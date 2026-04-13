@@ -116,7 +116,7 @@ async function boot() {
   initDebugConsoleEvents();
   initNodeMenuEvents();
   installWorkspaceShellObservers();
-  window.BiocircuitsExplorerWorkspaceShell.markReady();
+  (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.markReady?.();
 }
 
 void boot();

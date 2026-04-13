@@ -132,11 +132,11 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     func saveWorkspace() {
-        evaluateNativeShellScript("window.BiocircuitsExplorerWorkspaceShell?.saveWorkspace?.();")
+        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.saveWorkspace?.();")
     }
 
     func loadWorkspace() {
-        evaluateNativeShellScript("window.BiocircuitsExplorerWorkspaceShell?.loadWorkspace?.();")
+        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.loadWorkspace?.();")
     }
 
     func resetWorkspaceView() {
@@ -157,7 +157,7 @@ final class WebShellController: NSObject, ObservableObject {
             } else {
                 effectiveArgument = "null"
             }
-            evaluateNativeShellScript("window.BiocircuitsExplorerWorkspaceShell?.setThemeMode?.(\(argument), \(effectiveArgument));") { _, _ in
+            evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setThemeMode?.(\(argument), \(effectiveArgument));") { _, _ in
                 completion?()
             }
         } catch {
@@ -167,7 +167,7 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     func runConnectedWorkspace() {
-        evaluateNativeShellScript("window.BiocircuitsExplorerWorkspaceShell?.runConnectedWorkspace?.();")
+        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.runConnectedWorkspace?.();")
     }
 
     private func pushPendingProject() {
@@ -181,7 +181,7 @@ final class WebShellController: NSObject, ObservableObject {
             let jsonString = String(decoding: data, as: UTF8.self)
             let argument = try javaScriptStringLiteral(for: jsonString)
             let projectID = try javaScriptStringLiteral(for: pendingProject.id)
-            let script = "window.BiocircuitsExplorerNativeShell && window.BiocircuitsExplorerNativeShell.loadProjectFromJSONString(\(argument), \(projectID));"
+            let script = "(window.BiocircuitsExplorerNativeShell || window.ROPNativeShell)?.loadProjectFromJSONString(\(argument), \(projectID));"
 
             webView.evaluateJavaScript(script) { [weak self] result, error in
                 guard let self else {
@@ -294,7 +294,7 @@ final class WebShellController: NSObject, ObservableObject {
             return
         }
 
-        webView.evaluateJavaScript("window.BiocircuitsExplorerWorkspaceShell?.serializeWorkspace?.();") { [weak self] result, error in
+        webView.evaluateJavaScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.serializeWorkspace?.();") { [weak self] result, error in
             if let error {
                 self?.lastErrorMessage = error.localizedDescription
                 completion(nil)
@@ -466,7 +466,7 @@ private extension WebShellController {
       }
 
       function currentContract() {
-        return window.BiocircuitsExplorerWorkspaceShell;
+        return window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell;
       }
 
       function contractMetadata(contract, payload = null) {
@@ -500,7 +500,7 @@ private extension WebShellController {
         });
       }
 
-      window.BiocircuitsExplorerNativeShell = {
+      const nativeShell = {
         loadProjectFromJSONString(jsonString, projectID = null) {
           const contract = currentContract();
           if (typeof contract?.applyWorkspaceFromJSONString !== 'function') return false;
@@ -520,6 +520,8 @@ private extension WebShellController {
           return true;
         },
       };
+      window.BiocircuitsExplorerNativeShell = nativeShell;
+      window.ROPNativeShell = nativeShell;
 
       function registerHost(contract) {
         if (shellState.registered) return;
@@ -599,6 +601,7 @@ private extension WebShellController {
       }
 
       window.addEventListener('biocircuits-explorer:workspace-shell-ready', boot);
+      window.addEventListener('rop:workspace-shell-ready', boot);
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot, { once: true });
       } else {

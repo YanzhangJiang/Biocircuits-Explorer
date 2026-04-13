@@ -1,7 +1,7 @@
 // Biocircuits Explorer — Theme Management & Plot Theming
 
 import {
-  themeState, THEME_MODE_STORAGE_KEY, LIGHT_THEME_STYLESHEET_ID,
+  themeState, THEME_MODE_STORAGE_KEY, LEGACY_THEME_MODE_STORAGE_KEY, LIGHT_THEME_STYLESHEET_ID,
   colorSchemeMediaQuery, SISO_FAMILY_COLORS, nodeRegistry,
 } from './state.js';
 
@@ -127,6 +127,9 @@ export async function applyThemeMode(mode, options = {}) {
   document.documentElement.style.colorScheme = effective;
 
   await ensureLightThemeStylesheet(true);
+  window.dispatchEvent(new CustomEvent('biocircuits-explorer:theme-changed', {
+    detail: { mode: normalized, effective },
+  }));
   window.dispatchEvent(new CustomEvent('rop:theme-changed', {
     detail: { mode: normalized, effective },
   }));
@@ -145,7 +148,17 @@ export async function applyThemeMode(mode, options = {}) {
 
 export function storedThemeMode() {
   try {
-    return normalizeThemeMode(window.localStorage.getItem(THEME_MODE_STORAGE_KEY));
+    const stored = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
+    if (stored != null) {
+      return normalizeThemeMode(stored);
+    }
+
+    const legacyStored = window.localStorage.getItem(LEGACY_THEME_MODE_STORAGE_KEY);
+    const normalizedLegacy = normalizeThemeMode(legacyStored);
+    if (legacyStored != null) {
+      window.localStorage.setItem(THEME_MODE_STORAGE_KEY, normalizedLegacy);
+    }
+    return normalizedLegacy;
   } catch (_) {
     return 'auto';
   }

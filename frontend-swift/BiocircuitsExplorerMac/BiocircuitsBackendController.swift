@@ -162,12 +162,18 @@ final class BiocircuitsBackendController: ObservableObject {
         let compiledRoots = [
             Bundle.main.resourceURL?.appendingPathComponent("backend", isDirectory: true),
             Bundle.main.resourceURL?.appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true),
+            Bundle.main.resourceURL?.appendingPathComponent("ROPExplorerBackend", isDirectory: true),
         ]
         .compactMap { $0 }
         + repoRoots.map {
-            $0.appendingPathComponent("dist", isDirectory: true)
-                .appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true)
+            [
+                $0.appendingPathComponent("dist", isDirectory: true)
+                    .appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true),
+                $0.appendingPathComponent("dist", isDirectory: true)
+                    .appendingPathComponent("ROPExplorerBackend", isDirectory: true),
+            ]
         }
+        .flatMap { $0 }
 
         for backendRoot in compiledRoots {
             if let launchSpec = compiledLaunchSpec(for: backendRoot) {
@@ -205,17 +211,32 @@ final class BiocircuitsBackendController: ObservableObject {
     }
 
     private func compiledLaunchSpec(for backendRoot: URL) -> LaunchSpec? {
-        let executableURL = backendRoot
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("biocircuits-explorer-backend")
-        let publicDir = backendRoot
-            .appendingPathComponent("share", isDirectory: true)
-            .appendingPathComponent("biocircuits-explorer", isDirectory: true)
-            .appendingPathComponent("public", isDirectory: true)
+        let executableURL = [
+            "biocircuits-explorer-backend",
+            "rop-explorer-backend",
+        ]
+        .map {
+            backendRoot
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent($0)
+        }
+        .first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+
+        let publicDir = [
+            "biocircuits-explorer",
+            "rop-explorer",
+        ]
+        .map {
+            backendRoot
+                .appendingPathComponent("share", isDirectory: true)
+                .appendingPathComponent($0, isDirectory: true)
+                .appendingPathComponent("public", isDirectory: true)
+        }
+        .first(where: { fileManager.fileExists(atPath: $0.path) })
 
         guard
-            fileManager.isExecutableFile(atPath: executableURL.path),
-            fileManager.fileExists(atPath: publicDir.path)
+            let executableURL,
+            let publicDir
         else {
             return nil
         }

@@ -247,6 +247,7 @@ export function initCanvasEvents() {
   gridBg = document.getElementById('grid-bg');
 
   if (!themeChangeListenerInstalled) {
+    window.addEventListener('biocircuits-explorer:theme-changed', () => renderGrid());
     window.addEventListener('rop:theme-changed', () => renderGrid());
     themeChangeListenerInstalled = true;
   }
