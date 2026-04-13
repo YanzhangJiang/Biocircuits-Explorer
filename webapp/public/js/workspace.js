@@ -66,20 +66,20 @@ export function validateWorkspaceDocument(data) {
 export function queueWorkspaceShellSync(reason = 'unknown') {
   clearTimeout(workspaceShellSyncTimer);
   setWorkspaceShellSyncTimer(window.setTimeout(() => {
-    window.BiocircuitsExplorerWorkspaceShell?.notifyWorkspaceChanged(reason);
+    (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.notifyWorkspaceChanged(reason);
   }, 250));
 }
 
 export function commitWorkspaceSnapshot(reason = 'unknown') {
   clearTimeout(workspaceShellSyncTimer);
   setWorkspaceShellSyncTimer(null);
-  return window.BiocircuitsExplorerWorkspaceShell?.notifyWorkspaceChanged(reason) ?? false;
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.notifyWorkspaceChanged(reason) ?? false;
 }
 
 // ===== BiocircuitsExplorerWorkspaceShell Initializer =====
 
 export function initWorkspaceShell() {
-  window.BiocircuitsExplorerWorkspaceShell = {
+  const workspaceShell = {
     ...workspaceShellMetadata(),
 
     registerHost(host) {
@@ -101,9 +101,9 @@ export function initWorkspaceShell() {
 
       setWorkspaceShellReady(true);
       workspaceShellHost?.shellDidBecomeReady?.(workspaceShellMetadata());
-      window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-shell-ready', {
-        detail: workspaceShellMetadata(),
-      }));
+      const detail = workspaceShellMetadata();
+      window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-shell-ready', { detail }));
+      window.dispatchEvent(new CustomEvent('rop:workspace-shell-ready', { detail }));
     },
 
     serializeWorkspace() {
@@ -121,13 +121,13 @@ export function initWorkspaceShell() {
         reason,
         ...workspaceShellMetadata(),
       });
-      window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-changed', {
-        detail: {
-          reason,
-          jsonString,
-          ...workspaceShellMetadata(),
-        },
-      }));
+      const detail = {
+        reason,
+        jsonString,
+        ...workspaceShellMetadata(),
+      };
+      window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-changed', { detail }));
+      window.dispatchEvent(new CustomEvent('rop:workspace-changed', { detail }));
       return true;
     },
 
@@ -175,6 +175,8 @@ export function initWorkspaceShell() {
       return true;
     },
   };
+  window.BiocircuitsExplorerWorkspaceShell = workspaceShell;
+  window.ROPWorkspaceShell = workspaceShell;
 }
 
 // ===== Node Serial Data =====
@@ -235,12 +237,12 @@ export function defaultSaveState() {
   a.click();
   URL.revokeObjectURL(url);
   showToast('Workspace saved');
-  setLastWorkspaceShellSnapshot(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+  setLastWorkspaceShellSnapshot((window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).serializeWorkspace());
   return true;
 }
 
 export function saveState() {
-  return window.BiocircuitsExplorerWorkspaceShell.saveWorkspace();
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).saveWorkspace();
 }
 
 export function defaultLoadState() {
@@ -255,7 +257,7 @@ export function defaultLoadState() {
       try {
         const data = validateWorkspaceDocument(JSON.parse(ev.target.result));
         applyState(data);
-        setLastWorkspaceShellSnapshot(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+        setLastWorkspaceShellSnapshot((window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).serializeWorkspace());
         showToast('Workspace loaded');
       } catch (err) {
         showToast('Failed to load: ' + err.message);
@@ -268,7 +270,7 @@ export function defaultLoadState() {
 }
 
 export function loadState() {
-  return window.BiocircuitsExplorerWorkspaceShell.loadWorkspace();
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).loadWorkspace();
 }
 
 export function applyState(data) {

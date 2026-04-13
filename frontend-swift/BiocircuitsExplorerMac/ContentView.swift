@@ -100,6 +100,11 @@ struct ContentView: View {
         let store = ProjectStore()
         let backendController = BiocircuitsBackendController()
         let defaults = UserDefaults.standard
+        if defaults.string(forKey: "biocircuitsExplorer.themeMode") == nil,
+           let legacyThemeMode = defaults.string(forKey: "ropExplorer.themeMode")
+        {
+            defaults.set(legacyThemeMode, forKey: "biocircuitsExplorer.themeMode")
+        }
         let initialThemeMode =
             defaults.string(forKey: "biocircuitsExplorer.themeMode")
             ?? defaults.string(forKey: "ropExplorer.themeMode")

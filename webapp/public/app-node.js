@@ -20,6 +20,7 @@ const debugConsoleState = {
 const WORKSPACE_DOCUMENT_VERSION = 1;
 const WORKSPACE_SHELL_CONTRACT_VERSION = 1;
 const THEME_MODE_STORAGE_KEY = 'biocircuits-explorer.theme-mode';
+const LEGACY_THEME_MODE_STORAGE_KEY = 'rop-explorer.theme-mode';
 const LIGHT_THEME_STYLESHEET_ID = 'biocircuits-explorer-light-theme-stylesheet';
 const colorSchemeMediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
 
@@ -69,16 +70,16 @@ function validateWorkspaceDocument(data) {
 function queueWorkspaceShellSync(reason = 'unknown') {
   clearTimeout(workspaceShellSyncTimer);
   workspaceShellSyncTimer = window.setTimeout(() => {
-    window.BiocircuitsExplorerWorkspaceShell?.notifyWorkspaceChanged(reason);
+    (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.notifyWorkspaceChanged(reason);
   }, 250);
 }
 
 function commitWorkspaceSnapshot(reason = 'unknown') {
   clearTimeout(workspaceShellSyncTimer);
-  return window.BiocircuitsExplorerWorkspaceShell?.notifyWorkspaceChanged(reason) ?? false;
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.notifyWorkspaceChanged(reason) ?? false;
 }
 
-window.BiocircuitsExplorerWorkspaceShell = {
+const biocircuitsExplorerWorkspaceShell = {
   ...workspaceShellMetadata(),
 
   registerHost(host) {
@@ -100,9 +101,9 @@ window.BiocircuitsExplorerWorkspaceShell = {
 
     workspaceShellReady = true;
     workspaceShellHost?.shellDidBecomeReady?.(workspaceShellMetadata());
-    window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-shell-ready', {
-      detail: workspaceShellMetadata(),
-    }));
+    const detail = workspaceShellMetadata();
+    window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-shell-ready', { detail }));
+    window.dispatchEvent(new CustomEvent('rop:workspace-shell-ready', { detail }));
   },
 
   serializeWorkspace() {
@@ -120,13 +121,13 @@ window.BiocircuitsExplorerWorkspaceShell = {
       reason,
       ...workspaceShellMetadata(),
     });
-    window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-changed', {
-      detail: {
-        reason,
-        jsonString,
-        ...workspaceShellMetadata(),
-      },
-    }));
+    const detail = {
+      reason,
+      jsonString,
+      ...workspaceShellMetadata(),
+    };
+    window.dispatchEvent(new CustomEvent('biocircuits-explorer:workspace-changed', { detail }));
+    window.dispatchEvent(new CustomEvent('rop:workspace-changed', { detail }));
     return true;
   },
 
@@ -174,6 +175,8 @@ window.BiocircuitsExplorerWorkspaceShell = {
     return true;
   },
 };
+window.BiocircuitsExplorerWorkspaceShell = biocircuitsExplorerWorkspaceShell;
+window.ROPWorkspaceShell = biocircuitsExplorerWorkspaceShell;
 
 // ===== Node Registry =====
 let nodeIdCounter = 0;
@@ -2770,6 +2773,12 @@ async function applyThemeMode(mode, options = {}) {
   document.documentElement.style.colorScheme = effective;
 
   await ensureLightThemeStylesheet(effective === 'light');
+  window.dispatchEvent(new CustomEvent('biocircuits-explorer:theme-changed', {
+    detail: { mode: normalized, effective },
+  }));
+  window.dispatchEvent(new CustomEvent('rop:theme-changed', {
+    detail: { mode: normalized, effective },
+  }));
   syncThemeMenuUI();
 
   if (persist) {
@@ -2785,7 +2794,17 @@ async function applyThemeMode(mode, options = {}) {
 
 function storedThemeMode() {
   try {
-    return normalizeThemeMode(window.localStorage.getItem(THEME_MODE_STORAGE_KEY));
+    const stored = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
+    if (stored != null) {
+      return normalizeThemeMode(stored);
+    }
+
+    const legacyStored = window.localStorage.getItem(LEGACY_THEME_MODE_STORAGE_KEY);
+    const normalizedLegacy = normalizeThemeMode(legacyStored);
+    if (legacyStored != null) {
+      window.localStorage.setItem(THEME_MODE_STORAGE_KEY, normalizedLegacy);
+    }
+    return normalizedLegacy;
   } catch (_) {
     return 'auto';
   }
@@ -6231,12 +6250,12 @@ function defaultSaveState() {
   a.click();
   URL.revokeObjectURL(url);
   showToast('Workspace saved');
-  lastWorkspaceShellSnapshot = window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace();
+  lastWorkspaceShellSnapshot = (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).serializeWorkspace();
   return true;
 }
 
 function saveState() {
-  return window.BiocircuitsExplorerWorkspaceShell.saveWorkspace();
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).saveWorkspace();
 }
 
 function defaultLoadState() {
@@ -6251,7 +6270,7 @@ function defaultLoadState() {
       try {
         const data = validateWorkspaceDocument(JSON.parse(ev.target.result));
         applyState(data);
-        lastWorkspaceShellSnapshot = window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace();
+        lastWorkspaceShellSnapshot = (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).serializeWorkspace();
         showToast('Workspace loaded');
       } catch (err) {
         showToast('Failed to load: ' + err.message);
@@ -6264,7 +6283,7 @@ function defaultLoadState() {
 }
 
 function loadState() {
-  return window.BiocircuitsExplorerWorkspaceShell.loadWorkspace();
+  return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).loadWorkspace();
 }
 
 function applyState(data) {
@@ -8155,4 +8174,4 @@ function installWorkspaceShellObservers() {
 
 installWorkspaceShellObservers();
 installThemeChangeObserver();
-window.BiocircuitsExplorerWorkspaceShell.markReady();
+(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).markReady();

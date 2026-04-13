@@ -4,6 +4,7 @@
 
 export const API = '';
 export const DEBUG_CLIENT_STORAGE_KEY = 'biocircuits-explorer.debug-client-id';
+export const LEGACY_DEBUG_CLIENT_STORAGE_KEY = 'rop-explorer.debug-client-id';
 
 export const state = {
   sessionId: null,
@@ -23,6 +24,7 @@ export const debugConsoleState = {
 export const WORKSPACE_DOCUMENT_VERSION = 1;
 export const WORKSPACE_SHELL_CONTRACT_VERSION = 1;
 export const THEME_MODE_STORAGE_KEY = 'biocircuits-explorer.theme-mode';
+export const LEGACY_THEME_MODE_STORAGE_KEY = 'rop-explorer.theme-mode';
 export const LIGHT_THEME_STYLESHEET_ID = 'biocircuits-explorer-light-theme-stylesheet';
 export const colorSchemeMediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
 
@@ -54,9 +56,11 @@ export function ensureDebugClientId() {
   if (debugClientId) return debugClientId;
 
   try {
-    const stored = window.sessionStorage.getItem(DEBUG_CLIENT_STORAGE_KEY);
+    const stored = window.sessionStorage.getItem(DEBUG_CLIENT_STORAGE_KEY)
+      || window.sessionStorage.getItem(LEGACY_DEBUG_CLIENT_STORAGE_KEY);
     if (stored) {
       debugClientId = stored;
+      window.sessionStorage.setItem(DEBUG_CLIENT_STORAGE_KEY, debugClientId);
       return debugClientId;
     }
   } catch (_) {}

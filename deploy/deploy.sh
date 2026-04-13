@@ -16,7 +16,12 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
 REPO_URL="https://github.com/YanzhangJiang/Biocircuits-Explorer.git"
-INSTALL_DIR="/opt/Biocircuits-Explorer"
+DEFAULT_INSTALL_DIR="/opt/Biocircuits-Explorer"
+LEGACY_INSTALL_DIR="/opt/ROP-Explorer"
+INSTALL_DIR="${BIOCIRCUITS_EXPLORER_INSTALL_DIR:-${ROP_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}}"
+if [ -z "${BIOCIRCUITS_EXPLORER_INSTALL_DIR:-}" ] && [ -z "${ROP_INSTALL_DIR:-}" ] && [ ! -d "$INSTALL_DIR" ] && [ -d "$LEGACY_INSTALL_DIR" ]; then
+    INSTALL_DIR="$LEGACY_INSTALL_DIR"
+fi
 
 echo "=== Biocircuits Explorer Deployment ==="
 

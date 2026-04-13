@@ -16,6 +16,7 @@ final class ProjectStore: ObservableObject {
     @Published var lastErrorMessage: String?
 
     let projectsDirectory: URL
+    let legacyProjectsDirectory: URL?
 
     private let decoder = JSONDecoder()
     private let encoder: JSONEncoder
@@ -34,11 +35,17 @@ final class ProjectStore: ObservableObject {
             projectsDirectory = appSupportURL
                 .appendingPathComponent("Biocircuits Explorer", isDirectory: true)
                 .appendingPathComponent("Projects", isDirectory: true)
+            legacyProjectsDirectory = appSupportURL
+                .appendingPathComponent("ROP-Explorer", isDirectory: true)
+                .appendingPathComponent("Projects", isDirectory: true)
         } catch {
             let fallbackURL = fileManager.temporaryDirectory
                 .appendingPathComponent("Biocircuits Explorer", isDirectory: true)
                 .appendingPathComponent("Projects", isDirectory: true)
             projectsDirectory = fallbackURL
+            legacyProjectsDirectory = fileManager.temporaryDirectory
+                .appendingPathComponent("ROP-Explorer", isDirectory: true)
+                .appendingPathComponent("Projects", isDirectory: true)
             lastErrorMessage = "Failed to resolve Application Support. Falling back to \(fallbackURL.path)."
         }
 
@@ -131,12 +138,48 @@ final class ProjectStore: ObservableObject {
     private func bootstrap() {
         do {
             try fileManager.createDirectory(at: projectsDirectory, withIntermediateDirectories: true, attributes: nil)
+            try migrateLegacyProjectsIfNeeded()
             try reloadProjects()
             if projects.isEmpty {
                 _ = try createProject()
             }
         } catch {
             lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func migrateLegacyProjectsIfNeeded() throws {
+        guard
+            let legacyProjectsDirectory,
+            legacyProjectsDirectory != projectsDirectory,
+            fileManager.fileExists(atPath: legacyProjectsDirectory.path)
+        else {
+            return
+        }
+
+        let currentURLs = try fileManager.contentsOfDirectory(
+            at: projectsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "json" }
+
+        guard currentURLs.isEmpty else {
+            return
+        }
+
+        let legacyURLs = try fileManager.contentsOfDirectory(
+            at: legacyProjectsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "json" }
+
+        for legacyURL in legacyURLs {
+            let preferredName = legacyURL.deletingPathExtension().lastPathComponent
+            let resolvedName = uniqueProjectName(from: preferredName)
+            let destinationURL = fileURL(forProjectNamed: resolvedName)
+            try fileManager.copyItem(at: legacyURL, to: destinationURL)
         }
     }
 
