@@ -1,0 +1,288 @@
+/* ===== Biocircuits Explorer — Dark Theme Variables ===== */
+
+:root {
+  /* --- Core --- */
+  --bg-color: #1c1c1c;
+  --grid-color: #2b2b2b;
+  --node-bg: #2d2d2d;
+  --node-border: #111;
+  --text-color: #e0e0e0;
+  --text-dim: #aaa;
+  --input-bg: #111;
+  --input-border: #444;
+  --input-text-color: #fff;
+  --input-shadow: none;
+  --debug-panel-width: min(440px, 92vw);
+
+  /* --- Port colors --- */
+  --port-reactions: #E8854A;
+  --port-model: #6C8CFF;
+  --port-params: #9B59B6;
+  --port-result: #17A2B8;
+  --port-atlas-spec: var(--port-params);
+  --port-atlas: var(--port-model);
+  --port-atlas-query: var(--port-params);
+
+  /* --- Port hover / glow --- */
+  --port-reactions-hover: #f0a070;
+  --port-reactions-glow: rgba(232, 133, 74, 0.8);
+  --port-model-hover: #9ab0ff;
+  --port-model-glow: rgba(108, 140, 255, 0.8);
+  --port-params-hover: #b77dd6;
+  --port-params-glow: rgba(155, 89, 182, 0.8);
+  --port-result-hover: #3bc4db;
+  --port-result-glow: rgba(23, 162, 184, 0.8);
+
+  /* --- Sockets --- */
+  --socket-bg: #d3b53b;
+  --socket-default-glow: rgba(211, 181, 59, 0.8);
+
+  /* --- Wires --- */
+  --wire-color: #888;
+  --wire-active: #ffffff;
+
+  /* --- Header --- */
+  --header-bg: rgba(19, 22, 28, 0.64);
+  --header-border: rgba(255, 255, 255, 0.06);
+  --header-shadow: rgba(0, 0, 0, 0.12);
+  --header-title-color: #edf2f7;
+  --subtitle-color: #94a6ba;
+
+  /* --- Badges --- */
+  --badge-border: rgba(255, 255, 255, 0.1);
+  --badge-bg: rgba(255, 255, 255, 0.06);
+  --badge-color: #d9e3ed;
+  --badge-shadow: 0 2px 12px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --badge-working-bg: linear-gradient(180deg, rgba(214, 111, 111, 0.92), rgba(169, 76, 76, 0.8));
+  --badge-working-border: rgba(255, 171, 171, 0.3);
+  --badge-working-color: #fff5f5;
+  --badge-done-bg: linear-gradient(180deg, rgba(110, 214, 144, 0.92), rgba(70, 165, 106, 0.78));
+  --badge-done-border: rgba(190, 255, 208, 0.28);
+  --badge-done-color: #08150d;
+  --badge-error-bg: linear-gradient(180deg, rgba(255, 122, 122, 0.96), rgba(201, 81, 81, 0.84));
+  --badge-error-border: rgba(255, 196, 196, 0.3);
+  --badge-error-color: #fff7f7;
+
+  /* --- Toolbar buttons --- */
+  --toolbar-btn-border: rgba(255, 255, 255, 0.1);
+  --toolbar-btn-bg: rgba(255, 255, 255, 0.06);
+  --toolbar-btn-color: #edf3f9;
+  --toolbar-btn-shadow: 0 2px 12px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --toolbar-btn-before-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015));
+  --toolbar-btn-hover-bg: rgba(255, 255, 255, 0.1);
+  --toolbar-btn-hover-border: rgba(255, 255, 255, 0.14);
+  --toolbar-btn-hover-shadow: 0 2px 12px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --toolbar-btn-active-bg: rgba(255, 255, 255, 0.04);
+  --toolbar-btn-active-border: rgba(255, 255, 255, 0.1);
+  --toolbar-btn-active-shadow: 0 1px 8px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* --- Toolbar debug active --- */
+  --toolbar-debug-active-bg: rgba(93, 132, 201, 0.2);
+  --toolbar-debug-active-border: rgba(145, 177, 236, 0.28);
+  --toolbar-debug-active-color: #f8fbff;
+  --toolbar-debug-active-shadow: 0 6px 16px rgba(21, 34, 55, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* --- Debug indicator --- */
+  --debug-indicator-bg: #ff8c42;
+  --debug-indicator-glow: rgba(255, 140, 66, 0.7);
+
+  /* --- Nodes --- */
+  --node-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+  --node-hover-shadow: 0 8px 20px rgba(0, 0, 0, 0.7);
+  --node-resize-bg: linear-gradient(135deg, transparent 50%, #555 50%);
+  --node-resize-hover-bg: linear-gradient(135deg, transparent 50%, #777 50%);
+  --node-header-color: #f8fbff;
+
+  /* --- Node header types --- */
+  --header-input-bg: #C15C5C;
+  --header-process-bg: #3560A8;
+  --header-parameter-bg: #9B59B6;
+  --header-result-bg: #17A2B8;
+  --header-output-bg: #404040;
+  --header-note-bg: #F39C12;
+  --header-viewer-bg: #5C8A5C;
+  --header-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+
+  /* --- Close button --- */
+  --btn-close-bg: rgba(0, 0, 0, 0.3);
+  --btn-close-color: #fff;
+  --btn-close-hover-bg: rgba(0, 0, 0, 0.6);
+
+  /* --- Scrollbars --- */
+  --scrollbar-track: #222;
+  --scrollbar-thumb: #555;
+  --scrollbar-panel-track: #171717;
+  --scrollbar-panel-thumb: #4b5563;
+  --scrollbar-panel-thumb-hover: #64748b;
+
+  /* --- Debug Console --- */
+  --debug-bg: #000;
+  --debug-border: #151515;
+  --debug-open-shadow: rgba(0, 0, 0, 0.35);
+  --debug-header-border: #101010;
+  --debug-title-color: #d4d4d4;
+  --debug-subtitle-color: #7a7a7a;
+  --debug-toolbar-border: #0d0d0d;
+  --debug-counter-color: #6c6c6c;
+  --debug-text-color: #3cff7a;
+  --debug-scrollbar-thumb: #2f2f2f;
+  --debug-empty-color: #6a6a6a;
+
+  /* --- Panels (shared bg/border for info, viewer, path items, etc.) --- */
+  --panel-bg: #1a1a1a;
+  --panel-border: #333;
+  --panel-hover-bg: #252525;
+  --panel-hover-border: #555;
+
+  /* --- Tables --- */
+  --table-border: #333;
+  --table-header-bg: #222;
+  --table-cell-color: #ccc;
+
+  /* --- Plot --- */
+  --plot-bg: #111;
+
+  /* --- Buttons --- */
+  --btn-bg: #444;
+  --btn-color: white;
+  --btn-hover-bg: #555;
+  --btn-primary-bg: #3560A8;
+  --btn-primary-color: white;
+  --btn-primary-hover-bg: #4570B8;
+  --btn-run-bg: linear-gradient(180deg, #4278cb 0%, #3560A8 100%);
+  --btn-run-hover-bg: linear-gradient(180deg, #4d86dc 0%, #4570B8 100%);
+  --btn-run-color: #ffffff;
+  --btn-run-shadow: 0 8px 18px rgba(30, 64, 122, 0.32);
+  --btn-remove-bg: #C15C5C;
+  --btn-remove-color: #fff;
+  --btn-remove-hover-bg: #D16C6C;
+
+  /* --- Reaction header --- */
+  --reaction-header-border: #333;
+  --reaction-header-label-color: #888;
+
+  /* --- Node info --- */
+  --node-info-pre-color: #aaa;
+
+  /* --- Selected items --- */
+  --item-selected-bg: #3560A8;
+  --item-selected-border: #4570B8;
+  --item-selected-color: #fff;
+
+  /* --- SISO stat cards --- */
+  --stat-card-bg: linear-gradient(180deg, #232323, #181818);
+  --stat-label-color: #8da5b6;
+  --stat-value-color: #f4f7fa;
+
+  /* --- Scope note / summary chip --- */
+  --scope-note-bg: #202020;
+  --scope-note-color: #ccc;
+  --chip-bg: #222;
+  --chip-color: #ddd;
+
+  /* --- Section titles --- */
+  --section-title-color: #f4f7fa;
+
+  /* --- Tab navigation --- */
+  --tab-nav-border: #333;
+  --tab-btn-bg: #2d2d2d;
+  --tab-btn-color: #aaa;
+  --tab-btn-hover-bg: #353535;
+  --tab-btn-hover-color: #ddd;
+  --tab-btn-active-bg: #3560A8;
+  --tab-btn-active-color: #fff;
+
+  /* --- Atlas config --- */
+  --atlas-config-bg: #202020;
+  --atlas-section-title-color: #f3f6f8;
+  --atlas-builder-group-border: #313131;
+  --atlas-builder-head-color: #e7edf1;
+  --atlas-builder-row-bg: #121212;
+  --atlas-builder-row-border: #2f2f2f;
+  --atlas-builder-arrow-color: #c0c8cf;
+  --atlas-query-preview-border: #303030;
+  --atlas-query-preview-color: #d9e2ea;
+
+  /* --- Atlas sketch --- */
+  --atlas-sketch-card-bg:
+    radial-gradient(circle at top right, rgba(79, 168, 255, 0.12), transparent 44%),
+    linear-gradient(180deg, #171717 0%, #121212 100%);
+  --atlas-sketch-card-border: #313131;
+  --atlas-sketch-axis-stroke: #56616b;
+  --atlas-sketch-circle-stroke: #0c0c0c;
+  --atlas-sketch-caption-color: #aeb9c2;
+  --atlas-sketch-empty-bg: #141414;
+  --atlas-sketch-empty-border: #383838;
+
+  /* --- Atlas rule list code --- */
+  --atlas-rule-code-bg: rgba(255, 255, 255, 0.04);
+  --atlas-rule-code-border: rgba(255, 255, 255, 0.08);
+  --atlas-rule-code-color: #edf2f4;
+
+  /* --- Atlas inline card --- */
+  --atlas-inline-card-bg: #1d1d1d;
+
+  /* --- Cloud FOV --- */
+  --cloud-fov-bg: #1b1b1b;
+  --cloud-fov-axis-color: #cfd8df;
+  --cloud-fov-sep-color: #7f8b96;
+
+  /* --- SISO profile / path --- */
+  --siso-profile-cell-color: #ddd;
+  --siso-path-title-color: #f4f7fa;
+  --siso-path-detail-color: #ccc;
+  --siso-path-meta-color: #aaa;
+  --siso-path-selected-bg: #2c3950;
+
+  /* --- Family card --- */
+  --family-card-gradient-end: rgba(16, 16, 16, 0.96);
+  --family-card-border: rgba(255, 255, 255, 0.08);
+  --family-card-inset-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --family-title-color: #f3f6f8;
+  --family-subtitle-color: #bac6d0;
+  --family-metric-bg: rgba(255, 255, 255, 0.06);
+  --family-metric-color: #dbe5ec;
+  --family-badge-color: #f1f5f9;
+  --family-badge-exact-color: #f1f5f9;
+  --family-badge-motif-color: #f1f5f9;
+
+  /* --- Path chip --- */
+  --path-chip-border: #3a3a3a;
+  --path-chip-selected-bg: rgba(53, 96, 168, 0.25);
+  --path-chip-selected-border: #4570B8;
+  --path-chip-selected-color: #fff;
+
+  /* --- Dropdown menu --- */
+  --dropdown-bg: rgba(22, 25, 31, 0.78);
+  --dropdown-border: rgba(255, 255, 255, 0.08);
+  --dropdown-shadow: 0 18px 40px rgba(0, 0, 0, 0.24);
+  --menu-section-title-color: #94a6ba;
+  --menu-item-color: #e8eef5;
+  --menu-item-hover-bg: rgba(255, 255, 255, 0.08);
+  --menu-item-selected-bg: rgba(108, 140, 255, 0.14);
+  --menu-item-selected-color: #f8fbff;
+
+  /* --- Toast --- */
+  --toast-bg: #333;
+  --toast-color: #eee;
+  --toast-shadow: rgba(0, 0, 0, 0.5);
+
+  /* --- Text dim helper --- */
+  --text-dim-helper: #888;
+
+  /* --- Note tabs --- */
+  --note-tab-color: #888;
+  --note-tab-hover-color: #aaa;
+  --note-tab-active-color: #F39C12;
+
+  /* --- Markdown --- */
+  --markdown-editor-color: #ddd;
+  --markdown-preview-color: #ddd;
+  --markdown-heading-color: #fff;
+  --markdown-h1-border: #444;
+  --markdown-strong-color: #fff;
+  --markdown-em-color: #aaa;
+  --markdown-code-bg: #2a2a2a;
+  --markdown-code-color: #a8dadc;
+  --markdown-link-color: #6C8CFF;
+}

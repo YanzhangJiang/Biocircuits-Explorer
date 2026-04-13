@@ -1,0 +1,223 @@
+/* ===== Biocircuits Explorer — Light Theme Variable Overrides ===== */
+
+:root[data-effective-theme="light"] {
+  /* --- Core --- */
+  --bg-color: #e8eef5;
+  --grid-color: rgba(99, 120, 146, 0.16);
+  --node-bg: #f7f9fc;
+  --node-border: #ccd6e2;
+  --text-color: #1b2430;
+  --text-dim: #607081;
+  --input-bg: #ffffff;
+  --input-border: #c8d3df;
+  --input-text-color: #1b2430;
+  --input-shadow: inset 0 1px 2px rgba(99, 120, 146, 0.08);
+
+  /* --- Wires --- */
+  --wire-color: #7f92a6;
+  --wire-active: #3560A8;
+
+  /* --- Header --- */
+  --header-bg: rgba(248, 250, 253, 0.7);
+  --header-border: rgba(124, 142, 165, 0.24);
+  --header-shadow: rgba(79, 97, 122, 0.08);
+  --header-title-color: #1d2834;
+  --subtitle-color: #6d7c8c;
+
+  /* --- Badges --- */
+  --badge-border: rgba(189, 201, 214, 0.78);
+  --badge-bg: rgba(255, 255, 255, 0.74);
+  --badge-color: #344555;
+  --badge-shadow: 0 2px 12px rgba(79, 97, 122, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --badge-working-bg: linear-gradient(180deg, rgba(255, 206, 206, 0.98), rgba(241, 167, 167, 0.88));
+  --badge-working-border: rgba(219, 141, 141, 0.72);
+  --badge-working-color: #6d2020;
+  --badge-done-bg: linear-gradient(180deg, rgba(216, 248, 224, 0.98), rgba(171, 230, 187, 0.88));
+  --badge-done-border: rgba(110, 193, 139, 0.68);
+  --badge-done-color: #103620;
+  --badge-error-bg: linear-gradient(180deg, rgba(255, 215, 215, 0.98), rgba(255, 175, 175, 0.9));
+  --badge-error-border: rgba(225, 133, 133, 0.72);
+  --badge-error-color: #6a1f1f;
+
+  /* --- Toolbar buttons --- */
+  --toolbar-btn-border: rgba(185, 198, 213, 0.78);
+  --toolbar-btn-bg: rgba(255, 255, 255, 0.74);
+  --toolbar-btn-color: #324252;
+  --toolbar-btn-shadow: 0 2px 12px rgba(79, 97, 122, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --toolbar-btn-before-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.12));
+  --toolbar-btn-hover-bg: rgba(255, 255, 255, 0.92);
+  --toolbar-btn-hover-border: rgba(160, 179, 202, 0.88);
+  --toolbar-btn-hover-shadow: 0 2px 12px rgba(79, 97, 122, 0.12), inset 0 1px 0 rgba(255, 255, 255, 1);
+  --toolbar-btn-active-bg: rgba(236, 242, 248, 0.92);
+  --toolbar-btn-active-border: rgba(175, 190, 208, 0.82);
+  --toolbar-btn-active-shadow: 0 1px 8px rgba(79, 97, 122, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+
+  /* --- Toolbar-btn standalone (overrides shared btn-icon/toolbar-btn) --- */
+  --toolbar-btn-text-color: #162230;
+  --toolbar-btn-text-shadow: 0 8px 20px rgba(53, 96, 168, 0.16);
+
+  /* --- Toolbar debug active --- */
+  --toolbar-debug-active-bg: rgba(198, 218, 245, 0.72);
+  --toolbar-debug-active-border: rgba(116, 152, 209, 0.82);
+  --toolbar-debug-active-color: #1f3f66;
+  --toolbar-debug-active-shadow: 0 6px 16px rgba(65, 104, 163, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
+  /* --- Nodes --- */
+  --node-bg-full: linear-gradient(180deg, #fbfdff 0%, #f4f8fc 100%);
+  --node-shadow: 0 16px 36px rgba(79, 97, 122, 0.16);
+  --node-hover-shadow: 0 22px 46px rgba(79, 97, 122, 0.22);
+  --node-resize-bg: linear-gradient(135deg, transparent 50%, #b4c0cd 50%);
+  --node-resize-hover-bg: linear-gradient(135deg, transparent 50%, #93a5b8 50%);
+
+  /* --- Close button --- */
+  --btn-close-bg: rgba(29, 40, 52, 0.1);
+  --btn-close-color: #3d4f62;
+  --btn-close-hover-bg: rgba(29, 40, 52, 0.18);
+
+  /* --- Scrollbars --- */
+  --scrollbar-track: #e5ecf4;
+  --scrollbar-thumb: #b0bfce;
+  --scrollbar-panel-track: #e5ecf4;
+  --scrollbar-panel-thumb: #b0bfce;
+  --scrollbar-panel-thumb-hover: #96aabd;
+
+  /* --- Panels --- */
+  --panel-bg: #ffffff;
+  --panel-border: #d8e2ec;
+  --panel-hover-bg: #eef4fa;
+  --panel-hover-border: #bccbdb;
+
+  /* --- Tables --- */
+  --table-border: #dde6ef;
+  --table-header-bg: #edf3f9;
+  --table-cell-color: #1f2b38;
+
+  /* --- Plot --- */
+  --plot-bg: #edf3f8;
+
+  /* --- Buttons --- */
+  --btn-bg: #e4ebf3;
+  --btn-color: #243240;
+  --btn-hover-bg: #d8e2ee;
+  --btn-primary-color: #162230;
+  --btn-run-bg: linear-gradient(180deg, #4f83d2 0%, #3560A8 100%);
+  --btn-run-hover-bg: linear-gradient(180deg, #5c90df 0%, #4570B8 100%);
+  --btn-run-color: #ffffff;
+  --btn-run-shadow: 0 10px 20px rgba(53, 96, 168, 0.22);
+
+  /* --- Reaction header --- */
+  --reaction-header-border: #d9e2ec;
+  --reaction-header-label-color: #627180;
+
+  /* --- Node info --- */
+  --node-info-pre-color: #627180;
+
+  /* --- Selected items --- */
+  --item-selected-bg: #dce9f7;
+  --item-selected-border: #7ea4ce;
+  --item-selected-color: #182430;
+
+  /* --- SISO stat cards --- */
+  --stat-card-bg: linear-gradient(180deg, #ffffff 0%, #f2f6fa 100%);
+  --stat-label-color: #5f7891;
+  --stat-value-color: #1f2b38;
+
+  /* --- Scope note / summary chip --- */
+  --scope-note-bg: #f3f7fb;
+  --scope-note-color: #304152;
+  --chip-bg: #ffffff;
+  --chip-color: #243240;
+
+  /* --- Section titles --- */
+  --section-title-color: #1f2b38;
+
+  /* --- Tab navigation --- */
+  --tab-nav-border: #d7e1eb;
+  --tab-btn-bg: #edf3f9;
+  --tab-btn-color: #647588;
+  --tab-btn-hover-bg: #e2ebf4;
+  --tab-btn-hover-color: #223241;
+  --tab-btn-active-color: #fff;
+
+  /* --- Atlas config --- */
+  --atlas-config-bg: #f3f7fb;
+  --atlas-section-title-color: #1f2b38;
+  --atlas-builder-group-border: #d8e2ec;
+  --atlas-builder-head-color: #627180;
+  --atlas-builder-row-bg: #ffffff;
+  --atlas-builder-row-border: #d8e2ec;
+  --atlas-query-preview-border: #d8e2ec;
+  --atlas-query-preview-color: #243240;
+
+  /* --- Atlas sketch --- */
+  --atlas-sketch-card-bg:
+    radial-gradient(circle at top right, rgba(79, 168, 255, 0.14), transparent 42%),
+    linear-gradient(180deg, #ffffff 0%, #f3f7fb 100%);
+  --atlas-sketch-card-border: #d8e2ec;
+  --atlas-sketch-axis-stroke: #8192a5;
+  --atlas-sketch-circle-stroke: #f7f9fc;
+  --atlas-sketch-caption-color: #6b7a89;
+  --atlas-sketch-empty-bg: #f6f9fc;
+  --atlas-sketch-empty-border: #cfd9e4;
+
+  /* --- Atlas rule list code --- */
+  --atlas-rule-code-bg: #f5f8fc;
+  --atlas-rule-code-border: #d8e2ec;
+  --atlas-rule-code-color: #243240;
+
+  /* --- Atlas inline card --- */
+  --atlas-inline-card-bg: #ffffff;
+
+  /* --- Cloud FOV --- */
+  --cloud-fov-bg: #ffffff;
+  --cloud-fov-axis-color: #1f2b38;
+  --cloud-fov-sep-color: #6b7a89;
+
+  /* --- SISO profile / path --- */
+  --siso-profile-cell-color: #6b7a89;
+  --siso-path-title-color: #1f2b38;
+  --siso-path-detail-color: #627180;
+  --siso-path-meta-color: #627180;
+  --siso-path-selected-bg: #dce9f7;
+
+  /* --- Family card --- */
+  --family-card-gradient-end: rgba(255, 255, 255, 0.96);
+  --family-card-border: rgba(82, 101, 126, 0.16);
+  --family-card-inset-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --family-title-color: #1f2b38;
+  --family-subtitle-color: #6b7a89;
+  --family-metric-bg: rgba(36, 50, 64, 0.06);
+  --family-metric-color: #314254;
+  --family-badge-color: #243240;
+  --family-badge-exact-color: #8a4817;
+  --family-badge-motif-color: #145a71;
+
+  /* --- Path chip --- */
+  --path-chip-border: #d8e2ec;
+  --path-chip-selected-bg: rgba(53, 96, 168, 0.18);
+  --path-chip-selected-border: #7ea4ce;
+  --path-chip-selected-color: #182430;
+
+  /* --- Dropdown menu --- */
+  --dropdown-bg: rgba(255, 255, 255, 0.78);
+  --dropdown-border: rgba(193, 205, 217, 0.84);
+  --dropdown-shadow: 0 18px 36px rgba(79, 97, 122, 0.14);
+  --menu-section-title-color: #627180;
+  --menu-item-color: #243240;
+  --menu-item-hover-bg: rgba(203, 219, 236, 0.42);
+  --menu-item-selected-bg: rgba(86, 122, 187, 0.14);
+  --menu-item-selected-color: #1f2f3f;
+
+  /* --- Text dim helper --- */
+  --text-dim-helper: #627180;
+
+  /* --- Markdown --- */
+  --markdown-editor-color: #1f2b38;
+  --markdown-preview-color: #1f2b38;
+  --markdown-heading-color: #1f2b38;
+  --markdown-h1-border: #d8e2ec;
+  --markdown-strong-color: #1f2b38;
+  --markdown-em-color: #627180;
+  --markdown-code-bg: #eef3f8;
+  --markdown-code-color: #2a648d;
+}

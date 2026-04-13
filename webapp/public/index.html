@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Biocircuits Explorer — Reaction Order Polyhedra</title>
+<script src="vendor/plotly-2.27.0.min.js"></script>
+<script>
+if (!window.Plotly) {
+  document.write('<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"><\\/script>');
+}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <header id="header">
+    <h1>Biocircuits Explorer</h1>
+    <span class="subtitle">Reaction Order Polyhedra Analysis</span>
+    <span id="status-badge" class="badge idle">Ready</span>
+  </header>
+
+  <!-- Main layout -->
+  <div id="main-layout">
+    <!-- Left panel: Reaction Editor -->
+    <div id="left-panel" class="panel">
+      <h2>Reaction Network</h2>
+
+      <div id="reaction-editor">
+        <div id="reactions-list"></div>
+        <button id="btn-add-reaction" class="btn btn-sm">+ Add Reaction</button>
+      </div>
+
+      <div class="section">
+        <h3>Actions</h3>
+        <button id="btn-build" class="btn btn-primary">Build Model</button>
+        <button id="btn-enumerate" class="btn" disabled>Find Vertices</button>
+        <button id="btn-graph" class="btn" disabled>Build Graph</button>
+      </div>
+
+      <div class="section" id="siso-section" style="display:none">
+        <h3>SISO Analysis</h3>
+        <label>Change parameter:
+          <select id="siso-select"></select>
+        </label>
+        <button id="btn-siso" class="btn">Compute SISO Paths</button>
+      </div>
+
+      <div class="section" id="cloud-section" style="display:none">
+        <h3>ROP Point Cloud</h3>
+        <label>Samples: <input type="number" id="cloud-samples" value="10000" min="1000" max="100000" step="1000"></label>
+        <label>Span: <input type="number" id="cloud-span" value="6" min="1" max="12" step="1"></label>
+        <button id="btn-cloud" class="btn">Generate Cloud</button>
+      </div>
+
+      <div class="section" id="heatmap-section" style="display:none">
+        <h3>FRET Heatmap (2D)</h3>
+        <label>Grid: <input type="number" id="heatmap-grid" value="80" min="20" max="200" step="10"></label>
+        <button id="btn-heatmap" class="btn">Generate Heatmap</button>
+      </div>
+
+      <!-- Model info -->
+      <div id="model-info" class="section" style="display:none">
+        <h3>Model Info</h3>
+        <pre id="model-info-text"></pre>
+      </div>
+    </div>
+
+    <!-- Right panel: Visualization -->
+    <div id="right-panel">
+      <!-- Tabs -->
+      <div id="viz-tabs">
+        <button class="tab active" data-tab="tab-graph">Regime Graph</button>
+        <button class="tab" data-tab="tab-vertices">Vertices</button>
+        <button class="tab" data-tab="tab-siso">SISO Paths</button>
+        <button class="tab" data-tab="tab-cloud">ROP Cloud</button>
+        <button class="tab" data-tab="tab-heatmap">Heatmap</button>
+        <button class="tab" data-tab="tab-trajectory">Trajectory</button>
+      </div>
+
+      <div id="tab-graph" class="tab-content active">
+        <div id="plot-graph" class="plot-container"></div>
+      </div>
+      <div id="tab-vertices" class="tab-content">
+        <div id="vertices-table-wrap"></div>
+      </div>
+      <div id="tab-siso" class="tab-content">
+        <div id="siso-info"></div>
+        <div id="plot-siso" class="plot-container"></div>
+      </div>
+      <div id="tab-cloud" class="tab-content">
+        <div id="plot-cloud" class="plot-container"></div>
+      </div>
+      <div id="tab-heatmap" class="tab-content">
+        <div id="plot-heatmap" class="plot-container"></div>
+      </div>
+      <div id="tab-trajectory" class="tab-content">
+        <div id="plot-trajectory" class="plot-container"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

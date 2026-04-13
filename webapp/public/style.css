@@ -1,0 +1,186 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242836;
+  --border: #2e3348;
+  --text: #e1e4ed;
+  --text2: #8b90a5;
+  --accent: #6c8cff;
+  --accent2: #4ecdc4;
+  --danger: #ff6b6b;
+  --success: #51cf66;
+  --warn: #ffd43b;
+  --radius: 8px;
+  --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+#header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+#header h1 { font-size: 18px; font-weight: 700; color: var(--accent); }
+.subtitle { color: var(--text2); font-size: 13px; }
+.badge {
+  font-size: 11px; padding: 3px 10px; border-radius: 12px;
+  font-weight: 600; margin-left: auto;
+}
+.badge.idle { background: var(--surface2); color: var(--text2); }
+.badge.working { background: #2a2040; color: var(--accent); animation: pulse 1.5s infinite; }
+.badge.done { background: #1a3020; color: var(--success); }
+.badge.error { background: #301a1a; color: var(--danger); }
+
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+#main-layout {
+  display: flex; flex: 1; overflow: hidden;
+}
+
+/* Left panel */
+#left-panel {
+  width: 320px; min-width: 280px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 16px;
+}
+#left-panel h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent2); }
+#left-panel h3 { font-size: 13px; margin-bottom: 8px; color: var(--text2); }
+
+.section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* Reaction editor */
+.reaction-row {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px; padding: 6px 8px;
+  background: var(--surface2); border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.reaction-row input[type="text"] {
+  flex: 1; min-width: 0;
+}
+.reaction-row input[type="number"] {
+  width: 70px;
+}
+.reaction-row .btn-remove {
+  background: none; border: none; color: var(--danger);
+  cursor: pointer; font-size: 16px; padding: 2px 6px;
+}
+.reaction-row .btn-remove:hover { background: rgba(255,107,107,0.15); border-radius: 4px; }
+
+.reaction-label { font-size: 11px; color: var(--text2); display: block; margin-bottom: 2px; }
+
+/* Inputs */
+input, select {
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 8px; border-radius: 4px;
+  font-size: 13px; font-family: var(--font);
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+label {
+  display: block; font-size: 12px; color: var(--text2);
+  margin-bottom: 8px;
+}
+label input, label select { display: block; margin-top: 4px; width: 100%; }
+
+/* Buttons */
+.btn {
+  display: inline-block; padding: 7px 14px;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 13px; cursor: pointer; transition: all 0.15s;
+  margin-right: 6px; margin-bottom: 6px;
+}
+.btn:hover { background: var(--border); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { background: #5a7ae6; }
+.btn-sm { font-size: 12px; padding: 4px 10px; }
+
+/* Right panel */
+#right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+#viz-tabs {
+  display: flex; gap: 0; background: var(--surface);
+  border-bottom: 1px solid var(--border); padding: 0 12px;
+}
+.tab {
+  padding: 10px 16px; font-size: 13px;
+  background: none; border: none; color: var(--text2);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tab-content { display: none; flex: 1; overflow: auto; padding: 12px; }
+.tab-content.active { display: flex; flex-direction: column; }
+
+.plot-container { flex: 1; min-height: 400px; }
+
+/* Vertices table */
+#vertices-table-wrap { overflow: auto; flex: 1; }
+#vertices-table-wrap table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+#vertices-table-wrap th {
+  background: var(--surface2); padding: 8px 10px;
+  text-align: left; font-weight: 600; color: var(--text2);
+  position: sticky; top: 0;
+}
+#vertices-table-wrap td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+#vertices-table-wrap tr:hover td { background: var(--surface2); }
+
+.tag {
+  display: inline-block; padding: 2px 6px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+}
+.tag-asym { background: #1a3020; color: var(--success); }
+.tag-nonasym { background: #302a1a; color: var(--warn); }
+.tag-singular { background: #301a1a; color: var(--danger); }
+.tag-invertible { background: #1a2030; color: var(--accent); }
+
+/* SISO info */
+#siso-info {
+  margin-bottom: 12px; font-size: 13px;
+}
+#siso-info .path-list {
+  max-height: 200px; overflow-y: auto;
+  background: var(--surface); border-radius: var(--radius);
+  padding: 8px; margin-top: 8px;
+}
+.path-item {
+  padding: 4px 8px; cursor: pointer; border-radius: 4px;
+  font-family: var(--font); font-size: 12px;
+  margin-bottom: 2px;
+}
+.path-item:hover { background: var(--surface2); }
+.path-item.selected { background: var(--accent); color: #fff; }
+
+/* Model info */
+#model-info-text {
+  font-family: var(--font); font-size: 12px;
+  color: var(--text2); white-space: pre-wrap;
+  background: var(--bg); padding: 8px; border-radius: var(--radius);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text2); }
