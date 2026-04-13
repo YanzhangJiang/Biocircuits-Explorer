@@ -1,0 +1,616 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		BE524AF92F684C4700ED110C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BE524AE12F684C4600ED110C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BE524AE82F684C4600ED110C;
+			remoteInfo = BiocircuitsExplorerMac;
+		};
+		BE524B032F684C4700ED110C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BE524AE12F684C4600ED110C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BE524AE82F684C4600ED110C;
+			remoteInfo = BiocircuitsExplorerMac;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		BE524AE92F684C4600ED110C /* BiocircuitsExplorerMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BiocircuitsExplorerMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE524AF82F684C4700ED110C /* BiocircuitsExplorerMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BiocircuitsExplorerMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE524B022F684C4700ED110C /* BiocircuitsExplorerMacUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BiocircuitsExplorerMacUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		BE524AEB2F684C4600ED110C /* BiocircuitsExplorerMac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BiocircuitsExplorerMac;
+			sourceTree = "<group>";
+		};
+		BE524AFB2F684C4700ED110C /* BiocircuitsExplorerMacTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BiocircuitsExplorerMacTests;
+			sourceTree = "<group>";
+		};
+		BE524B052F684C4700ED110C /* BiocircuitsExplorerMacUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BiocircuitsExplorerMacUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BE524AE62F684C4600ED110C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524AF52F684C4700ED110C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524AFF2F684C4700ED110C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		BE524AE02F684C4600ED110C = {
+			isa = PBXGroup;
+			children = (
+				BE524AEB2F684C4600ED110C /* BiocircuitsExplorerMac */,
+				BE524AFB2F684C4700ED110C /* BiocircuitsExplorerMacTests */,
+				BE524B052F684C4700ED110C /* BiocircuitsExplorerMacUITests */,
+				BE524AEA2F684C4600ED110C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		BE524AEA2F684C4600ED110C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BE524AE92F684C4600ED110C /* BiocircuitsExplorerMac.app */,
+				BE524AF82F684C4700ED110C /* BiocircuitsExplorerMacTests.xctest */,
+				BE524B022F684C4700ED110C /* BiocircuitsExplorerMacUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		BE524AE82F684C4600ED110C /* BiocircuitsExplorerMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BE524B0C2F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMac" */;
+			buildPhases = (
+				BE524AE52F684C4600ED110C /* Sources */,
+				BE524AE62F684C4600ED110C /* Frameworks */,
+				BE524B152F684C4800ED110C /* Bundle Backend */,
+				BE524AE72F684C4600ED110C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				BE524AEB2F684C4600ED110C /* BiocircuitsExplorerMac */,
+			);
+			name = BiocircuitsExplorerMac;
+			packageProductDependencies = (
+			);
+			productName = BiocircuitsExplorerMac;
+			productReference = BE524AE92F684C4600ED110C /* BiocircuitsExplorerMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BE524AF72F684C4700ED110C /* BiocircuitsExplorerMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BE524B0F2F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMacTests" */;
+			buildPhases = (
+				BE524AF42F684C4700ED110C /* Sources */,
+				BE524AF52F684C4700ED110C /* Frameworks */,
+				BE524AF62F684C4700ED110C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BE524AFA2F684C4700ED110C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BE524AFB2F684C4700ED110C /* BiocircuitsExplorerMacTests */,
+			);
+			name = BiocircuitsExplorerMacTests;
+			packageProductDependencies = (
+			);
+			productName = BiocircuitsExplorerMacTests;
+			productReference = BE524AF82F684C4700ED110C /* BiocircuitsExplorerMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		BE524B012F684C4700ED110C /* BiocircuitsExplorerMacUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BE524B122F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMacUITests" */;
+			buildPhases = (
+				BE524AFE2F684C4700ED110C /* Sources */,
+				BE524AFF2F684C4700ED110C /* Frameworks */,
+				BE524B002F684C4700ED110C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BE524B042F684C4700ED110C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BE524B052F684C4700ED110C /* BiocircuitsExplorerMacUITests */,
+			);
+			name = BiocircuitsExplorerMacUITests;
+			packageProductDependencies = (
+			);
+			productName = BiocircuitsExplorerMacUITests;
+			productReference = BE524B022F684C4700ED110C /* BiocircuitsExplorerMacUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		BE524AE12F684C4600ED110C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					BE524AE82F684C4600ED110C = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					BE524AF72F684C4700ED110C = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = BE524AE82F684C4600ED110C;
+					};
+					BE524B012F684C4700ED110C = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = BE524AE82F684C4600ED110C;
+					};
+				};
+			};
+			buildConfigurationList = BE524AE42F684C4600ED110C /* Build configuration list for PBXProject "BiocircuitsExplorerMac" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = BE524AE02F684C4600ED110C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = BE524AEA2F684C4600ED110C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BE524AE82F684C4600ED110C /* BiocircuitsExplorerMac */,
+				BE524AF72F684C4700ED110C /* BiocircuitsExplorerMacTests */,
+				BE524B012F684C4700ED110C /* BiocircuitsExplorerMacUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BE524AE72F684C4600ED110C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524AF62F684C4700ED110C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524B002F684C4700ED110C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		BE524B152F684C4800ED110C /* Bundle Backend */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../dist/BiocircuitsExplorerBackend",
+				"$(SRCROOT)/scripts/copy_backend_into_app.sh",
+			);
+			name = "Bundle Backend";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/backend",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/copy_backend_into_app.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BE524AE52F684C4600ED110C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524AF42F684C4700ED110C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE524AFE2F684C4700ED110C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BE524AFA2F684C4700ED110C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BE524AE82F684C4600ED110C /* BiocircuitsExplorerMac */;
+			targetProxy = BE524AF92F684C4700ED110C /* PBXContainerItemProxy */;
+		};
+		BE524B042F684C4700ED110C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BE524AE82F684C4600ED110C /* BiocircuitsExplorerMac */;
+			targetProxy = BE524B032F684C4700ED110C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		BE524B0A2F684C4800ED110C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		BE524B0B2F684C4800ED110C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		BE524B0D2F684C4800ED110C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Biocircuits Explorer";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoadsInWebContent = YES;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BE524B0E2F684C4800ED110C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Biocircuits Explorer";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoadsInWebContent = YES;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		BE524B102F684C4800ED110C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac.tests;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BiocircuitsExplorerMac.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BiocircuitsExplorerMac";
+			};
+			name = Debug;
+		};
+		BE524B112F684C4800ED110C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac.tests;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BiocircuitsExplorerMac.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BiocircuitsExplorerMac";
+			};
+			name = Release;
+		};
+		BE524B132F684C4800ED110C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac.uitests;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMacUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = BiocircuitsExplorerMac;
+			};
+			name = Debug;
+		};
+		BE524B142F684C4800ED110C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = URA35B2YJC;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.biocircuitsexplorer.mac.uitests;
+				PRODUCT_MODULE_NAME = BiocircuitsExplorerMacUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = BiocircuitsExplorerMac;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		BE524AE42F684C4600ED110C /* Build configuration list for PBXProject "BiocircuitsExplorerMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE524B0A2F684C4800ED110C /* Debug */,
+				BE524B0B2F684C4800ED110C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BE524B0C2F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE524B0D2F684C4800ED110C /* Debug */,
+				BE524B0E2F684C4800ED110C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BE524B0F2F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE524B102F684C4800ED110C /* Debug */,
+				BE524B112F684C4800ED110C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BE524B122F684C4800ED110C /* Build configuration list for PBXNativeTarget "BiocircuitsExplorerMacUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE524B132F684C4800ED110C /* Debug */,
+				BE524B142F684C4800ED110C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = BE524AE12F684C4600ED110C /* Project object */;
+}
