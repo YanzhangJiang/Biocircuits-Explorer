@@ -169,7 +169,7 @@ export const ATLAS_TYPES = {
           <button class="tab-btn" data-tab="behavior">Behavior</button>
           <button class="tab-btn" data-tab="structure">Structure</button>
           <button class="tab-btn" data-tab="advanced">Advanced</button>
-          <button class="tab-btn" data-tab="pipeline">Pipeline</button>
+          <button class="tab-btn" data-tab="pipeline">Design</button>
         </div>
 
         <div class="tab-content active" data-tab="basic">
@@ -189,7 +189,7 @@ export const ATLAS_TYPES = {
             ></textarea>
           </div>
           <div class="atlas-config-section">
-            <div class="atlas-section-title">Goal Query</div>
+            <div class="atlas-section-title">Search Goal</div>
             <div class="param-row">
               <label>IO pair:</label>
               <input type="text" id="${nodeId}-goal-io" class="auto-update" placeholder="tA -> AB">
@@ -445,6 +445,7 @@ export const ATLAS_TYPES = {
         <div class="tab-content" data-tab="pipeline">
           <div class="atlas-config-section">
             <div class="atlas-section-title">Inverse Design</div>
+            <div class="text-dim">These settings are optional. Atlas Preview and Atlas Search ignore them; Atlas Inverse Design uses them.</div>
             <div class="param-row">
               <label>Source label:</label>
               <input type="text" id="${nodeId}-inverse-source-label" value="inverse_design_run" class="auto-update">
@@ -501,16 +502,16 @@ export const ATLAS_TYPES = {
   'atlas-query-result': {
     category: 'result',
     headerClass: 'header-result',
-    title: 'Atlas Query Result',
+    title: 'Atlas Search Result',
     inputs: [{ port: 'atlas', label: 'Atlas' }, { port: 'atlas-query', label: 'Query' }],
     outputs: [],
     defaultWidth: 640,
     defaultHeight: 540,
     createBody(nodeId) {
       return `
-        <button class="btn btn-run" data-action="executeAtlasQueryResult" data-node="${nodeId}">Run</button>
+        <button class="btn btn-run" data-action="executeAtlasQueryResult" data-node="${nodeId}">Search Atlas</button>
         <div class="viewer-content" id="${nodeId}-content">
-          <span class="text-dim">Connect an Atlas Builder and an Atlas Query Config node, or provide a SQLite atlas path in the query config.</span>
+          <span class="text-dim">Connect an Atlas Preview Builder and an Atlas Query Config node, or provide a SQLite atlas path in the query config. For pure preview, use Atlas Preview alone.</span>
         </div>
       `;
     },
@@ -534,7 +535,7 @@ export const ATLAS_TYPES = {
       return `
         <button class="btn btn-primary" data-action="executeAtlasInverseDesignResult" data-node="${nodeId}">Run Inverse Design</button>
         <div class="viewer-content" id="${nodeId}-content">
-          <span class="text-dim">Connect an Atlas Spec and Atlas Query Config to run the support-first inverse-design pipeline. You can also connect an Atlas Builder or provide a SQLite path in the query config for reuse.</span>
+          <span class="text-dim">Connect an Atlas Spec and Atlas Query Config to run the support-first inverse-design pipeline. You can also connect an Atlas Preview Builder or provide a SQLite path in the query config for reuse.</span>
         </div>
       `;
     },

@@ -1,9 +1,9 @@
 module BiocircuitsExplorerBackend
 
 export main, julia_main, router
-export AtlasSearchProfile, AtlasBehaviorConfig, AtlasEnumerationSpec, AtlasQuerySpec, InverseDesignSpec, InverseRefinementSpec
+export AtlasSearchProfile, AtlasBehaviorConfig, AtlasEnumerationSpec, AtlasChangeExpansionSpec, AtlasQuerySpec, InverseDesignSpec, InverseRefinementSpec
 export atlas_search_profile_binding_small_v0, atlas_behavior_config_default
-export atlas_enumeration_spec_default, atlas_query_spec_default, inverse_design_spec_default, inverse_refinement_spec_default
+export atlas_enumeration_spec_default, atlas_change_expansion_spec_default, atlas_query_spec_default, inverse_design_spec_default, inverse_refinement_spec_default
 export atlas_library_default, is_atlas_library
 export atlas_sqlite_default_path, atlas_sqlite_connect, atlas_sqlite_init!, atlas_sqlite_has_library
 export atlas_sqlite_load_library, atlas_sqlite_save_library!, atlas_sqlite_summary
@@ -123,6 +123,47 @@ function first_nonempty_env(keys::Vector{String})
         !isempty(value) && return value
     end
     return ""
+end
+
+function parse_optional_int(raw::AbstractString)
+    text = strip(String(raw))
+    isempty(text) && return nothing
+    try
+        return parse(Int, text)
+    catch
+        return nothing
+    end
+end
+
+configured_parent_pid() = parse_optional_int(first_nonempty_env(["BIOCIRCUITS_EXPLORER_PARENT_PID", "ROP_PARENT_PID"]))
+
+current_parent_pid() = Int(ccall(:getppid, Cint, ()))
+
+function parent_watchdog_should_exit(expected_parent_pid::Union{Nothing, Int}, actual_parent_pid::Integer)
+    expected_parent_pid === nothing && return false
+    expected_parent_pid <= 0 && return false
+    return actual_parent_pid <= 1 || actual_parent_pid != expected_parent_pid
+end
+
+function parent_watchdog_loop(expected_parent_pid::Int; interval_seconds::Real=2.0)
+    @info "Parent watchdog enabled" expected_parent_pid interval_seconds
+
+    while true
+        sleep(interval_seconds)
+        actual_parent_pid = current_parent_pid()
+        if parent_watchdog_should_exit(expected_parent_pid, actual_parent_pid)
+            append_debug_log(
+                "INFO",
+                "Parent watchdog exiting orphaned backend";
+                module_name=:BiocircuitsExplorerBackend,
+                details="expected_parent_pid=$(expected_parent_pid), actual_parent_pid=$(actual_parent_pid)",
+            )
+            @info "Parent watchdog exiting orphaned backend" expected_parent_pid actual_parent_pid
+            flush(stdout)
+            flush(stderr)
+            Base.exit(0)
+        end
+    end
 end
 
 function select_debug_log_buffer(client_id)
@@ -409,9 +450,30 @@ end
 # Convert Matrix to Vector of Vectors for proper JSON serialization
 mat2vv(M::AbstractMatrix) = [collect(M[i,:]) for i in 1:size(M,1)]
 
+json_safe_value(x::Real) = json_safe_real(x)
+json_safe_value(x::AbstractString) = x
+json_safe_value(x::Symbol) = String(x)
+json_safe_value(x::Nothing) = nothing
+json_safe_value(x::Bool) = x
+json_safe_value(x) = x
+
+function json_safe_value(data::AbstractDict)
+    sanitized = Dict{Any, Any}()
+    for (key, value) in data
+        safe_key = key isa Symbol ? String(key) : key
+        sanitized[safe_key] = json_safe_value(value)
+    end
+    return sanitized
+end
+
+json_safe_value(data::Tuple) = [json_safe_value(item) for item in data]
+json_safe_value(data::NamedTuple) = json_safe_value(Dict(pairs(data)))
+json_safe_value(data::AbstractVector) = [json_safe_value(item) for item in data]
+json_safe_value(data::AbstractSet) = [json_safe_value(item) for item in collect(data)]
+
 json_response(data; status=200) = HTTP.Response(status,
     ["Content-Type" => "application/json"],
-    JSON3.write(data))
+    JSON3.write(json_safe_value(data)))
 
 error_response(msg; status=400) = json_response(Dict("error" => msg); status)
 
@@ -790,6 +852,7 @@ else
 end
 
 json_safe_profile(profile::AbstractVector{<:Real}) = [json_safe_real(x) for x in profile]
+json_safe_profile(profile::AbstractVector{<:AbstractVector{<:Real}}) = [json_safe_profile(coords) for coords in profile]
 
 volume_to_dict(vol) = isnothing(vol) ? nothing : Dict(
     "mean" => vol.mean,
@@ -820,6 +883,7 @@ function behavior_result_to_dict(model, siso, result)
             "motif_profile" => collect(rec.motif_profile),
             "motif_label" => rec.motif_label,
             "feasible" => rec.feasible,
+            "feasibility_checked" => rec.feasibility_checked,
             "included" => rec.included,
             "exclusion_reason" => rec.exclusion_reason,
             "volume" => volume_to_dict(rec.volume),
@@ -855,9 +919,19 @@ function behavior_result_to_dict(model, siso, result)
         )
     end
 
+    change_qK_indices = Int[Int(idx) for idx in result.change_qK_indices]
+    change_qK_signs = Int[Int(sign) for sign in result.change_qK_signs]
+    change_qK_symbols = [string(qK_sym(model)[idx]) for idx in change_qK_indices]
+    change_qK = result.change_qK_idx === nothing ? nothing : string(qK_sym(model)[result.change_qK_idx])
+
     return Dict(
-        "change_qK" => string(qK_sym(model)[result.change_qK_idx]),
+        "change_kind" => string(result.change_kind),
+        "change_label" => string(result.change_label),
+        "change_qK" => change_qK,
         "change_qK_idx" => result.change_qK_idx,
+        "change_qK_indices" => change_qK_indices,
+        "change_qK_signs" => change_qK_signs,
+        "change_qK_symbols" => change_qK_symbols,
         "observe_x" => string(x_sym(model)[result.observe_x_idx]),
         "observe_x_idx" => result.observe_x_idx,
         "path_scope" => string(result.path_scope),
@@ -867,6 +941,7 @@ function behavior_result_to_dict(model, siso, result)
         "keep_singular" => result.keep_singular,
         "keep_nonasymptotic" => result.keep_nonasymptotic,
         "compute_volume" => result.compute_volume,
+        "feasibility_mode" => string(result.feasibility_mode),
         "total_paths" => result.total_paths,
         "feasible_paths" => result.feasible_paths,
         "included_paths" => result.included_paths,
@@ -1366,6 +1441,174 @@ function handle_parameter_scan_2d(req)
     ))
 end
 
+function _atlas_landscape_model_from_spec(body)
+    if _raw_haskey(body, :session_id)
+        sid = String(_raw_get(body, :session_id, ""))
+        sess = get_session(sid)
+        sess === nothing && error("Invalid session_id")
+        return (
+            model=sess["model"],
+            rules=String.(sess["rules"]),
+            kd=Float64.(sess["kd"]),
+        )
+    end
+
+    _raw_haskey(body, :reactions) || error("Landscape scan requires `session_id` or `reactions`.")
+    rules = String.(collect(_raw_get(body, :reactions, String[])))
+    isempty(rules) && error("At least one reaction is required for a landscape scan.")
+    kd = if _raw_haskey(body, :kd)
+        Float64.(collect(_raw_get(body, :kd, Float64[])))
+    else
+        ones(Float64, length(rules))
+    end
+    length(kd) == length(rules) || error("Length of `kd` must match `reactions`.")
+    any(x -> x <= 0, kd) && error("All Kd values must be positive (> 0).")
+    model, _, _, _ = build_model(rules, kd)
+    return (model=model, rules=rules, kd=kd)
+end
+
+function _atlas_landscape_param_options(model)
+    total_syms = string.(q_sym(model))
+    all_syms = string.(qK_sym(model))
+    extras = [sym for sym in all_syms if sym ∉ total_syms]
+    return vcat(total_syms, extras)
+end
+
+function _atlas_landscape_pick_params(model, body)
+    options = _atlas_landscape_param_options(model)
+    length(options) >= 2 || error("2D landscape requires at least two q/K coordinates.")
+
+    preferred = if _raw_haskey(body, :preferred_param_symbols)
+        [String(sym) for sym in collect(_raw_get(body, :preferred_param_symbols, String[])) if !isempty(strip(String(sym)))]
+    else
+        String[]
+    end
+
+    selected = String[]
+    seen = Set{String}()
+    for sym in preferred
+        sym in options || continue
+        sym in seen && continue
+        push!(selected, sym)
+        push!(seen, sym)
+        length(selected) == 2 && break
+    end
+
+    if _raw_haskey(body, :param1_symbol)
+        sym = String(_raw_get(body, :param1_symbol, ""))
+        sym in options || error("Unknown parameter: $(sym)")
+        empty!(selected)
+        empty!(seen)
+        push!(selected, sym)
+        push!(seen, sym)
+    end
+    if _raw_haskey(body, :param2_symbol)
+        sym = String(_raw_get(body, :param2_symbol, ""))
+        sym in options || error("Unknown parameter: $(sym)")
+        sym in seen && error("Parameters must be different.")
+        push!(selected, sym)
+        push!(seen, sym)
+    end
+
+    for sym in options
+        sym in seen && continue
+        push!(selected, sym)
+        push!(seen, sym)
+        length(selected) == 2 && break
+    end
+
+    length(selected) >= 2 || error("Could not resolve two parameters for the landscape scan.")
+    return selected[1], selected[2], options
+end
+
+function atlas_landscape_2d_from_spec(body)
+    ctx = _atlas_landscape_model_from_spec(body)
+    model = ctx.model
+
+    param1_symbol, param2_symbol, param_symbol_options = _atlas_landscape_pick_params(model, body)
+    param1_idx = locate_sym_qK(model, Symbol(param1_symbol))
+    param2_idx = locate_sym_qK(model, Symbol(param2_symbol))
+    (param1_idx === nothing || param2_idx === nothing) && error("Could not locate requested parameters in the model.")
+    param1_idx == param2_idx && error("Parameters must be different.")
+
+    output_symbol_options = string.(model.x_sym)
+    default_output = isempty(output_symbol_options) ? "" : output_symbol_options[1]
+    output_expr = if _raw_haskey(body, :output_expr)
+        String(_raw_get(body, :output_expr, default_output))
+    elseif _raw_haskey(body, :output_symbol)
+        String(_raw_get(body, :output_symbol, default_output))
+    else
+        default_output
+    end
+    isempty(strip(output_expr)) && error("Landscape scan requires an output expression.")
+    output_coeffs = parse_linear_combination(model, output_expr)
+
+    param1_min = Float64(_raw_get(body, :param1_min, -4.0))
+    param1_max = Float64(_raw_get(body, :param1_max, 4.0))
+    param2_min = Float64(_raw_get(body, :param2_min, -4.0))
+    param2_max = Float64(_raw_get(body, :param2_max, 4.0))
+    param1_max > param1_min || error("param1_max must be greater than param1_min.")
+    param2_max > param2_min || error("param2_max must be greater than param2_min.")
+    n_grid = clamp(Int(_raw_get(body, :n_grid, 72)), 20, 160)
+
+    fixed_qK = if _raw_haskey(body, :fixed_qK)
+        Float64.(collect(_raw_get(body, :fixed_qK, Float64[])))
+    else
+        zeros(Float64, model.n)
+    end
+    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
+
+    indices_to_remove = sort([param1_idx, param2_idx], rev=true)
+    fixed_params = copy(fixed_qK)
+    for idx in indices_to_remove
+        deleteat!(fixed_params, idx)
+    end
+
+    param1_range = collect(range(param1_min, param1_max, length=n_grid))
+    param2_range = collect(range(param2_min, param2_max, length=n_grid))
+    param1_vals, param2_vals, output_grid, regime_grid = scan_parameter_2d(
+        model,
+        param1_idx,
+        param2_idx,
+        param1_range,
+        param2_range,
+        output_coeffs,
+        fixed_params;
+        input_logspace=true,
+        output_logspace=true,
+    )
+    bounds = find_bounds(regime_grid)
+
+    return Dict(
+        "param1_symbol" => param1_symbol,
+        "param2_symbol" => param2_symbol,
+        "param1_values" => param1_vals,
+        "param2_values" => param2_vals,
+        "param_symbol_options" => param_symbol_options,
+        "output_expr" => output_expr,
+        "output_symbol_options" => output_symbol_options,
+        "output_grid" => mat2vv(output_grid),
+        "regime_grid" => mat2vv(regime_grid),
+        "bounds" => mat2vv(Float64.(bounds)),
+        "fixed_qK" => collect(fixed_qK),
+        "q_sym" => string.(q_sym(model)),
+        "K_sym" => string.(K_sym(model)),
+        "x_sym" => string.(model.x_sym),
+        "rules" => ctx.rules,
+        "kd" => collect(ctx.kd),
+        "n_grid" => n_grid,
+    )
+end
+
+function handle_atlas_landscape_2d(req)
+    body = read_json(req)
+    try
+        return json_response(atlas_landscape_2d_from_spec(body))
+    catch e
+        return error_response(sprint(showerror, e); status=400)
+    end
+end
+
 function handle_rop_polyhedron(req)
     body = read_json(req)
     sid = String(body[:session_id])
@@ -1547,6 +1790,7 @@ const API_ROUTES = Dict{String, Function}(
     "/api/fret_heatmap" => handle_fret_heatmap,
     "/api/parameter_scan_1d" => handle_parameter_scan_1d,
     "/api/parameter_scan_2d" => handle_parameter_scan_2d,
+    "/api/atlas_landscape_2d" => handle_atlas_landscape_2d,
     "/api/rop_polyhedron" => handle_rop_polyhedron,
     "/api/debug_logs" => handle_debug_logs,
 )
@@ -1588,12 +1832,16 @@ end
 function main()
     install_debug_logger!()
     port = resolve_port()
+    expected_parent_pid = configured_parent_pid()
     @info "ROP Web Server starting on http://localhost:$port"
     @info "Static files from: $(static_dir())"
     @info "Session TTL: $(SESSION_TTL)s, cleanup interval: $(SESSION_CLEANUP_INTERVAL)s"
 
     # Start session cleanup task in background
     @async cleanup_old_sessions()
+    if expected_parent_pid !== nothing
+        @async parent_watchdog_loop(expected_parent_pid)
+    end
 
     HTTP.serve(router, "0.0.0.0", port)
 end

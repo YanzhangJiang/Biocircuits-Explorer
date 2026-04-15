@@ -7,7 +7,7 @@ const INVERSE_DESIGN_PIPELINE_VERSION = "inverse_design_pipeline_v0.2.0"
 
 const _ALLOWED_QUERY_TOP_LEVEL_KEYS = Set([
     "motif_labels", "exact_labels", "motif_match_mode", "exact_match_mode",
-    "input_symbols", "output_symbols", "require_robust", "min_robust_path_count",
+    "input_symbols", "change_signatures", "change_signature", "output_symbols", "require_robust", "min_robust_path_count",
     "max_base_species", "max_reactions", "max_support", "max_support_mass",
     "required_regimes", "forbidden_regimes", "required_transitions", "forbidden_transitions",
     "required_path_sequences", "required_sequences", "exists_sequence",
@@ -39,6 +39,7 @@ const _ALLOWED_GOAL_KEYS = Set([
     "exact", "exacts", "exact_labels",
     "io", "io_pair",
     "input", "inputs", "input_symbols",
+    "change", "changes", "change_signature", "change_signatures",
     "output", "outputs", "output_symbols",
     "must_regimes", "required_regimes", "regimes", "must_have_regimes",
     "forbid_regimes", "forbidden_regimes", "forbidden_nodes",
@@ -122,7 +123,7 @@ function _assert_supported_profile(profile::AtlasSearchProfile)
     profile.allow_catalysis && throw(ArgumentError("out_of_scope: catalysis is not supported in `binding_small_v0`."))
     profile.allow_irreversible_steps && throw(ArgumentError("out_of_scope: irreversible steps are not supported in `binding_small_v0`."))
     profile.allow_conformational_switches && throw(ArgumentError("out_of_scope: conformational switching is not supported in `binding_small_v0`."))
-    profile.slice_mode == :siso || throw(ArgumentError("out_of_scope: only SISO slices are supported."))
+    profile.slice_mode in (:siso, :change) || throw(ArgumentError("out_of_scope: unsupported slice mode `$(profile.slice_mode)`."))
     return profile
 end
 
@@ -252,8 +253,33 @@ function compile_behavior_filters(query::AtlasQuerySpec)
         "require_robust" => query.require_robust,
         "min_robust_path_count" => query.min_robust_path_count,
         "input_symbols" => collect(query.input_symbols),
+        "change_signatures" => collect(query.change_signatures),
         "output_symbols" => collect(query.output_symbols),
     )
+end
+
+function _change_signature_symbols(signature::AbstractString)
+    text = strip(String(signature))
+    isempty(text) && return String[]
+    if !occursin('(', text)
+        return isempty(text) ? String[] : [text]
+    end
+
+    open_idx = findfirst(==('('), text)
+    close_idx = findlast(==(')'), text)
+    (open_idx === nothing || close_idx === nothing || close_idx <= open_idx) && return String[]
+    body = text[(open_idx + 1):(close_idx - 1)]
+    isempty(strip(body)) && return String[]
+    symbols = String[]
+    for part in split(body, ',')
+        token = strip(part)
+        isempty(token) && continue
+        if startswith(token, '+') || startswith(token, '-')
+            token = token[2:end]
+        end
+        isempty(token) || push!(symbols, token)
+    end
+    return _sorted_unique_strings(symbols)
 end
 
 function compile_graph_predicates(query::AtlasQuerySpec)
@@ -312,8 +338,11 @@ function compile_count_envelope(raw_query, query::AtlasQuerySpec)
     b = Float64[]
     reasons = String[]
 
-    min_base_species = isempty(query.input_symbols) ? 0 : length(unique(query.input_symbols))
-    min_total_species = length(unique(vcat(query.input_symbols, query.output_symbols)))
+    change_symbols = reduce(vcat, [_change_signature_symbols(signature) for signature in query.change_signatures]; init=String[])
+    required_change_symbols = _sorted_unique_strings(change_symbols)
+    required_input_symbols = _sorted_unique_strings(vcat(query.input_symbols, required_change_symbols))
+    min_base_species = isempty(required_input_symbols) ? 0 : length(unique(required_input_symbols))
+    min_total_species = length(unique(vcat(required_input_symbols, query.output_symbols)))
 
     if min_base_species > 0
         push!(A, [-1.0, 0.0, 0.0, 0.0])
@@ -379,7 +408,8 @@ function compile_count_envelope(raw_query, query::AtlasQuerySpec)
             "min_base_species" => min_base_species,
             "min_total_species" => min_total_species,
         ),
-        "required_input_symbols" => collect(query.input_symbols),
+        "required_input_symbols" => collect(required_input_symbols),
+        "required_change_signatures" => collect(query.change_signatures),
         "required_output_symbols" => collect(query.output_symbols),
     )
 end
@@ -1409,12 +1439,47 @@ function _polyhedron_proxy_summary(poly_dict)
     return summary
 end
 
-function _attach_proxy_metrics!(paths, model, input_symbol::AbstractString)
+function _is_positive_axis_change_spec(change_spec)
+    return String(_raw_get(change_spec, :kind, "axis")) == "axis" &&
+           length(_change_qk_symbols(change_spec)) == 1 &&
+           _change_qk_signs(change_spec) == [1]
+end
+
+function _scalar_refinement_input_symbol(change_spec)
+    _is_positive_axis_change_spec(change_spec) || return nothing
+    symbols = _change_qk_symbols(change_spec)
+    return isempty(symbols) ? nothing : only(symbols)
+end
+
+function _unsupported_multidimensional_refinement_trial(change_spec, output_symbol::AbstractString, target_motifs::Vector{String}; reason::AbstractString="unsupported_multidimensional_refinement")
+    input_symbol = String(_raw_get(change_spec, :input_symbol, _raw_get(change_spec, :label, "")))
+    change_signature = String(_raw_get(change_spec, :signature, input_symbol))
+    return Dict(
+        "trial_idx" => 0,
+        "input_symbol" => input_symbol,
+        "change_signature" => change_signature,
+        "output_symbol" => String(output_symbol),
+        "param_symbol" => nothing,
+        "target_motif_labels" => collect(target_motifs),
+        "numeric_motif_profile" => String[],
+        "numeric_motif_label" => "unsupported_multidimensional_refinement",
+        "token_tolerance" => nothing,
+        "dynamic_range" => 0.0,
+        "response_min" => nothing,
+        "response_max" => nothing,
+        "regime_transition_count" => 0,
+        "motif_match" => 0.0,
+        "refinement_score" => 0.0,
+        "refinement_status" => String(reason),
+    )
+end
+
+function _attach_proxy_metrics!(paths, model, change_spec)
     for path in paths
         path_idx = Int(_raw_get(path, :path_idx, 0))
         path_idx > 0 || continue
         try
-            poly_dict = _candidate_polyhedron(model, String(input_symbol), path_idx)
+            poly_dict = _candidate_polyhedron(model, change_spec, path_idx)
             path["volume_proxy"] = _polyhedron_proxy_summary(poly_dict)
         catch err
             path["volume_proxy"] = Dict(
@@ -1477,7 +1542,7 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
     )
 
     rules = String.(_raw_get(network_entry, :raw_rules, String[]))
-    input_symbol = Symbol(String(_raw_get(slice, :input_symbol, "")))
+    input_symbol = String(_raw_get(slice, :input_symbol, ""))
     output_symbol = Symbol(String(_raw_get(slice, :output_symbol, "")))
     classifier_config = atlas_behavior_config_from_raw(_raw_get(slice, :classifier_config, Dict{String, Any}()))
     volume_policy = String(_raw_get(policies, :volume_policy, query.require_witness_robust || query.min_witness_volume_mean !== nothing ? "estimated" : "none"))
@@ -1493,11 +1558,11 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
         motif_zero_tol=classifier_config.motif_zero_tol,
         include_path_records=true,
     )
-
     model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
-    siso = SISOPaths(model, input_symbol)
+    change_spec = _change_spec_from_slice(model, slice)
+    change_paths = _build_change_paths(model, change_spec)
     result = get_behavior_families(
-        siso;
+        change_paths;
         observe_x=output_symbol,
         path_scope=material_config.path_scope,
         min_volume_mean=material_config.min_volume_mean,
@@ -1510,11 +1575,11 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
 
     slice_graph_payload = _build_slice_regime_transition_records(
         model,
-        siso,
+        change_paths,
         String(_raw_get(slice, :network_id, "")),
         slice_id,
         String(_raw_get(slice, :graph_slice_id, "")),
-        String(input_symbol),
+        change_spec,
         String(output_symbol),
     )
 
@@ -1528,7 +1593,7 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
         slice_graph_payload["regime_by_vertex"],
         slice_graph_payload["transition_by_edge"],
     )
-    volume_policy == "proxy" && _attach_proxy_metrics!(temp_paths, model, String(input_symbol))
+    volume_policy == "proxy" && _attach_proxy_metrics!(temp_paths, model, change_spec)
 
     bucket_paths = _bucket_paths(temp_paths, bucket)
     accepted_paths, accepted = _matching_automaton_witness_paths(bucket_paths, gamma_q, query)
@@ -1585,6 +1650,7 @@ function _candidate_trace_record(slice, network_entry, trace_status::AbstractStr
         "slice_id" => String(_raw_get(slice, :slice_id, "")),
         "network_id" => String(_raw_get(network_entry, :network_id, "")),
         "input_symbol" => String(_raw_get(slice, :input_symbol, "")),
+        "change_signature" => String(_raw_get(slice, :change_signature, "")),
         "output_symbol" => String(_raw_get(slice, :output_symbol, "")),
         "status" => String(trace_status),
         "stages" => trace_stages,
@@ -1914,6 +1980,9 @@ function retrieve_candidates(gamma_q, library, profile::AtlasSearchProfile; poli
             "source_label" => String(_raw_get(network_entry, :source_label, "")),
             "source_kind" => String(_raw_get(network_entry, :source_kind, "")),
             "input_symbol" => String(_raw_get(slice, :input_symbol, "")),
+            "change_signature" => String(_raw_get(slice, :change_signature, "")),
+            "change_kind" => String(_raw_get(slice, :change_kind, "")),
+            "change_spec" => _raw_get(slice, :change_spec, nothing),
             "output_symbol" => String(_raw_get(slice, :output_symbol, "")),
             "base_species_count" => _raw_get(network_entry, :base_species_count, nothing),
             "reaction_count" => _raw_get(network_entry, :reaction_count, nothing),
@@ -2132,9 +2201,16 @@ function _coordinate_search_background(model, param_idx::Int, param_range, outpu
     return best
 end
 
-function _candidate_polyhedron(model, input_symbol::String, path_idx::Int)
-    siso = SISOPaths(model, Symbol(input_symbol))
-    poly = get_polyhedra(siso, [path_idx])[1]
+function _candidate_change_spec(model, io)
+    if io.change_spec !== nothing
+        return _normalize_change_spec(io.change_spec, model)
+    end
+    return _normalize_change_spec(io.input_symbol, model)
+end
+
+function _candidate_polyhedron(model, change_spec, path_idx::Int)
+    change_paths = _build_change_paths(model, change_spec)
+    poly = get_polyhedra(change_paths, [path_idx])[1]
     return polyhedron_to_dict(poly)
 end
 
@@ -2142,7 +2218,10 @@ function _best_seeded_trial(result, gamma_q, refinement::InverseRefinementSpec, 
     io = _candidate_io(result, String(_raw_get(result, :result_unit, "slice")))
     rules = String.(_raw_get(result, :raw_rules, String[]))
     model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
-    param_idx = locate_sym_qK(model, Symbol(io.input_symbol))
+    change_spec = _candidate_change_spec(model, io)
+    scalar_input_symbol = _scalar_refinement_input_symbol(change_spec)
+    scalar_input_symbol === nothing && return nothing, "unsupported_multidimensional_refinement"
+    param_idx = locate_sym_qK(model, Symbol(scalar_input_symbol))
     param_idx === nothing && return nothing, "unknown_input_symbol"
     output_coeffs = parse_linear_combination(model, io.output_symbol)
     param_range = collect(range(refinement.param_min, refinement.param_max, length=max(refinement.n_points, 10)))
@@ -2152,7 +2231,7 @@ function _best_seeded_trial(result, gamma_q, refinement::InverseRefinementSpec, 
     path_idx = Int(_raw_get(witness, :path_idx, 0))
     path_idx > 0 || return nothing, "invalid_witness_path"
 
-    poly_dict = _candidate_polyhedron(model, io.input_symbol, path_idx)
+    poly_dict = _candidate_polyhedron(model, change_spec, path_idx)
     haskey(poly_dict, "dimension") || return nothing, "polyhedron_unavailable"
     qk_count = length(qK_sym(model))
     poly_dim = Int(_raw_get(poly_dict, :dimension, -1))
@@ -2191,6 +2270,8 @@ function _best_seeded_trial(result, gamma_q, refinement::InverseRefinementSpec, 
                 "n_vertices" => Int(_raw_get(poly_dict, :n_vertices, 0)),
             ),
         )
+        trial["change_signature"] = String(_raw_get(change_spec, :signature, String(scalar_input_symbol)))
+        trial["refinement_status"] = "ok"
         if best_trial === nothing || Float64(trial["refinement_score"]) > Float64(best_trial["refinement_score"])
             best_trial = trial
         end
@@ -2229,10 +2310,11 @@ function refine_top_k(query_result, gamma_q, refinement_policy::InverseRefinemen
             rules = String.(_raw_get(result, :raw_rules, String[]))
             model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
             target_motifs = _target_motif_labels_for_result(result, query)
-            fallback_trial, _ = _candidate_refinement_trials(model, io.input_symbol, io.output_symbol, refinement_policy, query, target_motifs)
+            change_target = io.change_spec === nothing ? io.input_symbol : io.change_spec
+            fallback_trial, _ = _candidate_refinement_trials(model, change_target, io.output_symbol, refinement_policy, query, target_motifs)
             fallback_trial["seed_source"] = "random_fallback"
             fallback_trial["fallback_reason"] = fallback_reason
-            fallback_trial["local_search"] = "random_background_scan"
+            fallback_trial["local_search"] = get(fallback_trial, "refinement_status", "ok") == "ok" ? "random_background_scan" : "unsupported"
             best_trial = fallback_trial
         end
 
@@ -2242,6 +2324,7 @@ function refine_top_k(query_result, gamma_q, refinement_policy::InverseRefinemen
             "source_rank" => Int(_raw_get(result, :rank, 0)),
             "result_unit" => result_unit,
             "input_symbol" => result_unit == "network" ? String(_raw_get(result, :best_input_symbol, "")) : String(_raw_get(result, :input_symbol, "")),
+            "change_signature" => result_unit == "network" ? String(_raw_get(result, :best_change_signature, "")) : String(_raw_get(result, :change_signature, "")),
             "output_symbol" => result_unit == "network" ? String(_raw_get(result, :best_output_symbol, "")) : String(_raw_get(result, :output_symbol, "")),
             "raw_rules" => String.(_raw_get(result, :raw_rules, String[])),
             "base_species_count" => _raw_get(result, :base_species_count, nothing),
@@ -2255,6 +2338,7 @@ function refine_top_k(query_result, gamma_q, refinement_policy::InverseRefinemen
             "dynamic_range" => best_trial["dynamic_range"],
             "regime_transition_count" => best_trial["regime_transition_count"],
             "refinement_score" => best_trial["refinement_score"],
+            "refinement_status" => _raw_get(best_trial, :refinement_status, "ok"),
             "best_trial" => best_trial,
         ))
     end

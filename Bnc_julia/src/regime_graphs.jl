@@ -316,17 +316,18 @@ end
 
 
 """
-    _calc_polyhedra_for_path(model::Bnc, paths, change_qK_idx) -> Vector{Polyhedron}
+    _calc_polyhedra_for_path(model::Bnc, paths, change_qK_indices) -> Vector{Polyhedron}
 
 Compute qK-space polyhedra for each regime path.
 """
 function _calc_polyhedra_for_path(
     model::Bnc,
     paths::AbstractVector{<:AbstractVector{<:Integer}},
-    change_qK_idx::Integer,
+    change_qK_indices::AbstractVector{<:Integer},
 )::Vector{Union{Nothing, Polyhedron}}
 
-    el_dim = BitSet((change_qK_idx,))
+    el_dim = BitSet(Int[idx for idx in change_qK_indices])
+    projected_cleanup = length(change_qK_indices) == 1
 
     clean!(p::Polyhedron) = (detecthlinearity!(p); removehredundancy!(p); p)
     #dict: node: polyhedron 
@@ -334,7 +335,7 @@ function _calc_polyhedra_for_path(
                         unique_rgms = unique(vcat(paths...))
                         dic = Dict{Int,Polyhedron}()
                         for r in unique_rgms
-                            pr = get_polyhedron(model, r)
+                            pr = get_polyhedron(model, r) |> clean!
                             dic[Int(r)] = pr        
                         end
                         dic
@@ -372,8 +373,9 @@ function _calc_polyhedra_for_path(
         @info "Start building polyhedra for edges (total: $(length(edge_dict)))"
         @showprogress Threads.@threads  for i in eachindex(edges)
             (u, v) = edges[i]
-            p = intersect(node_polyhedra[u], node_polyhedra[v])
-            edge_poly[i] = eliminate(p, el_dim)
+            p = intersect(node_polyhedra[u], node_polyhedra[v]) |> clean!
+            q = eliminate(p, el_dim)
+            edge_poly[i] = projected_cleanup ? clean!(q) : q
         end
         edge_poly
     end
@@ -398,7 +400,8 @@ function _calc_polyhedra_for_path(
     out = Vector{Polyhedron}(undef, length(edge_paths))
     @info "Start building polyhedra for paths (total: $(length(edge_paths)))"
     @showprogress Threads.@threads for i in eachindex(edge_paths)
-        out[i] = intersect(edge_poly[edge_paths[i]]...) |> clean!
+        p = intersect(edge_poly[edge_paths[i]]...)
+        out[i] = projected_cleanup ? clean!(p) : p
     end
     return out
 end
@@ -422,6 +425,37 @@ function _ensure_full_vertices_graph!(grh::VertexGraph)
         grh.change_dir_qK_computed = true
     end
     return nothing
+end
+
+change_qK_indices(grh::SISOPaths) = Int[Int(grh.change_qK_idx)]
+change_qK_indices(grh::ChangePaths) = Int[Int(idx) for idx in grh.change_qK_indices]
+
+change_qK_signs(::SISOPaths) = Int8[1]
+change_qK_signs(grh::ChangePaths) = Int8[Int8(sign) for sign in grh.change_qK_signs]
+
+change_label(grh::SISOPaths) = string(qK_sym(grh.bn)[grh.change_qK_idx])
+change_label(grh::ChangePaths) = grh.change_label
+
+change_kind(::SISOPaths) = :axis
+change_kind(grh::ChangePaths) = grh.change_kind
+
+function _classify_change_projection(change_dir_qK, change_qK_indices::AbstractVector{<:Integer}, change_qK_signs::AbstractVector{<:Integer}; tol::Real=1e-6)
+    isnothing(change_dir_qK) && return 0
+    length(change_qK_indices) == length(change_qK_signs) || error("change_qK_indices and change_qK_signs must have the same length")
+
+    projected = Float64[]
+    for (idx, sign) in zip(change_qK_indices, change_qK_signs)
+        push!(projected, Float64(sign) * Float64(change_dir_qK[idx]))
+    end
+
+    isempty(projected) && return 0
+    if all(val -> val >= -tol, projected) && any(val -> val > tol, projected)
+        return 1
+    elseif all(val -> val <= tol, projected) && any(val -> val < -tol, projected)
+        return -1
+    else
+        return 0
+    end
 end
 
 
@@ -576,12 +610,47 @@ get_neighbor_graph_qK(Bnc::Bnc; kwargs...) = get_neighbor_graph_qK(get_vertices_
 Return the qK neighbor graph for a SISO path object.
 """
 get_neighbor_graph_qK(grh::SISOPaths; kwargs...) = grh.qK_grh
+get_neighbor_graph_qK(grh::ChangePaths; kwargs...) = grh.qK_grh
 """
     get_neighbor_graph(args...; kwargs...) -> SimpleDiGraph
 
 Alias for `get_neighbor_graph_qK`.
 """
 get_neighbor_graph(args...; kwargs...) = get_neighbor_graph_qK(args...; kwargs...)
+
+"""
+    get_change_graph(grh::VertexGraph, change_qK_indices, change_qK_signs) -> SimpleDiGraph
+
+Build a monotone change graph for a selected qK-coordinate cone.
+"""
+function get_change_graph(grh::VertexGraph, change_qK_indices::AbstractVector{<:Integer}, change_qK_signs::AbstractVector{<:Integer})::SimpleDiGraph
+    bn = get_binding_network(grh)
+    _ensure_full_vertices_graph!(grh)
+
+    n = length(grh.neighbors)
+    g = SimpleDiGraph(n)
+    for (i, edges) in enumerate(grh.neighbors)
+        nlt = get_nullity(bn, i)
+        if nlt > 1
+            continue
+        end
+        for e in edges
+            if isnothing(e.change_dir_qK) || e.to < i
+                continue
+            end
+            direction = _classify_change_projection(e.change_dir_qK, change_qK_indices, change_qK_signs)
+            if direction > 0
+                add_edge!(g, i, e.to)
+            elseif direction < 0
+                add_edge!(g, e.to, i)
+            end
+        end
+    end
+    return g
+end
+
+get_change_graph(Bnc::Bnc, change_qK_indices::AbstractVector{<:Integer}, change_qK_signs::AbstractVector{<:Integer}) =
+    get_change_graph(get_vertices_graph!(Bnc; full=true), change_qK_indices, change_qK_signs)
 
 
 
@@ -606,33 +675,7 @@ Build a SISO graph from a vertex graph for a chosen qK coordinate.
 function get_SISO_graph(grh::VertexGraph, change_qK)::SimpleDiGraph
     bn = get_binding_network(grh)
     change_qK_idx = locate_sym_qK(bn, change_qK)
-    _ensure_full_vertices_graph!(grh)
-
-    n = length(grh.neighbors)
-
-    g = let 
-        g = SimpleDiGraph(n)
-        for (i, edges) in enumerate(grh.neighbors)
-            nlt = get_nullity(bn,i)
-            if nlt >1
-                continue
-            end
-            for e in edges
-                if isnothing(e.change_dir_qK) || e.to < i
-                    continue
-                end 
-                val = e.change_dir_qK[change_qK_idx]
-                if val > 1e-6
-                    add_edge!(g, i, e.to)
-                elseif val < -1e-6
-                    add_edge!(g, e.to, i)
-                end 
-            end
-        end
-        g
-    end
-
-    return g
+    return get_change_graph(grh, [change_qK_idx], Int8[1])
 end
 
 
@@ -662,11 +705,57 @@ function SISOPaths(model::Bnc{T}, change_qK; rgm_paths=nothing) where {T}
 end
 
 """
-    get_path(grh::SISOPaths, pth_idx; return_idx=false) -> Vector
+    ChangePaths(model::Bnc, change_qK_syms; signs=nothing, label=nothing, rgm_paths=nothing, kind=:orthant)
+        -> ChangePaths
+
+Construct a monotone multi-parameter path bundle for a chosen qK cone.
+"""
+function ChangePaths(
+    model::Bnc{T},
+    change_qK_syms::AbstractVector;
+    signs=nothing,
+    label=nothing,
+    rgm_paths=nothing,
+    kind::Symbol=:orthant,
+) where {T}
+    change_qK_indices = T[]
+    for sym in change_qK_syms
+        idx = locate_sym_qK(model, sym)
+        isnothing(idx) && error("Unknown qK symbol in change specification: $(sym)")
+        push!(change_qK_indices, idx)
+    end
+    isempty(change_qK_indices) && error("change_qK_syms cannot be empty")
+
+    sign_vals = if isnothing(signs)
+        fill(Int8(1), length(change_qK_indices))
+    else
+        length(signs) == length(change_qK_indices) || error("signs length must match change_qK_syms length")
+        Int8[Int8(sign) for sign in signs]
+    end
+    label_str = if isnothing(label)
+        join([string(sign > 0 ? "+" : "-", qK_sym(model)[idx]) for (idx, sign) in zip(change_qK_indices, sign_vals)], ",")
+    else
+        String(label)
+    end
+
+    if rgm_paths === nothing
+        qK_grh = get_change_graph(model, change_qK_indices, sign_vals)
+        sources, sinks = get_sources_sinks(model, qK_grh)
+        rgm_paths = _enumerate_paths(qK_grh; sources, sinks)
+    else
+        qK_grh = graph_from_paths(rgm_paths, length(model.vertices_perm))
+        sources, sinks = get_sources_sinks(qK_grh)
+    end
+
+    return ChangePaths(model, qK_grh, kind, label_str, change_qK_indices, sign_vals, sources, sinks, rgm_paths)
+end
+
+"""
+    get_path(grh::AbstractChangePaths, pth_idx; return_idx=false) -> Vector
 
 Return a path by index, optionally as vertex indices.
 """
-function get_path(grh::SISOPaths, pth_idx::Integer; return_idx::Bool=false)
+function get_path(grh::AbstractChangePaths, pth_idx::Integer; return_idx::Bool=false)
     rgm_idxs = grh.rgm_paths[pth_idx]
     if return_idx
         return rgm_idxs
@@ -677,57 +766,66 @@ function get_path(grh::SISOPaths, pth_idx::Integer; return_idx::Bool=false)
     return perms
 end
 """
-    get_path(grh::SISOPaths, pth::AbstractVector; return_idx=false) -> Vector
+    get_path(grh::AbstractChangePaths, pth::AbstractVector; return_idx=false) -> Vector
 
 Normalize a path representation to indices or permutations.
 """
-function get_path(grh::SISOPaths, pth::AbstractVector; return_idx::Bool=false)
+function get_path(grh::AbstractChangePaths, pth::AbstractVector; return_idx::Bool=false)
     bn = get_binding_network(grh)
     return return_idx ? get_idx.(Ref(bn), pth) : get_perm.(Ref(bn), pth)
 end
 
 """
-    get_binding_network(grh::SISOPaths, args...) -> Bnc
+    get_binding_network(grh::AbstractChangePaths, args...) -> Bnc
 
 Return the model backing a SISO path object.
 """
-get_binding_network(grh::SISOPaths,args...)= grh.bn
+get_binding_network(grh::AbstractChangePaths,args...)= grh.bn
 """
-    get_C_C0_nullity_qK(grh::SISOPaths, pth_idx) -> (Matrix, Vector, Int)
+    get_C_C0_nullity_qK(grh::AbstractChangePaths, pth_idx) -> (Matrix, Vector, Int)
 
 Return constraints for a SISO path polyhedron.
 """
-get_C_C0_nullity_qK(grh::SISOPaths, pth_idx) = get_polyhedron(grh, pth_idx) |> get_C_C0_nullity
+get_C_C0_nullity_qK(grh::AbstractChangePaths, pth_idx) = get_polyhedron(grh, pth_idx) |> get_C_C0_nullity
 
 
 
 """
-    get_idx(grh::SISOPaths, pth) -> Int
+    get_idx(grh::AbstractChangePaths, pth) -> Int
 
 Return the index for a SISO path specification.
 """
-get_idx(grh::SISOPaths, pth::AbstractVector) = let
+function _ensure_paths_dict!(grh::AbstractChangePaths)
+    length(grh.paths_dict) == length(grh.rgm_paths) && return grh.paths_dict
+    isempty(grh.paths_dict) || empty!(grh.paths_dict)
+    for (i, p) in enumerate(grh.rgm_paths)
+        grh.paths_dict[p] = i
+    end
+    return grh.paths_dict
+end
+
+get_idx(grh::AbstractChangePaths, pth::AbstractVector) = let
     bn = get_binding_network(grh)
     idxs = get_idx.(Ref(bn), pth)
-    grh.paths_dict[idxs] 
+    _ensure_paths_dict!(grh)[idxs]
 end
 """
-    get_idx(grh::SISOPaths, pth::Integer) -> Int
+    get_idx(grh::AbstractChangePaths, pth::Integer) -> Int
 
 Return the provided path index.
 """
-get_idx(grh::SISOPaths, pth::Integer) = pth
+get_idx(grh::AbstractChangePaths, pth::Integer) = pth
 
 
 
 
 
 """
-    get_polyhedra(grh::SISOPaths, pth_idx=nothing) -> Vector{Polyhedron}
+    get_polyhedra(grh::AbstractChangePaths, pth_idx=nothing) -> Vector{Polyhedron}
 
 Return polyhedra for selected SISO paths.
 """
-function get_polyhedra(grh::SISOPaths, pth_idx::Union{AbstractVector,Nothing} = nothing)::Vector{Polyhedron}
+function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing} = nothing)::Vector{Polyhedron}
     pth_idx = let 
             if isnothing(pth_idx)
                 1:length(grh.rgm_paths)
@@ -739,7 +837,7 @@ function get_polyhedra(grh::SISOPaths, pth_idx::Union{AbstractVector,Nothing} = 
     pth_poly_to_calc = filter(x -> !grh.path_polys_is_calc[x], pth_idx)
     
     if !isempty(pth_poly_to_calc)
-        polys = _calc_polyhedra_for_path(get_binding_network(grh), grh.rgm_paths[pth_poly_to_calc], grh.change_qK_idx)
+        polys = _calc_polyhedra_for_path(get_binding_network(grh), grh.rgm_paths[pth_poly_to_calc], change_qK_indices(grh))
         grh.path_polys[pth_poly_to_calc] .= polys
         grh.path_polys_is_calc[pth_poly_to_calc] .= true
     end
@@ -747,20 +845,20 @@ function get_polyhedra(grh::SISOPaths, pth_idx::Union{AbstractVector,Nothing} = 
     return grh.path_polys[pth_idx]
 end
 """
-    get_polyhedron(grh::SISOPaths, pth) -> Polyhedron
+    get_polyhedron(grh::AbstractChangePaths, pth) -> Polyhedron
 
 Return the polyhedron for a single SISO path.
 """
-get_polyhedron(grh::SISOPaths, pth)= get_polyhedra(grh, [get_idx(grh, pth)])[1]
+get_polyhedron(grh::AbstractChangePaths, pth)= get_polyhedra(grh, [get_idx(grh, pth)])[1]
 
 
 
 """
-    get_volumes(grh::SISOPaths, pth_idx=nothing; asymptotic=true, recalculate=false, kwargs...) -> Vector{Volume}
+    get_volumes(grh::AbstractChangePaths, pth_idx=nothing; asymptotic=true, recalculate=false, kwargs...) -> Vector{Volume}
 
 Compute volumes for SISO paths.
 """
-function get_volumes(grh::SISOPaths, pth_idx::Union{AbstractVector,Nothing}=nothing; 
+function get_volumes(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing}=nothing; 
     rebase_K = false,
     rebase_mat = nothing,
     recalculate=false, kwargs...)
@@ -800,11 +898,11 @@ function get_volumes(grh::SISOPaths, pth_idx::Union{AbstractVector,Nothing}=noth
 end
 
 """
-    get_volume(grh::SISOPaths, pth; kwargs...) -> Volume
+    get_volume(grh::AbstractChangePaths, pth; kwargs...) -> Volume
 
 Return the volume for a single SISO path.
 """
-get_volume(grh::SISOPaths, pth; kwargs...) = get_volumes(grh, [get_idx(grh, pth)]; kwargs...)[1]
+get_volume(grh::AbstractChangePaths, pth; kwargs...) = get_volumes(grh, [get_idx(grh, pth)]; kwargs...)[1]
 
 
 
@@ -880,28 +978,47 @@ end
 
 #-------------------------------------------------------------------------------------------
 # 
+_round_ro_value(x::Real) = round(Float64(x); digits=3)
+
+function _calc_change_response_for_vertex(model, vertex_idx::Integer, change_qK_idx::Integer, observe_x_idx::Integer, sign::Integer=1)::Float64
+    nullity = get_nullity(model, vertex_idx)
+    nullity > 1 && error("atlas_nullity_gt_1: reaction-order path materialization does not support vertex $(vertex_idx) with nullity $(nullity)")
+    if !is_singular(model, vertex_idx)
+        return _round_ro_value(Float64(sign) * get_H(model, vertex_idx)[observe_x_idx, change_qK_idx])
+    end
+
+    ord = Float64(sign) * Float64(get_H(model, vertex_idx)[observe_x_idx, change_qK_idx])
+    return abs(ord) < 1e-6 ? NaN : ord * Inf
+end
+
+function _calc_change_response_for_vertex(model, vertex_idx::Integer, change_qK_indices::AbstractVector{<:Integer}, observe_x_idx::Integer, change_qK_signs::AbstractVector{<:Integer})::Vector{Float64}
+    return Float64[
+        _calc_change_response_for_vertex(model, vertex_idx, idx, observe_x_idx, sign)
+        for (idx, sign) in zip(change_qK_indices, change_qK_signs)
+    ]
+end
+
 """
     _calc_RO_for_single_path(model, path, change_qK_idx, observe_x_idx) -> Vector
 
 Compute the reaction-order profile along a single path.
 """
-function _calc_RO_for_single_path(model, path::AbstractVector{<:Integer}, change_qK_idx, observe_x_idx)::Vector{<:Real}
+function _calc_RO_for_single_path(model, path::AbstractVector{<:Integer}, change_qK_idx::Integer, observe_x_idx)::Vector{Float64}
     r_ord = Vector{Float64}(undef, length(path))
     for i in eachindex(path)
-        nullity = get_nullity(model, path[i])
-        nullity > 1 && error("atlas_nullity_gt_1: reaction-order path materialization does not support vertex $(path[i]) with nullity $(nullity)")
-        if !is_singular(model, path[i])
-            r_ord[i] = get_H(model, path[i])[observe_x_idx, change_qK_idx] |> x->round(x;digits=3)
-        else
-            ord = get_H(model, path[i])[observe_x_idx, change_qK_idx]
-            if abs(ord) < 1e-6
-                r_ord[i] = NaN  # We use NaN to denote continuous singular, if reaction order not same before and after, means discontinuity
-            else 
-                r_ord[i] = ord  * Inf
-            end     
-        end
+        r_ord[i] = _calc_change_response_for_vertex(model, path[i], change_qK_idx, observe_x_idx)
     end
     return r_ord
+end
+
+function _calc_RO_for_single_path(
+    model,
+    path::AbstractVector{<:Integer},
+    change_qK_indices::AbstractVector{<:Integer},
+    observe_x_idx,
+    change_qK_signs::AbstractVector{<:Integer},
+)::Vector{Vector{Float64}}
+    return [_calc_change_response_for_vertex(model, vertex_idx, change_qK_indices, observe_x_idx, change_qK_signs) for vertex_idx in path]
 end
 """
     _dedup(ord_path) -> Vector
@@ -934,6 +1051,39 @@ function _dedup(ord_path::AbstractVector{T})::Vector{T} where T<:Real
     return out
 end
 
+function _all_nan(values::AbstractVector{<:Real})
+    return !isempty(values) && all(isnan, values)
+end
+
+function _dedup(ord_path::AbstractVector{<:AbstractVector{<:Real}})::Vector{Vector{Float64}}
+    isempty(ord_path) && return Vector{Float64}[]
+
+    first_vec = Float64[Float64(x) for x in ord_path[1]]
+    out = Vector{Float64}[first_vec]
+    pending_nan = false
+    last_out = first_vec
+    _all_nan(last_out) && throw(ArgumentError("The first element cannot be all-NaN for deduplication."))
+
+    for x_raw in @view ord_path[2:end]
+        x = Float64[Float64(v) for v in x_raw]
+        if _all_nan(x)
+            pending_nan = true
+            continue
+        end
+        if x != last_out
+            if pending_nan
+                push!(out, fill(NaN, length(x)))
+                pending_nan = false
+            end
+            push!(out, x)
+            last_out = x
+        else
+            pending_nan = false
+        end
+    end
+    return out
+end
+
 
 
 
@@ -942,27 +1092,36 @@ end
     get_RO_path(model::Bnc, rgm_idx_shift_pth; change_qK, observe_x,
         deduplicate=false, keep_singular=true, keep_nonasymptotic=true) -> Vector
 
-Calculate the reaction-order profile for a single regime path.
+Calculate the reaction-order profile for a single regime path. Use either
+`change_qK=<symbol>` for a scalar SISO profile or
+`change_qK_indices=<indices>, change_qK_signs=<signs>` for a vector-valued
+multi-change profile.
 """
 function get_RO_path(
-    model::Bnc,rgm_idx_shift_pth::AbstractVector; 
-    change_qK, observe_x,
-    
+    model::Bnc,rgm_idx_shift_pth::AbstractVector;
+    change_qK=nothing,
+    change_qK_indices::Union{Nothing, AbstractVector{<:Integer}}=nothing,
+    observe_x,
+    change_qK_signs::Union{Nothing, AbstractVector{<:Integer}}=nothing,
     deduplicate::Bool=false,
     keep_singular::Bool=true,
     keep_nonasymptotic::Bool=true
-    )::Vector{<:Real}
-
-    
-    # get reaction order along the path
+    )
     rgm_idx_shift_pth = get_idx.(Ref(model), rgm_idx_shift_pth)
+    observe_x_idx = locate_sym_x(model, observe_x)
 
-    ord_path = let 
-        change_qK_idx = locate_sym_qK(model, change_qK)
-        observe_x_idx = locate_sym_x(model, observe_x)
-        _calc_RO_for_single_path(model, rgm_idx_shift_pth, change_qK_idx, observe_x_idx)
+    if !isnothing(change_qK) && !isnothing(change_qK_indices)
+        error("Specify either change_qK or change_qK_indices, but not both.")
     end
-    
+
+    ord_path = if isnothing(change_qK_indices)
+        isnothing(change_qK) && error("change_qK is required when change_qK_indices is not provided.")
+        change_qK_idx = locate_sym_qK(model, change_qK)
+        _calc_RO_for_single_path(model, rgm_idx_shift_pth, change_qK_idx, observe_x_idx)
+    else
+        sign_vals = isnothing(change_qK_signs) ? fill(Int8(1), length(change_qK_indices)) : Int8[Int8(sign) for sign in change_qK_signs]
+        _calc_RO_for_single_path(model, rgm_idx_shift_pth, Int[Int(idx) for idx in change_qK_indices], observe_x_idx, sign_vals)
+    end
 
     # apply the regime filter
     mask = _get_mask(model, rgm_idx_shift_pth;
@@ -984,11 +1143,11 @@ end
 
 Calculate reaction-order profiles for multiple regime paths.
 """
-function get_RO_paths(model::Bnc, rgm_paths::AbstractVector{<:AbstractVector}, args...; kwargs...)::Vector{Vector{<:Real}}
+function get_RO_paths(model::Bnc, rgm_paths::AbstractVector{<:AbstractVector}, args...; kwargs...)
     
     rgm_idx_for_each_paths = rgm_paths .|> x -> get_idx.(Ref(model), x)
 
-    ord_for_each_paths = Vector{Vector{<:Real}}(undef, length(rgm_idx_for_each_paths))
+    ord_for_each_paths = Vector{Any}(undef, length(rgm_idx_for_each_paths))
     Threads.@threads for i in eachindex(rgm_idx_for_each_paths)
         ord_for_each_paths[i] = get_RO_path(model, rgm_idx_for_each_paths[i], args...; kwargs...)
     end
@@ -1005,12 +1164,30 @@ function get_RO_paths(model::SISOPaths, pth_idx::Union{Nothing, AbstractVector}=
     return get_RO_paths(model.bn, rgm_paths; 
         change_qK=model.change_qK_idx, observe_x=observe_x_idx, kwargs...)
 end
+
+function get_RO_paths(model::ChangePaths, pth_idx::Union{Nothing, AbstractVector}=nothing ; observe_x, kwargs...)
+    rgm_paths = isnothing(pth_idx) ? model.rgm_paths : get_path.(Ref(model), pth_idx; return_idx=true)
+    observe_x_idx = locate_sym_x(model.bn, observe_x)
+    profiles = Vector{Any}(undef, length(rgm_paths))
+    Threads.@threads for i in eachindex(rgm_paths)
+        profiles[i] = get_RO_path(
+            model.bn,
+            rgm_paths[i];
+            change_qK_indices=change_qK_indices(model),
+            change_qK_signs=change_qK_signs(model),
+            observe_x=observe_x_idx,
+            kwargs...,
+        )
+    end
+    return profiles
+end
 """
     get_RO_path(model::SISOPaths, pth_idx, args...; kwargs...) -> Vector
 
 Single-path wrapper for `get_RO_paths`.
 """
 get_RO_path(model::SISOPaths, pth_idx, args...; kwargs...) = get_RO_paths(model, [get_idx(model,pth_idx)], args... ; kwargs...)[1]
+get_RO_path(model::ChangePaths, pth_idx, args...; kwargs...) = get_RO_paths(model, [get_idx(model,pth_idx)], args... ; kwargs...)[1]
     
 
 
@@ -1076,12 +1253,12 @@ end
 
 
 """
-    summary_RO_path(grh::SISOPaths; observe_x, show_volume=true, deduplicate=true,
+    summary_RO_path(grh::AbstractChangePaths; observe_x, show_volume=true, deduplicate=true,
         keep_singular=true, keep_nonasymptotic=true, kwargs...) -> nothing
 
 Summarize reaction-order paths grouped by profile.
 """
-function summary_RO_path(grh::SISOPaths;observe_x, show_volume::Bool=true,
+function summary_RO_path(grh::AbstractChangePaths;observe_x, show_volume::Bool=true,
 
     deduplicate::Bool=true,keep_singular::Bool=true,keep_nonasymptotic::Bool=true,kwargs...)
 
@@ -1148,6 +1325,13 @@ Convert an exact reaction-order profile to a coarse motif profile.
 _motif_profile(ord_path::AbstractVector{<:Real}; zero_tol::Real=1e-6)::Vector{String} =
     map(x -> _ro_token(x; zero_tol=zero_tol), ord_path)
 
+function _motif_profile(ord_path::AbstractVector{<:AbstractVector{<:Real}}; zero_tol::Real=1e-6)::Vector{String}
+    return [
+        "(" * join((_ro_token(x; zero_tol=zero_tol) for x in coords), ",") * ")"
+        for coords in ord_path
+    ]
+end
+
 """
     _motif_label(motif_profile) -> String
 
@@ -1155,6 +1339,9 @@ Assign a coarse behavior label to a motif profile.
 """
 function _motif_label(motif_profile::AbstractVector{<:AbstractString})::String
     isempty(motif_profile) && return "empty"
+    if any(token -> startswith(token, "("), motif_profile)
+        return "vector_motif::" * join(motif_profile, " -> ")
+    end
 
     has_singular = any(x -> x == "NaN" || x == "+Inf" || x == "-Inf", motif_profile)
     coarse = map(motif_profile) do token
@@ -1238,6 +1425,90 @@ Render a profile vector with arrows for display.
 """
 _profile_label(profile::AbstractVector{<:Real})::String = format_arrow(profile; digits=3)
 _profile_label(profile::AbstractVector{<:AbstractString})::String = join(profile, " -> ")
+function _profile_label(profile::AbstractVector{<:AbstractVector{<:Real}})::String
+    return join([
+        "[" * join((string(_round_ro_value(x)) for x in coords), ",") * "]"
+        for coords in profile
+    ], " -> ")
+end
+
+function _profile_fingerprint(profile::AbstractVector{<:Real})::UInt
+    h = hash(:real_profile)
+    h = hash(length(profile), h)
+    for value in profile
+        h = hash(value, h)
+    end
+    return h
+end
+
+function _profile_fingerprint(profile::AbstractVector{<:AbstractString})::UInt
+    h = hash(:string_profile)
+    h = hash(length(profile), h)
+    for value in profile
+        h = hash(value, h)
+    end
+    return h
+end
+
+function _profile_fingerprint(profile::AbstractVector{<:AbstractVector{<:Real}})::UInt
+    h = hash(:vector_profile)
+    h = hash(length(profile), h)
+    for coords in profile
+        h = hash(length(coords), h)
+        for value in coords
+            h = hash(value, h)
+        end
+    end
+    return h
+end
+
+function _profile_group_index!(
+    profiles::Vector{Any},
+    bucketed_group_ids::Dict{UInt,Vector{Int}},
+    profile,
+)::Int
+    fingerprint = _profile_fingerprint(profile)
+    candidate_group_ids = get!(bucketed_group_ids, fingerprint, Int[])
+    for group_idx in candidate_group_ids
+        isequal(profiles[group_idx], profile) && return group_idx
+    end
+
+    push!(profiles, profile)
+    group_idx = length(profiles)
+    push!(candidate_group_ids, group_idx)
+    return group_idx
+end
+
+function _path_total_volume(path_records::AbstractVector, path_ids::AbstractVector{<:Integer})
+    volumes = Volume[]
+    sizehint!(volumes, length(path_ids))
+    for path_idx in path_ids
+        vol = path_records[path_idx].volume
+        isnothing(vol) || push!(volumes, vol)
+    end
+    return _sum_volumes(volumes)
+end
+
+function _path_volume_mean(path_records::AbstractVector, path_ids::AbstractVector{<:Integer})
+    mean_values = Float64[]
+    sizehint!(mean_values, length(path_ids))
+    for path_idx in path_ids
+        vol = path_records[path_idx].volume
+        isnothing(vol) || push!(mean_values, vol.mean)
+    end
+    return isempty(mean_values) ? nothing : sum(mean_values) / length(mean_values)
+end
+
+function _robust_path_count(path_records::AbstractVector, path_ids::AbstractVector{<:Integer}, min_volume_mean::Real)::Int
+    count = 0
+    for path_idx in path_ids
+        rec = path_records[path_idx]
+        if rec.feasible && !isnothing(rec.volume) && rec.volume.mean >= min_volume_mean
+            count += 1
+        end
+    end
+    return count
+end
 
 """
     _should_include_behavior_path(ro_profile, feasible, volume, path_scope, min_volume_mean)
@@ -1246,7 +1517,7 @@ _profile_label(profile::AbstractVector{<:AbstractString})::String = join(profile
 Decide whether a path should be included in behavior-family grouping.
 """
 function _should_include_behavior_path(
-    ro_profile::AbstractVector{<:Real},
+    ro_profile::AbstractVector,
     feasible::Bool,
     volume::Union{Nothing,Volume},
     path_scope::Symbol,
@@ -1270,7 +1541,7 @@ function _should_include_behavior_path(
 end
 
 """
-    get_behavior_families(grh::SISOPaths; observe_x, path_scope=:feasible,
+    get_behavior_families(grh::AbstractChangePaths; observe_x, path_scope=:feasible,
         min_volume_mean=0.0, deduplicate=true, keep_singular=true,
         keep_nonasymptotic=false, motif_zero_tol=1e-6, compute_volume=true,
         volume_kwargs...) -> NamedTuple
@@ -1287,7 +1558,7 @@ All paths are still reported in the returned diagnostics, along with explicit
 `included` / `exclusion_reason` fields, so filtering is never silent.
 """
 function get_behavior_families(
-    grh::SISOPaths;
+    grh::AbstractChangePaths;
     observe_x,
     path_scope::Symbol=:feasible,
     min_volume_mean::Real=0.0,
@@ -1296,10 +1567,14 @@ function get_behavior_families(
     keep_nonasymptotic::Bool=false,
     motif_zero_tol::Real=1e-6,
     compute_volume::Bool=true,
+    include_path_labels::Bool=true,
+    include_path_details::Bool=true,
+    include_family_path_indices::Bool=true,
     volume_kwargs...,
 )
     path_scope = _normalize_behavior_scope(path_scope)
     path_scope == :robust && !compute_volume && error("path_scope=:robust requires compute_volume=true")
+    graph_only_multi_change = grh isa ChangePaths && path_scope == :all && !compute_volume
 
     total_paths = length(grh.rgm_paths)
     ord_paths = get_RO_paths(
@@ -1310,9 +1585,11 @@ function get_behavior_families(
         keep_nonasymptotic=keep_nonasymptotic,
     )
 
-    polys = get_polyhedra(grh)
-    feasible_mask = map(poly -> !isempty(poly), polys)
-    feasible_ids = findall(feasible_mask)
+    feasible_mask = graph_only_multi_change ? trues(total_paths) : begin
+        polys = get_polyhedra(grh)
+        map(poly -> !isempty(poly), polys)
+    end
+    feasible_ids = compute_volume ? findall(feasible_mask) : Int[]
 
     volumes_by_path = Vector{Union{Nothing,Volume}}(undef, total_paths)
     fill!(volumes_by_path, nothing)
@@ -1325,7 +1602,15 @@ function get_behavior_families(
 
     path_records = Vector{NamedTuple}(undef, total_paths)
     exclusion_counts = Dict{String,Int}()
-    included_path_ids = Int[]
+    included_paths = 0
+    exact_profiles = Any[]
+    exact_group_paths = Vector{Vector{Int}}()
+    exact_profile_buckets = Dict{UInt,Vector{Int}}()
+    exact_group_to_motif = Int[]
+    motif_profiles = Any[]
+    motif_group_paths = Vector{Vector{Int}}()
+    motif_profile_buckets = Dict{UInt,Vector{Int}}()
+    motif_group_to_exact_groups = Vector{Vector{Int}}()
 
     for path_idx in 1:total_paths
         ord_profile = ord_paths[path_idx]
@@ -1336,40 +1621,59 @@ function get_behavior_families(
             ord_profile, feasible, volume, path_scope, min_volume_mean)
 
         if included
-            push!(included_path_ids, path_idx)
+            included_paths += 1
+
+            exact_group_idx = _profile_group_index!(exact_profiles, exact_profile_buckets, ord_profile)
+            while length(exact_group_paths) < exact_group_idx
+                push!(exact_group_paths, Int[])
+                push!(exact_group_to_motif, 0)
+            end
+            push!(exact_group_paths[exact_group_idx], path_idx)
+
+            motif_group_idx = _profile_group_index!(motif_profiles, motif_profile_buckets, motif_profile)
+            while length(motif_group_paths) < motif_group_idx
+                push!(motif_group_paths, Int[])
+                push!(motif_group_to_exact_groups, Int[])
+            end
+            exact_group_to_motif[exact_group_idx] = motif_group_idx
+            push!(motif_group_paths[motif_group_idx], path_idx)
+            exact_groups = motif_group_to_exact_groups[motif_group_idx]
+            exact_group_idx in exact_groups || push!(exact_groups, exact_group_idx)
         elseif !isnothing(exclusion_reason)
             exclusion_counts[exclusion_reason] = get(exclusion_counts, exclusion_reason, 0) + 1
         end
 
-        path_records[path_idx] = (
-            path_idx=path_idx,
-            vertex_indices=copy(grh.rgm_paths[path_idx]),
-            exact_profile=ord_profile,
-            exact_label=_profile_label(ord_profile),
-            motif_profile=motif_profile,
-            motif_label=_motif_label(motif_profile),
-            feasible=feasible,
-            included=included,
-            exclusion_reason=exclusion_reason,
-            volume=volume,
-        )
+        path_records[path_idx] = if include_path_details
+            (
+                path_idx=path_idx,
+                vertex_indices=copy(grh.rgm_paths[path_idx]),
+                exact_profile=ord_profile,
+                exact_label=include_path_labels ? _profile_label(ord_profile) : nothing,
+                motif_profile=motif_profile,
+                motif_label=include_path_labels ? _motif_label(motif_profile) : nothing,
+                feasible=feasible,
+                feasibility_checked=!graph_only_multi_change,
+                included=included,
+                exclusion_reason=exclusion_reason,
+                volume=volume,
+            )
+        else
+            (
+                path_idx=path_idx,
+                feasible=feasible,
+                included=included,
+                exclusion_reason=exclusion_reason,
+                volume=volume,
+            )
+        end
     end
 
-    exact_groups = Dict{Any,Vector{Int}}()
-    exact_to_motif = Dict{Any,Any}()
-    for path_idx in included_path_ids
-        exact_key = Tuple(path_records[path_idx].exact_profile)
-        motif_key = Tuple(path_records[path_idx].motif_profile)
-        push!(get!(exact_groups, exact_key, Int[]), path_idx)
-        exact_to_motif[exact_key] = motif_key
-    end
-
-    exact_families = NamedTuple[]
-    for (exact_key, path_ids) in exact_groups
-        profile = collect(exact_key)
-        motif_profile = collect(exact_to_motif[exact_key])
-        member_volumes = filter(!isnothing, getindex.(path_records[path_ids], :volume))
-        total_volume = _sum_volumes(member_volumes)
+    exact_family_stats = NamedTuple[]
+    for exact_group_idx in eachindex(exact_group_paths)
+        path_ids = exact_group_paths[exact_group_idx]
+        profile = exact_profiles[exact_group_idx]
+        motif_profile = motif_profiles[exact_group_to_motif[exact_group_idx]]
+        total_volume = _path_total_volume(path_records, path_ids)
         rep_path = if isempty(path_ids)
             0
         elseif isnothing(total_volume)
@@ -1378,39 +1682,49 @@ function get_behavior_families(
             _representative_path_idx(path_ids, path_records)
         end
 
-        push!(exact_families, (
-            family_idx=0,
+        push!(exact_family_stats, (
+            exact_group_idx=exact_group_idx,
             exact_profile=profile,
             exact_label=_profile_label(profile),
             motif_profile=motif_profile,
             motif_label=_motif_label(motif_profile),
-            path_indices=sort(path_ids),
+            path_indices=include_family_path_indices ? copy(path_ids) : Int[],
             n_paths=length(path_ids),
+            robust_path_count=_robust_path_count(path_records, path_ids, min_volume_mean),
+            volume_mean=_path_volume_mean(path_records, path_ids),
             total_volume=total_volume,
             representative_path_idx=rep_path,
             representative_volume=rep_path == 0 ? nothing : path_records[rep_path].volume,
         ))
     end
 
-    sort!(exact_families; by=family -> isnothing(family.total_volume) ? family.n_paths : family.total_volume.mean, rev=true)
-    exact_families = [(; family..., family_idx=i) for (i, family) in enumerate(exact_families)]
-    exact_family_idx_by_key = Dict(Tuple(family.exact_profile) => family.family_idx for family in exact_families)
-
-    motif_groups = Dict{Any,Vector{Int}}()
-    motif_to_exact_keys = Dict{Any,Vector{Any}}()
-    for path_idx in included_path_ids
-        motif_key = Tuple(path_records[path_idx].motif_profile)
-        exact_key = Tuple(path_records[path_idx].exact_profile)
-        push!(get!(motif_groups, motif_key, Int[]), path_idx)
-        exact_keys = get!(motif_to_exact_keys, motif_key, Any[])
-        any(existing -> isequal(existing, exact_key), exact_keys) || push!(exact_keys, exact_key)
+    sort!(exact_family_stats; by=family -> isnothing(family.total_volume) ? family.n_paths : family.total_volume.mean, rev=true)
+    exact_family_idx_by_group = zeros(Int, length(exact_family_stats))
+    exact_families = NamedTuple[]
+    sizehint!(exact_families, length(exact_family_stats))
+    for (family_idx, family) in enumerate(exact_family_stats)
+        exact_family_idx_by_group[family.exact_group_idx] = family_idx
+        push!(exact_families, (
+            family_idx=family_idx,
+            exact_profile=family.exact_profile,
+            exact_label=family.exact_label,
+            motif_profile=family.motif_profile,
+            motif_label=family.motif_label,
+            path_indices=family.path_indices,
+            n_paths=family.n_paths,
+            robust_path_count=family.robust_path_count,
+            volume_mean=family.volume_mean,
+            total_volume=family.total_volume,
+            representative_path_idx=family.representative_path_idx,
+            representative_volume=family.representative_volume,
+        ))
     end
 
-    motif_families = NamedTuple[]
-    for (motif_key, path_ids) in motif_groups
-        motif_profile = collect(motif_key)
-        member_volumes = filter(!isnothing, getindex.(path_records[path_ids], :volume))
-        total_volume = _sum_volumes(member_volumes)
+    motif_family_stats = NamedTuple[]
+    for motif_group_idx in eachindex(motif_group_paths)
+        path_ids = motif_group_paths[motif_group_idx]
+        motif_profile = motif_profiles[motif_group_idx]
+        total_volume = _path_total_volume(path_records, path_ids)
         rep_path = if isempty(path_ids)
             0
         elseif isnothing(total_volume)
@@ -1419,24 +1733,29 @@ function get_behavior_families(
             _representative_path_idx(path_ids, path_records)
         end
 
-        push!(motif_families, (
-            family_idx=0,
+        push!(motif_family_stats, (
             motif_profile=motif_profile,
             motif_label=_motif_label(motif_profile),
-            path_indices=sort(path_ids),
+            path_indices=include_family_path_indices ? copy(path_ids) : Int[],
             n_paths=length(path_ids),
-            exact_family_indices=sort([exact_family_idx_by_key[exact_key] for exact_key in motif_to_exact_keys[motif_key]]),
+            exact_family_indices=sort([exact_family_idx_by_group[exact_group_idx] for exact_group_idx in motif_group_to_exact_groups[motif_group_idx]]),
+            robust_path_count=_robust_path_count(path_records, path_ids, min_volume_mean),
+            volume_mean=_path_volume_mean(path_records, path_ids),
             total_volume=total_volume,
             representative_path_idx=rep_path,
             representative_volume=rep_path == 0 ? nothing : path_records[rep_path].volume,
         ))
     end
 
-    sort!(motif_families; by=family -> isnothing(family.total_volume) ? family.n_paths : family.total_volume.mean, rev=true)
-    motif_families = [(; family..., family_idx=i) for (i, family) in enumerate(motif_families)]
+    sort!(motif_family_stats; by=family -> isnothing(family.total_volume) ? family.n_paths : family.total_volume.mean, rev=true)
+    motif_families = [(; family..., family_idx=i) for (i, family) in enumerate(motif_family_stats)]
 
     return (
-        change_qK_idx=grh.change_qK_idx,
+        change_kind=change_kind(grh),
+        change_label=change_label(grh),
+        change_qK_indices=change_qK_indices(grh),
+        change_qK_signs=change_qK_signs(grh),
+        change_qK_idx=length(change_qK_indices(grh)) == 1 ? only(change_qK_indices(grh)) : nothing,
         observe_x_idx=locate_sym_x(grh.bn, observe_x),
         path_scope=path_scope,
         min_volume_mean=Float64(min_volume_mean),
@@ -1444,10 +1763,11 @@ function get_behavior_families(
         keep_singular=keep_singular,
         keep_nonasymptotic=keep_nonasymptotic,
         compute_volume=compute_volume,
+        feasibility_mode=graph_only_multi_change ? :graph_only_unchecked : :projected_feasible,
         total_paths=total_paths,
         feasible_paths=count(feasible_mask),
-        included_paths=length(included_path_ids),
-        excluded_paths=total_paths - length(included_path_ids),
+        included_paths=included_paths,
+        excluded_paths=total_paths - included_paths,
         exclusion_counts=exclusion_counts,
         path_records=path_records,
         exact_families=exact_families,
@@ -1463,12 +1783,12 @@ Convenience wrapper that constructs `SISOPaths` first.
 get_behavior_families(model::Bnc, change_qK; kwargs...) = get_behavior_families(SISOPaths(model, change_qK); kwargs...)
 
 """
-    summary_behavior_families(grh::SISOPaths; observe_x, level=:exact, kwargs...) -> nothing
+    summary_behavior_families(grh::AbstractChangePaths; observe_x, level=:exact, kwargs...) -> nothing
 
 Print exact or motif behavior families.
 """
 function summary_behavior_families(
-    grh::SISOPaths;
+    grh::AbstractChangePaths;
     observe_x,
     level::Symbol=:exact,
     kwargs...,

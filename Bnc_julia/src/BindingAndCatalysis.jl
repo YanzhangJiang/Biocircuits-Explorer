@@ -53,7 +53,7 @@ export show_dominant_condition, show_conservation, show_equilibrium, show_interf
 export sym_direction, print_path, print_paths, format_arrow
 
 # include("regime_graphs.jl")
-export get_vertices_graph!, SISOPaths,  get_polyhedra, get_polyhedron, get_SISO_graph
+export get_vertices_graph!, AbstractChangePaths, SISOPaths, ChangePaths, get_polyhedra, get_polyhedron, get_SISO_graph, get_change_graph
 export get_path, get_edge, get_intersect
 export get_neighbor_graph_x, get_neighbor_graph_qK,get_neighbor_graph
 export get_sources, get_sinks, get_sources_sinks

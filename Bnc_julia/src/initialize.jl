@@ -406,7 +406,9 @@ end
 
 
 
-struct SISOPaths{T} 
+abstract type AbstractChangePaths{T} end
+
+struct SISOPaths{T} <: AbstractChangePaths{T}
     bn::Bnc{T}   # binding Newtork
     qK_grh::SimpleDiGraph # SimpleDiGraph in qK space
     change_qK_idx::T  # which qK is changing in this SISO graph
@@ -426,15 +428,67 @@ struct SISOPaths{T}
         path_volume = Vector{Volume}(undef, length(rgm_paths))
         path_volume_is_calc = falses(length(rgm_paths))
         path_polys_is_calc = falses(length(rgm_paths))
-        paths_dict = Dict{Vector{Int},Int}()
-        for (i, p) in enumerate(rgm_paths)
-            paths_dict[p] = i
-        end  
+        paths_dict = sizehint!(Dict{Vector{Int},Int}(), length(rgm_paths))
         new{T}(model, qK_grh, change_qK_idx, 
             sources, sinks, 
             paths_dict,
             rgm_paths, path_polys, path_volume,
             path_volume_is_calc, path_polys_is_calc)
+    end
+end
+
+struct ChangePaths{T} <: AbstractChangePaths{T}
+    bn::Bnc{T}   # binding network
+    qK_grh::SimpleDiGraph
+    change_kind::Symbol
+    change_label::String
+    change_qK_indices::Vector{T}
+    change_qK_signs::Vector{Int8}
+
+    sources::Vector{Int}
+    sinks::Vector{Int}
+    paths_dict::Dict{Vector{Int},Int}
+    rgm_paths::Vector{Vector{Int}}
+    path_polys::Vector{Polyhedron}
+    path_volume::Vector{Volume}
+
+    path_volume_is_calc::BitVector
+    path_polys_is_calc::BitVector
+
+    function ChangePaths(
+        model::Bnc{T},
+        qK_grh,
+        change_kind::Symbol,
+        change_label::AbstractString,
+        change_qK_indices::AbstractVector,
+        change_qK_signs::AbstractVector,
+        sources,
+        sinks,
+        rgm_paths,
+    ) where T
+        path_polys = Vector{Polyhedron}(undef, length(rgm_paths))
+        path_volume = Vector{Volume}(undef, length(rgm_paths))
+        path_volume_is_calc = falses(length(rgm_paths))
+        path_polys_is_calc = falses(length(rgm_paths))
+        paths_dict = sizehint!(Dict{Vector{Int},Int}(), length(rgm_paths))
+        indices = T[T(idx) for idx in change_qK_indices]
+        signs = Int8[Int8(sign) for sign in change_qK_signs]
+        new{T}(
+            model,
+            qK_grh,
+            change_kind,
+            String(change_label),
+            indices,
+            signs,
+            collect(sources),
+            collect(sinks),
+            paths_dict,
+            rgm_paths,
+            path_polys,
+            path_volume,
+            path_volume_is_calc,
+            path_polys_is_calc,
+        )
     end
 end
 

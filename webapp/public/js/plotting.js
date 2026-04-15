@@ -209,3 +209,98 @@ export function plotHeatmap(data, plotId) {
 
   Plotly.newPlot(plotId, traces, applyPlotLayoutTheme(layout), { responsive: true, displayModeBar: false, scrollZoom: true });
 }
+
+export function plotAtlasLandscape2D(data, plotId) {
+  const {
+    param1_values,
+    param2_values,
+    output_grid,
+    regime_grid,
+    bounds,
+    param1_symbol,
+    param2_symbol,
+    output_expr,
+  } = data;
+  const plotTheme = getPlotTheme();
+
+  const topoTrace = {
+    z: output_grid,
+    x: param1_values,
+    y: param2_values,
+    type: 'heatmap',
+    colorscale: 'Viridis',
+    colorbar: themedColorbar(`log(${output_expr || 'output'})`),
+    hovertemplate: `${param1_symbol}=%{x:.2f}<br>${param2_symbol}=%{y:.2f}<br>${escapeHtmlForHover(output_expr || 'output')}=%{z:.3f}<br>rgm %{customdata}<extra></extra>`,
+    customdata: regime_grid,
+  };
+
+  const contourTrace = {
+    z: output_grid,
+    x: param1_values,
+    y: param2_values,
+    type: 'contour',
+    contours: {
+      coloring: 'none',
+      showlabels: false,
+    },
+    line: {
+      color: hexToRgba(plotTheme.contourLineColor, 0.42),
+      width: 1,
+    },
+    hoverinfo: 'skip',
+    showscale: false,
+  };
+
+  const regimeBoundaryTrace = {
+    z: bounds,
+    x: param1_values,
+    y: param2_values,
+    type: 'contour',
+    contours: { start: 0.5, end: 0.5, size: 1, coloring: 'none' },
+    line: { color: plotTheme.contourLineColor, width: 2.2 },
+    hoverinfo: 'skip',
+    showscale: false,
+  };
+
+  const layout = {
+    autosize: true,
+    margin: { t: 48, b: 58, l: 70, r: 24 },
+    title: {
+      text: `2D landscape: ${output_expr || 'output'}`,
+      font: { color: plotTheme.titleColor, size: 11 },
+      y: 0.98,
+      yanchor: 'top',
+    },
+    xaxis: { title: `log ${param1_symbol}` },
+    yaxis: { title: `log ${param2_symbol}` },
+    annotations: [
+      {
+        xref: 'paper',
+        yref: 'paper',
+        x: 1,
+        y: 1.12,
+        xanchor: 'right',
+        showarrow: false,
+        text: 'heatmap + contours + regime boundaries',
+        font: { size: 10, color: plotTheme.subtleTextColor },
+      },
+    ],
+  };
+
+  Plotly.newPlot(plotId, [topoTrace, contourTrace, regimeBoundaryTrace], applyPlotLayoutTheme(layout), {
+    responsive: true,
+    displayModeBar: false,
+    scrollZoom: true,
+  });
+  const plotEl = document.getElementById(plotId);
+  if (plotEl) setupPlotInteractionGuard(plotEl);
+}
+
+function escapeHtmlForHover(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}

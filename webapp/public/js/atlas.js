@@ -1,5 +1,5 @@
 import { nodeRegistry, connections, ATLAS_ROLE_OPTIONS, ATLAS_ORDER_OPTIONS, ATLAS_SINGULAR_OPTIONS } from './state.js';
-import { api, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable } from './api.js';
+import { api, apiSilent, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { setNodeLoading, getModelContextForNode, findUpstreamNodeByType, getSessionIdForNode } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
@@ -7,6 +7,15 @@ import { triggerConfigUpdate } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { getNodeSerialData } from './workspace.js';
 import { getFamilyColor, hexToRgba } from './theme.js';
+
+let _plotAtlasLandscape2D = null;
+
+async function ensureAtlasPlotting() {
+  if (_plotAtlasLandscape2D) return _plotAtlasLandscape2D;
+  const plotting = await import('./plotting.js');
+  _plotAtlasLandscape2D = plotting.plotAtlasLandscape2D;
+  return _plotAtlasLandscape2D;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Atlas-specific predicate helpers                                   */
@@ -893,6 +902,107 @@ export function renderAtlasResultExplain(result, resultUnit) {
   `;
 }
 
+function atlasLandscapeCandidate(result, resultUnit) {
+  if (resultUnit === 'network') {
+    return {
+      rawRules: Array.isArray(result.raw_rules) ? result.raw_rules : [],
+      outputSymbol: result.best_output_symbol || atlasDefaultLandscapeOutput(result.raw_rules),
+      changeSpec: result.best_change_spec || null,
+      changeSignature: result.best_change_signature || '',
+      inputSymbol: result.best_input_symbol || '',
+      baseSpeciesCount: Number(result.base_species_count || 0),
+    };
+  }
+  return {
+    rawRules: Array.isArray(result.raw_rules) ? result.raw_rules : [],
+    outputSymbol: result.output_symbol || '',
+    changeSpec: result.change_spec || null,
+    changeSignature: result.change_signature || '',
+    inputSymbol: result.input_symbol || '',
+    baseSpeciesCount: Number(result.base_species_count || 0),
+  };
+}
+
+function atlasDefaultLandscapeOutput(rawRules) {
+  const rules = Array.isArray(rawRules) ? rawRules : [];
+  for (const rule of rules) {
+    if (typeof rule !== 'string') continue;
+    const [, right = ''] = rule.split(/<->|<=>|↔/);
+    const terms = right.split('+')
+      .map(part => part.trim().replace(/^[0-9]+\s*/, ''))
+      .filter(Boolean);
+    if (terms.length) return terms[0];
+  }
+  for (const rule of rules) {
+    if (typeof rule !== 'string') continue;
+    const [left = ''] = rule.split(/<->|<=>|↔/);
+    const terms = left.split('+')
+      .map(part => part.trim().replace(/^[0-9]+\s*/, ''))
+      .filter(Boolean);
+    if (terms.length) return terms[0];
+  }
+  return '';
+}
+
+function atlasLandscapeSuggestedParams(candidate) {
+  const qkSymbols = Array.isArray(candidate.changeSpec?.qk_symbols)
+    ? candidate.changeSpec.qk_symbols.filter(Boolean).map(String)
+    : [];
+  const unique = [];
+  qkSymbols.forEach(sym => {
+    if (!unique.includes(sym)) unique.push(sym);
+  });
+  return unique.slice(0, 2);
+}
+
+function renderAtlasLandscapeShell(result, resultUnit, idx) {
+  const candidate = atlasLandscapeCandidate(result, resultUnit);
+  if (!candidate.rawRules.length || candidate.baseSpeciesCount < 2) return '';
+
+  const suggestedParams = atlasLandscapeSuggestedParams(candidate);
+  const defaultOutput = candidate.outputSymbol || 'auto';
+  const queryHint = candidate.changeSignature || candidate.inputSymbol || 'auto totals';
+  const paramOptionHtml = (value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+
+  return `
+    <div class="atlas-landscape-shell" data-result-idx="${idx}">
+      <div class="family-kicker">2D Landscape</div>
+      <div class="atlas-landscape-controls">
+        <label>
+          <span>X</span>
+          <select class="atlas-builder-input atlas-landscape-param1">
+            <option value="">auto</option>
+            ${suggestedParams.map(paramOptionHtml).join('')}
+          </select>
+        </label>
+        <label>
+          <span>Y</span>
+          <select class="atlas-builder-input atlas-landscape-param2">
+            <option value="">auto</option>
+            ${suggestedParams.map(paramOptionHtml).join('')}
+          </select>
+        </label>
+        <label>
+          <span>Output</span>
+          <select class="atlas-builder-input atlas-landscape-output">
+            <option value="${escapeHtml(candidate.outputSymbol || '')}">${escapeHtml(defaultOutput)}</option>
+          </select>
+        </label>
+        <label>
+          <span>Grid</span>
+          <input type="number" class="atlas-builder-input atlas-landscape-grid" value="72" min="20" max="160" step="8">
+        </label>
+        <button type="button" class="btn btn-small atlas-landscape-run">Generate</button>
+      </div>
+      <div class="atlas-landscape-meta text-dim">Defaults follow ${escapeHtml(queryHint)}; other coordinates stay fixed at 0 in log space.</div>
+      <div class="atlas-landscape-status text-dim">Ready to render.</div>
+      <div class="atlas-landscape-plot-wrap">
+        <div class="atlas-landscape-plot"></div>
+      </div>
+    </div>
+  `;
+}
+
 export function formatTraceStatusTag(status) {
   const label = String(status || 'unknown');
   let cls = 'tag-atlas-neutral';
@@ -1036,6 +1146,9 @@ export function renderAtlasBuilderResult(data) {
   const enumeration = data.enumeration || null;
   const sqliteSummary = data.sqlite_library_summary || null;
   const previewEntries = entries.slice(0, 12);
+  const visualPreviewEntries = previewEntries
+    .filter(entry => (entry?.analysis_status || '') === 'ok' && Array.isArray(entry?.raw_rules) && Number(entry?.base_species_count || 0) >= 2)
+    .slice(0, 4);
 
   let html = `
     <section class="siso-section">
@@ -1152,6 +1265,47 @@ export function renderAtlasBuilderResult(data) {
     `;
   }
 
+  if (visualPreviewEntries.length) {
+    html += `
+      <section class="siso-section">
+        <div class="siso-section-head">
+          <div class="siso-section-title">Preview Cards</div>
+          <div class="text-dim">2D landscape preview for ${visualPreviewEntries.length} network${visualPreviewEntries.length === 1 ? '' : 's'}</div>
+        </div>
+        <div class="atlas-result-list">
+          ${visualPreviewEntries.map((entry, idx) => `
+            <div class="atlas-result-card">
+              <div class="atlas-card-head">
+                <div>
+                  <div class="family-kicker">${escapeHtml(entry.source_label || entry.network_id || `network ${idx + 1}`)}</div>
+                  <h4>${escapeHtml(entry.network_id || `network_${idx + 1}`)}</h4>
+                </div>
+                <div class="family-meta">
+                  <span class="family-metric">${formatAtlasStatusTag(entry.analysis_status)}</span>
+                </div>
+              </div>
+              ${renderAtlasMetricChipRows([
+                entry.base_species_count != null ? `d ${entry.base_species_count}` : '',
+                entry.reaction_count != null ? `r ${entry.reaction_count}` : '',
+                entry.max_support != null ? `support ${entry.max_support}` : '',
+                entry.successful_slice_count != null ? `ok slices ${entry.successful_slice_count}` : '',
+              ])}
+              <div>
+                <div class="family-kicker">Rules</div>
+                ${renderAtlasRules(entry.raw_rules || [])}
+              </div>
+              <div>
+                <div class="family-kicker">Motifs</div>
+                <div class="siso-wrap-cell">${renderAtlasLabelRefs(entry.motif_union || [])}</div>
+              </div>
+              ${renderAtlasLandscapeShell(entry, 'network', idx)}
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    `;
+  }
+
   return html;
 }
 
@@ -1253,6 +1407,7 @@ export function renderAtlasQueryResult(data) {
                 ${renderWitnessPathSummary(witnessPath)}
               </div>
               ${renderAtlasResultExplain(result, resultUnit)}
+              ${renderAtlasLandscapeShell(result, resultUnit, idx)}
             </div>
           `;
         }).join('')}
@@ -1393,6 +1548,161 @@ export function renderAtlasInverseDesignResult(data) {
   return html;
 }
 
+function atlasQueryDataForVisualization(data) {
+  if (data && Array.isArray(data.results)) return data;
+  if (data && Array.isArray(data.network_entries)) {
+    return {
+      results: data.network_entries,
+      result_unit: 'network',
+      query_source: 'atlas_preview',
+      sqlite_path: data.sqlite_path || '',
+    };
+  }
+  if (data?.query_result && Array.isArray(data.query_result.results)) {
+    return {
+      ...data.query_result,
+      query_source: data.query_source || 'inverse_design',
+      sqlite_path: data.sqlite_path || data.query_result.sqlite_path || '',
+    };
+  }
+  return null;
+}
+
+function atlasLandscapeStatus(shell) {
+  return shell.querySelector('.atlas-landscape-status');
+}
+
+function setAtlasLandscapeStatus(shell, text, isError = false) {
+  const statusEl = atlasLandscapeStatus(shell);
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.classList.toggle('node-error', !!isError);
+}
+
+function atlasLandscapeSelection(shell) {
+  return {
+    param1: shell.querySelector('.atlas-landscape-param1')?.value || '',
+    param2: shell.querySelector('.atlas-landscape-param2')?.value || '',
+    output: shell.querySelector('.atlas-landscape-output')?.value || '',
+    nGrid: parseOptionalInteger(shell.querySelector('.atlas-landscape-grid')?.value) || 72,
+  };
+}
+
+function atlasLandscapeResponseSummary(response) {
+  const values = (response.output_grid || []).flat().filter(Number.isFinite);
+  const regimes = new Set((response.regime_grid || []).flat().filter(value => Number.isFinite(value) && value > 0));
+  if (!values.length) {
+    return `Showing ${response.param1_symbol} × ${response.param2_symbol}.`;
+  }
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  return `Showing ${response.param1_symbol} × ${response.param2_symbol}; log-output ${minVal.toFixed(2)} to ${maxVal.toFixed(2)} across ${regimes.size} regimes.`;
+}
+
+function applyAtlasLandscapeResponse(shell, response, candidate) {
+  const param1Select = shell.querySelector('.atlas-landscape-param1');
+  const param2Select = shell.querySelector('.atlas-landscape-param2');
+  const outputSelect = shell.querySelector('.atlas-landscape-output');
+  const paramOptions = Array.isArray(response.param_symbol_options) ? response.param_symbol_options : [];
+  const outputOptions = Array.isArray(response.output_symbol_options) ? response.output_symbol_options : [];
+
+  syncSelectOptions(param1Select, paramOptions, response.param1_symbol, 0);
+  syncSelectOptions(param2Select, paramOptions, response.param2_symbol, Math.min(1, Math.max(paramOptions.length - 1, 0)));
+  syncSelectOptions(outputSelect, outputOptions, response.output_expr || candidate.outputSymbol || '', 0);
+
+  const metaEl = shell.querySelector('.atlas-landscape-meta');
+  if (metaEl) {
+    const fixedCount = Array.isArray(response.fixed_qK)
+      ? response.fixed_qK.filter((_, idx) => {
+          const allSyms = [...(response.q_sym || []), ...(response.K_sym || [])];
+          const sym = allSyms[idx];
+          return sym && ![response.param1_symbol, response.param2_symbol].includes(sym);
+        }).length
+      : 0;
+    metaEl.textContent = `q-space explorer for ${response.output_expr}; ${fixedCount} remaining coordinates are held fixed in log space.`;
+  }
+}
+
+async function runAtlasLandscapeShell(nodeId, shell, queryData) {
+  const resultIdx = parseInt(shell.dataset.resultIdx || '', 10);
+  const results = Array.isArray(queryData?.results) ? queryData.results : [];
+  const result = Number.isInteger(resultIdx) ? results[resultIdx] : null;
+  if (!result) {
+    setAtlasLandscapeStatus(shell, 'Could not resolve atlas result for this card.', true);
+    return;
+  }
+
+  const candidate = atlasLandscapeCandidate(result, queryData.result_unit || 'slice');
+  if (!candidate.rawRules.length) {
+    setAtlasLandscapeStatus(shell, 'This atlas result does not include raw reaction rules.', true);
+    return;
+  }
+
+  const selection = atlasLandscapeSelection(shell);
+  if (selection.param1 && selection.param2 && selection.param1 === selection.param2) {
+    setAtlasLandscapeStatus(shell, 'X and Y must be different coordinates.', true);
+    return;
+  }
+
+  const request = {
+    reactions: candidate.rawRules,
+    output_expr: selection.output || candidate.outputSymbol || '',
+    n_grid: selection.nGrid,
+  };
+
+  if (selection.param1) request.param1_symbol = selection.param1;
+  if (selection.param2) request.param2_symbol = selection.param2;
+
+  const preferred = [selection.param1, selection.param2].filter(Boolean);
+  if (!preferred.length) {
+    preferred.push(...atlasLandscapeSuggestedParams(candidate));
+  }
+  if (preferred.length) request.preferred_param_symbols = preferred;
+
+  const button = shell.querySelector('.atlas-landscape-run');
+  if (button) button.disabled = true;
+  setAtlasLandscapeStatus(shell, 'Computing 2D landscape...');
+
+  try {
+    const response = await apiSilent('atlas_landscape_2d', request);
+    applyAtlasLandscapeResponse(shell, response, candidate);
+    const plotEl = shell.querySelector('.atlas-landscape-plot');
+    if (!plotEl.id) {
+      plotEl.id = `${nodeId}-atlas-landscape-${resultIdx}`;
+    }
+    const plotAtlasLandscape2D = await ensureAtlasPlotting();
+    plotAtlasLandscape2D(response, plotEl.id);
+    shell.dataset.hasLandscape = 'true';
+    setAtlasLandscapeStatus(shell, atlasLandscapeResponseSummary(response));
+  } catch (error) {
+    setAtlasLandscapeStatus(shell, error?.message || 'Landscape computation failed.', true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+export function hydrateAtlasResultContent(nodeId, data = null) {
+  const queryData = atlasQueryDataForVisualization(
+    data ||
+    nodeRegistry[nodeId]?.data?.queryData ||
+    nodeRegistry[nodeId]?.data?.inverseDesignData ||
+    nodeRegistry[nodeId]?.data?.atlasData
+  );
+  if (!queryData) return;
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  if (!contentEl) return;
+
+  contentEl.querySelectorAll('.atlas-landscape-shell').forEach(shell => {
+    if (shell.dataset.bound === 'true') return;
+    shell.dataset.bound = 'true';
+    shell.querySelector('.atlas-landscape-run')?.addEventListener('click', () => {
+      runAtlasLandscapeShell(nodeId, shell, queryData).catch(error => {
+        setAtlasLandscapeStatus(shell, error?.message || 'Landscape computation failed.', true);
+      });
+    });
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /*  Execution                                                          */
 /* ------------------------------------------------------------------ */
@@ -1435,6 +1745,7 @@ export async function executeAtlasBuilder(nodeId) {
       info.data.sqlitePath = data.sqlite_path || payload.spec.sqlite_path || '';
     }
     if (contentEl) contentEl.innerHTML = renderAtlasBuilderResult(data);
+    hydrateAtlasResultContent(nodeId, data);
     commitWorkspaceSnapshot('atlas-built');
     triggerDownstreamNodes(nodeId, 'atlas');
   } catch (e) {
@@ -1493,6 +1804,7 @@ export async function executeAtlasQueryResult(nodeId) {
       info.data.lastQuery = queryPayload.serial;
     }
     if (contentEl) contentEl.innerHTML = renderAtlasQueryResult(renderData);
+    hydrateAtlasResultContent(nodeId, renderData);
     commitWorkspaceSnapshot('atlas-query');
   } catch (e) {
     handleNodeError(e, nodeId, 'Atlas query');
@@ -1528,7 +1840,7 @@ export async function executeAtlasInverseDesignResult(nodeId) {
 
   const { atlas, specPayload, sqlitePath } = executionContext;
   if (!specPayload && !atlas && !sqlitePath) {
-    showToast('Connect an Atlas Spec or Atlas Builder node, or provide a SQLite path in Atlas Query Config');
+    showToast('Connect an Atlas Spec or Atlas Preview Builder node, or provide a SQLite path in Atlas Query Config');
     return;
   }
 
@@ -1556,6 +1868,7 @@ export async function executeAtlasInverseDesignResult(nodeId) {
       };
     }
     if (contentEl) contentEl.innerHTML = renderAtlasInverseDesignResult(data);
+    hydrateAtlasResultContent(nodeId, data);
     commitWorkspaceSnapshot('atlas-inverse-design');
   } catch (e) {
     handleNodeError(e, nodeId, 'Atlas inverse design');

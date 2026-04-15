@@ -64,7 +64,7 @@ struct ContentView: View {
             id: "process",
             title: "Process",
             items: [
-                NodeMenuItem(id: "atlas-builder", title: "Atlas Builder", systemImage: "hammer")
+                NodeMenuItem(id: "atlas-builder", title: "Atlas Preview Builder", systemImage: "hammer")
             ]
         ),
         NodeMenuSection(
@@ -81,7 +81,8 @@ struct ContentView: View {
                 NodeMenuItem(id: "rop-cloud-result", title: "ROP Cloud Result", systemImage: "cloud"),
                 NodeMenuItem(id: "fret-result", title: "FRET Result", systemImage: "camera.filters"),
                 NodeMenuItem(id: "rop-poly-result", title: "ROP Polyhedron Result", systemImage: "cube"),
-                NodeMenuItem(id: "atlas-query-result", title: "Atlas Query Result", systemImage: "scope")
+                NodeMenuItem(id: "atlas-query-result", title: "Atlas Search Result", systemImage: "scope"),
+                NodeMenuItem(id: "atlas-inverse-result", title: "Atlas Inverse Design", systemImage: "wand.and.stars")
             ]
         )
     ]
@@ -93,7 +94,9 @@ struct ContentView: View {
         NodeMenuItem(id: "parameter-scan-1d", title: "Parameter Scan (1D)", systemImage: "chart.line.uptrend.xyaxis"),
         NodeMenuItem(id: "parameter-scan-2d", title: "Parameter Scan (2D)", systemImage: "square.grid.2x2"),
         NodeMenuItem(id: "rop-polyhedron", title: "ROP Polyhedron", systemImage: "hexagon"),
-        NodeMenuItem(id: "atlas-workflow", title: "Atlas Workflow", systemImage: "map")
+        NodeMenuItem(id: "atlas-preview", title: "Atlas Preview", systemImage: "map"),
+        NodeMenuItem(id: "atlas-search", title: "Atlas Search", systemImage: "scope"),
+        NodeMenuItem(id: "atlas-inverse-design", title: "Atlas Inverse Design", systemImage: "wand.and.stars")
     ]
 
     init() {
@@ -338,6 +341,9 @@ struct ContentView: View {
                 errorMessage = launchError
             }
             await startBackend()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            backendController.stop()
         }
         .onChange(of: selectedProjectIDs) { oldValue, newValue in
             reconcileSelectionChange(from: oldValue, to: newValue)

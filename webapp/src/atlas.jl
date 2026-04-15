@@ -28,7 +28,17 @@ Base.@kwdef struct AtlasEnumerationSpec
     base_species_counts::Vector{Int} = [2, 3]
     min_reactions::Int = 1
     max_reactions::Int = 2
+    min_template_order::Int = 2
+    max_template_order::Int = 2
     limit::Int = 0
+end
+
+Base.@kwdef struct AtlasChangeExpansionSpec
+    mode::Symbol = :axes_only
+    max_active_dims::Int = 1
+    include_axis_slices::Bool = true
+    include_negative_directions::Bool = false
+    limit_per_network::Int = 0
 end
 
 Base.@kwdef struct AtlasQuerySpec
@@ -37,6 +47,7 @@ Base.@kwdef struct AtlasQuerySpec
     motif_match_mode::Symbol = :any
     exact_match_mode::Symbol = :any
     input_symbols::Vector{String} = String[]
+    change_signatures::Vector{String} = String[]
     output_symbols::Vector{String} = String[]
     require_robust::Bool = false
     min_robust_path_count::Int = 0
@@ -87,6 +98,7 @@ end
 atlas_search_profile_binding_small_v0() = AtlasSearchProfile()
 atlas_behavior_config_default() = AtlasBehaviorConfig()
 atlas_enumeration_spec_default() = AtlasEnumerationSpec()
+atlas_change_expansion_spec_default() = AtlasChangeExpansionSpec()
 atlas_query_spec_default() = AtlasQuerySpec()
 inverse_design_spec_default() = InverseDesignSpec()
 inverse_refinement_spec_default() = InverseRefinementSpec()
@@ -96,6 +108,7 @@ atlas_library_default() = Dict(
     "generated_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
     "created_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
     "updated_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
+    "change_expansion" => Dict{String, Any}(),
     "atlas_manifests" => Dict{String, Any}[],
     "merge_events" => Dict{String, Any}[],
     "network_entries" => Dict{String, Any}[],
@@ -452,6 +465,19 @@ function _goal_io_symbols(goal)
     return (_sorted_unique_strings(input_symbols), _sorted_unique_strings(output_symbols))
 end
 
+function _goal_change_signatures(goal)
+    goal isa AbstractDict || return String[]
+    change_signatures = String[]
+
+    io_value = _query_value(goal, :io; aliases=[:io_pair])
+    if io_value isa AbstractDict
+        append!(change_signatures, _goal_string_list(_query_value(io_value, :change; aliases=[:changes, :change_signature, :change_signatures])))
+    end
+
+    append!(change_signatures, _goal_string_list(_query_value(goal, :change; aliases=[:changes, :change_signature, :change_signatures])))
+    return _sorted_unique_strings(change_signatures)
+end
+
 function _ensure_string_vector_field!(obj::Dict{String, Any}, key::String)
     current = haskey(obj, key) ? obj[key] : String[]
     obj[key] = _sorted_unique_strings(current isa AbstractVector ? current : String[])
@@ -532,7 +558,13 @@ end
 
 function _atlas_failure_metadata(err, stage::AbstractString; partial_result_available::Bool=false, integrity_issues=String[])
     error_text = _atlas_error_text(err)
-    failure_class = _atlas_error_is_high_nullity(error_text) ? "unsupported_high_nullity" : "build_error"
+    failure_class = if _atlas_error_is_high_nullity(error_text)
+        "unsupported_high_nullity"
+    elseif occursin("atlas_multi_change_polyhedra_not_supported", error_text)
+        "unsupported_multi_change_polyhedra"
+    else
+        "build_error"
+    end
     metadata = Dict{String, Any}(
         "build_state" => partial_result_available ? "partial_failed" : "failed",
         "partial_result_available" => partial_result_available,
@@ -546,6 +578,9 @@ function _atlas_failure_metadata(err, stage::AbstractString; partial_result_avai
     if failure_class == "unsupported_high_nullity"
         metadata["unsupported_feature"] = "nullity_gt_1_output_order_materialization"
         metadata["failure_message"] = "Encountered a regime with nullity > 1 while materializing atlas slice records."
+    elseif failure_class == "unsupported_multi_change_polyhedra"
+        metadata["unsupported_feature"] = "multi_change_polyhedral_filtering"
+        metadata["failure_message"] = "Multidimensional change slices currently support `compute_volume=false` with `path_scope=:all` or `:feasible`."
     end
     return metadata
 end
@@ -742,7 +777,21 @@ function atlas_enumeration_spec_from_raw(raw=nothing)
         base_species_counts=base_species_counts,
         min_reactions=Int(_raw_get(raw, :min_reactions, spec.min_reactions)),
         max_reactions=Int(_raw_get(raw, :max_reactions, spec.max_reactions)),
+        min_template_order=max(2, Int(_raw_get(raw, :min_template_order, spec.min_template_order))),
+        max_template_order=max(2, Int(_raw_get(raw, :max_template_order, spec.max_template_order))),
         limit=Int(_raw_get(raw, :limit, spec.limit)),
+    )
+end
+
+function atlas_change_expansion_spec_from_raw(raw=nothing)
+    spec = atlas_change_expansion_spec_default()
+    raw === nothing && return spec
+    return AtlasChangeExpansionSpec(
+        mode=Symbol(_raw_get(raw, :mode, spec.mode)),
+        max_active_dims=max(1, Int(_raw_get(raw, :max_active_dims, spec.max_active_dims))),
+        include_axis_slices=Bool(_raw_get(raw, :include_axis_slices, spec.include_axis_slices)),
+        include_negative_directions=Bool(_raw_get(raw, :include_negative_directions, spec.include_negative_directions)),
+        limit_per_network=max(0, Int(_raw_get(raw, :limit_per_network, spec.limit_per_network))),
     )
 end
 
@@ -755,6 +804,7 @@ function atlas_query_spec_from_raw(raw=nothing)
     goal = _query_section(raw, :goal)
 
     goal_inputs, goal_outputs = _goal_io_symbols(goal)
+    goal_changes = _goal_change_signatures(goal)
     goal_motifs = _goal_string_list(_query_value(goal, :motif; aliases=[:motifs, :motif_labels]))
     goal_exacts = _goal_string_list(_query_value(goal, :exact; aliases=[:exacts, :exact_labels]))
     goal_required_regimes = _goal_regime_predicate_list(_query_value(goal, :must_regimes; aliases=[:required_regimes, :regimes, :must_have_regimes]))
@@ -798,6 +848,7 @@ function atlas_query_spec_from_raw(raw=nothing)
         motif_match_mode=Symbol(_raw_get(raw, :motif_match_mode, spec.motif_match_mode)),
         exact_match_mode=Symbol(_raw_get(raw, :exact_match_mode, spec.exact_match_mode)),
         input_symbols=sort!(unique(vcat(String.(collect(_raw_get(raw, :input_symbols, String[]))), goal_inputs))),
+        change_signatures=sort!(unique(vcat(_goal_string_list(_query_value(raw, :change_signatures; aliases=[:change_signature])), goal_changes))),
         output_symbols=sort!(unique(vcat(String.(collect(_raw_get(raw, :output_symbols, String[]))), goal_outputs))),
         require_robust=Bool(something(_query_value(raw, :require_robust), goal_robust, spec.require_robust)),
         min_robust_path_count=Int(_raw_get(raw, :min_robust_path_count, spec.min_robust_path_count)),
@@ -928,7 +979,19 @@ function atlas_enumeration_spec_to_dict(spec::AtlasEnumerationSpec)
         "base_species_counts" => collect(spec.base_species_counts),
         "min_reactions" => spec.min_reactions,
         "max_reactions" => spec.max_reactions,
+        "min_template_order" => spec.min_template_order,
+        "max_template_order" => spec.max_template_order,
         "limit" => spec.limit,
+    )
+end
+
+function atlas_change_expansion_spec_to_dict(spec::AtlasChangeExpansionSpec)
+    return Dict(
+        "mode" => String(spec.mode),
+        "max_active_dims" => spec.max_active_dims,
+        "include_axis_slices" => spec.include_axis_slices,
+        "include_negative_directions" => spec.include_negative_directions,
+        "limit_per_network" => spec.limit_per_network,
     )
 end
 
@@ -939,6 +1002,7 @@ function atlas_query_spec_to_dict(spec::AtlasQuerySpec)
         "motif_match_mode" => String(spec.motif_match_mode),
         "exact_match_mode" => String(spec.exact_match_mode),
         "input_symbols" => collect(spec.input_symbols),
+        "change_signatures" => collect(spec.change_signatures),
         "output_symbols" => collect(spec.output_symbols),
         "require_robust" => spec.require_robust,
         "min_robust_path_count" => spec.min_robust_path_count,
@@ -1052,22 +1116,25 @@ end
 
 _base_species_symbols(count::Int) = [Symbol(_base_species_label(idx)) for idx in 1:count]
 
-function _pairwise_complex_symbol(sym_a::Symbol, sym_b::Symbol)
-    labels = sort([String(sym_a), String(sym_b)])
+function _support_complex_symbol(syms::AbstractVector{<:Symbol})
+    labels = sort(String.(syms))
     return Symbol("C_" * join(labels, "_"))
 end
 
-function _pairwise_binding_templates(base_syms::Vector{Symbol})
+function _binding_templates(base_syms::Vector{Symbol}; min_order::Int=2, max_order::Int=2)
     templates = Vector{NamedTuple}(undef, 0)
-    for i in 1:length(base_syms)-1
-        for j in i+1:length(base_syms)
-            left = sort([String(base_syms[i]), String(base_syms[j])])
-            complex_sym = _pairwise_complex_symbol(base_syms[i], base_syms[j])
-            rule = left[1] * " + " * left[2] * " <-> " * String(complex_sym)
+    max_valid_order = min(length(base_syms), max_order)
+    min_valid_order = min(max(2, min_order), max_valid_order)
+    for order in min_valid_order:max_valid_order
+        for combo in _combinations(base_syms, order)
+            left = sort(String.(combo))
+            complex_sym = _support_complex_symbol(combo)
+            rule = join(left, " + ") * " <-> " * String(complex_sym)
             push!(templates, (
                 rule=rule,
                 complex_symbol=String(complex_sym),
                 reactants=copy(left),
+                order=order,
             ))
         end
     end
@@ -1086,8 +1153,8 @@ function enumerate_network_specs(
     spec::AtlasEnumerationSpec;
     search_profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0(),
 )
-    search_profile.slice_mode == :siso || error("Atlas enumerator currently supports only slice_mode=:siso.")
-    spec.mode == :pairwise_binding || error("Unsupported atlas enumeration mode: $(spec.mode)")
+    search_profile.slice_mode in (:siso, :change) || error("Atlas enumerator currently supports only slice_mode in (:siso, :change).")
+    spec.mode in (:pairwise_binding, :subset_binding) || error("Unsupported atlas enumeration mode: $(spec.mode)")
     search_profile.allow_reversible_binding || error("The pairwise-binding enumerator requires allow_reversible_binding=true.")
 
     network_specs = Dict{Symbol, Any}[]
@@ -1097,7 +1164,12 @@ function enumerate_network_specs(
     for base_count in sort!(unique(copy(spec.base_species_counts)))
         base_count <= search_profile.max_base_species || continue
         base_syms = _base_species_symbols(base_count)
-        templates = _pairwise_binding_templates(base_syms)
+        if spec.mode == :subset_binding && !search_profile.allow_higher_order_templates
+            error("subset_binding enumeration requires allow_higher_order_templates=true in the search profile.")
+        end
+        min_template_order = spec.mode == :pairwise_binding ? 2 : spec.min_template_order
+        max_template_order = spec.mode == :pairwise_binding ? 2 : min(spec.max_template_order, search_profile.max_support, base_count)
+        templates = _binding_templates(base_syms; min_order=min_template_order, max_order=max_template_order)
         max_reactions = min(spec.max_reactions, search_profile.max_reactions, length(templates))
         min_reactions = min(spec.min_reactions, max_reactions)
 
@@ -1117,6 +1189,7 @@ function enumerate_network_specs(
                         "reaction_count" => reaction_count,
                         "base_species_symbols" => string.(base_syms),
                         "template_complexes" => [template.complex_symbol for template in combo],
+                        "template_orders" => [template.order for template in combo],
                     ),
                 ))
                 key = string(base_count)
@@ -1321,6 +1394,261 @@ function _resolve_input_symbols(raw_network, model, profile::AtlasSearchProfile)
     end
 end
 
+function _change_sign_assignments(dim::Int, include_negative::Bool)
+    dim > 0 || return Vector{Vector{Int}}()
+    if !include_negative
+        return [fill(1, dim)]
+    end
+
+    assignments = Vector{Vector{Int}}()
+    for mask in 0:(2^dim - 1)
+        signs = Int[]
+        for bit in 1:dim
+            push!(signs, ((mask >> (bit - 1)) & 1) == 1 ? -1 : 1)
+        end
+        push!(assignments, signs)
+    end
+    return assignments
+end
+
+function _parse_change_sign(raw_value)::Int8
+    if raw_value isa Integer
+        raw_value == 0 && error("Change-sign entries cannot be zero.")
+        return raw_value > 0 ? Int8(1) : Int8(-1)
+    end
+    token = lowercase(strip(String(raw_value)))
+    if token in ("+", "plus", "positive", "inc", "increase", "up")
+        return Int8(1)
+    elseif token in ("-", "minus", "negative", "dec", "decrease", "down")
+        return Int8(-1)
+    else
+        error("Unsupported change sign: $(raw_value)")
+    end
+end
+
+function _default_change_label(qk_symbols::AbstractVector{<:AbstractString}, qk_signs::AbstractVector{<:Integer})
+    return join([string(sign > 0 ? "+" : "-", sym) for (sym, sign) in zip(qk_symbols, qk_signs)], ",")
+end
+
+function _normalize_change_spec(raw_change, model)
+    valid = Dict(Symbol(sym) => idx for (idx, sym) in enumerate(Symbol.(qK_sym(model))))
+
+    if raw_change isa AbstractString || raw_change isa Symbol
+        sym = Symbol(String(raw_change))
+        haskey(valid, sym) || error("Unknown input symbol: $(sym)")
+        return Dict(
+            "kind" => "axis",
+            "label" => String(sym),
+            "input_symbol" => String(sym),
+            "qk_symbols" => [String(sym)],
+            "qk_indices" => [valid[sym]],
+            "qk_signs" => [1],
+            "signature" => "axis(+" * String(sym) * ")",
+            "graph_schema_version" => "axis_v0",
+        )
+    end
+
+    raw_change isa AbstractDict || error("Unsupported change specification: $(raw_change)")
+    kind = Symbol(lowercase(String(_raw_get(raw_change, :kind, "axis"))))
+    qk_raw = collect(_raw_get(raw_change, :qk_symbols, _raw_get(raw_change, :input_symbols, Any[])))
+    isempty(qk_raw) && _raw_haskey(raw_change, :change_qK) && (qk_raw = Any[_raw_get(raw_change, :change_qK, "")])
+    isempty(qk_raw) && error("change_spec must provide qk_symbols/input_symbols/change_qK")
+    qk_symbols = String.(qk_raw)
+    qk_indices = Int[]
+    for sym_str in qk_symbols
+        sym = Symbol(sym_str)
+        haskey(valid, sym) || error("Unknown input symbol in change_spec: $(sym_str)")
+        push!(qk_indices, valid[sym])
+    end
+
+    sign_vals = if _raw_haskey(raw_change, :qk_signs)
+        Int[_parse_change_sign(value) for value in collect(_raw_get(raw_change, :qk_signs, Any[]))]
+    elseif _raw_haskey(raw_change, :signs)
+        Int[_parse_change_sign(value) for value in collect(_raw_get(raw_change, :signs, Any[]))]
+    else
+        fill(1, length(qk_symbols))
+    end
+    length(sign_vals) == length(qk_symbols) || error("change_spec signs length must match qk_symbols length")
+
+    ordered = sort(collect(zip(qk_indices, qk_symbols, sign_vals)); by=item -> item[1])
+    ordered_indices = [item[1] for item in ordered]
+    ordered_symbols = [item[2] for item in ordered]
+    ordered_signs = [item[3] for item in ordered]
+    signature = string(
+        kind,
+        "(",
+        join([string(sign > 0 ? "+" : "-", sym) for (sym, sign) in zip(ordered_symbols, ordered_signs)], ","),
+        ")",
+    )
+    label = String(_raw_get(raw_change, :label, _default_change_label(ordered_symbols, ordered_signs)))
+    input_symbol = kind == :axis && length(ordered_symbols) == 1 && ordered_signs[1] == 1 ? ordered_symbols[1] : label
+
+    return Dict(
+        "kind" => String(kind),
+        "label" => label,
+        "input_symbol" => input_symbol,
+        "qk_symbols" => ordered_symbols,
+        "qk_indices" => ordered_indices,
+        "qk_signs" => ordered_signs,
+        "signature" => signature,
+        "graph_schema_version" => kind == :axis ? "axis_v0" : "orthant_v0",
+    )
+end
+
+function _change_expansion_supports_requested_io_shortcut(spec::AtlasChangeExpansionSpec)
+    return spec.mode == :axes_only &&
+           spec.max_active_dims <= 1 &&
+           !spec.include_negative_directions
+end
+
+function _generated_change_specs(model, input_symbols::Vector{Symbol}, expansion::AtlasChangeExpansionSpec)
+    isempty(input_symbols) && return Dict{String, Any}[]
+
+    specs = Dict{String, Any}[]
+    seen = Set{String}()
+    max_dims = min(expansion.max_active_dims, length(input_symbols))
+    include_axes = expansion.include_axis_slices || max_dims <= 1
+    combo_sizes = Int[]
+    include_axes && push!(combo_sizes, 1)
+    if expansion.mode == :orthant
+        for size in 2:max_dims
+            push!(combo_sizes, size)
+        end
+    elseif expansion.mode != :axes_only
+        error("Unsupported change expansion mode: $(expansion.mode)")
+    end
+
+    for size in combo_sizes
+        for combo in _combinations(copy(input_symbols), size)
+            ordered_symbols = sort!(String.(combo))
+            for sign_assignment in _change_sign_assignments(length(ordered_symbols), expansion.include_negative_directions)
+                raw_change = if size == 1 && sign_assignment == [1]
+                    ordered_symbols[1]
+                else
+                    Dict(
+                        "kind" => size == 1 ? "axis" : "orthant",
+                        "qk_symbols" => ordered_symbols,
+                        "qk_signs" => sign_assignment,
+                    )
+                end
+                spec = _normalize_change_spec(raw_change, model)
+                signature = _change_signature(spec)
+                signature in seen && continue
+                push!(seen, signature)
+                push!(specs, spec)
+            end
+        end
+    end
+
+    if expansion.limit_per_network > 0 && length(specs) > expansion.limit_per_network
+        specs = specs[1:expansion.limit_per_network]
+    end
+    return specs
+end
+
+function _resolve_change_specs(raw_network, model, profile::AtlasSearchProfile, expansion::AtlasChangeExpansionSpec)
+    if _raw_haskey(raw_network, :change_specs)
+        return [_normalize_change_spec(raw_change, model) for raw_change in collect(_raw_get(raw_network, :change_specs, Any[]))]
+    end
+
+    input_symbols = _resolve_input_symbols(raw_network, model, profile)
+    if expansion.mode == :axes_only && expansion.max_active_dims <= 1 && expansion.include_axis_slices
+        specs = [_normalize_change_spec(sym, model) for sym in input_symbols]
+        if expansion.include_negative_directions
+            append!(specs, [
+                _normalize_change_spec(Dict("kind" => "axis", "qk_symbols" => [String(sym)], "qk_signs" => [-1]), model)
+                for sym in input_symbols
+            ])
+        end
+        return specs
+    end
+    return _generated_change_specs(model, input_symbols, expansion)
+end
+
+function _build_change_paths(model, change_spec)
+    kind = Symbol(String(_raw_get(change_spec, :kind, "axis")))
+    qk_symbols = Symbol.(String.(_raw_get(change_spec, :qk_symbols, String[])))
+    qk_signs = Int8.(Int.(_raw_get(change_spec, :qk_signs, Int[])))
+    label = String(_raw_get(change_spec, :label, _raw_get(change_spec, :input_symbol, "")))
+    if kind == :axis && length(qk_symbols) == 1 && qk_signs == Int8[1]
+        return SISOPaths(model, only(qk_symbols))
+    elseif kind in (:axis, :orthant)
+        return ChangePaths(model, qk_symbols; signs=qk_signs, label=label, kind=kind)
+    else
+        error("Unsupported change_spec kind for atlas path construction: $(kind)")
+    end
+end
+
+function _change_spec_from_slice(model, slice)
+    if _raw_haskey(slice, :change_spec)
+        return _normalize_change_spec(_raw_get(slice, :change_spec, Dict{String, Any}()), model)
+    end
+    input_symbol = String(_raw_get(slice, :input_symbol, ""))
+    isempty(input_symbol) && error("Slice is missing both `change_spec` and `input_symbol`.")
+    return _normalize_change_spec(input_symbol, model)
+end
+
+_change_kind(change_spec::AbstractDict) = String(_raw_get(change_spec, :kind, "axis"))
+_change_label(change_spec::AbstractDict) = String(_raw_get(change_spec, :label, _raw_get(change_spec, :input_symbol, "")))
+_change_input_symbol(change_spec::AbstractDict) = String(_raw_get(change_spec, :input_symbol, _change_label(change_spec)))
+_change_qk_symbols(change_spec::AbstractDict) = String.(_raw_get(change_spec, :qk_symbols, String[]))
+_change_qk_indices(change_spec::AbstractDict) = Int.(Int.(_raw_get(change_spec, :qk_indices, Int[])))
+_change_qk_signs(change_spec::AbstractDict) = Int.(Int.(_raw_get(change_spec, :qk_signs, Int[])))
+
+function _change_signature(change_spec::AbstractDict)
+    qk_symbols = _change_qk_symbols(change_spec)
+    qk_signs = _change_qk_signs(change_spec)
+    if _change_kind(change_spec) == "axis" && length(qk_symbols) == 1 && qk_signs == [1]
+        return only(qk_symbols)
+    end
+    return String(_raw_get(change_spec, :signature, _default_change_label(qk_symbols, qk_signs)))
+end
+
+function _change_graph_schema(change_spec::AbstractDict)
+    qk_symbols = _change_qk_symbols(change_spec)
+    qk_signs = _change_qk_signs(change_spec)
+    if _change_kind(change_spec) == "axis" && length(qk_symbols) == 1 && qk_signs == [1]
+        return "siso_v0"
+    end
+    return String(_raw_get(change_spec, :graph_schema_version, "change_v0"))
+end
+
+function _change_spec_record(change_spec::AbstractDict)
+    return Dict(
+        "kind" => _change_kind(change_spec),
+        "label" => _change_label(change_spec),
+        "input_symbol" => _change_input_symbol(change_spec),
+        "signature" => _change_signature(change_spec),
+        "graph_schema_version" => _change_graph_schema(change_spec),
+        "qk_symbols" => _change_qk_symbols(change_spec),
+        "qk_indices" => _change_qk_indices(change_spec),
+        "qk_signs" => _change_qk_signs(change_spec),
+    )
+end
+
+function _change_spec_from_paths(model, change_paths, input_symbol::AbstractString)
+    if change_paths isa SISOPaths
+        return _normalize_change_spec(input_symbol, model)
+    elseif change_paths isa ChangePaths
+        qk_indices = Int[Int(idx) for idx in change_paths.change_qK_indices]
+        qk_symbols = [string(qK_sym(model)[idx]) for idx in qk_indices]
+        qk_signs = Int[Int(sign) for sign in change_paths.change_qK_signs]
+        label = isempty(input_symbol) ? change_paths.change_label : String(input_symbol)
+        return Dict(
+            "kind" => string(change_paths.change_kind),
+            "label" => label,
+            "input_symbol" => label,
+            "qk_symbols" => qk_symbols,
+            "qk_indices" => qk_indices,
+            "qk_signs" => qk_signs,
+            "signature" => string(change_paths.change_kind, "(", join([string(sign > 0 ? "+" : "-", sym) for (sym, sign) in zip(qk_symbols, qk_signs)], ","), ")"),
+            "graph_schema_version" => string(change_paths.change_kind == :orthant ? "orthant_v0" : "change_v0"),
+        )
+    else
+        error("Unsupported change-path object for change_spec materialization: $(typeof(change_paths))")
+    end
+end
+
 function _resolve_output_symbols(raw_network, model)
     if _raw_haskey(raw_network, :output_symbols)
         requested = Symbol.(String.(_raw_get(raw_network, :output_symbols, String[])))
@@ -1360,6 +1688,19 @@ function _graph_slice_id(network_id::AbstractString, change_qK::AbstractString)
     ], "::")
 end
 
+function _graph_slice_id(network_id::AbstractString, change_spec::AbstractDict)
+    graph_schema = _change_graph_schema(change_spec)
+    if graph_schema == "siso_v0"
+        return _graph_slice_id(network_id, _change_input_symbol(change_spec))
+    end
+
+    return join([
+        String(network_id),
+        "graph_change=" * _change_signature(change_spec),
+        "graphcfg=" * graph_schema,
+    ], "::")
+end
+
 function _output_order_token(value::Real)
     val = Float64(value)
     if isnan(val)
@@ -1380,15 +1721,66 @@ function _output_order_token(value::Real)
     return rounded > 0 ? "+" * str : str
 end
 
-function _output_order_for_vertex(model, vertex_idx::Integer, change_qK_idx, observe_x_idx::Integer)
+function _output_order_token(value::AbstractVector{<:Real})
+    return "(" * join((_output_order_token(x) for x in value), ",") * ")"
+end
+
+_json_safe_output_order_value(value::Real) = json_safe_real(value)
+_json_safe_output_order_value(value::AbstractVector{<:Real}) = json_safe_profile(value)
+_json_safe_output_order_value(::Nothing) = nothing
+
+_high_nullity_output_order_token(nullity::Integer) = "high_nullity(n=$(nullity))"
+
+function _output_order_for_vertex(model, vertex_idx::Integer, change_qK_idx, observe_x_idx::Integer, change_sign::Integer=1)
     nullity = get_nullity(model, vertex_idx)
     nullity > 1 && error("atlas_nullity_gt_1: atlas output-order materialization does not support vertex $(vertex_idx) with nullity $(nullity)")
     if !is_singular(model, vertex_idx)
-        return get_H(model, vertex_idx)[observe_x_idx, change_qK_idx] |> x -> round(Float64(x); digits=3)
+        return round(Float64(change_sign) * Float64(get_H(model, vertex_idx)[observe_x_idx, change_qK_idx]); digits=3)
     end
 
-    ord = Float64(get_H(model, vertex_idx)[observe_x_idx, change_qK_idx])
+    ord = Float64(change_sign) * Float64(get_H(model, vertex_idx)[observe_x_idx, change_qK_idx])
     return abs(ord) < 1e-6 ? NaN : ord * Inf
+end
+
+function _output_order_for_vertex(model, vertex_idx::Integer, change_qK_indices::AbstractVector{<:Integer}, observe_x_idx::Integer, change_qK_signs::AbstractVector{<:Integer})
+    return Float64[
+        _output_order_for_vertex(model, vertex_idx, idx, observe_x_idx, sign)
+        for (idx, sign) in zip(change_qK_indices, change_qK_signs)
+    ]
+end
+
+function _output_order_for_vertex(model, vertex_idx::Integer, change_spec::AbstractDict, observe_x_idx::Integer)
+    qk_indices = _change_qk_indices(change_spec)
+    qk_signs = _change_qk_signs(change_spec)
+    if length(qk_indices) == 1
+        return _output_order_for_vertex(model, vertex_idx, only(qk_indices), observe_x_idx, only(qk_signs))
+    end
+    return _output_order_for_vertex(model, vertex_idx, qk_indices, observe_x_idx, qk_signs)
+end
+
+function _output_order_payload_for_vertex(model, vertex_idx::Integer, change_spec::AbstractDict, observe_x_idx::Integer)
+    nullity = get_nullity(model, vertex_idx)
+    if nullity > 1
+        qk_indices = _change_qk_indices(change_spec)
+        return Dict(
+            "value" => nothing,
+            "token" => _high_nullity_output_order_token(nullity),
+            "kind" => "high_nullity",
+            "detail" => Dict(
+                "nullity" => nullity,
+                "change_dimension" => length(qk_indices),
+                "note" => "reaction order is not uniquely identified at this regime",
+            ),
+        )
+    end
+
+    order_value = _output_order_for_vertex(model, vertex_idx, change_spec, observe_x_idx)
+    return Dict(
+        "value" => _json_safe_output_order_value(order_value),
+        "token" => _output_order_token(order_value),
+        "kind" => order_value isa AbstractVector ? "vector" : "scalar",
+        "detail" => nothing,
+    )
 end
 
 function _graph_reachability_masks(g, sources::AbstractVector{<:Integer}, sinks::AbstractVector{<:Integer})
@@ -1413,11 +1805,41 @@ function _graph_reachability_masks(g, sources::AbstractVector{<:Integer}, sinks:
     return from_sources, to_sinks
 end
 
-function _regime_role(siso, vertex_idx::Integer)
-    is_source = vertex_idx in siso.sources
-    is_sink = vertex_idx in siso.sinks
-    is_branch = outdegree(siso.qK_grh, vertex_idx) > 1
-    is_merge = indegree(siso.qK_grh, vertex_idx) > 1
+function _active_change_graph_mask(change_paths)
+    from_sources, can_reach_sinks = _graph_reachability_masks(change_paths.qK_grh, change_paths.sources, change_paths.sinks)
+    return from_sources .& can_reach_sinks
+end
+
+function _active_change_graph_vertices(change_paths; active_mask=nothing)
+    mask = active_mask === nothing ? _active_change_graph_mask(change_paths) : active_mask
+    return Int[vertex_idx for vertex_idx in vertices(change_paths.qK_grh) if mask[vertex_idx]]
+end
+
+function _active_change_graph_edge_pairs(change_paths; active_mask=nothing)
+    mask = active_mask === nothing ? _active_change_graph_mask(change_paths) : active_mask
+    return Tuple{Int, Int}[
+        (src(edge), dst(edge))
+        for edge in edges(change_paths.qK_grh)
+        if mask[src(edge)] && mask[dst(edge)]
+    ]
+end
+
+function _active_change_graph_degrees(change_paths; active_mask=nothing)
+    edge_pairs = _active_change_graph_edge_pairs(change_paths; active_mask=active_mask)
+    indegrees = Dict{Int, Int}()
+    outdegrees = Dict{Int, Int}()
+    for (from_vertex, to_vertex) in edge_pairs
+        outdegrees[from_vertex] = get(outdegrees, from_vertex, 0) + 1
+        indegrees[to_vertex] = get(indegrees, to_vertex, 0) + 1
+    end
+    return indegrees, outdegrees
+end
+
+function _regime_role(change_paths, vertex_idx::Integer, indegrees::AbstractDict{Int, Int}, outdegrees::AbstractDict{Int, Int})
+    is_source = vertex_idx in change_paths.sources
+    is_sink = vertex_idx in change_paths.sinks
+    is_branch = get(outdegrees, vertex_idx, 0) > 1
+    is_merge = get(indegrees, vertex_idx, 0) > 1
 
     if is_source && is_sink
         return "source_sink"
@@ -1436,37 +1858,61 @@ function _regime_role(siso, vertex_idx::Integer)
     end
 end
 
-function _build_input_graph_slice(siso, network_id::String, input_symbol::String)
+function _build_input_graph_slice(change_paths, network_id::String, change_spec::AbstractDict)
+    input_symbol = _change_input_symbol(change_spec)
+    change_record = _change_spec_record(change_spec)
+    graph_schema = change_record["graph_schema_version"]
+    active_mask = _active_change_graph_mask(change_paths)
+    active_vertices = sort!(_active_change_graph_vertices(change_paths; active_mask=active_mask))
+    active_edges = _active_change_graph_edge_pairs(change_paths; active_mask=active_mask)
     return Dict(
-        "graph_slice_id" => _graph_slice_id(network_id, input_symbol),
+        "graph_slice_id" => _graph_slice_id(network_id, change_spec),
         "network_id" => network_id,
         "input_symbol" => input_symbol,
+        "change_kind" => change_record["kind"],
+        "change_label" => change_record["label"],
+        "change_signature" => change_record["signature"],
+        "change_qk_symbols" => change_record["qk_symbols"],
+        "change_qk_indices" => change_record["qk_indices"],
+        "change_qk_signs" => change_record["qk_signs"],
+        "change_spec" => change_record,
         "graph_config" => Dict(
-            "slice_mode" => "siso",
-            "graph_schema_version" => "siso_v0",
+            "slice_mode" => graph_schema == "siso_v0" ? "siso" : "change",
+            "graph_schema_version" => graph_schema,
+            "change_kind" => change_record["kind"],
+            "change_signature" => change_record["signature"],
         ),
-        "vertex_count" => nv(siso.qK_grh),
-        "edge_count" => ne(siso.qK_grh),
-        "path_count" => length(siso.rgm_paths),
-        "source_vertex_indices" => sort!(collect(siso.sources)),
-        "sink_vertex_indices" => sort!(collect(siso.sinks)),
+        "vertex_count" => length(active_vertices),
+        "edge_count" => length(active_edges),
+        "full_vertex_count" => nv(change_paths.qK_grh),
+        "full_edge_count" => ne(change_paths.qK_grh),
+        "path_count" => length(change_paths.rgm_paths),
+        "source_vertex_indices" => sort!(collect(change_paths.sources)),
+        "sink_vertex_indices" => sort!(collect(change_paths.sinks)),
+        "active_vertex_indices" => active_vertices,
     )
 end
 
-function _build_slice_regime_transition_records(model, siso, network_id::String, slice_id::String, graph_slice_id::String, input_symbol::String, output_symbol::String)
+function _build_slice_regime_transition_records(model, change_paths, network_id::String, slice_id::String, graph_slice_id::String, change_spec::AbstractDict, output_symbol::String)
     observe_x_idx = locate_sym_x(model, Symbol(output_symbol))
-    reachable_from_sources, can_reach_sinks = _graph_reachability_masks(siso.qK_grh, siso.sources, siso.sinks)
+    input_symbol = _change_input_symbol(change_spec)
+    change_record = _change_spec_record(change_spec)
+    reachable_from_sources, can_reach_sinks = _graph_reachability_masks(change_paths.qK_grh, change_paths.sources, change_paths.sinks)
+    active_mask = reachable_from_sources .& can_reach_sinks
+    active_vertices = sort!(_active_change_graph_vertices(change_paths; active_mask=active_mask))
+    active_edges = _active_change_graph_edge_pairs(change_paths; active_mask=active_mask)
+    indegrees, outdegrees = _active_change_graph_degrees(change_paths; active_mask=active_mask)
 
     regime_records = Dict{String, Any}[]
     regime_by_vertex = Dict{Int, Dict{String, Any}}()
 
-    for vertex_idx in sort!(collect(vertices(siso.qK_grh)))
+    for vertex_idx in active_vertices
         nullity = get_nullity(model, vertex_idx)
         asymptotic = is_asymptotic(model, vertex_idx)
-        order_value = _output_order_for_vertex(model, vertex_idx, siso.change_qK_idx, observe_x_idx)
-        role = _regime_role(siso, vertex_idx)
-        indeg = indegree(siso.qK_grh, vertex_idx)
-        outdeg = outdegree(siso.qK_grh, vertex_idx)
+        order_payload = _output_order_payload_for_vertex(model, vertex_idx, change_spec, observe_x_idx)
+        role = _regime_role(change_paths, vertex_idx, indegrees, outdegrees)
+        indeg = get(indegrees, vertex_idx, 0)
+        outdeg = get(outdegrees, vertex_idx, 0)
 
         record = Dict(
             "regime_record_id" => slice_id * "::regime::" * string(vertex_idx),
@@ -1474,11 +1920,17 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
             "graph_slice_id" => graph_slice_id,
             "network_id" => network_id,
             "input_symbol" => input_symbol,
+            "change_kind" => change_record["kind"],
+            "change_label" => change_record["label"],
+            "change_signature" => change_record["signature"],
+            "change_qk_symbols" => change_record["qk_symbols"],
+            "change_qk_indices" => change_record["qk_indices"],
+            "change_qk_signs" => change_record["qk_signs"],
             "output_symbol" => output_symbol,
             "vertex_idx" => vertex_idx,
             "role" => role,
-            "is_source" => vertex_idx in siso.sources,
-            "is_sink" => vertex_idx in siso.sinks,
+            "is_source" => vertex_idx in change_paths.sources,
+            "is_sink" => vertex_idx in change_paths.sinks,
             "is_branch" => outdeg > 1,
             "is_merge" => indeg > 1,
             "indegree" => indeg,
@@ -1488,9 +1940,15 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
             "singular" => nullity > 0,
             "nullity" => nullity,
             "asymptotic" => asymptotic,
-            "output_order_value" => order_value,
-            "output_order_token" => _output_order_token(order_value),
+            "output_order_value" => order_payload["value"],
+            "output_order_token" => order_payload["token"],
+            "output_order_kind" => order_payload["kind"],
+            "output_order_detail" => order_payload["detail"],
         )
+        if length(change_record["qk_symbols"]) == 1
+            record["change_qK"] = only(change_record["qk_symbols"])
+            record["change_qK_idx"] = only(change_record["qk_indices"])
+        end
         push!(regime_records, record)
         regime_by_vertex[vertex_idx] = record
     end
@@ -1498,9 +1956,7 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
     transition_records = Dict{String, Any}[]
     transition_by_edge = Dict{Tuple{Int, Int}, Dict{String, Any}}()
 
-    for edge in edges(siso.qK_grh)
-        from_vertex = src(edge)
-        to_vertex = dst(edge)
+    for (from_vertex, to_vertex) in active_edges
         from_record = regime_by_vertex[from_vertex]
         to_record = regime_by_vertex[to_vertex]
         record = Dict(
@@ -1508,6 +1964,12 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
             "slice_id" => slice_id,
             "graph_slice_id" => graph_slice_id,
             "input_symbol" => input_symbol,
+            "change_kind" => change_record["kind"],
+            "change_label" => change_record["label"],
+            "change_signature" => change_record["signature"],
+            "change_qk_symbols" => change_record["qk_symbols"],
+            "change_qk_indices" => change_record["qk_indices"],
+            "change_qk_signs" => change_record["qk_signs"],
             "output_symbol" => output_symbol,
             "from_vertex_idx" => from_vertex,
             "to_vertex_idx" => to_vertex,
@@ -1519,6 +1981,8 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
             "to_nullity" => to_record["nullity"],
             "from_output_order_token" => from_record["output_order_token"],
             "to_output_order_token" => to_record["output_order_token"],
+            "from_output_order_kind" => from_record["output_order_kind"],
+            "to_output_order_kind" => to_record["output_order_kind"],
             "transition_token" => string(from_record["output_order_token"], "->", to_record["output_order_token"]),
         )
         push!(transition_records, record)
@@ -1531,6 +1995,11 @@ function _build_slice_regime_transition_records(model, siso, network_id::String,
         "regime_by_vertex" => regime_by_vertex,
         "transition_by_edge" => transition_by_edge,
     )
+end
+
+function _build_slice_regime_transition_records(model, change_paths, network_id::String, slice_id::String, graph_slice_id::String, input_symbol::String, output_symbol::String)
+    change_spec = _change_spec_from_paths(model, change_paths, input_symbol)
+    return _build_slice_regime_transition_records(model, change_paths, network_id, slice_id, graph_slice_id, change_spec, output_symbol)
 end
 
 function _path_family_maps(result)
@@ -1554,40 +2023,42 @@ end
 
 function _build_family_buckets!(family_buckets, result, slice_id::String, config::AtlasBehaviorConfig)
     for family in result.exact_families
-        push!(family_buckets, Dict(
+        bucket = Dict(
             "bucket_id" => slice_id * "::exact::" * string(family.family_idx),
             "slice_id" => slice_id,
             "family_kind" => "exact",
             "family_idx" => family.family_idx,
             "family_label" => family.exact_label,
             "parent_motif" => family.motif_label,
-            "path_indices" => collect(family.path_indices),
             "path_count" => family.n_paths,
-            "robust_path_count" => _robust_path_count(family.path_indices, result.path_records, config.min_volume_mean),
-            "volume_mean" => _family_volume_mean(family.path_indices, result.path_records),
+            "robust_path_count" => hasproperty(family, :robust_path_count) ? Int(family.robust_path_count) : _robust_path_count(family.path_indices, result.path_records, config.min_volume_mean),
+            "volume_mean" => hasproperty(family, :volume_mean) ? family.volume_mean : _family_volume_mean(family.path_indices, result.path_records),
             "total_volume" => volume_to_dict(family.total_volume),
             "representative_path_idx" => family.representative_path_idx,
-            "representative_path_signature" => family.representative_path_idx == 0 ? nothing : result.path_records[family.representative_path_idx].exact_label,
-        ))
+            "representative_path_signature" => family.exact_label,
+        )
+        config.include_path_records && (bucket["path_indices"] = collect(family.path_indices))
+        push!(family_buckets, bucket)
     end
 
     for family in result.motif_families
-        push!(family_buckets, Dict(
+        bucket = Dict(
             "bucket_id" => slice_id * "::motif::" * string(family.family_idx),
             "slice_id" => slice_id,
             "family_kind" => "motif",
             "family_idx" => family.family_idx,
             "family_label" => family.motif_label,
             "parent_motif" => nothing,
-            "path_indices" => collect(family.path_indices),
             "path_count" => family.n_paths,
-            "robust_path_count" => _robust_path_count(family.path_indices, result.path_records, config.min_volume_mean),
-            "volume_mean" => _family_volume_mean(family.path_indices, result.path_records),
+            "robust_path_count" => hasproperty(family, :robust_path_count) ? Int(family.robust_path_count) : _robust_path_count(family.path_indices, result.path_records, config.min_volume_mean),
+            "volume_mean" => hasproperty(family, :volume_mean) ? family.volume_mean : _family_volume_mean(family.path_indices, result.path_records),
             "total_volume" => volume_to_dict(family.total_volume),
             "representative_path_idx" => family.representative_path_idx,
-            "representative_path_signature" => family.representative_path_idx == 0 ? nothing : result.path_records[family.representative_path_idx].motif_label,
+            "representative_path_signature" => family.motif_label,
             "exact_family_indices" => collect(family.exact_family_indices),
-        ))
+        )
+        config.include_path_records && (bucket["path_indices"] = collect(family.path_indices))
+        push!(family_buckets, bucket)
     end
 end
 
@@ -1634,6 +2105,7 @@ function _build_path_records!(path_records, result, slice_id::String, graph_slic
             "exact_family_idx" => get(exact_by_path, rec.path_idx, nothing),
             "motif_family_idx" => get(motif_by_path, rec.path_idx, nothing),
             "feasible" => rec.feasible,
+            "feasibility_checked" => getfield(rec, :feasibility_checked),
             "included" => rec.included,
             "robust" => rec.feasible && !isnothing(rec.volume) && rec.volume.mean >= config.min_volume_mean,
             "exclusion_reason" => rec.exclusion_reason,
@@ -1646,6 +2118,19 @@ function _atlas_slice_id(network_id::AbstractString, change_qK::AbstractString, 
     return join([
         String(network_id),
         "input=" * String(change_qK),
+        "output=" * String(observe_x),
+        "cfg=" * _config_signature(config),
+    ], "::")
+end
+
+function _atlas_slice_id(network_id::AbstractString, change_spec::AbstractDict, observe_x::AbstractString, config::AtlasBehaviorConfig)
+    if _change_graph_schema(change_spec) == "siso_v0"
+        return _atlas_slice_id(network_id, _change_input_symbol(change_spec), observe_x, config)
+    end
+
+    return join([
+        String(network_id),
+        "change=" * _change_signature(change_spec),
         "output=" * String(observe_x),
         "cfg=" * _config_signature(config),
     ], "::")
@@ -1681,12 +2166,14 @@ function _record_skipped_existing!(records, raw_network, canonical_code::String,
     ))
 end
 
-function _build_behavior_slice(model, network_id::String, graph_slice_id::String, change_qK::Symbol, observe_x::Symbol, siso, config::AtlasBehaviorConfig)
-    slice_id = _atlas_slice_id(network_id, string(change_qK), string(observe_x), config)
+function _build_behavior_slice(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig)
+    slice_id = _atlas_slice_id(network_id, change_spec, string(observe_x), config)
+    change_record = _change_spec_record(change_spec)
+    input_symbol = _change_input_symbol(change_spec)
 
     try
         result = get_behavior_families(
-            siso;
+            change_paths;
             observe_x=observe_x,
             path_scope=config.path_scope,
             min_volume_mean=config.min_volume_mean,
@@ -1695,6 +2182,9 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
             keep_nonasymptotic=config.keep_nonasymptotic,
             motif_zero_tol=config.motif_zero_tol,
             compute_volume=config.compute_volume,
+            include_path_labels=config.include_path_records,
+            include_path_details=config.include_path_records,
+            include_family_path_indices=config.include_path_records,
         )
 
         return Dict(
@@ -1703,7 +2193,14 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
                 "network_id" => network_id,
                 "graph_slice_id" => graph_slice_id,
                 "analysis_status" => "ok",
-                "input_symbol" => string(change_qK),
+                "input_symbol" => input_symbol,
+                "change_kind" => String(result.change_kind),
+                "change_label" => String(result.change_label),
+                "change_signature" => change_record["signature"],
+                "change_qk_symbols" => change_record["qk_symbols"],
+                "change_qk_indices" => change_record["qk_indices"],
+                "change_qk_signs" => change_record["qk_signs"],
+                "change_spec" => change_record,
                 "output_symbol" => string(observe_x),
                 "classifier_config" => atlas_behavior_config_to_dict(config),
                 "path_scope" => String(result.path_scope),
@@ -1712,6 +2209,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
                 "keep_singular" => result.keep_singular,
                 "keep_nonasymptotic" => result.keep_nonasymptotic,
                 "compute_volume" => result.compute_volume,
+                "feasibility_mode" => String(result.feasibility_mode),
                 "total_paths" => result.total_paths,
                 "feasible_paths" => result.feasible_paths,
                 "included_paths" => result.included_paths,
@@ -1732,7 +2230,14 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
                 "network_id" => network_id,
                 "graph_slice_id" => graph_slice_id,
                 "analysis_status" => "failed",
-                "input_symbol" => string(change_qK),
+                "input_symbol" => input_symbol,
+                "change_kind" => change_record["kind"],
+                "change_label" => change_record["label"],
+                "change_signature" => change_record["signature"],
+                "change_qk_symbols" => change_record["qk_symbols"],
+                "change_qk_indices" => change_record["qk_indices"],
+                "change_qk_signs" => change_record["qk_signs"],
+                "change_spec" => change_record,
                 "output_symbol" => string(observe_x),
                 "classifier_config" => atlas_behavior_config_to_dict(config),
                 "error" => failure["error"],
@@ -1753,8 +2258,8 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
     end
 end
 
-function _materialize_behavior_slice_payload(model, network_id::String, graph_slice_id::String, change_qK::Symbol, observe_x::Symbol, siso, config::AtlasBehaviorConfig)
-    slice_payload = _build_behavior_slice(model, network_id, graph_slice_id, change_qK, observe_x, siso, config)
+function _materialize_behavior_slice_payload(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig)
+    slice_payload = _build_behavior_slice(model, network_id, graph_slice_id, change_spec, observe_x, change_paths, config)
     slice = slice_payload["slice"]
     result = slice_payload["result"]
 
@@ -1783,11 +2288,11 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
     try
         slice_graph_payload = _build_slice_regime_transition_records(
             model,
-            siso,
+            change_paths,
             network_id,
             slice["slice_id"],
             graph_slice_id,
-            string(change_qK),
+            change_spec,
             string(observe_x),
         )
         append!(regime_records, slice_graph_payload["regime_records"])
@@ -1871,9 +2376,240 @@ function _build_network_summary(slice_dicts)
     )
 end
 
+function _initial_network_entry(raw_network, network_idx::Integer, canonical_code::String, rules::Vector{String}, validation, search_profile::AtlasSearchProfile)
+    label = String(_raw_get(raw_network, :label, "network_$(network_idx)"))
+    metrics = validation["metrics"]
+    return Dict(
+        "network_id" => canonical_code,
+        "source_label" => label,
+        "source_kind" => String(_raw_get(raw_network, :source_kind, "explicit")),
+        "source_metadata" => _raw_get(raw_network, :source_metadata, nothing),
+        "canonical_code" => canonical_code,
+        "raw_rules" => rules,
+        "search_profile" => atlas_search_profile_to_dict(search_profile),
+        "analysis_status" => validation["valid"] ? "pending" : "excluded_by_search_profile",
+        "build_state" => validation["valid"] ? "pending" : "excluded_by_search_profile",
+        "profile_issues" => validation["issues"],
+        "base_species_count" => metrics === nothing ? nothing : metrics["base_species_count"],
+        "reaction_count" => length(rules),
+        "total_species_count" => metrics === nothing ? nothing : metrics["total_species_count"],
+        "max_support" => metrics === nothing ? nothing : metrics["max_support"],
+        "support_mass" => metrics === nothing ? nothing : metrics["support_mass"],
+        "support_map" => metrics === nothing ? nothing : metrics["support_map"],
+    )
+end
+
+function _prepare_network_build_job(raw_network, network_idx::Integer, search_profile::AtlasSearchProfile)
+    rules = String.(_raw_get(raw_network, :reactions, String[]))
+    kd = _raw_haskey(raw_network, :kd) ? Float64.(_raw_get(raw_network, :kd, Float64[])) : ones(Float64, length(rules))
+    validation = validate_rules_against_profile(rules, search_profile)
+    canonical_code = try
+        canonical_network_code(rules)
+    catch
+        "uncanonicalized::" * join(sort(strip.(rules)), "|")
+    end
+    network_entry = _initial_network_entry(raw_network, network_idx, canonical_code, rules, validation, search_profile)
+    return (
+        raw_network=raw_network,
+        network_idx=network_idx,
+        rules=rules,
+        kd=kd,
+        validation=validation,
+        canonical_code=canonical_code,
+        network_entry=network_entry,
+    )
+end
+
+function _resolve_network_parallelism(requested::Integer, job_count::Integer)
+    job_count <= 1 && return 1
+    Threads.nthreads() <= 1 && return 1
+    if requested <= 0
+        return max(1, min(job_count, max(1, Threads.nthreads() ÷ 2)))
+    end
+    return max(1, min(Int(requested), job_count, Threads.nthreads()))
+end
+
+function _resolve_output_parallelism(requested::Integer, output_count::Integer, config::AtlasBehaviorConfig)
+    output_count <= 1 && return 1
+    Threads.nthreads() <= 1 && return 1
+    config.include_path_records && return 1
+    return max(1, min(output_count, requested, Threads.nthreads()))
+end
+
+function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallelism::Integer)
+    isempty(jobs) && return Any[]
+
+    parallelism = _resolve_network_parallelism(requested_parallelism, length(jobs))
+    results = Vector{Any}(undef, length(jobs))
+    if parallelism <= 1
+        for idx in eachindex(jobs)
+            results[idx] = build_fn(jobs[idx])
+        end
+        return results
+    end
+
+    sem = Base.Semaphore(parallelism)
+    tasks = Task[]
+    for idx in eachindex(jobs)
+        Base.acquire(sem)
+        push!(tasks, Threads.@spawn begin
+            try
+                results[idx] = build_fn(jobs[idx])
+            finally
+                Base.release(sem)
+            end
+        end)
+    end
+    fetch.(tasks)
+    return results
+end
+
+function _build_single_network_atlas(job;
+    search_profile::AtlasSearchProfile,
+    behavior_config::AtlasBehaviorConfig,
+    change_expansion::AtlasChangeExpansionSpec,
+    output_parallelism::Int,
+    existing_slice_ids::Set{String},
+    skip_existing::Bool,
+)
+    raw_network = job.raw_network
+    canonical_code = job.canonical_code
+    rules = job.rules
+    kd = job.kd
+    network_entry = Dict{String, Any}(_materialize(job.network_entry))
+
+    result = Dict{String, Any}(
+        "include_network_entry" => false,
+        "network_entry" => network_entry,
+        "input_graph_slices" => Dict{String, Any}[],
+        "behavior_slices" => Dict{String, Any}[],
+        "regime_records" => Dict{String, Any}[],
+        "transition_records" => Dict{String, Any}[],
+        "family_buckets" => Dict{String, Any}[],
+        "path_records" => Dict{String, Any}[],
+        "skipped_existing_networks" => Dict{String, Any}[],
+        "skipped_existing_slice_count" => 0,
+    )
+
+    if skip_existing && !isempty(existing_slice_ids) &&
+       _change_expansion_supports_requested_io_shortcut(change_expansion) &&
+       _raw_haskey(raw_network, :input_symbols) && _raw_haskey(raw_network, :output_symbols)
+        requested_inputs = String.(_raw_get(raw_network, :input_symbols, String[]))
+        requested_outputs = String.(_raw_get(raw_network, :output_symbols, String[]))
+        planned_slice_ids = String[
+            _atlas_slice_id(canonical_code, input_symbol, output_symbol, behavior_config)
+            for input_symbol in requested_inputs for output_symbol in requested_outputs
+        ]
+        if !isempty(planned_slice_ids) && all(slice_id -> slice_id in existing_slice_ids, planned_slice_ids)
+            result["skipped_existing_slice_count"] = length(planned_slice_ids)
+            _record_skipped_existing!(result["skipped_existing_networks"], raw_network, canonical_code, planned_slice_ids;
+                reason="all_requested_slices_present_in_library",
+            )
+            return result
+        end
+    end
+
+    slice_dicts = Dict{String, Any}[]
+    try
+        model, _, _, _ = build_model(rules, kd)
+        change_specs = _resolve_change_specs(raw_network, model, search_profile, change_expansion)
+        output_symbols = _resolve_output_symbols(raw_network, model)
+        planned_slice_ids = String[
+            _atlas_slice_id(canonical_code, change_spec, string(output_symbol), behavior_config)
+            for change_spec in change_specs for output_symbol in output_symbols
+        ]
+
+        if skip_existing && !isempty(planned_slice_ids) && all(slice_id -> slice_id in existing_slice_ids, planned_slice_ids)
+            result["skipped_existing_slice_count"] = length(planned_slice_ids)
+            _record_skipped_existing!(result["skipped_existing_networks"], raw_network, canonical_code, planned_slice_ids;
+                reason="all_resolved_slices_present_in_library",
+            )
+            return result
+        end
+
+        change_path_cache = Dict{String, Any}()
+        graph_slice_cache = Dict{String, Dict{String, Any}}()
+        skipped_slice_ids = String[]
+
+        for change_spec in change_specs
+            missing_outputs = Symbol[]
+            change_cache_key = _change_signature(change_spec)
+            for output_symbol in output_symbols
+                slice_id = _atlas_slice_id(canonical_code, change_spec, string(output_symbol), behavior_config)
+                if skip_existing && slice_id in existing_slice_ids
+                    push!(skipped_slice_ids, slice_id)
+                    result["skipped_existing_slice_count"] = Int(result["skipped_existing_slice_count"]) + 1
+                else
+                    push!(missing_outputs, output_symbol)
+                end
+            end
+
+            isempty(missing_outputs) && continue
+
+            change_paths = get!(change_path_cache, change_cache_key) do
+                _build_change_paths(model, change_spec)
+            end
+            graph_slice = get!(graph_slice_cache, change_cache_key) do
+                payload = _build_input_graph_slice(change_paths, canonical_code, change_spec)
+                push!(result["input_graph_slices"], payload)
+                payload
+            end
+            effective_output_parallelism = _resolve_output_parallelism(output_parallelism, length(missing_outputs), behavior_config)
+            if effective_output_parallelism > 1
+                if behavior_config.compute_volume
+                    get_volumes(change_paths)
+                elseif !(change_paths isa ChangePaths && behavior_config.path_scope == :all)
+                    get_polyhedra(change_paths)
+                end
+            end
+            slice_payloads = _run_network_jobs_parallel(missing_outputs, effective_output_parallelism) do output_symbol
+                _materialize_behavior_slice_payload(model, canonical_code, graph_slice["graph_slice_id"], change_spec, output_symbol, change_paths, behavior_config)
+            end
+            for slice_payload in slice_payloads
+                slice = slice_payload["slice"]
+                push!(result["behavior_slices"], slice)
+                push!(slice_dicts, slice)
+                append!(result["regime_records"], slice_payload["regime_records"])
+                append!(result["transition_records"], slice_payload["transition_records"])
+                append!(result["family_buckets"], slice_payload["family_buckets"])
+                append!(result["path_records"], slice_payload["path_records"])
+            end
+        end
+
+        if !isempty(skipped_slice_ids)
+            _record_skipped_existing!(result["skipped_existing_networks"], raw_network, canonical_code, skipped_slice_ids;
+                reason=isempty(slice_dicts) ? "all_resolved_slices_present_in_library" : "partial_slice_reuse_from_library",
+            )
+        end
+
+        isempty(slice_dicts) && return result
+
+        summary = _build_network_summary(slice_dicts)
+        merge!(network_entry, summary)
+        network_entry["analysis_status"] = if Int(summary["successful_slice_count"]) > 0
+            "ok"
+        elseif Int(summary["failed_slice_count"]) > 0
+            "failed"
+        else
+            "pending"
+        end
+        network_entry["build_state"] = _network_build_state(summary)
+    catch err
+        network_entry["analysis_status"] = "failed"
+        network_entry["build_state"] = "failed"
+        merge!(network_entry, _atlas_failure_metadata(err, "network_build"))
+    end
+
+    result["network_entry"] = network_entry
+    result["include_network_entry"] = true
+    return result
+end
+
 function build_behavior_atlas(network_specs;
     search_profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0(),
     behavior_config::AtlasBehaviorConfig=atlas_behavior_config_default(),
+    change_expansion::AtlasChangeExpansionSpec=atlas_change_expansion_spec_default(),
+    network_parallelism::Int=1,
     library=nothing,
     sqlite_path=nothing,
     skip_existing::Bool=false,
@@ -1895,149 +2631,70 @@ function build_behavior_atlas(network_specs;
         union!(existing_slice_ids, atlas_sqlite_existing_ok_slice_ids(String(sqlite_path)))
     end
     skipped_existing_slice_count = 0
-
+    prepared_jobs = Any[]
+    build_jobs = Any[]
     for (network_idx, raw_network) in enumerate(network_specs)
-        label = String(_raw_get(raw_network, :label, "network_$(network_idx)"))
-        rules = String.(_raw_get(raw_network, :reactions, String[]))
-        kd = _raw_haskey(raw_network, :kd) ? Float64.(_raw_get(raw_network, :kd, Float64[])) : ones(Float64, length(rules))
+        job = _prepare_network_build_job(raw_network, network_idx, search_profile)
 
-        validation = validate_rules_against_profile(rules, search_profile)
-        canonical_code = try
-            canonical_network_code(rules)
-        catch
-            "uncanonicalized::" * join(sort(strip.(rules)), "|")
-        end
-
-        if validation["valid"] && canonical_code in seen_networks
+        if Bool(job.validation["valid"]) && job.canonical_code in seen_networks
             push!(duplicate_inputs, Dict(
-                "source_label" => label,
-                "duplicate_of_network_id" => canonical_code,
-                "reactions" => rules,
+                "source_label" => String(_raw_get(raw_network, :label, job.canonical_code)),
+                "duplicate_of_network_id" => job.canonical_code,
+                "reactions" => job.rules,
             ))
             continue
         end
 
-        metrics = validation["metrics"]
-        network_entry = Dict(
-            "network_id" => canonical_code,
-            "source_label" => label,
-            "source_kind" => String(_raw_get(raw_network, :source_kind, "explicit")),
-            "source_metadata" => _raw_get(raw_network, :source_metadata, nothing),
-            "canonical_code" => canonical_code,
-            "raw_rules" => rules,
-            "search_profile" => atlas_search_profile_to_dict(search_profile),
-            "analysis_status" => validation["valid"] ? "pending" : "excluded_by_search_profile",
-            "build_state" => validation["valid"] ? "pending" : "excluded_by_search_profile",
-            "profile_issues" => validation["issues"],
-            "base_species_count" => metrics === nothing ? nothing : metrics["base_species_count"],
-            "reaction_count" => length(rules),
-            "total_species_count" => metrics === nothing ? nothing : metrics["total_species_count"],
-            "max_support" => metrics === nothing ? nothing : metrics["max_support"],
-            "support_mass" => metrics === nothing ? nothing : metrics["support_mass"],
-            "support_map" => metrics === nothing ? nothing : metrics["support_map"],
-        )
+        if Bool(job.validation["valid"])
+            push!(seen_networks, job.canonical_code)
+        end
 
-        if !validation["valid"]
-            push!(network_entries, network_entry)
+        if !Bool(job.validation["valid"])
+            push!(prepared_jobs, (
+                kind=:invalid,
+                network_idx=network_idx,
+                network_entry=job.network_entry,
+            ))
+        else
+            push!(prepared_jobs, (
+                kind=:build,
+                network_idx=network_idx,
+                build_job=job,
+            ))
+            push!(build_jobs, job)
+        end
+    end
+
+    built_job_results = _run_network_jobs_parallel(build_jobs, network_parallelism) do job
+        _build_single_network_atlas(job;
+            search_profile=search_profile,
+            behavior_config=behavior_config,
+            change_expansion=change_expansion,
+            output_parallelism=max(1, Threads.nthreads() ÷ max(1, _resolve_network_parallelism(network_parallelism, length(build_jobs)))),
+            existing_slice_ids=existing_slice_ids,
+            skip_existing=skip_existing,
+        )
+    end
+    built_results_by_idx = Dict(job.network_idx => built_job_results[idx] for (idx, job) in enumerate(build_jobs))
+
+    for prepared in prepared_jobs
+        if prepared.kind == :invalid
+            push!(network_entries, prepared.network_entry)
             continue
         end
 
-        if skip_existing && !isempty(existing_slice_ids) &&
-           _raw_haskey(raw_network, :input_symbols) && _raw_haskey(raw_network, :output_symbols)
-            requested_inputs = String.(_raw_get(raw_network, :input_symbols, String[]))
-            requested_outputs = String.(_raw_get(raw_network, :output_symbols, String[]))
-            planned_slice_ids = String[
-                _atlas_slice_id(canonical_code, input_symbol, output_symbol, behavior_config)
-                for input_symbol in requested_inputs for output_symbol in requested_outputs
-            ]
-            if !isempty(planned_slice_ids) && all(slice_id -> slice_id in existing_slice_ids, planned_slice_ids)
-                skipped_existing_slice_count += length(planned_slice_ids)
-                _record_skipped_existing!(skipped_existing_networks, raw_network, canonical_code, planned_slice_ids;
-                    reason="all_requested_slices_present_in_library",
-                )
-                continue
-            end
-        end
+        built = built_results_by_idx[prepared.network_idx]
+        skipped_existing_slice_count += Int(_raw_get(built, :skipped_existing_slice_count, 0))
+        append!(skipped_existing_networks, collect(_raw_get(built, :skipped_existing_networks, Any[])))
 
-        push!(seen_networks, canonical_code)
-
-        slice_dicts = Dict{String, Any}[]
-        try
-            model, _, _, _ = build_model(rules, kd)
-            input_symbols = _resolve_input_symbols(raw_network, model, search_profile)
-            output_symbols = _resolve_output_symbols(raw_network, model)
-            planned_slice_ids = String[
-                _atlas_slice_id(canonical_code, string(input_symbol), string(output_symbol), behavior_config)
-                for input_symbol in input_symbols for output_symbol in output_symbols
-            ]
-
-            if skip_existing && !isempty(planned_slice_ids) && all(slice_id -> slice_id in existing_slice_ids, planned_slice_ids)
-                skipped_existing_slice_count += length(planned_slice_ids)
-                _record_skipped_existing!(skipped_existing_networks, raw_network, canonical_code, planned_slice_ids;
-                    reason="all_resolved_slices_present_in_library",
-                )
-                continue
-            end
-
-            siso_cache = Dict{Symbol, Any}()
-            skipped_slice_ids = String[]
-
-            for input_symbol in input_symbols
-                missing_outputs = Symbol[]
-                for output_symbol in output_symbols
-                    slice_id = _atlas_slice_id(canonical_code, string(input_symbol), string(output_symbol), behavior_config)
-                    if skip_existing && slice_id in existing_slice_ids
-                        push!(skipped_slice_ids, slice_id)
-                        skipped_existing_slice_count += 1
-                    else
-                        push!(missing_outputs, output_symbol)
-                    end
-                end
-
-                isempty(missing_outputs) && continue
-
-                siso = get!(siso_cache, input_symbol) do
-                    SISOPaths(model, input_symbol)
-                end
-                graph_slice = _build_input_graph_slice(siso, canonical_code, string(input_symbol))
-                push!(input_graph_slices, graph_slice)
-                for output_symbol in missing_outputs
-                    slice_payload = _materialize_behavior_slice_payload(model, canonical_code, graph_slice["graph_slice_id"], input_symbol, output_symbol, siso, behavior_config)
-                    slice = slice_payload["slice"]
-                    push!(behavior_slices, slice)
-                    push!(slice_dicts, slice)
-                    append!(regime_records, slice_payload["regime_records"])
-                    append!(transition_records, slice_payload["transition_records"])
-                    append!(family_buckets, slice_payload["family_buckets"])
-                    append!(path_records, slice_payload["path_records"])
-                end
-            end
-
-            if !isempty(skipped_slice_ids)
-                _record_skipped_existing!(skipped_existing_networks, raw_network, canonical_code, skipped_slice_ids;
-                    reason=isempty(slice_dicts) ? "all_resolved_slices_present_in_library" : "partial_slice_reuse_from_library",
-                )
-            end
-
-            isempty(slice_dicts) && continue
-
-            summary = _build_network_summary(slice_dicts)
-            merge!(network_entry, summary)
-            network_entry["analysis_status"] = if Int(summary["successful_slice_count"]) > 0
-                "ok"
-            elseif Int(summary["failed_slice_count"]) > 0
-                "failed"
-            else
-                "pending"
-            end
-            network_entry["build_state"] = _network_build_state(summary)
-        catch err
-            network_entry["analysis_status"] = "failed"
-            network_entry["build_state"] = "failed"
-            merge!(network_entry, _atlas_failure_metadata(err, "network_build"))
-        end
-
-        push!(network_entries, network_entry)
+        Bool(_raw_get(built, :include_network_entry, false)) || continue
+        append!(input_graph_slices, collect(_raw_get(built, :input_graph_slices, Any[])))
+        append!(behavior_slices, collect(_raw_get(built, :behavior_slices, Any[])))
+        append!(regime_records, collect(_raw_get(built, :regime_records, Any[])))
+        append!(transition_records, collect(_raw_get(built, :transition_records, Any[])))
+        append!(family_buckets, collect(_raw_get(built, :family_buckets, Any[])))
+        append!(path_records, collect(_raw_get(built, :path_records, Any[])))
+        push!(network_entries, _raw_get(built, :network_entry, Dict{String, Any}()))
     end
 
     return Dict(
@@ -2045,6 +2702,8 @@ function build_behavior_atlas(network_specs;
         "generated_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
         "search_profile" => atlas_search_profile_to_dict(search_profile),
         "behavior_config" => atlas_behavior_config_to_dict(behavior_config),
+        "change_expansion" => atlas_change_expansion_spec_to_dict(change_expansion),
+        "network_parallelism" => _resolve_network_parallelism(network_parallelism, length(build_jobs)),
         "input_network_count" => length(network_specs),
         "unique_network_count" => length(network_entries),
         "successful_network_count" => count(entry -> get(entry, "analysis_status", "") == "ok", network_entries),
@@ -2095,6 +2754,8 @@ function _build_atlas_manifest(atlas; source_label=nothing, source_metadata=noth
         "generated_at" => String(_raw_get(atlas, :generated_at, "unknown")),
         "search_profile" => _materialize(_raw_get(atlas, :search_profile, Dict{String, Any}())),
         "behavior_config" => _materialize(_raw_get(atlas, :behavior_config, Dict{String, Any}())),
+        "change_expansion" => _materialize(_raw_get(atlas, :change_expansion, Dict{String, Any}())),
+        "network_parallelism" => Int(_raw_get(atlas, :network_parallelism, 1)),
         "input_network_count" => Int(_raw_get(atlas, :input_network_count, length(collect(_raw_get(atlas, :network_entries, Any[]))))),
         "unique_network_count" => Int(_raw_get(atlas, :unique_network_count, length(collect(_raw_get(atlas, :network_entries, Any[]))))),
         "successful_network_count" => Int(_raw_get(atlas, :successful_network_count, 0)),
@@ -2326,6 +2987,7 @@ function merge_atlas_library(library, atlas; source_label=nothing, source_metada
     _is_atlas_corpus(atlas) || error("merge_atlas_library expects `atlas` to be an atlas or atlas-library-like corpus.")
 
     corpus = _materialize(atlas)
+    _raw_haskey(corpus, :change_expansion) && (merged["change_expansion"] = _materialize(_raw_get(corpus, :change_expansion, Dict{String, Any}())))
     manifest = _build_atlas_manifest(corpus; source_label=source_label, source_metadata=source_metadata)
     atlas_id = manifest["atlas_id"]
 
@@ -2500,6 +3162,7 @@ function merge_atlas_library_from_spec(spec)
             )
             _raw_haskey(atlas_spec, :search_profile) && (request["search_profile"] = _raw_get(atlas_spec, :search_profile, nothing))
             _raw_haskey(atlas_spec, :behavior_config) && (request["behavior_config"] = _raw_get(atlas_spec, :behavior_config, nothing))
+            _raw_haskey(atlas_spec, :change_expansion) && (request["change_expansion"] = _raw_get(atlas_spec, :change_expansion, nothing))
             _raw_haskey(atlas_spec, :networks) && (request["networks"] = _raw_get(atlas_spec, :networks, Any[]))
             _raw_haskey(atlas_spec, :enumeration) && (request["enumeration"] = _raw_get(atlas_spec, :enumeration, nothing))
             build_behavior_atlas_from_spec(request)
@@ -2511,6 +3174,7 @@ function merge_atlas_library_from_spec(spec)
         )
         _raw_haskey(spec, :search_profile) && (request["search_profile"] = _raw_get(spec, :search_profile, nothing))
         _raw_haskey(spec, :behavior_config) && (request["behavior_config"] = _raw_get(spec, :behavior_config, nothing))
+        _raw_haskey(spec, :change_expansion) && (request["change_expansion"] = _raw_get(spec, :change_expansion, nothing))
         _raw_haskey(spec, :networks) && (request["networks"] = _raw_get(spec, :networks, Any[]))
         _raw_haskey(spec, :enumeration) && (request["enumeration"] = _raw_get(spec, :enumeration, nothing))
         build_behavior_atlas_from_spec(request)
@@ -2590,6 +3254,8 @@ function _normalize_query_output_order_token(value)
     value === nothing && return nothing
     if value isa Real
         return _output_order_token(value)
+    elseif value isa AbstractVector && all(item -> item isa Real, value)
+        return _output_order_token(Float64[Float64(item) for item in value])
     end
     str = String(value)
     isempty(str) && return nothing
@@ -2818,8 +3484,10 @@ end
 
 function _passes_io_constraints(slice, query::AtlasQuerySpec)
     input_symbol = String(_raw_get(slice, :input_symbol, ""))
+    change_signature = String(_raw_get(slice, :change_signature, ""))
     output_symbol = String(_raw_get(slice, :output_symbol, ""))
     isempty(query.input_symbols) || input_symbol in query.input_symbols || return false
+    isempty(query.change_signatures) || change_signature in query.change_signatures || return false
     isempty(query.output_symbols) || output_symbol in query.output_symbols || return false
     return true
 end
@@ -2905,12 +3573,16 @@ function _collapse_results_by_network(results, query::AtlasQuerySpec)
             "raw_rules" => collect(_raw_get(best, :raw_rules, Any[])),
             "best_slice_id" => String(_raw_get(best, :slice_id, "")),
             "best_input_symbol" => String(_raw_get(best, :input_symbol, "")),
+            "best_change_signature" => String(_raw_get(best, :change_signature, "")),
+            "best_change_kind" => String(_raw_get(best, :change_kind, "")),
+            "best_change_spec" => _raw_get(best, :change_spec, nothing),
             "best_output_symbol" => String(_raw_get(best, :output_symbol, "")),
             "best_ranking_key" => collect(_raw_get(best, :ranking_key, Any[])),
             "robustness_score" => Float64(_raw_get(best, :robustness_score, 0.0)),
             "matching_slice_count" => length(slices),
             "matching_slice_ids" => [String(_raw_get(slice, :slice_id, "")) for slice in slices],
             "matching_input_symbols" => sort!(unique([String(_raw_get(slice, :input_symbol, "")) for slice in slices])),
+            "matching_change_signatures" => sort!(unique([String(_raw_get(slice, :change_signature, "")) for slice in slices])),
             "matching_output_symbols" => sort!(unique([String(_raw_get(slice, :output_symbol, "")) for slice in slices])),
             "matched_bucket_count" => maximum(Int(_raw_get(slice, :matched_bucket_count, 0)) for slice in slices),
             "matched_robust_path_count" => maximum(Int(_raw_get(slice, :matched_robust_path_count, 0)) for slice in slices),
@@ -2978,6 +3650,8 @@ end
 function build_behavior_atlas_from_spec(spec)
     search_profile = atlas_search_profile_from_raw(_raw_get(spec, :search_profile, nothing))
     behavior_config = atlas_behavior_config_from_raw(_raw_get(spec, :behavior_config, nothing))
+    change_expansion = atlas_change_expansion_spec_from_raw(_raw_get(spec, :change_expansion, nothing))
+    network_parallelism = Int(_raw_get(spec, :network_parallelism, 1))
     network_specs = Any[]
     enumeration_summary = nothing
     library = _raw_haskey(spec, :library) ? _raw_get(spec, :library, nothing) : nothing
@@ -3005,6 +3679,8 @@ function build_behavior_atlas_from_spec(spec)
     atlas = build_behavior_atlas(network_specs;
         search_profile=search_profile,
         behavior_config=behavior_config,
+        change_expansion=change_expansion,
+        network_parallelism=network_parallelism,
         library=library,
         sqlite_path=sqlite_path,
         skip_existing=skip_existing,
@@ -3023,7 +3699,7 @@ function build_behavior_atlas_from_spec(spec)
             atlas_sqlite_merge_atlas!(sqlite_path, atlas;
                 source_label=source_label,
                 source_metadata=source_metadata,
-                library_label=isempty(library_label) ? nothing : library_label,
+                library_label=(library_label === nothing || isempty(library_label)) ? nothing : library_label,
             )
         end
         atlas["sqlite_path"] = sqlite_path
@@ -3039,6 +3715,8 @@ function _atlas_summary(atlas)
     return Dict(
         "atlas_schema_version" => String(_raw_get(atlas, :atlas_schema_version, "unknown")),
         "generated_at" => String(_raw_get(atlas, :generated_at, "unknown")),
+        "change_expansion" => _materialize(_raw_get(atlas, :change_expansion, Dict{String, Any}())),
+        "network_parallelism" => Int(_raw_get(atlas, :network_parallelism, 1)),
         "input_network_count" => Int(_raw_get(atlas, :input_network_count, 0)),
         "unique_network_count" => Int(_raw_get(atlas, :unique_network_count, length(collect(_raw_get(atlas, :network_entries, Any[]))))),
         "successful_network_count" => Int(_raw_get(atlas, :successful_network_count, 0)),
@@ -3065,6 +3743,7 @@ function _atlas_library_summary(library)
         "atlas_schema_version" => String(_raw_get(library, :atlas_schema_version, "unknown")),
         "created_at" => String(_raw_get(library, :created_at, "unknown")),
         "updated_at" => String(_raw_get(library, :updated_at, "unknown")),
+        "change_expansion" => _materialize(_raw_get(library, :change_expansion, Dict{String, Any}())),
         "atlas_count" => Int(_raw_get(library, :atlas_count, 0)),
         "input_network_count" => Int(_raw_get(library, :input_network_count, 0)),
         "unique_network_count" => Int(_raw_get(library, :unique_network_count, length(collect(_raw_get(library, :network_entries, Any[]))))),
@@ -3082,7 +3761,7 @@ function _atlas_library_summary(library)
 end
 
 function _copy_atlas_build_fields!(request::Dict{String, Any}, raw)
-    for key in (:search_profile, :behavior_config, :networks, :enumeration, :sqlite_path)
+    for key in (:search_profile, :behavior_config, :change_expansion, :network_parallelism, :networks, :enumeration, :sqlite_path)
         _raw_haskey(raw, key) || continue
         value = _raw_get(raw, key, nothing)
         value === nothing && continue
@@ -3246,17 +3925,33 @@ function _candidate_io(result, result_unit::AbstractString)
         return (
             slice_id=String(_raw_get(result, :best_slice_id, "")),
             input_symbol=String(_raw_get(result, :best_input_symbol, "")),
+            change_signature=String(_raw_get(result, :best_change_signature, "")),
+            change_spec=_raw_get(result, :best_change_spec, nothing),
             output_symbol=String(_raw_get(result, :best_output_symbol, "")),
         )
     end
     return (
         slice_id=String(_raw_get(result, :slice_id, "")),
         input_symbol=String(_raw_get(result, :input_symbol, "")),
+        change_signature=String(_raw_get(result, :change_signature, "")),
+        change_spec=_raw_get(result, :change_spec, nothing),
         output_symbol=String(_raw_get(result, :output_symbol, "")),
     )
 end
 
-function _candidate_refinement_trials(model, input_symbol::String, output_symbol::String, refinement::InverseRefinementSpec, query::AtlasQuerySpec, target_motifs::Vector{String})
+function _candidate_refinement_trials(model, change_target, output_symbol::String, refinement::InverseRefinementSpec, query::AtlasQuerySpec, target_motifs::Vector{String})
+    change_spec = if change_target isa AbstractDict
+        _normalize_change_spec(change_target, model)
+    else
+        _normalize_change_spec(String(change_target), model)
+    end
+    scalar_input_symbol = _scalar_refinement_input_symbol(change_spec)
+    if scalar_input_symbol === nothing
+        trial = _unsupported_multidimensional_refinement_trial(change_spec, output_symbol, target_motifs)
+        return trial, Dict{String, Any}[trial]
+    end
+
+    input_symbol = String(scalar_input_symbol)
     param_idx = locate_sym_qK(model, Symbol(input_symbol))
     param_idx === nothing && error("Unknown input symbol for refinement: $(input_symbol)")
     output_coeffs = parse_linear_combination(model, output_symbol)
@@ -3297,6 +3992,7 @@ function _candidate_refinement_trials(model, input_symbol::String, output_symbol
         trial_summary = Dict(
             "trial_idx" => trial_idx,
             "input_symbol" => input_symbol,
+            "change_signature" => String(_raw_get(change_spec, :signature, input_symbol)),
             "output_symbol" => output_symbol,
             "param_symbol" => input_symbol,
             "fixed_qK" => collect(full_qK),
@@ -3310,6 +4006,7 @@ function _candidate_refinement_trials(model, input_symbol::String, output_symbol
             "motif_match" => motif_match,
             "target_motif_labels" => collect(target_motifs),
             "refinement_score" => refinement_score,
+            "refinement_status" => "ok",
         )
         if refinement.include_traces
             trial_summary["param_values"] = param_range
@@ -3350,7 +4047,8 @@ function refine_inverse_design_candidates(query_result, refinement::InverseRefin
         rules = String.(_raw_get(result, :raw_rules, String[]))
         model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
         target_motifs = _target_motif_labels_for_result(result, query)
-        best_trial, _ = _candidate_refinement_trials(model, io.input_symbol, io.output_symbol, refinement, query, target_motifs)
+        change_target = io.change_spec === nothing ? io.input_symbol : io.change_spec
+        best_trial, _ = _candidate_refinement_trials(model, change_target, io.output_symbol, refinement, query, target_motifs)
 
         push!(refined_results, Dict(
             "network_id" => String(_raw_get(result, :network_id, "")),
@@ -3358,6 +4056,7 @@ function refine_inverse_design_candidates(query_result, refinement::InverseRefin
             "source_rank" => Int(_raw_get(result, :rank, 0)),
             "result_unit" => result_unit,
             "input_symbol" => io.input_symbol,
+            "change_signature" => io.change_signature,
             "output_symbol" => io.output_symbol,
             "raw_rules" => rules,
             "base_species_count" => _raw_get(result, :base_species_count, nothing),
@@ -3371,6 +4070,7 @@ function refine_inverse_design_candidates(query_result, refinement::InverseRefin
             "dynamic_range" => best_trial["dynamic_range"],
             "regime_transition_count" => best_trial["regime_transition_count"],
             "refinement_score" => best_trial["refinement_score"],
+            "refinement_status" => _raw_get(best_trial, :refinement_status, "ok"),
             "best_trial" => best_trial,
         ))
     end
