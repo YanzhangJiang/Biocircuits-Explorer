@@ -1012,6 +1012,61 @@ textarea {
   padding: 8px 10px;
 }
 
+.atlas-landscape-shell {
+  background:
+    radial-gradient(circle at top right, var(--family-soft), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.atlas-landscape-controls {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  align-items: end;
+}
+
+.atlas-landscape-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.atlas-landscape-controls .atlas-builder-input {
+  min-width: 0;
+}
+
+.atlas-landscape-controls .atlas-landscape-run {
+  align-self: stretch;
+  min-height: 32px;
+}
+
+.atlas-landscape-meta,
+.atlas-landscape-status {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.atlas-landscape-plot-wrap {
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-bg);
+}
+
+.atlas-landscape-plot {
+  min-height: 280px;
+}
+
 .cloud-fov-panel {
   background: var(--cloud-fov-bg);
   border: 1px solid var(--panel-border);

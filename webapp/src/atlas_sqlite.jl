@@ -1,4 +1,4 @@
-const ATLAS_SQLITE_SCHEMA_VERSION = "0.1.0"
+const ATLAS_SQLITE_SCHEMA_VERSION = "0.2.0"
 const ATLAS_SQLITE_SELECT_BATCH_SIZE = 400
 
 atlas_sqlite_default_path() = normpath(joinpath(@__DIR__, "..", "atlas_store", "atlas.sqlite"))
@@ -84,6 +84,28 @@ function _atlas_sqlite_execute(db::SQLite.DB, sql::AbstractString, params=())
     return nothing
 end
 
+function _atlas_sqlite_table_columns(db::SQLite.DB, table::AbstractString)
+    columns = Set{String}()
+    query = DBInterface.execute(db, "PRAGMA table_info(" * String(table) * ")")
+    try
+        for row in query
+            push!(columns, String(row[:name]))
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return columns
+end
+
+function _atlas_sqlite_ensure_columns!(db::SQLite.DB, table::AbstractString, columns)
+    existing = _atlas_sqlite_table_columns(db, table)
+    for (name, decl) in columns
+        name in existing && continue
+        _atlas_sqlite_execute(db, "ALTER TABLE $(table) ADD COLUMN $(name) $(decl)")
+    end
+    return db
+end
+
 function _atlas_sqlite_transaction(f::Function, db::SQLite.DB)
     _atlas_sqlite_execute(db, "BEGIN IMMEDIATE TRANSACTION")
     try
@@ -157,6 +179,7 @@ function atlas_sqlite_init!(db::SQLite.DB)
             graph_slice_id TEXT PRIMARY KEY,
             network_id TEXT,
             input_symbol TEXT,
+            change_signature TEXT,
             vertex_count INTEGER,
             edge_count INTEGER,
             path_count INTEGER,
@@ -169,6 +192,7 @@ function atlas_sqlite_init!(db::SQLite.DB)
             network_id TEXT,
             graph_slice_id TEXT,
             input_symbol TEXT,
+            change_signature TEXT,
             output_symbol TEXT,
             analysis_status TEXT,
             path_scope TEXT,
@@ -190,6 +214,7 @@ function atlas_sqlite_init!(db::SQLite.DB)
             graph_slice_id TEXT,
             network_id TEXT,
             input_symbol TEXT,
+            change_signature TEXT,
             output_symbol TEXT,
             vertex_idx INTEGER,
             role TEXT,
@@ -206,6 +231,7 @@ function atlas_sqlite_init!(db::SQLite.DB)
             slice_id TEXT,
             graph_slice_id TEXT,
             input_symbol TEXT,
+            change_signature TEXT,
             output_symbol TEXT,
             from_vertex_idx INTEGER,
             to_vertex_idx INTEGER,
@@ -240,6 +266,7 @@ function atlas_sqlite_init!(db::SQLite.DB)
             graph_slice_id TEXT,
             network_id TEXT,
             input_symbol TEXT,
+            change_signature TEXT,
             output_symbol TEXT,
             path_idx INTEGER,
             path_length INTEGER,
@@ -278,6 +305,28 @@ function atlas_sqlite_init!(db::SQLite.DB)
     for statement in statements
         _atlas_sqlite_execute(db, statement)
     end
+
+    _atlas_sqlite_ensure_columns!(db, "input_graph_slices", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "behavior_slices", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "regime_records", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "transition_records", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "path_records", [
+        "change_signature" => "TEXT",
+    ])
+
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_graph_slice_change ON input_graph_slices (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_slice_change ON behavior_slices (change_signature, output_symbol)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_regime_change ON regime_records (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_transition_change ON transition_records (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_path_change ON path_records (change_signature, output_symbol)")
 
     _atlas_sqlite_execute(db,
         "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
@@ -389,6 +438,10 @@ function _atlas_sqlite_query_slice_refs(db::SQLite.DB, query::AtlasQuerySpec)
     if !isempty(query.input_symbols)
         push!(clauses, "s.input_symbol IN (" * _atlas_sqlite_placeholder_list(length(query.input_symbols)) * ")")
         append!(params, query.input_symbols)
+    end
+    if !isempty(query.change_signatures)
+        push!(clauses, "s.change_signature IN (" * _atlas_sqlite_placeholder_list(length(query.change_signatures)) * ")")
+        append!(params, query.change_signatures)
     end
     if !isempty(query.output_symbols)
         push!(clauses, "s.output_symbol IN (" * _atlas_sqlite_placeholder_list(length(query.output_symbols)) * ")")
@@ -563,13 +616,14 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             _atlas_sqlite_execute(db,
                 """
                 INSERT INTO input_graph_slices (
-                    graph_slice_id, network_id, input_symbol, vertex_count, edge_count, path_count, record_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    graph_slice_id, network_id, input_symbol, change_signature, vertex_count, edge_count, path_count, record_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     String(_raw_get(item, :graph_slice_id, "")),
                     _atlas_sqlite_text(_raw_get(item, :network_id, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :input_symbol, nothing)),
+                    _atlas_sqlite_text(_raw_get(item, :change_signature, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :vertex_count, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :edge_count, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :path_count, nothing)),
@@ -582,16 +636,17 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             _atlas_sqlite_execute(db,
                 """
                 INSERT INTO behavior_slices (
-                    slice_id, network_id, graph_slice_id, input_symbol, output_symbol, analysis_status,
+                    slice_id, network_id, graph_slice_id, input_symbol, change_signature, output_symbol, analysis_status,
                     path_scope, min_volume_mean, total_paths, feasible_paths, included_paths, excluded_paths,
                     motif_union_json, exact_union_json, classifier_config_json, record_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     String(_raw_get(slice, :slice_id, "")),
                     _atlas_sqlite_text(_raw_get(slice, :network_id, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :graph_slice_id, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :input_symbol, nothing)),
+                    _atlas_sqlite_text(_raw_get(slice, :change_signature, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :output_symbol, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :analysis_status, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :path_scope, nothing)),
@@ -612,9 +667,9 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             _atlas_sqlite_execute(db,
                 """
                 INSERT INTO regime_records (
-                    regime_record_id, slice_id, graph_slice_id, network_id, input_symbol, output_symbol,
+                    regime_record_id, slice_id, graph_slice_id, network_id, input_symbol, change_signature, output_symbol,
                     vertex_idx, role, singular, nullity, asymptotic, output_order_token, record_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     String(_raw_get(item, :regime_record_id, "")),
@@ -622,6 +677,7 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
                     _atlas_sqlite_text(_raw_get(item, :graph_slice_id, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :network_id, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :input_symbol, nothing)),
+                    _atlas_sqlite_text(_raw_get(item, :change_signature, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :output_symbol, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :vertex_idx, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :role, nothing)),
@@ -638,16 +694,17 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             _atlas_sqlite_execute(db,
                 """
                 INSERT INTO transition_records (
-                    transition_record_id, slice_id, graph_slice_id, input_symbol, output_symbol,
+                    transition_record_id, slice_id, graph_slice_id, input_symbol, change_signature, output_symbol,
                     from_vertex_idx, to_vertex_idx, from_role, to_role,
                     from_output_order_token, to_output_order_token, transition_token, record_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     String(_raw_get(item, :transition_record_id, "")),
                     _atlas_sqlite_text(_raw_get(item, :slice_id, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :graph_slice_id, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :input_symbol, nothing)),
+                    _atlas_sqlite_text(_raw_get(item, :change_signature, nothing)),
                     _atlas_sqlite_text(_raw_get(item, :output_symbol, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :from_vertex_idx, nothing)),
                     _atlas_sqlite_int(_raw_get(item, :to_vertex_idx, nothing)),
@@ -692,10 +749,10 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             _atlas_sqlite_execute(db,
                 """
                 INSERT INTO path_records (
-                    path_record_id, slice_id, graph_slice_id, network_id, input_symbol, output_symbol,
+                    path_record_id, slice_id, graph_slice_id, network_id, input_symbol, change_signature, output_symbol,
                     path_idx, path_length, exact_label, motif_label, feasible, robust, volume_mean,
                     output_order_tokens_json, transition_tokens_json, record_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     String(_raw_get(rec, :path_record_id, "")),
@@ -703,6 +760,7 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
                     _atlas_sqlite_text(_raw_get(rec, :graph_slice_id, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :network_id, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :input_symbol, nothing)),
+                    _atlas_sqlite_text(_raw_get(slice, :change_signature, nothing)),
                     _atlas_sqlite_text(_raw_get(slice, :output_symbol, nothing)),
                     _atlas_sqlite_int(_raw_get(rec, :path_idx, nothing)),
                     length(collect(_raw_get(rec, :vertex_indices, Any[]))),

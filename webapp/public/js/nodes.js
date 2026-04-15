@@ -301,7 +301,20 @@ export function addResultNode(nodeType) {
 export function addQuickAddChain(chainType) {
   closeDropdown();
 
-  if (chainType === 'atlas-workflow') {
+  if (chainType === 'atlas-preview') {
+    const specX = 80;
+    const specY = resolveOverlap(specX, 150, 420, 620, null);
+    const specId = createNode('atlas-spec', specX, specY);
+    const builderX = specX + 480;
+    const builderY = resolveOverlap(builderX, specY, 460, 480, null);
+    const builderId = createNode('atlas-builder', builderX, builderY);
+
+    connections.push({ fromNode: specId, fromPort: 'atlas-spec', toNode: builderId, toPort: 'atlas-spec' });
+    updateConnections();
+    return;
+  }
+
+  if (chainType === 'atlas-search' || chainType === 'atlas-workflow') {
     const specX = 80;
     const specY = resolveOverlap(specX, 150, 420, 620, null);
     const specId = createNode('atlas-spec', specX, specY);

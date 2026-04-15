@@ -32,6 +32,10 @@ final class BiocircuitsBackendController: ObservableObject {
     private var startedByApp = false
     private var logBuffer = ""
 
+    private var parentProcessIdentifierString: String {
+        String(ProcessInfo.processInfo.processIdentifier)
+    }
+
     init(
         port: Int? = nil,
         fileManager: FileManager = .default,
@@ -249,8 +253,10 @@ final class BiocircuitsBackendController: ObservableObject {
                 "HOME": NSHomeDirectory(),
                 "BIOCIRCUITS_EXPLORER_PORT": String(port),
                 "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
+                "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
                 "ROP_PORT": String(port),
                 "ROP_PUBLIC_DIR": publicDir.path,
+                "ROP_PARENT_PID": parentProcessIdentifierString,
             ],
             startupTimeout: 90,
             startupStatus: "Starting compiled backend"
@@ -284,8 +290,10 @@ final class BiocircuitsBackendController: ObservableObject {
                     "HOME": NSHomeDirectory(),
                     "BIOCIRCUITS_EXPLORER_PORT": String(port),
                     "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
+                    "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
                     "ROP_PORT": String(port),
                     "ROP_PUBLIC_DIR": publicDir.path,
+                    "ROP_PARENT_PID": parentProcessIdentifierString,
                 ],
                 startupTimeout: 900,
                     startupStatus: "Starting Julia backend from source"

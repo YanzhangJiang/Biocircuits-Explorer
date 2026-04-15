@@ -21,7 +21,7 @@ import { updateRegimeGraphMode, plotRegimeGraph } from './regime-graph.js';
 import { plotTrajectory, plotHeatmap } from './plotting.js';
 import { plotParameterScan1D, plotParameterScan2D, plotROPPolyhedron, renderROPPolyhedronOutput, updateScan1DConfig, updateScan2DConfig, updateROPPolyConfig, updateROPPolyDimension } from './scan.js';
 import { plotQKPolyhedron, renderQKPolyhedronResult, renderBehaviorFamiliesResult, normalizeSISOConfig } from './siso.js';
-import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
+import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
 import { runConnectedWorkspace } from './nodes.js';
 import { serializeNodeBySchema, restoreNodeBySchema, NODE_SCHEMAS } from './node-schema.js';
 
@@ -613,6 +613,7 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
       info.data.sqlitePath = data.sqlitePath || '';
       const contentEl = document.getElementById(`${nodeId}-content`);
       if (contentEl) contentEl.innerHTML = renderAtlasBuilderResult(data.atlasData);
+      hydrateAtlasResultContent(nodeId, data.atlasData);
       break;
     }
     case 'atlas-query-result': {
@@ -621,6 +622,7 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
       info.data.lastQuery = data.lastQuery || null;
       const contentEl = document.getElementById(`${nodeId}-content`);
       if (contentEl) contentEl.innerHTML = renderAtlasQueryResult(data.queryData);
+      hydrateAtlasResultContent(nodeId, data.queryData);
       break;
     }
     case 'atlas-inverse-result': {
@@ -629,6 +631,7 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
       info.data.lastInverseRequest = data.lastInverseRequest || null;
       const contentEl = document.getElementById(`${nodeId}-content`);
       if (contentEl) contentEl.innerHTML = renderAtlasInverseDesignResult(data.inverseDesignData);
+      hydrateAtlasResultContent(nodeId, data.inverseDesignData);
       break;
     }
     default:
