@@ -85,10 +85,50 @@ function addReactionRow(rule = '', kd = 1e-3) {
   list.appendChild(row);
 }
 
+function resizeActivePlots() {
+  if (!window.Plotly?.Plots?.resize) return;
+
+  const resizeVisiblePlots = () => {
+    document.querySelectorAll('.tab-content.active .plot-container').forEach((plotEl) => {
+      if (!plotEl || plotEl.offsetParent === null) return;
+      try {
+        Plotly.Plots.resize(plotEl);
+      } catch (_) {}
+    });
+  };
+
+  window.requestAnimationFrame(() => {
+    resizeVisiblePlots();
+    window.setTimeout(resizeVisiblePlots, 60);
+  });
+}
+
+function resetPlot(containerId) {
+  const plotEl = document.getElementById(containerId);
+  if (!plotEl) return;
+  if (window.Plotly?.purge) {
+    try {
+      Plotly.purge(plotEl);
+    } catch (_) {}
+  }
+  plotEl.innerHTML = '';
+}
+
+function resetDerivedViews() {
+  state.qK_syms = [];
+  document.getElementById('siso-section').style.display = 'none';
+  document.getElementById('siso-select').innerHTML = '';
+  document.getElementById('siso-info').innerHTML = '';
+  document.getElementById('vertices-table-wrap').innerHTML = '';
+  ['plot-graph', 'plot-siso', 'plot-cloud', 'plot-heatmap', 'plot-trajectory'].forEach(resetPlot);
+  switchTab('tab-graph');
+}
+
 // ─── Tab switching ───
 function switchTab(tabId) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === tabId));
+  resizeActivePlots();
 }
 
 // ─── Build Model ───
@@ -108,6 +148,7 @@ async function buildModel() {
   state.vertices = null;
   state.graph = null;
   state.siso = {};
+  resetDerivedViews();
 
   // Update UI
   document.getElementById('btn-enumerate').disabled = false;
@@ -317,15 +358,19 @@ function renderSISOInfo(data, changeQK) {
   html += `<div class="path-list">`;
   data.paths.forEach(p => {
     const permStr = p.perms.map(pr => `[${pr.join(',')}]`).join(' → ');
-    html += `<div class="path-item" data-idx="${p.idx}" data-qk="${changeQK}" onclick="selectSISOPath(this)">#${p.idx}: ${permStr}</div>`;
+    html += `<button type="button" class="path-item" data-idx="${p.idx}" data-qk="${changeQK}" aria-pressed="false" onclick="selectSISOPath(this)">#${p.idx}: ${permStr}</button>`;
   });
   html += '</div>';
   info.innerHTML = html;
 }
 
 async function selectSISOPath(el) {
-  document.querySelectorAll('.path-item').forEach(p => p.classList.remove('selected'));
+  document.querySelectorAll('.path-item').forEach((p) => {
+    p.classList.remove('selected');
+    p.setAttribute('aria-pressed', 'false');
+  });
   el.classList.add('selected');
+  el.setAttribute('aria-pressed', 'true');
   const pathIdx = parseInt(el.dataset.idx);
   const changeQK = el.dataset.qk;
 

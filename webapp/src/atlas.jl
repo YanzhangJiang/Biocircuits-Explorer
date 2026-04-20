@@ -8,6 +8,8 @@ Base.@kwdef struct AtlasSearchProfile
     allow_irreversible_steps::Bool = false
     allow_conformational_switches::Bool = false
     allow_higher_order_templates::Bool = false
+    allow_homomeric_templates::Bool = false
+    max_homomer_order::Int = 3
     slice_mode::Symbol = :siso
     input_mode::Symbol = :totals_only
 end
@@ -30,6 +32,9 @@ Base.@kwdef struct AtlasEnumerationSpec
     max_reactions::Int = 2
     min_template_order::Int = 2
     max_template_order::Int = 2
+    require_homomeric_template::Bool = false
+    require_complex_growth_template::Bool = false
+    require_product_support_at_least::Int = 0
     limit::Int = 0
 end
 
@@ -740,6 +745,8 @@ function atlas_search_profile_from_raw(raw=nothing)
         allow_irreversible_steps=Bool(_raw_get(raw, :allow_irreversible_steps, profile.allow_irreversible_steps)),
         allow_conformational_switches=Bool(_raw_get(raw, :allow_conformational_switches, profile.allow_conformational_switches)),
         allow_higher_order_templates=Bool(_raw_get(raw, :allow_higher_order_templates, profile.allow_higher_order_templates)),
+        allow_homomeric_templates=Bool(_raw_get(raw, :allow_homomeric_templates, profile.allow_homomeric_templates)),
+        max_homomer_order=max(1, Int(_raw_get(raw, :max_homomer_order, profile.max_homomer_order))),
         slice_mode=Symbol(_raw_get(raw, :slice_mode, profile.slice_mode)),
         input_mode=Symbol(_raw_get(raw, :input_mode, profile.input_mode)),
     )
@@ -779,6 +786,9 @@ function atlas_enumeration_spec_from_raw(raw=nothing)
         max_reactions=Int(_raw_get(raw, :max_reactions, spec.max_reactions)),
         min_template_order=max(2, Int(_raw_get(raw, :min_template_order, spec.min_template_order))),
         max_template_order=max(2, Int(_raw_get(raw, :max_template_order, spec.max_template_order))),
+        require_homomeric_template=Bool(_raw_get(raw, :require_homomeric_template, spec.require_homomeric_template)),
+        require_complex_growth_template=Bool(_raw_get(raw, :require_complex_growth_template, spec.require_complex_growth_template)),
+        require_product_support_at_least=max(0, Int(_raw_get(raw, :require_product_support_at_least, spec.require_product_support_at_least))),
         limit=Int(_raw_get(raw, :limit, spec.limit)),
     )
 end
@@ -955,6 +965,8 @@ function atlas_search_profile_to_dict(profile::AtlasSearchProfile)
         "allow_irreversible_steps" => profile.allow_irreversible_steps,
         "allow_conformational_switches" => profile.allow_conformational_switches,
         "allow_higher_order_templates" => profile.allow_higher_order_templates,
+        "allow_homomeric_templates" => profile.allow_homomeric_templates,
+        "max_homomer_order" => profile.max_homomer_order,
         "slice_mode" => String(profile.slice_mode),
         "input_mode" => String(profile.input_mode),
     )
@@ -981,6 +993,9 @@ function atlas_enumeration_spec_to_dict(spec::AtlasEnumerationSpec)
         "max_reactions" => spec.max_reactions,
         "min_template_order" => spec.min_template_order,
         "max_template_order" => spec.max_template_order,
+        "require_homomeric_template" => spec.require_homomeric_template,
+        "require_complex_growth_template" => spec.require_complex_growth_template,
+        "require_product_support_at_least" => spec.require_product_support_at_least,
         "limit" => spec.limit,
     )
 end
@@ -1121,22 +1136,70 @@ function _support_complex_symbol(syms::AbstractVector{<:Symbol})
     return Symbol("C_" * join(labels, "_"))
 end
 
-function _binding_templates(base_syms::Vector{Symbol}; min_order::Int=2, max_order::Int=2)
+function _support_species_symbol(support::AbstractVector{<:Symbol})
+    sorted_support = sort(Symbol.(support))
+    length(sorted_support) == 1 && return first(sorted_support)
+    return _support_complex_symbol(sorted_support)
+end
+
+function _homomer_binding_templates(base_syms::Vector{Symbol}; min_order::Int=2, max_order::Int=3)
     templates = Vector{NamedTuple}(undef, 0)
-    max_valid_order = min(length(base_syms), max_order)
-    min_valid_order = min(max(2, min_order), max_valid_order)
+    max_valid_order = max(0, max_order)
+    min_valid_order = max(2, min_order)
     for order in min_valid_order:max_valid_order
-        for combo in _combinations(base_syms, order)
-            left = sort(String.(combo))
-            complex_sym = _support_complex_symbol(combo)
+        for sym in base_syms
+            reactants = fill(sym, order)
+            left = fill(String(sym), order)
+            complex_sym = _support_complex_symbol(reactants)
             rule = join(left, " + ") * " <-> " * String(complex_sym)
             push!(templates, (
                 rule=rule,
                 complex_symbol=String(complex_sym),
                 reactants=copy(left),
                 order=order,
+                homomeric=true,
             ))
         end
+    end
+    return templates
+end
+
+function _binding_templates(
+    base_syms::Vector{Symbol};
+    min_order::Int=2,
+    max_order::Int=2,
+    include_distinct::Bool=true,
+    include_homomeric::Bool=false,
+    max_homomer_order::Int=3,
+)
+    templates = Vector{NamedTuple}(undef, 0)
+    if include_distinct
+        max_valid_order = min(length(base_syms), max_order)
+        min_valid_order = max(2, min_order)
+        if min_valid_order <= max_valid_order
+            for order in min_valid_order:max_valid_order
+                for combo in _combinations(base_syms, order)
+                    left = sort(String.(combo))
+                    complex_sym = _support_complex_symbol(combo)
+                    rule = join(left, " + ") * " <-> " * String(complex_sym)
+                    push!(templates, (
+                        rule=rule,
+                        complex_symbol=String(complex_sym),
+                        reactants=copy(left),
+                        order=order,
+                        homomeric=false,
+                    ))
+                end
+            end
+        end
+    end
+
+    if include_homomeric
+        append!(templates, _homomer_binding_templates(
+            base_syms;
+            min_order=min_order,
+            max_order=min(max_order, max_homomer_order),
+        ))
     end
     return templates
 end
@@ -1149,13 +1212,175 @@ function _uses_all_base_species(combo, base_syms::Vector{Symbol})
     return length(used) == length(base_syms)
 end
 
+function _network_supports_from_rules(rules::Vector{String}, base_syms::Vector{Symbol}=Symbol[])
+    supports, support_issue = _infer_binding_supports(rules)
+    support_issue === nothing || error("support_inference_failed:$support_issue")
+    materialized = Dict(sym => sort(Symbol.(sig)) for (sym, sig) in supports)
+    for sym in base_syms
+        materialized[sym] = [sym]
+    end
+    return materialized
+end
+
+function _reaction_templates_from_available_supports(
+    supports::Dict{Symbol, Vector{Symbol}};
+    max_product_support::Int,
+)
+    species_syms = sort!(collect(keys(supports)); by=string)
+    templates = NamedTuple[]
+    for i in eachindex(species_syms)
+        lhs_a = species_syms[i]
+        support_a = sort(copy(supports[lhs_a]))
+        for j in i:length(species_syms)
+            lhs_b = species_syms[j]
+            support_b = sort(copy(supports[lhs_b]))
+            product_support = sort(vcat(copy(support_a), copy(support_b)))
+            length(product_support) <= max_product_support || continue
+            product_symbol = _support_species_symbol(product_support)
+            reactant_symbols = sort!([lhs_a, lhs_b]; by=string)
+            rule = join(string.(reactant_symbols), " + ") * " <-> " * String(product_symbol)
+            product_bases = unique(copy(product_support))
+            push!(templates, (
+                rule=rule,
+                reactant_symbols=copy(reactant_symbols),
+                reactant_supports=[copy(supports[sym]) for sym in reactant_symbols],
+                product_symbol=product_symbol,
+                product_support=product_support,
+                product_order=length(product_support),
+                homomeric=length(product_bases) == 1 && length(product_support) > 1,
+                complex_growth=any(length(supports[sym]) > 1 for sym in reactant_symbols),
+                product_base_symbols=product_bases,
+            ))
+        end
+    end
+    return templates
+end
+
+function _empty_growth_state(base_syms::Vector{Symbol})
+    supports = Dict(sym => [sym] for sym in base_syms)
+    return (
+        rules=String[],
+        supports=supports,
+        used_bases=Set{Symbol}(),
+        has_homomeric=false,
+        has_complex_growth=false,
+        max_product_support=1,
+    )
+end
+
+function _network_meets_enumeration_requirements(state, base_syms::Vector{Symbol}, spec::AtlasEnumerationSpec)
+    length(state.used_bases) == length(base_syms) || return false
+    spec.require_homomeric_template && !state.has_homomeric && return false
+    spec.require_complex_growth_template && !state.has_complex_growth && return false
+    spec.require_product_support_at_least > 0 && state.max_product_support < spec.require_product_support_at_least && return false
+    return true
+end
+
+function _enumerate_complex_growth_network_specs(
+    spec::AtlasEnumerationSpec,
+    search_profile::AtlasSearchProfile,
+)
+    network_specs = Dict{Symbol, Any}[]
+    generated_counts = Dict{String, Int}()
+    emitted = 0
+
+    for base_count in sort!(unique(copy(spec.base_species_counts)))
+        base_count <= search_profile.max_base_species || continue
+        base_syms = _base_species_symbols(base_count)
+        max_product_support = min(spec.max_template_order, search_profile.max_support)
+        frontier = Any[_empty_growth_state(base_syms)]
+
+        for reaction_count in 1:min(spec.max_reactions, search_profile.max_reactions)
+            next_frontier = Any[]
+            seen_next = Set{String}()
+
+            for state in frontier
+                templates = _reaction_templates_from_available_supports(
+                    state.supports;
+                    max_product_support=max_product_support,
+                )
+                for template in templates
+                    template.rule in state.rules && continue
+                    template.product_symbol in keys(state.supports) && continue
+
+                    new_rules = sort!(vcat(copy(state.rules), [template.rule]))
+                    canonical_code = try
+                        canonical_network_code(new_rules)
+                    catch
+                        nothing
+                    end
+                    canonical_code === nothing && continue
+                    canonical_code in seen_next && continue
+
+                    new_supports = _network_supports_from_rules(new_rules, base_syms)
+                    new_state = (
+                        rules=new_rules,
+                        supports=new_supports,
+                        used_bases=union(state.used_bases, Set(template.product_base_symbols)),
+                        has_homomeric=state.has_homomeric || template.homomeric,
+                        has_complex_growth=state.has_complex_growth || template.complex_growth,
+                        max_product_support=max(state.max_product_support, template.product_order),
+                    )
+                    push!(next_frontier, new_state)
+                    push!(seen_next, canonical_code)
+
+                    if reaction_count >= spec.min_reactions &&
+                       _network_meets_enumeration_requirements(new_state, base_syms, spec)
+                        emitted += 1
+                        label = "enum_" * String(spec.mode) * "_d$(base_count)_r$(reaction_count)_$(emitted)"
+                        push!(network_specs, Dict{Symbol, Any}(
+                            :label => label,
+                            :reactions => copy(new_rules),
+                            :source_kind => "enumerated",
+                            :source_metadata => Dict(
+                                "enumeration_mode" => String(spec.mode),
+                                "base_species_count" => base_count,
+                                "reaction_count" => reaction_count,
+                                "base_species_symbols" => string.(base_syms),
+                                "contains_homomeric_template" => new_state.has_homomeric,
+                                "contains_complex_growth_template" => new_state.has_complex_growth,
+                                "max_product_support" => new_state.max_product_support,
+                            ),
+                        ))
+                        key = string(base_count)
+                        generated_counts[key] = get(generated_counts, key, 0) + 1
+
+                        if spec.limit > 0 && length(network_specs) >= spec.limit
+                            return network_specs, Dict(
+                                "enumeration_spec" => atlas_enumeration_spec_to_dict(spec),
+                                "generated_network_count" => length(network_specs),
+                                "generated_by_base_species_count" => generated_counts,
+                                "truncated" => true,
+                            )
+                        end
+                    end
+                end
+            end
+
+            frontier = next_frontier
+            isempty(frontier) && break
+        end
+    end
+
+    return network_specs, Dict(
+        "enumeration_spec" => atlas_enumeration_spec_to_dict(spec),
+        "generated_network_count" => length(network_specs),
+        "generated_by_base_species_count" => generated_counts,
+        "truncated" => false,
+    )
+end
+
 function enumerate_network_specs(
     spec::AtlasEnumerationSpec;
     search_profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0(),
 )
     search_profile.slice_mode in (:siso, :change) || error("Atlas enumerator currently supports only slice_mode in (:siso, :change).")
-    spec.mode in (:pairwise_binding, :subset_binding) || error("Unsupported atlas enumeration mode: $(spec.mode)")
+    spec.mode in (:pairwise_binding, :subset_binding, :pairwise_plus_homomeric, :complex_growth_binding) || error("Unsupported atlas enumeration mode: $(spec.mode)")
     search_profile.allow_reversible_binding || error("The pairwise-binding enumerator requires allow_reversible_binding=true.")
+
+    if spec.mode == :complex_growth_binding
+        return _enumerate_complex_growth_network_specs(spec, search_profile)
+    end
 
     network_specs = Dict{Symbol, Any}[]
     generated_counts = Dict{String, Int}()
@@ -1166,15 +1391,56 @@ function enumerate_network_specs(
         base_syms = _base_species_symbols(base_count)
         if spec.mode == :subset_binding && !search_profile.allow_higher_order_templates
             error("subset_binding enumeration requires allow_higher_order_templates=true in the search profile.")
+        elseif spec.mode == :pairwise_plus_homomeric && !search_profile.allow_homomeric_templates
+            error("pairwise_plus_homomeric enumeration requires allow_homomeric_templates=true in the search profile.")
         end
+        include_distinct = true
+        include_homomeric = false
         min_template_order = spec.mode == :pairwise_binding ? 2 : spec.min_template_order
-        max_template_order = spec.mode == :pairwise_binding ? 2 : min(spec.max_template_order, search_profile.max_support, base_count)
-        templates = _binding_templates(base_syms; min_order=min_template_order, max_order=max_template_order)
+        max_template_order = if spec.mode == :pairwise_binding
+            2
+        elseif spec.mode == :pairwise_plus_homomeric
+            min(spec.max_template_order, max(search_profile.max_support, search_profile.max_homomer_order))
+        elseif spec.mode == :subset_binding && search_profile.allow_homomeric_templates
+            min(spec.max_template_order, max(search_profile.max_support, search_profile.max_homomer_order))
+        else
+            min(spec.max_template_order, search_profile.max_support, base_count)
+        end
+
+        if spec.mode == :pairwise_binding
+            include_distinct = true
+            include_homomeric = false
+        elseif spec.mode == :subset_binding
+            include_distinct = true
+            include_homomeric = search_profile.allow_homomeric_templates
+        elseif spec.mode == :pairwise_plus_homomeric
+            include_distinct = true
+            include_homomeric = true
+            min_template_order = max(2, spec.min_template_order)
+        end
+
+        templates = _binding_templates(
+            base_syms;
+            min_order=min_template_order,
+            max_order=max_template_order,
+            include_distinct=include_distinct,
+            include_homomeric=include_homomeric,
+            max_homomer_order=search_profile.max_homomer_order,
+        )
+        if spec.mode == :pairwise_plus_homomeric
+            filter!(templates) do template
+                template.order == 2 || all(==(first(template.reactants)), template.reactants)
+            end
+        end
         max_reactions = min(spec.max_reactions, search_profile.max_reactions, length(templates))
         min_reactions = min(spec.min_reactions, max_reactions)
 
         for reaction_count in min_reactions:max_reactions
             for combo in _combinations(templates, reaction_count)
+                spec.require_homomeric_template && !any(template.homomeric for template in combo) && continue
+                spec.require_product_support_at_least > 0 &&
+                    maximum(template.order for template in combo) < spec.require_product_support_at_least &&
+                    continue
                 _uses_all_base_species(combo, base_syms) || continue
                 emitted += 1
                 rules = [template.rule for template in combo]
@@ -1215,10 +1481,18 @@ function enumerate_network_specs(
     )
 end
 
+function _merge_support_signature!(dest::Vector{Symbol}, src::Vector{Symbol}, copies::Integer=1)
+    copies <= 0 && return dest
+    for _ in 1:copies
+        append!(dest, src)
+    end
+    return dest
+end
+
 function _infer_binding_supports(rules::Vector{String})
     reactants, products = parse_reactions(rules)
     _, _, free_syms, prod_syms = parse_network_structure(rules)
-    supports = Dict{Symbol, Set{Symbol}}(sym => Set([sym]) for sym in free_syms)
+    supports = Dict{Symbol, Vector{Symbol}}(sym => [sym] for sym in free_syms)
 
     progress = true
     while progress
@@ -1229,16 +1503,15 @@ function _infer_binding_supports(rules::Vector{String})
             if length(product_dict) != 1 || any(coeff != 1 for coeff in values(product_dict))
                 continue
             end
-            if any(coeff != 1 for coeff in values(reactant_dict))
-                continue
-            end
             all(haskey(supports, sym) for sym in keys(reactant_dict)) || continue
 
             product_sym = first(keys(product_dict))
-            merged = Set{Symbol}()
-            for sym in keys(reactant_dict)
-                union!(merged, supports[sym])
+            merged = Symbol[]
+            for sym in sort!(collect(keys(reactant_dict)))
+                coeff = reactant_dict[sym]
+                _merge_support_signature!(merged, supports[sym], coeff)
             end
+            sort!(merged)
 
             if !haskey(supports, product_sym)
                 supports[product_sym] = merged
@@ -1257,7 +1530,7 @@ function _infer_binding_supports(rules::Vector{String})
     return supports, nothing
 end
 
-function _support_metrics(supports::Dict{Symbol, Set{Symbol}}, free_syms::Vector{Symbol}, prod_syms::Vector{Symbol})
+function _support_metrics(supports::Dict{Symbol, Vector{Symbol}}, free_syms::Vector{Symbol}, prod_syms::Vector{Symbol})
     support_sizes = [length(supports[sym]) for sym in prod_syms if haskey(supports, sym)]
     max_support = isempty(support_sizes) ? 1 : maximum(support_sizes)
     support_mass = isempty(support_sizes) ? 0 : sum(size - 1 for size in support_sizes)
@@ -1267,8 +1540,33 @@ function _support_metrics(supports::Dict{Symbol, Set{Symbol}}, free_syms::Vector
         "product_species_count" => length(prod_syms),
         "max_support" => max_support,
         "support_mass" => support_mass,
-        "support_map" => Dict(string(sym) => sort!(collect(string.(supports[sym]))) for sym in sort!(collect(keys(supports)))),
+        "support_map" => Dict(string(sym) => string.(supports[sym]) for sym in sort!(collect(keys(supports)))),
     )
+end
+
+function _is_valid_reaction_shape(reactant_dict::Dict{Symbol, Int}, product_dict::Dict{Symbol, Int}, profile::AtlasSearchProfile)
+    length(product_dict) == 1 || return false
+    all(coeff == 1 for coeff in values(product_dict)) || return false
+
+    total_order = sum(values(reactant_dict))
+    total_order >= 2 || return false
+    distinct_reactants = length(reactant_dict)
+    unit_stoich = all(coeff == 1 for coeff in values(reactant_dict))
+    pure_homomer = distinct_reactants == 1
+
+    if pure_homomer
+        return profile.allow_homomeric_templates && total_order <= profile.max_homomer_order
+    end
+
+    if !unit_stoich
+        return false
+    end
+
+    if total_order == 2
+        return true
+    end
+
+    return profile.allow_higher_order_templates && total_order <= profile.max_support
 end
 
 function validate_rules_against_profile(rules::Vector{String}, profile::AtlasSearchProfile)
@@ -1291,12 +1589,21 @@ function validate_rules_against_profile(rules::Vector{String}, profile::AtlasSea
     length(rules) <= profile.max_reactions || push!(issues, "too_many_reactions")
     length(free_syms) <= profile.max_base_species || push!(issues, "too_many_base_species")
 
-    if !profile.allow_higher_order_templates
-        for idx in eachindex(rules)
-            length(reactants[idx]) == 2 || push!(issues, "reaction_$(idx):requires_exactly_two_reactant_terms")
+    for idx in eachindex(rules)
+        if !_is_valid_reaction_shape(reactants[idx], products[idx], profile)
+            push!(issues, "reaction_$(idx):unsupported_reaction_shape")
             length(products[idx]) == 1 || push!(issues, "reaction_$(idx):requires_exactly_one_product_term")
-            all(coeff == 1 for coeff in values(reactants[idx])) || push!(issues, "reaction_$(idx):requires_unit_reactant_stoichiometry")
             all(coeff == 1 for coeff in values(products[idx])) || push!(issues, "reaction_$(idx):requires_unit_product_stoichiometry")
+            total_order = sum(values(reactants[idx]))
+            pure_homomer = length(reactants[idx]) == 1
+            if pure_homomer
+                profile.allow_homomeric_templates || push!(issues, "reaction_$(idx):homomeric_templates_disabled")
+                total_order <= profile.max_homomer_order || push!(issues, "reaction_$(idx):homomer_order_exceeds_profile")
+            else
+                all(coeff == 1 for coeff in values(reactants[idx])) || push!(issues, "reaction_$(idx):requires_unit_reactant_stoichiometry")
+                total_order == 2 || profile.allow_higher_order_templates || push!(issues, "reaction_$(idx):requires_pairwise_or_enabled_higher_order_templates")
+                total_order <= profile.max_support || push!(issues, "reaction_$(idx):support_order_exceeds_profile")
+            end
         end
     end
 
@@ -1322,7 +1629,7 @@ function validate_rules_against_profile(rules::Vector{String}, profile::AtlasSea
     )
 end
 
-function _canonical_term_string(sym::Symbol, supports::Dict{Symbol, Set{Symbol}}, remap::Dict{Symbol, Int})
+function _canonical_term_string(sym::Symbol, supports::Dict{Symbol, Vector{Symbol}}, remap::Dict{Symbol, Int})
     term = sort(collect(remap[base] for base in supports[sym]))
     return "[" * join(term, ",") * "]"
 end
@@ -3658,6 +3965,7 @@ function build_behavior_atlas_from_spec(spec)
     sqlite_path = _sqlite_path_from_raw(spec)
     skip_existing = Bool(_raw_get(spec, :skip_existing, library !== nothing || sqlite_path !== nothing))
     persist_sqlite = Bool(_raw_get(spec, :persist_sqlite, false))
+    sqlite_persist_mode = _raw_haskey(spec, :sqlite_persist_mode) ? _raw_get(spec, :sqlite_persist_mode, nothing) : nothing
     source_label = _raw_haskey(spec, :source_label) ? String(_raw_get(spec, :source_label, "atlas_spec")) : "atlas_spec"
     source_metadata = _raw_haskey(spec, :source_metadata) ? _raw_get(spec, :source_metadata, nothing) : nothing
     library_label = _raw_haskey(spec, :library_label) ? String(_raw_get(spec, :library_label, "")) : nothing
@@ -3694,12 +4002,14 @@ function build_behavior_atlas_from_spec(spec)
                 source_metadata=source_metadata,
                 skipped_existing_network_count=Int(_raw_get(atlas, :skipped_existing_network_count, 0)),
                 skipped_existing_slice_count=Int(_raw_get(atlas, :skipped_existing_slice_count, 0)),
+                persist_mode=sqlite_persist_mode,
             )
         else
             atlas_sqlite_merge_atlas!(sqlite_path, atlas;
                 source_label=source_label,
                 source_metadata=source_metadata,
                 library_label=(library_label === nothing || isempty(library_label)) ? nothing : library_label,
+                persist_mode=sqlite_persist_mode,
             )
         end
         atlas["sqlite_path"] = sqlite_path

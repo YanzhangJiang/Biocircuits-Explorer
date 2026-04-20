@@ -101,6 +101,19 @@ logder_x_qK_sym(args...;kwargs...) = ∂logx_∂logqK_sym(args...;kwargs...)
 #   Below are regimes associtaed symbolic functions
 #---------------------------------------------------------
 
+@inline function _symbolic_pretty_scalar(x::Real)
+    if x isa Integer || x isa Rational
+        return x
+    elseif x isa AbstractFloat && isfinite(x)
+        rounded = round(Int, x)
+        return isapprox(x, rounded; atol=1e-12, rtol=0.0) ? rounded : x
+    end
+    return x
+end
+
+_symbolic_pretty_vector(v::AbstractVector{<:Real}) = [_symbolic_pretty_scalar(x) for x in v]
+_symbolic_pretty_matrix(A::AbstractMatrix{<:Real}) = [_symbolic_pretty_scalar(A[i, j]) for i in axes(A, 1), j in axes(A, 2)]
+
 """
     show_condition_poly(C, C0, nullity=0; syms, log_space=true, asymptotic=false) -> Vector
 
@@ -114,6 +127,8 @@ function show_condition_poly(C::AbstractMatrix{<:Real},
                         log_space::Bool = true,
                         asymptotic::Bool = false
 )
+    C_pretty = _symbolic_pretty_matrix(C)
+    C0_pretty = _symbolic_pretty_vector(C0)
 
     # Helper: generate symbolic expression per row
     make_expr(Crow, C0v) = if log_space
@@ -139,12 +154,12 @@ function show_condition_poly(C::AbstractMatrix{<:Real},
 
     # Handle two cases: nullity == 0 vs >0
     if nullity == 0
-        expr = make_expr(C, C0)
+        expr = make_expr(C_pretty, C0_pretty)
         conds = make_cond(expr, :uneq)
         return conds
     else
-        eq_expr   = make_expr(C[1:nullity, :], C0[1:nullity])
-        uneq_expr = make_expr(C[nullity+1:end, :], C0[nullity+1:end])
+        eq_expr   = make_expr(C_pretty[1:nullity, :], C0_pretty[1:nullity])
+        uneq_expr = make_expr(C_pretty[nullity+1:end, :], C0_pretty[nullity+1:end])
 
         eq   = make_cond(eq_expr, :eq)
         uneq = make_cond(uneq_expr, :uneq)
@@ -221,10 +236,12 @@ end
 Return symbolic expressions for mappings of the form `log(y) = C log(x) + C0`.
 """
 function show_expression_mapping(C::AbstractMatrix{<:Real}, C0::AbstractVector{<:Real}, y, x; log_space::Bool=true,asymptotic::Bool=false)::Vector{Equation}
+    C_pretty = _symbolic_pretty_matrix(C)
+    C0_pretty = _symbolic_pretty_vector(C0)
     if log_space
-        expr =  asymptotic ?   log10.(y) .~ C * log10.(x) : log10.(y) .~ C * log10.(x) .+ C0
+        expr =  asymptotic ?   log10.(y) .~ C_pretty * log10.(x) : log10.(y) .~ C_pretty * log10.(x) .+ C0_pretty
     else
-        expr =  asymptotic ? y .~ handle_log_weighted_sum(C, x) : y .~ handle_log_weighted_sum(C, x,C0)
+        expr =  asymptotic ? y .~ handle_log_weighted_sum(C_pretty, x) : y .~ handle_log_weighted_sum(C_pretty, x, C0_pretty)
     end
     return expr 
 end

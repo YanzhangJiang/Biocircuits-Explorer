@@ -7,7 +7,7 @@ export atlas_enumeration_spec_default, atlas_change_expansion_spec_default, atla
 export atlas_library_default, is_atlas_library
 export atlas_sqlite_default_path, atlas_sqlite_connect, atlas_sqlite_init!, atlas_sqlite_has_library
 export atlas_sqlite_load_library, atlas_sqlite_save_library!, atlas_sqlite_summary
-export atlas_sqlite_existing_ok_slice_ids, atlas_sqlite_merge_atlas!, atlas_sqlite_record_skip_only_event!
+export atlas_sqlite_existing_ok_slice_ids, atlas_sqlite_merge_atlas!, atlas_sqlite_record_skip_only_event!, atlas_sqlite_append_atlas!
 export enumerate_network_specs
 export build_behavior_atlas, build_behavior_atlas_from_spec
 export build_atlas_library, build_atlas_library_from_spec
@@ -32,6 +32,7 @@ using SparseArrays
 using Random
 using Logging
 using Dates
+using Base64
 using SHA
 using DBInterface
 using SQLite
@@ -328,8 +329,10 @@ end
 function cleanup_old_sessions()
     while true
         sleep(SESSION_CLEANUP_INTERVAL)
+        current_time = time()
+        expired_clients = String[]
+
         lock(MODELS_LOCK) do
-            current_time = time()
             to_delete = String[]
             for (sid, sess) in MODELS
                 last_access = get(sess, "last_access", 0.0)
@@ -341,8 +344,9 @@ function cleanup_old_sessions()
                 delete!(MODELS, sid)
                 @info "Cleaned up expired session: $sid"
             end
+        end
 
-            expired_clients = String[]
+        lock(DEBUG_LOG_LOCK) do
             for (client_id, last_access) in DEBUG_CLIENT_LAST_ACCESS
                 if current_time - last_access > SESSION_TTL
                     push!(expired_clients, client_id)
@@ -481,9 +485,14 @@ function read_json(req)
     try
         return JSON3.read(String(req.body))
     catch e
-        error("Invalid JSON: $e")
+        throw(ArgumentError("Invalid JSON: $(sprint(showerror, e))"))
     end
 end
+
+is_request_error(err) = err isa ArgumentError ||
+                        err isa DomainError ||
+                        err isa BoundsError ||
+                        err isa KeyError
 
 function handle_debug_logs(req)
     body = read_json(req)
@@ -1747,14 +1756,22 @@ function handle_rop_polyhedron(req)
     ))
 end
 
+function _is_subpath(path::AbstractString, root::AbstractString)
+    norm_path = normpath(path)
+    norm_root = normpath(root)
+    norm_path == norm_root && return true
+    return startswith(norm_path, norm_root * Base.Filesystem.path_separator)
+end
+
 
 function serve_static(req)
     path = HTTP.URI(req.target).path
     # Default to node edition
-    path = path == "/" ? "/index-node.html" : path
-    filepath = joinpath(static_dir(), lstrip(path, '/'))
+    relative_path = path == "/" ? "index-node.html" : lstrip(path, '/')
+    root = static_dir()
+    filepath = normpath(joinpath(root, relative_path))
 
-    if !isfile(filepath)
+    if !_is_subpath(filepath, root) || !isfile(filepath)
         return HTTP.Response(404, "Not found")
     end
 
@@ -1807,7 +1824,11 @@ function router(req)
 
     path = HTTP.URI(req.target).path
 
-    if haskey(API_ROUTES, path) && req.method == "POST"
+    if haskey(API_ROUTES, path) && req.method != "POST"
+        return error_response("Method not allowed"; status=405)
+    end
+
+    if haskey(API_ROUTES, path)
         client_id = debug_client_id_from_request(req)
         return with_debug_client_scope(client_id) do
             try
@@ -1815,7 +1836,7 @@ function router(req)
             catch e
                 @error "API error" path exception=(e, catch_backtrace())
                 # Distinguish between user errors (400) and server errors (500)
-                if isa(e, ArgumentError) || isa(e, DomainError) || isa(e, BoundsError)
+                if is_request_error(e)
                     return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
                 else
                     return error_response("Internal server error"; status=500)

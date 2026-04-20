@@ -417,14 +417,14 @@ struct SISOPaths{T} <: AbstractChangePaths{T}
     sinks::Vector{Int}    # sink vertices in the graph
     paths_dict::Dict{Vector{Int},Int} # map from path (vector of vertex idx) to its idx in rgm_paths
     rgm_paths::Vector{Vector{Int}} #All paths from sources to sinks, each path is represented as a vector of vertex idx. Grows exponentially
-    path_polys::Vector{Polyhedron} # the polyhedron for each path, lazily calculated when needed, stored in the same order as rgm_paths
+    path_polys::Vector{Any} # the polyhedron for each path, lazily calculated when needed; may also store an explicit empty-set object
     path_volume::Vector{Volume}# the volume for each path, lazily calculated when needed, stored in the same order as rgm_paths
 
     path_volume_is_calc::BitVector # whether the volume for each path is calculated, stored in the same order as rgm_paths
     path_polys_is_calc::BitVector # whether the polyhedron for each path is calculated, stored in the same order as rgm_paths
     
      function SISOPaths(model::Bnc{T}, qK_grh, change_qK_idx, sources, sinks, rgm_paths) where T
-        path_polys = Vector{Polyhedron}(undef, length(rgm_paths))
+        path_polys = Vector{Any}(undef, length(rgm_paths))
         path_volume = Vector{Volume}(undef, length(rgm_paths))
         path_volume_is_calc = falses(length(rgm_paths))
         path_polys_is_calc = falses(length(rgm_paths))
@@ -449,7 +449,7 @@ struct ChangePaths{T} <: AbstractChangePaths{T}
     sinks::Vector{Int}
     paths_dict::Dict{Vector{Int},Int}
     rgm_paths::Vector{Vector{Int}}
-    path_polys::Vector{Polyhedron}
+    path_polys::Vector{Any}
     path_volume::Vector{Volume}
 
     path_volume_is_calc::BitVector
@@ -466,7 +466,7 @@ struct ChangePaths{T} <: AbstractChangePaths{T}
         sinks,
         rgm_paths,
     ) where T
-        path_polys = Vector{Polyhedron}(undef, length(rgm_paths))
+        path_polys = Vector{Any}(undef, length(rgm_paths))
         path_volume = Vector{Volume}(undef, length(rgm_paths))
         path_volume_is_calc = falses(length(rgm_paths))
         path_polys_is_calc = falses(length(rgm_paths))

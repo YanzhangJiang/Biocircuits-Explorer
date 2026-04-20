@@ -2,6 +2,10 @@
 
 import { API, ensureDebugClientId } from './state.js';
 
+let activeApiRequests = 0;
+let statusRevision = 0;
+let readyResetTimer = null;
+
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
@@ -37,7 +41,8 @@ export async function apiSilent(endpoint, data) {
 }
 
 export async function api(endpoint, data) {
-  setStatus('working', 'Computing...');
+  activeApiRequests += 1;
+  setStatus('working', activeApiRequests > 1 ? `Computing... (${activeApiRequests})` : 'Computing...');
   try {
     const resp = await fetch(`${API}/api/${endpoint}`, {
       method: 'POST',
@@ -52,9 +57,15 @@ export async function api(endpoint, data) {
 
     const json = await resp.json();
     if (json.error) throw new Error(json.error);
-    setStatus('done', 'Done');
+    activeApiRequests = Math.max(0, activeApiRequests - 1);
+    if (activeApiRequests > 0) {
+      setStatus('working', `Computing... (${activeApiRequests})`);
+    } else {
+      setStatus('done', 'Done');
+    }
     return json;
   } catch (e) {
+    activeApiRequests = Math.max(0, activeApiRequests - 1);
     setStatus('error', e.message);
     throw e;
   }
@@ -63,12 +74,24 @@ export async function api(endpoint, data) {
 // ===== Status Badge =====
 export function setStatus(cls, text) {
   const badge = document.getElementById('status-badge');
+  if (!badge) return;
+
+  statusRevision += 1;
+  const currentRevision = statusRevision;
+  if (readyResetTimer) {
+    clearTimeout(readyResetTimer);
+    readyResetTimer = null;
+  }
   badge.className = `badge ${cls}`;
   badge.textContent = text;
-  if (cls === 'done') setTimeout(() => {
-    badge.className = 'badge';
-    badge.textContent = 'Ready';
-  }, 3000);
+  if (cls === 'done') {
+    readyResetTimer = setTimeout(() => {
+      if (activeApiRequests !== 0 || statusRevision !== currentRevision) return;
+      badge.className = 'badge';
+      badge.textContent = 'Ready';
+      readyResetTimer = null;
+    }, 3000);
+  }
 }
 
 // ===== Toast Notifications =====
@@ -127,16 +150,21 @@ export function normalizePredicateArray(value, label) {
 export function syncSelectOptions(selectEl, values, preferredValue = null, fallbackIndex = 0) {
   if (!selectEl) return;
   const orderedValues = Array.isArray(values) ? values.filter(v => v != null && v !== '') : [];
-  const previousValue = preferredValue ?? selectEl.value;
+  const pendingValue = selectEl.dataset.pendingValue || null;
+  const explicitPreferredValue = preferredValue != null && preferredValue !== '' ? preferredValue : null;
+  const liveValue = selectEl.value || null;
+  const previousValue = explicitPreferredValue ?? pendingValue ?? liveValue;
   selectEl.innerHTML = '';
   orderedValues.forEach(value => selectEl.add(new Option(value, value)));
   if (!orderedValues.length) return;
   if (previousValue && orderedValues.includes(previousValue)) {
     selectEl.value = previousValue;
+    delete selectEl.dataset.pendingValue;
     return;
   }
   const safeIndex = Math.min(Math.max(fallbackIndex, 0), orderedValues.length - 1);
   selectEl.value = orderedValues[safeIndex];
+  delete selectEl.dataset.pendingValue;
 }
 
 // ===== Unified Error Handler =====
