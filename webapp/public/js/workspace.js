@@ -13,7 +13,7 @@ import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
 
 // Circular-dep imports (safe: only accessed inside function bodies at call time)
-import { createNode, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
+import { createNode, removeNode, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
 import { addReactionRow, getReactionsFromNode } from './model.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, plotROPCloud } from './rop-cloud.js';
@@ -278,10 +278,8 @@ export function applyState(data) {
 
   // 1. Clear existing canvas
   for (const id of Object.keys(nodeRegistry)) {
-    const el = document.getElementById(id);
-    if (el) el.remove();
+    removeNode(id);
   }
-  Object.keys(nodeRegistry).forEach(k => delete nodeRegistry[k]);
   connections.length = 0;
   document.getElementById('svg-layer')?.querySelectorAll('.wire').forEach(w => w.remove());
 
@@ -481,14 +479,22 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
   switch (type) {
     case 'model-builder': {
       if (!data.modelContext) break;
-      info.data.built = data.built !== false;
-      info.data.modelContext = data.modelContext;
+      const cachedModel = data.modelContext.model || null;
+      const cachedQKSymbols = Array.isArray(data.modelContext.qK_syms) && data.modelContext.qK_syms.length
+        ? data.modelContext.qK_syms
+        : cachedModel ? [...(cachedModel.q_sym || []), ...(cachedModel.K_sym || [])] : [];
+      info.data.built = false;
+      info.data.modelContext = cachedModel ? {
+        ...data.modelContext,
+        sessionId: null,
+        model: cachedModel,
+        qK_syms: cachedQKSymbols,
+      } : null;
       const infoEl = document.getElementById(`${nodeId}-model-info`);
       const infoText = document.getElementById(`${nodeId}-model-info-text`);
-      const model = data.modelContext.model;
-      if (infoEl && infoText && model) {
+      if (infoEl && infoText && cachedModel) {
         infoEl.style.display = '';
-        infoText.textContent = `n=${model.n}, d=${model.d}, r=${model.r}\nSpecies: ${model.x_sym.join(', ')}\nTotals: ${model.q_sym.join(', ')}\nConstants: ${model.K_sym.join(', ')}`;
+        infoText.textContent = `n=${cachedModel.n}, d=${cachedModel.d}, r=${cachedModel.r}\nSpecies: ${cachedModel.x_sym.join(', ')}\nTotals: ${cachedModel.q_sym.join(', ')}\nConstants: ${cachedModel.K_sym.join(', ')}\n\nReloaded workspace: run Model Builder to refresh the backend session.`;
       }
       break;
     }

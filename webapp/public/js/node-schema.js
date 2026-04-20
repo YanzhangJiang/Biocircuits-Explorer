@@ -43,8 +43,22 @@ function writeField(nodeId, fd, value) {
   if (value == null) return;
   const el = document.getElementById(`${nodeId}${fd.suffix}`);
   if (!el) return;
-  if (fd.type === 'bool') el.checked = value;
-  else el.value = value;
+  if (fd.type === 'bool') {
+    el.checked = value;
+    return;
+  }
+
+  if (el instanceof HTMLSelectElement) {
+    const stringValue = String(value);
+    el.dataset.pendingValue = stringValue;
+    if (Array.from(el.options).some(option => option.value === stringValue)) {
+      el.value = stringValue;
+      delete el.dataset.pendingValue;
+    }
+    return;
+  }
+
+  el.value = value;
 }
 
 // ===== Generic serialize / restore =================================

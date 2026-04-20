@@ -24,7 +24,14 @@ webapp/atlas_store/
 *.sqlite-shm
 *.sqlite-wal
 
-doc/
+!doc/
+doc/*
+!doc/generate_slice_multidim_math_figure.py
+!doc/slice_multidim_input.md
+!doc/assets/
+doc/assets/*
+!doc/assets/slice_multidim_input_textbook.png
+!doc/assets/slice_multidim_input_textbook.svg
 request_doc/
 
 doc/atlas_behavior_inverse_design_spec.tex

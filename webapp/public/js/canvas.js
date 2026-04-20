@@ -189,11 +189,6 @@ export function findScrollableAncestor(target, stopAt = editor) {
 export function findWheelScrollableAncestor(target, deltaX, deltaY, stopAt = editor) {
   let el = target instanceof Element ? target : null;
   while (el && el !== stopAt) {
-    if (el.classList?.contains('node-body')) {
-      el = el.parentElement;
-      continue;
-    }
-
     const style = window.getComputedStyle(el);
     const canScrollY = ['auto', 'scroll'].includes(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
     const canScrollX = ['auto', 'scroll'].includes(style.overflowX) && el.scrollWidth > el.clientWidth + 1;

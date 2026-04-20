@@ -1,5 +1,5 @@
 import { nodeRegistry } from '../state.js';
-import { api } from '../api.js';
+import { api, syncSelectOptions } from '../api.js';
 import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, hasModelContextForNode, setupAutoUpdate } from '../nodes.js';
 import { computeSISOResult, recomputeSISO, executeQKPolyResult } from '../siso.js';
 
@@ -58,30 +58,11 @@ export const SISO_TYPES = {
       const model = getModelForNode(nodeId);
       const qKSymbols = getQKSymbolsForNode(nodeId);
       const sel = document.getElementById(`${nodeId}-siso-select`);
-      if (sel && qKSymbols.length > 0) {
-        const curVal = sel.value;
-        sel.innerHTML = '';
-        qKSymbols.forEach(s => {
-          const opt = document.createElement('option');
-          opt.value = s; opt.textContent = s;
-          sel.appendChild(opt);
-        });
-        if (curVal && qKSymbols.includes(curVal)) sel.value = curVal;
-        else sel.value = qKSymbols[0];
-      }
+      const savedConfig = nodeRegistry[nodeId]?.data?.config || {};
+      syncSelectOptions(sel, qKSymbols, savedConfig.change_qK ?? sel?.value, 0);
 
       const targetSel = document.getElementById(`${nodeId}-target-x`);
-      if (targetSel && model?.x_sym?.length > 0) {
-        const curVal = targetSel.value;
-        targetSel.innerHTML = '';
-        model.x_sym.forEach(s => {
-          const opt = document.createElement('option');
-          opt.value = s; opt.textContent = s;
-          targetSel.appendChild(opt);
-        });
-        if (curVal && model.x_sym.includes(curVal)) targetSel.value = curVal;
-        else targetSel.value = model.x_sym[0];
-      }
+      syncSelectOptions(targetSel, model?.x_sym || [], savedConfig.observe_x ?? targetSel?.value, 0);
 
       // Store config in node data
       const info = nodeRegistry[nodeId];
