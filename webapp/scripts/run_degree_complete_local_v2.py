@@ -292,7 +292,7 @@ def _write_plan(
             "notes": "The path_only sqlite is the authoritative artifact. It stores only path_record_id and behavior_code in the narrow path_only_records table. Per-family specs and summaries live under meta/ for recovery and audit.",
         },
         "execution_notes": {
-            "streaming_resume": "Streaming runs are treated as fresh-run only. If a streaming summary exists and is not completed, reuse the completed output or rerun into a fresh run_root instead of resuming against the same sqlite.",
+            "streaming_resume": "Streaming runs persist a checkpoint next to the summary. Re-invoking the same family will resume from the latest checkpoint when the summary is incomplete.",
         },
     }
     _write_json(paths["plan_path"], plan)
@@ -400,10 +400,7 @@ def main() -> None:
             if _is_completed_summary(existing_summary):
                 summary = existing_summary
             elif args.scan_mode == "streaming" or _summary_execution_mode(existing_summary) == "streaming":
-                raise RuntimeError(
-                    f"Found incomplete streaming summary at {summary_path}. "
-                    "Streaming mode is fresh-run only; rerun into a fresh run_root or remove the stale summary and partial sqlite first."
-                )
+                summary = _run_scan(julia_bin, args.julia_threads, spec_path, summary_path, args.scan_mode)
             else:
                 summary = _run_scan(julia_bin, args.julia_threads, spec_path, summary_path, args.scan_mode)
         else:
