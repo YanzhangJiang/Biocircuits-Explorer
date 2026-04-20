@@ -17,6 +17,11 @@ function _default_summary_path(spec_path::String)
     return root * ".summary.json"
 end
 
+function _default_checkpoint_path(summary_path::String)
+    root, _ = splitext(summary_path)
+    return root * ".checkpoint.json"
+end
+
 function _env_bool(name::AbstractString, default::Bool=false)::Bool
     value = lowercase(strip(get(ENV, String(name), "")))
     isempty(value) && return default
@@ -25,7 +30,7 @@ function _env_bool(name::AbstractString, default::Bool=false)::Bool
     error("Environment $(name) must be boolean-like, got $(repr(value)).")
 end
 
-function _write_summary(path::String, payload)
+function _write_json_payload(path::String, payload)
     rendered = sprint(io -> JSON3.pretty(io, payload))
     open(path, "w") do io
         write(io, rendered)
@@ -33,7 +38,25 @@ function _write_summary(path::String, payload)
     end
 end
 
+function _write_summary(path::String, payload)
+    _write_json_payload(path, payload)
+end
+
+function _write_checkpoint(path::String, payload)
+    _write_json_payload(path, payload)
+end
+
 function _load_existing_summary(path::String)
+    isfile(path) || return nothing
+    try
+        raw = read(path, String)
+        return BiocircuitsExplorerBackend._materialize(JSON3.read(raw))
+    catch
+        return nothing
+    end
+end
+
+function _load_existing_checkpoint(path::String)
     isfile(path) || return nothing
     try
         raw = read(path, String)
@@ -88,6 +111,185 @@ function _merge_metadata(base_metadata, extra::AbstractDict)
             "streaming_metadata" => rendered_extra,
         )
     end
+end
+
+function _new_state(; wall_t0::Float64=time())
+    return Dict{String, Any}(
+        "wall_t0" => wall_t0,
+        "processed_input_network_count" => 0,
+        "completed_build_network_count" => 0,
+        "unique_network_count" => 0,
+        "successful_network_count" => 0,
+        "failed_network_count" => 0,
+        "excluded_network_count" => 0,
+        "deduplicated_network_count" => 0,
+        "input_graph_slice_count" => 0,
+        "behavior_slice_count" => 0,
+        "regime_record_count" => 0,
+        "transition_record_count" => 0,
+        "family_bucket_count" => 0,
+        "path_record_count" => 0,
+        "skipped_existing_network_count" => 0,
+        "skipped_existing_slice_count" => 0,
+        "network_status_counts" => Dict{String, Int}(),
+        "network_failure_class_counts" => Dict{String, Int}(),
+        "slice_status_counts" => Dict{String, Int}(),
+        "slice_failure_class_counts" => Dict{String, Int}(),
+        "slowest_networks" => Dict{String, Any}[],
+        "flush_count" => 0,
+        "flush_elapsed_seconds" => Float64[],
+        "sqlite_summary" => nothing,
+    )
+end
+
+function _string_int_dict(raw)
+    out = Dict{String, Int}()
+    raw === nothing && return out
+    for (key, value) in pairs(raw)
+        out[String(key)] = Int(value)
+    end
+    return out
+end
+
+function _string_set(raw)
+    out = Set{String}()
+    raw === nothing && return out
+    for item in collect(raw)
+        push!(out, String(item))
+    end
+    return out
+end
+
+function _int_set(raw)
+    out = Set{Int}()
+    raw === nothing && return out
+    for item in collect(raw)
+        push!(out, Int(item))
+    end
+    return out
+end
+
+function _checkpoint_state_payload(state::Dict{String, Any})
+    return Dict(
+        "elapsed_wall_seconds" => max(0.0, time() - Float64(state["wall_t0"])),
+        "processed_input_network_count" => Int(state["processed_input_network_count"]),
+        "completed_build_network_count" => Int(state["completed_build_network_count"]),
+        "unique_network_count" => Int(state["unique_network_count"]),
+        "successful_network_count" => Int(state["successful_network_count"]),
+        "failed_network_count" => Int(state["failed_network_count"]),
+        "excluded_network_count" => Int(state["excluded_network_count"]),
+        "deduplicated_network_count" => Int(state["deduplicated_network_count"]),
+        "input_graph_slice_count" => Int(state["input_graph_slice_count"]),
+        "behavior_slice_count" => Int(state["behavior_slice_count"]),
+        "regime_record_count" => Int(state["regime_record_count"]),
+        "transition_record_count" => Int(state["transition_record_count"]),
+        "family_bucket_count" => Int(state["family_bucket_count"]),
+        "path_record_count" => Int(state["path_record_count"]),
+        "skipped_existing_network_count" => Int(state["skipped_existing_network_count"]),
+        "skipped_existing_slice_count" => Int(state["skipped_existing_slice_count"]),
+        "network_status_counts" => _sorted_counts(state["network_status_counts"]),
+        "network_failure_class_counts" => _sorted_counts(state["network_failure_class_counts"]),
+        "slice_status_counts" => _sorted_counts(state["slice_status_counts"]),
+        "slice_failure_class_counts" => _sorted_counts(state["slice_failure_class_counts"]),
+        "slowest_networks" => BiocircuitsExplorerBackend._materialize(state["slowest_networks"]),
+        "flush_count" => Int(state["flush_count"]),
+        "flush_elapsed_seconds" => Float64[Float64(value) for value in state["flush_elapsed_seconds"]],
+        "sqlite_summary" => state["sqlite_summary"] === nothing ? nothing : BiocircuitsExplorerBackend._materialize(state["sqlite_summary"]),
+    )
+end
+
+function _restore_state_from_checkpoint(raw_state)
+    raw_state isa AbstractDict || return _new_state()
+    elapsed_wall_seconds = Float64(_dict_get(raw_state, "elapsed_wall_seconds", 0.0))
+    state = _new_state(wall_t0=time() - max(0.0, elapsed_wall_seconds))
+
+    for key in (
+        "processed_input_network_count",
+        "completed_build_network_count",
+        "unique_network_count",
+        "successful_network_count",
+        "failed_network_count",
+        "excluded_network_count",
+        "deduplicated_network_count",
+        "input_graph_slice_count",
+        "behavior_slice_count",
+        "regime_record_count",
+        "transition_record_count",
+        "family_bucket_count",
+        "path_record_count",
+        "skipped_existing_network_count",
+        "skipped_existing_slice_count",
+        "flush_count",
+    )
+        state[key] = Int(_dict_get(raw_state, key, state[key]))
+    end
+
+    state["network_status_counts"] = _string_int_dict(_dict_get(raw_state, "network_status_counts", nothing))
+    state["network_failure_class_counts"] = _string_int_dict(_dict_get(raw_state, "network_failure_class_counts", nothing))
+    state["slice_status_counts"] = _string_int_dict(_dict_get(raw_state, "slice_status_counts", nothing))
+    state["slice_failure_class_counts"] = _string_int_dict(_dict_get(raw_state, "slice_failure_class_counts", nothing))
+    state["slowest_networks"] = Dict{String, Any}[Dict{String, Any}(BiocircuitsExplorerBackend._materialize(item)) for item in collect(_dict_get(raw_state, "slowest_networks", Any[]))]
+    state["flush_elapsed_seconds"] = Float64[Float64(value) for value in collect(_dict_get(raw_state, "flush_elapsed_seconds", Float64[]))]
+
+    sqlite_summary = _dict_get(raw_state, "sqlite_summary", nothing)
+    state["sqlite_summary"] = sqlite_summary === nothing ? nothing : Dict{String, Any}(BiocircuitsExplorerBackend._materialize(sqlite_summary))
+    return state
+end
+
+function _record_completed_slice_ids!(completed_slice_ids::Set{String}, built)
+    for slice in collect(_dict_get(built, "behavior_slices", Any[]))
+        slice_id = String(_dict_get(slice, "slice_id", ""))
+        isempty(slice_id) || push!(completed_slice_ids, slice_id)
+    end
+    return completed_slice_ids
+end
+
+function _build_checkpoint_payload(
+    state::Dict{String, Any},
+    spec_path::String,
+    summary_path::String,
+    checkpoint_path::String,
+    started_at::String,
+    status::String,
+    total_network_count::Int,
+    build_network_count::Int,
+    requested_parallelism::Int,
+    resolved_parallelism::Int,
+    flush_network_count::Int,
+    enumeration_summary,
+    sqlite_path,
+    base_existing_slice_ids::Set{String},
+    completed_slice_ids::Set{String},
+    completed_build_network_indices::Set{Int},
+    preprocessed_inputs_applied::Bool,
+    resumed_from_checkpoint::Bool,
+    resume_count::Int,
+)
+    return Dict(
+        "checkpoint_schema_version" => "streaming_resume_v1",
+        "status" => status,
+        "execution_mode" => "streaming",
+        "spec_path" => spec_path,
+        "summary_path" => summary_path,
+        "checkpoint_path" => checkpoint_path,
+        "started_at" => started_at,
+        "updated_at" => _now_timestamp(),
+        "julia_threads" => nthreads(),
+        "network_parallelism_requested" => requested_parallelism,
+        "network_parallelism_resolved" => resolved_parallelism,
+        "flush_network_count" => flush_network_count,
+        "total_network_count" => total_network_count,
+        "build_network_count" => build_network_count,
+        "enumeration" => enumeration_summary,
+        "sqlite_path" => sqlite_path,
+        "state" => _checkpoint_state_payload(state),
+        "base_existing_slice_ids" => sort!(collect(base_existing_slice_ids)),
+        "completed_slice_ids" => sort!(collect(completed_slice_ids)),
+        "completed_build_network_indices" => sort!(collect(completed_build_network_indices)),
+        "preprocessed_inputs_applied" => preprocessed_inputs_applied,
+        "resumed_from_checkpoint" => resumed_from_checkpoint,
+        "resume_count" => resume_count,
+    )
 end
 
 function _new_batch_atlas(
@@ -267,6 +469,7 @@ function _build_run_summary(
     state::Dict{String, Any},
     spec_path::String,
     summary_path::String,
+    checkpoint_path::String,
     started_at::String,
     status::String,
     total_network_count::Int,
@@ -276,12 +479,15 @@ function _build_run_summary(
     flush_network_count::Int,
     enumeration_summary,
     sqlite_path,
+    resumed_from_checkpoint::Bool,
+    resume_count::Int,
 )
     return Dict(
         "status" => status,
         "execution_mode" => "streaming",
         "spec_path" => spec_path,
         "summary_path" => summary_path,
+        "checkpoint_path" => checkpoint_path,
         "started_at" => started_at,
         "updated_at" => _now_timestamp(),
         "elapsed_seconds" => time() - Float64(state["wall_t0"]),
@@ -289,6 +495,8 @@ function _build_run_summary(
         "network_parallelism_requested" => requested_parallelism,
         "network_parallelism_resolved" => resolved_parallelism,
         "flush_network_count" => flush_network_count,
+        "resumed_from_checkpoint" => resumed_from_checkpoint,
+        "resume_count" => resume_count,
         "total_network_count" => total_network_count,
         "build_network_count" => build_network_count,
         "completed_network_count" => Int(state["completed_build_network_count"]),
@@ -333,6 +541,7 @@ function main(args)
     length(args) >= 1 || error("Usage: julia run_atlas_scan_streaming.jl <spec.json> [summary.json]")
     spec_path = abspath(args[1])
     summary_path = length(args) >= 2 ? abspath(args[2]) : _default_summary_path(spec_path)
+    checkpoint_path = _default_checkpoint_path(summary_path)
 
     global_logger(SimpleLogger(stderr, Logging.Warn))
 
@@ -346,13 +555,30 @@ function main(args)
         (spec["source_metadata"] = BiocircuitsExplorerBackend._materialize(JSON3.read(ENV["ATLAS_SOURCE_METADATA_JSON"])))
 
     existing_summary = _load_existing_summary(summary_path)
+    existing_checkpoint = _load_existing_checkpoint(checkpoint_path)
     if existing_summary isa AbstractDict
         if _dict_get(existing_summary, "status", nothing) == "completed"
             println(sprint(io -> JSON3.pretty(io, existing_summary)))
             return existing_summary
         end
-        error("Streaming atlas scans are not resumable yet. Found incomplete summary at $(summary_path). Use a fresh run root or remove the stale summary and partial sqlite before rerunning.")
+        existing_checkpoint isa AbstractDict ||
+            error("Found incomplete streaming summary at $(summary_path), but no checkpoint exists at $(checkpoint_path).")
     end
+
+    if existing_checkpoint isa AbstractDict
+        checkpoint_execution_mode = String(_dict_get(existing_checkpoint, "execution_mode", "streaming"))
+        checkpoint_execution_mode == "streaming" ||
+            error("Checkpoint at $(checkpoint_path) is not for streaming execution mode.")
+
+        checkpoint_spec_path = _dict_get(existing_checkpoint, "spec_path", nothing)
+        checkpoint_spec_path === nothing || abspath(String(checkpoint_spec_path)) == spec_path ||
+            error("Checkpoint at $(checkpoint_path) was created for a different spec: $(checkpoint_spec_path)")
+
+        checkpoint_summary_path = _dict_get(existing_checkpoint, "summary_path", nothing)
+        checkpoint_summary_path === nothing || abspath(String(checkpoint_summary_path)) == summary_path ||
+            error("Checkpoint at $(checkpoint_path) was created for a different summary: $(checkpoint_summary_path)")
+    end
+    resume_checkpoint = existing_checkpoint isa AbstractDict ? existing_checkpoint : nothing
 
     search_profile = BiocircuitsExplorerBackend.atlas_search_profile_from_raw(_dict_get(spec, "search_profile", nothing))
     behavior_config = BiocircuitsExplorerBackend.atlas_behavior_config_from_raw(_dict_get(spec, "behavior_config", nothing))
@@ -385,37 +611,31 @@ function main(args)
     pruned_against_library = skip_existing && library !== nothing
     pruned_against_sqlite = skip_existing && sqlite_path !== nothing
 
-    state = Dict{String, Any}(
-        "wall_t0" => time(),
-        "processed_input_network_count" => 0,
-        "completed_build_network_count" => 0,
-        "unique_network_count" => 0,
-        "successful_network_count" => 0,
-        "failed_network_count" => 0,
-        "excluded_network_count" => 0,
-        "deduplicated_network_count" => 0,
-        "input_graph_slice_count" => 0,
-        "behavior_slice_count" => 0,
-        "regime_record_count" => 0,
-        "transition_record_count" => 0,
-        "family_bucket_count" => 0,
-        "path_record_count" => 0,
-        "skipped_existing_network_count" => 0,
-        "skipped_existing_slice_count" => 0,
-        "network_status_counts" => Dict{String, Int}(),
-        "network_failure_class_counts" => Dict{String, Int}(),
-        "slice_status_counts" => Dict{String, Int}(),
-        "slice_failure_class_counts" => Dict{String, Int}(),
-        "slowest_networks" => Dict{String, Any}[],
-        "flush_count" => 0,
-        "flush_elapsed_seconds" => Float64[],
-        "sqlite_summary" => nothing,
-    )
-
-    existing_slice_ids = skip_existing ? BiocircuitsExplorerBackend._library_existing_ok_slice_ids(library) : Set{String}()
+    base_existing_slice_ids = skip_existing ? BiocircuitsExplorerBackend._library_existing_ok_slice_ids(library) : Set{String}()
     if pruned_against_sqlite
-        union!(existing_slice_ids, BiocircuitsExplorerBackend.atlas_sqlite_existing_ok_slice_ids(String(sqlite_path)))
+        union!(base_existing_slice_ids, BiocircuitsExplorerBackend.atlas_sqlite_existing_ok_slice_ids(String(sqlite_path)))
     end
+
+    state = _new_state()
+    completed_slice_ids = Set{String}()
+    completed_build_network_indices = Set{Int}()
+    preprocessed_inputs_applied = false
+    resumed_from_checkpoint = false
+    resume_count = 0
+
+    if resume_checkpoint isa AbstractDict
+        state = _restore_state_from_checkpoint(_dict_get(resume_checkpoint, "state", nothing))
+        started_at = String(_dict_get(resume_checkpoint, "started_at", started_at))
+        base_existing_slice_ids = _string_set(_dict_get(resume_checkpoint, "base_existing_slice_ids", nothing))
+        completed_slice_ids = _string_set(_dict_get(resume_checkpoint, "completed_slice_ids", nothing))
+        completed_build_network_indices = _int_set(_dict_get(resume_checkpoint, "completed_build_network_indices", nothing))
+        preprocessed_inputs_applied = Bool(_dict_get(resume_checkpoint, "preprocessed_inputs_applied", false))
+        resumed_from_checkpoint = true
+        resume_count = Int(_dict_get(resume_checkpoint, "resume_count", 0)) + 1
+    end
+
+    existing_slice_ids = copy(base_existing_slice_ids)
+    union!(existing_slice_ids, completed_slice_ids)
 
     prepared_jobs = Any[]
     build_jobs = Any[]
@@ -426,19 +646,22 @@ function main(args)
         job = BiocircuitsExplorerBackend._prepare_network_build_job(raw_network, network_idx, search_profile)
 
         if Bool(job.validation["valid"]) && job.canonical_code in seen_networks
-            duplicate = Dict(
-                "source_label" => String(BiocircuitsExplorerBackend._raw_get(raw_network, :label, job.canonical_code)),
-                "duplicate_of_network_id" => job.canonical_code,
-                "reactions" => job.rules,
-            )
-            push!(duplicate_inputs, duplicate)
-            state["processed_input_network_count"] = Int(state["processed_input_network_count"]) + 1
-            state["deduplicated_network_count"] = Int(state["deduplicated_network_count"]) + 1
+            if !preprocessed_inputs_applied
+                duplicate = Dict(
+                    "source_label" => String(BiocircuitsExplorerBackend._raw_get(raw_network, :label, job.canonical_code)),
+                    "duplicate_of_network_id" => job.canonical_code,
+                    "reactions" => job.rules,
+                )
+                push!(duplicate_inputs, duplicate)
+                state["processed_input_network_count"] = Int(state["processed_input_network_count"]) + 1
+                state["deduplicated_network_count"] = Int(state["deduplicated_network_count"]) + 1
+            end
             continue
         end
 
         if Bool(job.validation["valid"])
             push!(seen_networks, job.canonical_code)
+            Int(job.network_idx) in completed_build_network_indices && continue
             push!(prepared_jobs, (
                 kind=:build,
                 network_idx=network_idx,
@@ -446,38 +669,108 @@ function main(args)
             ))
             push!(build_jobs, job)
         else
-            push!(prepared_jobs, (
-                kind=:invalid,
-                network_idx=network_idx,
-                network_entry=job.network_entry,
-            ))
-            state["processed_input_network_count"] = Int(state["processed_input_network_count"]) + 1
-            _record_network_entry!(state, job.network_entry)
+            if !preprocessed_inputs_applied
+                push!(prepared_jobs, (
+                    kind=:invalid,
+                    network_idx=network_idx,
+                    network_entry=job.network_entry,
+                ))
+                state["processed_input_network_count"] = Int(state["processed_input_network_count"]) + 1
+                _record_network_entry!(state, job.network_entry)
+            end
         end
     end
 
     resolved_parallelism = BiocircuitsExplorerBackend._resolve_network_parallelism(requested_parallelism, length(build_jobs))
-    initial_summary = _build_run_summary(
-        state,
-        spec_path,
-        summary_path,
-        started_at,
-        discover_only ? "planned" : "running",
-        length(network_specs),
-        length(build_jobs),
-        requested_parallelism,
-        resolved_parallelism,
-        flush_network_count,
-        enumeration_summary,
-        sqlite_path,
-    )
-    _write_summary(summary_path, initial_summary)
+    function write_progress!(status::String)
+        summary = _build_run_summary(
+            state,
+            spec_path,
+            summary_path,
+            checkpoint_path,
+            started_at,
+            status,
+            length(network_specs),
+            length(build_jobs),
+            requested_parallelism,
+            resolved_parallelism,
+            flush_network_count,
+            enumeration_summary,
+            sqlite_path,
+            resumed_from_checkpoint,
+            resume_count,
+        )
+        _write_summary(summary_path, summary)
+        checkpoint = _build_checkpoint_payload(
+            state,
+            spec_path,
+            summary_path,
+            checkpoint_path,
+            started_at,
+            status,
+            length(network_specs),
+            length(build_jobs),
+            requested_parallelism,
+            resolved_parallelism,
+            flush_network_count,
+            enumeration_summary,
+            sqlite_path,
+            base_existing_slice_ids,
+            completed_slice_ids,
+            completed_build_network_indices,
+            preprocessed_inputs_applied,
+            resumed_from_checkpoint,
+            resume_count,
+        )
+        _write_checkpoint(checkpoint_path, checkpoint)
+        return summary
+    end
+
+    initial_summary = write_progress!(discover_only ? "planned" : "running")
 
     if discover_only
-        initial_summary["finished_at"] = _now_timestamp()
-        _write_summary(summary_path, initial_summary)
-        println(sprint(io -> JSON3.pretty(io, initial_summary)))
-        return initial_summary
+        completed_summary = _build_run_summary(
+            state,
+            spec_path,
+            summary_path,
+            checkpoint_path,
+            started_at,
+            "completed",
+            length(network_specs),
+            length(build_jobs),
+            requested_parallelism,
+            resolved_parallelism,
+            flush_network_count,
+            enumeration_summary,
+            sqlite_path,
+            resumed_from_checkpoint,
+            resume_count,
+        )
+        completed_summary["finished_at"] = _now_timestamp()
+        _write_summary(summary_path, completed_summary)
+        _write_checkpoint(checkpoint_path, _build_checkpoint_payload(
+            state,
+            spec_path,
+            summary_path,
+            checkpoint_path,
+            started_at,
+            "completed",
+            length(network_specs),
+            length(build_jobs),
+            requested_parallelism,
+            resolved_parallelism,
+            flush_network_count,
+            enumeration_summary,
+            sqlite_path,
+            base_existing_slice_ids,
+            completed_slice_ids,
+            completed_build_network_indices,
+            preprocessed_inputs_applied,
+            resumed_from_checkpoint,
+            resume_count,
+        ))
+        println(sprint(io -> JSON3.pretty(io, completed_summary)))
+        return completed_summary
     end
 
     batch_atlas = _new_batch_atlas(
@@ -534,6 +827,7 @@ function main(args)
         end
         push!(state["flush_elapsed_seconds"], time() - flush_t0)
         state["flush_count"] = flush_index
+        preprocessed_inputs_applied = true
 
         batch_atlas = _new_batch_atlas(
             search_profile,
@@ -601,24 +895,13 @@ function main(args)
 
             _record_built_result!(state, job, built, elapsed_seconds, worker_index)
             _append_built_result!(batch_atlas, built)
+            push!(completed_build_network_indices, Int(job.network_idx))
+            _record_completed_slice_ids!(completed_slice_ids, built)
             batch_build_result_count += 1
 
             if batch_build_result_count >= flush_network_count
                 flush_batch!()
-                _write_summary(summary_path, _build_run_summary(
-                    state,
-                    spec_path,
-                    summary_path,
-                    started_at,
-                    "running",
-                    length(network_specs),
-                    length(build_jobs),
-                    requested_parallelism,
-                    resolved_parallelism,
-                    flush_network_count,
-                    enumeration_summary,
-                    sqlite_path,
-                ))
+                write_progress!("running")
             end
         end
 
@@ -631,6 +914,7 @@ function main(args)
         state,
         spec_path,
         summary_path,
+        checkpoint_path,
         started_at,
         "completed",
         length(network_specs),
@@ -640,9 +924,32 @@ function main(args)
         flush_network_count,
         enumeration_summary,
         sqlite_path,
+        resumed_from_checkpoint,
+        resume_count,
     )
     completed_summary["finished_at"] = _now_timestamp()
     _write_summary(summary_path, completed_summary)
+    _write_checkpoint(checkpoint_path, _build_checkpoint_payload(
+        state,
+        spec_path,
+        summary_path,
+        checkpoint_path,
+        started_at,
+        "completed",
+        length(network_specs),
+        length(build_jobs),
+        requested_parallelism,
+        resolved_parallelism,
+        flush_network_count,
+        enumeration_summary,
+        sqlite_path,
+        base_existing_slice_ids,
+        completed_slice_ids,
+        completed_build_network_indices,
+        preprocessed_inputs_applied,
+        resumed_from_checkpoint,
+        resume_count,
+    ))
     println(sprint(io -> JSON3.pretty(io, completed_summary)))
     return completed_summary
 end
