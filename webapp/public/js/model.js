@@ -61,6 +61,7 @@ export function addReactionRow(nodeId, rule = '', kd = 1e-3) {
 export async function buildModel(modelBuilderNodeId, options = {}) {
   const shouldTriggerDownstream = options.triggerDownstream !== false;
   const throwOnFailure = options.throwOnFailure === true;
+  const buildToken = Symbol(`build-model-${modelBuilderNodeId}`);
   const fail = (message) => {
     showToast(message);
     if (throwOnFailure) {
@@ -82,9 +83,16 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     return fail('Model Builder requires Kd for every reaction (> 0)');
   }
 
+  if (nodeRegistry[modelBuilderNodeId]) {
+    nodeRegistry[modelBuilderNodeId]._buildToken = buildToken;
+  }
   setNodeLoading(modelBuilderNodeId, true);
   try {
     const data = await api('build_model', { reactions, kd: kds });
+    const liveInfo = nodeRegistry[modelBuilderNodeId];
+    if (!liveInfo || liveInfo._buildToken !== buildToken) {
+      return false;
+    }
     const modelContext = {
       sessionId: data.session_id,
       model: data,
@@ -104,8 +112,9 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
 
     // Store model builder node reference
-    nodeRegistry[modelBuilderNodeId].data.built = true;
-    nodeRegistry[modelBuilderNodeId].data.modelContext = modelContext;
+    liveInfo.data = liveInfo.data || {};
+    liveInfo.data.built = true;
+    liveInfo.data.modelContext = modelContext;
 
     showToast('Model built successfully');
     commitWorkspaceSnapshot('model-built');
@@ -122,6 +131,9 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
     return false;
   } finally {
+    if (nodeRegistry[modelBuilderNodeId]?._buildToken === buildToken) {
+      delete nodeRegistry[modelBuilderNodeId]._buildToken;
+    }
     setNodeLoading(modelBuilderNodeId, false);
   }
 }

@@ -1,6 +1,9 @@
 using Test
 using BiocircuitsExplorerBackend
+using BindingAndCatalysis
 using Logging
+using HTTP
+using JSON3
 
 const SIMPLE_NETWORK = Dict(
     "label" => "monomer_dimer",
@@ -33,6 +36,16 @@ const HIGH_NULLITY_NETWORK = Dict(
     "output_symbols" => Any["A"],
 )
 
+const HOMOMER_MIXED_NETWORK = Dict(
+    "label" => "homomer_mixed",
+    "reactions" => Any[
+        "A + A <-> C_A_A",
+        "A + B <-> C_A_B",
+    ],
+    "input_symbols" => Any["tA"],
+    "output_symbols" => Any["C_A_A"],
+)
+
 const ORTHANT_NETWORK = Dict(
     "label" => "orthant_dimer",
     "reactions" => Any["A + B <-> AB"],
@@ -62,6 +75,18 @@ const D4_REGRESSION_NETWORK = Dict(
         ),
     ],
     "output_symbols" => Any["A"],
+)
+
+const EMPTY_PATH_REGRESSION_NETWORK = Dict(
+    "label" => "complex_growth_empty_path_regression",
+    "reactions" => Any[
+        "A + A <-> C_A_A",
+        "A + C_A_A_B <-> C_A_A_A_B",
+        "B + C_A_A <-> C_A_A_B",
+        "B + C_A_A_A_B <-> C_A_A_A_B_B",
+    ],
+    "input_symbols" => Any["tA"],
+    "output_symbols" => Any["C_A_A_A_B_B"],
 )
 
 struct ThrowingLogger <: AbstractLogger end
@@ -142,6 +167,23 @@ end
     withenv("BIOCIRCUITS_EXPLORER_PARENT_PID" => "bad", "ROP_PARENT_PID" => "") do
         @test BiocircuitsExplorerBackend.configured_parent_pid() === nothing
     end
+end
+
+@testset "Router Guards Static And API Errors" begin
+    traversal = router(HTTP.Request("GET", "/../Project.toml"))
+    malformed = router(HTTP.Request("POST", "/api/build_model", ["Content-Type" => "application/json"], "{"))
+    missing_field = router(HTTP.Request("POST", "/api/build_model", ["Content-Type" => "application/json"], JSON3.write(Dict(
+        "kd" => Any[1.0],
+    ))))
+    wrong_method = router(HTTP.Request("GET", "/api/build_model"))
+
+    @test traversal.status == 404
+    @test malformed.status == 400
+    @test occursin("Invalid JSON", String(malformed.body))
+    @test missing_field.status == 400
+    @test occursin("reactions", String(missing_field.body))
+    @test wrong_method.status == 405
+    @test occursin("Method not allowed", String(wrong_method.body))
 end
 
 @testset "Unsupported Query Scope" begin
@@ -366,6 +408,95 @@ end
     end
 end
 
+@testset "SQLite Append Atlas Reconstructs Library" begin
+    mktempdir() do tmpdir
+        sqlite_path = joinpath(tmpdir, "atlas_append.sqlite")
+        atlas = build_behavior_atlas_from_spec(Dict(
+            "networks" => Any[SIMPLE_NETWORK, ALT_NETWORK],
+            "behavior_config" => Dict(
+                "include_path_records" => true,
+            ),
+        ))
+
+        summary = atlas_sqlite_append_atlas!(sqlite_path, atlas;
+            source_label="sqlite_append_test",
+            library_label="append_only_library",
+        )
+        loaded = atlas_sqlite_load_library(sqlite_path)
+        query = Dict(
+            "input_symbols" => Any["tA"],
+            "output_symbols" => Any["AB"],
+            "limit" => 5,
+        )
+        in_memory = query_behavior_atlas(atlas, query)
+        via_inverse = run_inverse_design_from_spec(Dict(
+            "sqlite_path" => sqlite_path,
+            "query" => query,
+            "inverse_design" => Dict(
+                "build_library_if_missing" => false,
+                "return_library" => false,
+                "return_delta_atlas" => false,
+            ),
+        ))
+
+        @test atlas_sqlite_has_library(sqlite_path) == true
+        @test summary["atlas_count"] == 1
+        @test atlas_sqlite_summary(sqlite_path)["atlas_count"] == 1
+        @test loaded["atlas_count"] == 1
+        @test loaded["library_label"] == "append_only_library"
+        @test loaded["unique_network_count"] == atlas["unique_network_count"]
+        @test length(loaded["behavior_slices"]) == length(atlas["behavior_slices"])
+        @test via_inverse["build_source_mode"] == "sqlite_library"
+        @test via_inverse["query_result"]["result_count"] == in_memory["result_count"] == 1
+        @test via_inverse["query_result"]["results"][1]["network_id"] == in_memory["results"][1]["network_id"]
+        @test via_inverse["query_result"]["results"][1]["slice_id"] == in_memory["results"][1]["slice_id"]
+    end
+end
+
+@testset "Prune SQLite Uses Lightweight Runtime Persist" begin
+    mktempdir() do tmpdir
+        sqlite_path = joinpath(tmpdir, "atlas_prune.sqlite")
+        db = BiocircuitsExplorerBackend.atlas_sqlite_connect(sqlite_path)
+        try
+            BiocircuitsExplorerBackend._atlas_sqlite_set_metadata!(db, "prune_only_sqlite", "true")
+        finally
+            BiocircuitsExplorerBackend.SQLite.close(db)
+        end
+
+        atlas = build_behavior_atlas_from_spec(Dict(
+            "networks" => Any[SIMPLE_NETWORK, ALT_NETWORK],
+            "behavior_config" => Dict(
+                "include_path_records" => true,
+            ),
+        ))
+
+        summary = atlas_sqlite_merge_atlas!(sqlite_path, atlas; source_label="sqlite_prune_test")
+        loaded = atlas_sqlite_load_library(sqlite_path)
+        prefiltered = BiocircuitsExplorerBackend.atlas_sqlite_load_query_corpus(sqlite_path, Dict(
+            "input_symbols" => Any["tA"],
+            "output_symbols" => Any["AB"],
+        ))
+
+        @test summary["behavior_slice_count"] == length(atlas["behavior_slices"])
+        @test summary["regime_record_count"] == length(atlas["regime_records"])
+        @test summary["family_bucket_count"] == length(atlas["family_buckets"])
+        @test summary["transition_record_count"] == 0
+        @test summary["path_record_count"] == 0
+        @test atlas_sqlite_summary(sqlite_path)["path_record_count"] == 0
+        @test length(loaded["transition_records"]) == 0
+        @test length(loaded["path_records"]) == 0
+        @test length(prefiltered["behavior_slices"]) == 1
+        @test prefiltered["behavior_slices"][1]["output_symbol"] == "AB"
+
+        db = BiocircuitsExplorerBackend.atlas_sqlite_connect(sqlite_path)
+        try
+            @test BiocircuitsExplorerBackend._atlas_sqlite_metadata_text(db, "persist_mode") == "lightweight"
+        finally
+            BiocircuitsExplorerBackend.SQLite.close(db)
+        end
+    end
+end
+
 @testset "Change Expansion Generates Axis And Orthant Slices" begin
     atlas = build_behavior_atlas_from_spec(Dict(
         "networks" => Any[DUAL_INPUT_NETWORK],
@@ -455,6 +586,164 @@ end
     @test length(networks) == 1
     @test networks[1][:reactions] == ["A + B + C <-> C_A_B_C"]
     @test summary["generated_network_count"] == 1
+end
+
+@testset "Homomeric Templates Validate and Build" begin
+    profile = AtlasSearchProfile(
+        name="homomer_scan",
+        slice_mode=:change,
+        input_mode=:totals_only,
+        allow_homomeric_templates=true,
+        max_homomer_order=3,
+        max_support=3,
+        max_reactions=5,
+    )
+
+    dimer_validation = BiocircuitsExplorerBackend.validate_rules_against_profile(["A + A <-> AA"], profile)
+    trimer_validation = BiocircuitsExplorerBackend.validate_rules_against_profile(["A + A + A <-> AAA"], profile)
+
+    @test dimer_validation["valid"] == true
+    @test trimer_validation["valid"] == true
+    @test dimer_validation["metrics"]["max_support"] == 2
+    @test trimer_validation["metrics"]["max_support"] == 3
+    @test dimer_validation["supports"][:AA] == [:A, :A]
+    @test trimer_validation["supports"][:AAA] == [:A, :A, :A]
+
+    atlas = build_behavior_atlas_from_spec(Dict(
+        "search_profile" => Dict(
+            "name" => "homomer_scan",
+            "slice_mode" => "change",
+            "input_mode" => "totals_only",
+            "allow_homomeric_templates" => true,
+            "max_homomer_order" => 3,
+        ),
+        "networks" => Any[HOMOMER_MIXED_NETWORK],
+        "behavior_config" => Dict(
+            "compute_volume" => false,
+            "include_path_records" => false,
+            "min_volume_mean" => 0.0,
+        ),
+    ))
+
+    @test atlas["successful_network_count"] == 1
+    @test length(atlas["behavior_slices"]) == 1
+    @test only(atlas["behavior_slices"])["output_symbol"] == "C_A_A"
+end
+
+@testset "Pairwise Plus Homomeric Enumeration Includes AA and AAA" begin
+    profile = AtlasSearchProfile(
+        name="pairwise_plus_homomeric_scan",
+        slice_mode=:change,
+        input_mode=:totals_only,
+        allow_homomeric_templates=true,
+        max_homomer_order=3,
+        max_support=3,
+        max_reactions=5,
+    )
+    spec = AtlasEnumerationSpec(
+        mode=:pairwise_plus_homomeric,
+        base_species_counts=[2],
+        min_reactions=2,
+        max_reactions=2,
+        min_template_order=2,
+        max_template_order=3,
+    )
+
+    networks, summary = enumerate_network_specs(spec; search_profile=profile)
+    rendered = Set(Tuple(sort(String.(network[:reactions]))) for network in networks)
+
+    @test ("A + A <-> C_A_A", "B + B <-> C_B_B") in rendered
+    @test ("A + A + A <-> C_A_A_A", "B + B <-> C_B_B") in rendered
+    @test summary["generated_network_count"] == length(networks)
+end
+
+@testset "Pairwise Plus Homomeric Enumeration Supports Tetramer Filter" begin
+    profile = AtlasSearchProfile(
+        name="pairwise_plus_homomeric_tetramer_scan",
+        slice_mode=:change,
+        input_mode=:totals_only,
+        allow_homomeric_templates=true,
+        max_homomer_order=4,
+        max_support=4,
+        max_reactions=5,
+        max_base_species=1,
+    )
+    spec = AtlasEnumerationSpec(
+        mode=:pairwise_plus_homomeric,
+        base_species_counts=[1],
+        min_reactions=1,
+        max_reactions=1,
+        min_template_order=2,
+        max_template_order=4,
+        require_homomeric_template=true,
+        require_product_support_at_least=4,
+    )
+
+    networks, summary = enumerate_network_specs(spec; search_profile=profile)
+    rendered = Set(Tuple(sort(String.(network[:reactions]))) for network in networks)
+
+    @test ("A + A + A + A <-> C_A_A_A_A",) in rendered
+    @test !any(any(occursin("C_A_A", rule) && !occursin("C_A_A_A_A", rule) for rule in reaction_set) for reaction_set in rendered)
+    @test summary["generated_network_count"] == length(networks) >= 1
+end
+
+@testset "Complex-Growth Enumeration Includes AB Plus C To ABC" begin
+    profile = AtlasSearchProfile(
+        name="complex_growth_scan",
+        slice_mode=:change,
+        input_mode=:totals_only,
+        allow_homomeric_templates=true,
+        allow_higher_order_templates=true,
+        max_homomer_order=3,
+        max_support=3,
+        max_reactions=5,
+        max_base_species=3,
+    )
+    spec = AtlasEnumerationSpec(
+        mode=:complex_growth_binding,
+        base_species_counts=[3],
+        min_reactions=2,
+        max_reactions=2,
+        max_template_order=3,
+        require_complex_growth_template=true,
+        require_product_support_at_least=3,
+    )
+
+    networks, summary = enumerate_network_specs(spec; search_profile=profile)
+    rendered = Set(Tuple(sort(String.(network[:reactions]))) for network in networks)
+
+    @test ("A + B <-> C_A_B", "C + C_A_B <-> C_A_B_C") in rendered
+    @test summary["generated_network_count"] == length(networks) >= 1
+end
+
+@testset "Complex-Growth Enumeration Includes Tetrameric Homomer Growth" begin
+    profile = AtlasSearchProfile(
+        name="complex_growth_homomer_scan",
+        slice_mode=:change,
+        input_mode=:totals_only,
+        allow_homomeric_templates=true,
+        allow_higher_order_templates=true,
+        max_homomer_order=4,
+        max_support=4,
+        max_reactions=5,
+        max_base_species=1,
+    )
+    spec = AtlasEnumerationSpec(
+        mode=:complex_growth_binding,
+        base_species_counts=[1],
+        min_reactions=2,
+        max_reactions=2,
+        max_template_order=4,
+        require_homomeric_template=true,
+        require_complex_growth_template=true,
+        require_product_support_at_least=4,
+    )
+
+    networks, summary = enumerate_network_specs(spec; search_profile=profile)
+    rendered = Set(Tuple(sort(String.(network[:reactions]))) for network in networks)
+
+    @test ("A + A <-> C_A_A", "C_A_A + C_A_A <-> C_A_A_A_A") in rendered
+    @test summary["generated_network_count"] == length(networks) >= 1
 end
 
 @testset "Parallel Network Build Matches Serial Build" begin
@@ -574,6 +863,90 @@ end
         ))
         @test rerun["skipped_existing_slice_count"] == 1
     end
+end
+
+@testset "Nullity-One Vertices Expose H0 While Higher Nullity Stays Guarded" begin
+    model, _, _, _ = BiocircuitsExplorerBackend.build_model(["A + B <-> AB"], [1.0])
+    find_all_vertices!(model)
+
+    nullity_one_idx = first(filter(i -> get_nullity(model, i) == 1, 1:n_vertices(model)))
+    H, H0 = get_H_H0(model, nullity_one_idx)
+    exprs = show_expression_x(model, nullity_one_idx; log_space=true)
+
+    @test size(H) == (3, 3)
+    @test length(H0) == 3
+    @test !isempty(H0)
+    @test length(exprs) == 3
+
+    high_model, _, _, _ = BiocircuitsExplorerBackend.build_model(Vector{String}(HIGH_NULLITY_NETWORK["reactions"]), ones(length(HIGH_NULLITY_NETWORK["reactions"])))
+    find_all_vertices!(high_model)
+    high_nullity_idx = first(filter(i -> get_nullity(high_model, i) > 1, 1:n_vertices(high_model)))
+    @test_logs (:error, r"nullity is bigger than 1") isnothing(get_H_H0(high_model, high_nullity_idx))
+end
+
+@testset "High-Nullity qK Conditions Render Nonempty And Cleanly" begin
+    high_model, _, _, _ = BiocircuitsExplorerBackend.build_model(Vector{String}(HIGH_NULLITY_NETWORK["reactions"]), ones(length(HIGH_NULLITY_NETWORK["reactions"])))
+    find_all_vertices!(high_model)
+    high_nullity_idx = first(filter(i -> get_nullity(high_model, i) > 1, 1:n_vertices(high_model)))
+
+    cond_log = show_condition_qK(high_model, high_nullity_idx)
+    cond_lin = show_condition_qK(high_model, high_nullity_idx; log_space=false)
+
+    @test get_nullity(high_model, high_nullity_idx) == 2
+    @test !isempty(cond_log)
+    @test !isempty(cond_lin)
+    @test all(c -> !occursin(".0", string(c)), cond_lin)
+end
+
+@testset "Leading Singular Tokens Deduplicate Without Crashing" begin
+    scalar_path = [NaN, NaN, 1.0, 1.0, NaN, 0.0, 0.0]
+    @test isequal(BindingAndCatalysis._dedup(scalar_path), [NaN, 1.0, NaN, 0.0])
+    @test isequal(BindingAndCatalysis._dedup([NaN, NaN]), [NaN])
+
+    vector_path = [
+        [NaN, NaN],
+        [NaN, NaN],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [NaN, NaN],
+        [0.0, -1.0],
+        [0.0, -1.0],
+    ]
+    @test isequal(BindingAndCatalysis._dedup(vector_path), [
+        [NaN, NaN],
+        [1.0, 0.0],
+        [NaN, NaN],
+        [0.0, -1.0],
+    ])
+    @test isequal(BindingAndCatalysis._dedup([[NaN, NaN], [NaN, NaN]]), [[NaN, NaN]])
+end
+
+@testset "Empty Path Polyhedra Do Not Crash Complex-Growth Materialization" begin
+    atlas = build_behavior_atlas_from_spec(Dict(
+        "networks" => Any[EMPTY_PATH_REGRESSION_NETWORK],
+        "search_profile" => Dict(
+            "mode" => "complex_growth_binding",
+            "allow_homomeric_templates" => true,
+            "allow_higher_order_templates" => true,
+            "require_complex_growth_template" => true,
+            "max_support" => 8,
+            "input_mode" => "totals_only",
+            "max_reactions" => 5,
+        ),
+        "behavior_config" => Dict(
+            "compute_volume" => false,
+            "include_path_records" => false,
+            "min_volume_mean" => 0.0,
+        ),
+    ))
+
+    @test atlas["successful_network_count"] == 1
+    @test atlas["failed_network_count"] == 0
+
+    network = only(atlas["network_entries"])
+    @test network["analysis_status"] == "ok"
+    @test network["build_state"] == "complete"
+    @test network["failure_classes"] == String[]
 end
 
 @testset "Orthant Change Slice Builds In Graph-Only Mode" begin

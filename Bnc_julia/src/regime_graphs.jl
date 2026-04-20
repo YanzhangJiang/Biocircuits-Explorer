@@ -315,27 +315,29 @@ end
 
 
 
-"""
-    _calc_polyhedra_for_path(model::Bnc, paths, change_qK_indices) -> Vector{Polyhedron}
+_clean_polyhedron_if_possible(p) = p isa Polyhedron ? (detecthlinearity!(p); removehredundancy!(p); p) : p
 
-Compute qK-space polyhedra for each regime path.
+"""
+    _calc_polyhedra_for_path(model::Bnc, paths, change_qK_indices) -> Vector
+
+Compute qK-space polyhedra for each regime path. Paths whose feasible region is
+empty keep the empty-set object instead of throwing during conversion.
 """
 function _calc_polyhedra_for_path(
     model::Bnc,
     paths::AbstractVector{<:AbstractVector{<:Integer}},
     change_qK_indices::AbstractVector{<:Integer},
-)::Vector{Union{Nothing, Polyhedron}}
+)::Vector{Any}
 
     el_dim = BitSet(Int[idx for idx in change_qK_indices])
     projected_cleanup = length(change_qK_indices) == 1
 
-    clean!(p::Polyhedron) = (detecthlinearity!(p); removehredundancy!(p); p)
     #dict: node: polyhedron 
     node_polyhedra = let
                         unique_rgms = unique(vcat(paths...))
                         dic = Dict{Int,Polyhedron}()
                         for r in unique_rgms
-                            pr = get_polyhedron(model, r) |> clean!
+                            pr = _clean_polyhedron_if_possible(get_polyhedron(model, r))
                             dic[Int(r)] = pr        
                         end
                         dic
@@ -369,13 +371,19 @@ function _calc_polyhedra_for_path(
     # -------------------------
 
     edge_poly = let 
-        edge_poly = Vector{Polyhedron}(undef, length(edge_dict))
+        edge_poly = Vector{Any}(undef, length(edge_dict))
         @info "Start building polyhedra for edges (total: $(length(edge_dict)))"
         @showprogress Threads.@threads  for i in eachindex(edges)
             (u, v) = edges[i]
-            p = intersect(node_polyhedra[u], node_polyhedra[v]) |> clean!
+            p = intersect(node_polyhedra[u], node_polyhedra[v])
+            if isempty(p)
+                edge_poly[i] = p
+                continue
+            end
+
+            p = _clean_polyhedron_if_possible(p)
             q = eliminate(p, el_dim)
-            edge_poly[i] = projected_cleanup ? clean!(q) : q
+            edge_poly[i] = projected_cleanup ? _clean_polyhedron_if_possible(q) : q
         end
         edge_poly
     end
@@ -397,11 +405,18 @@ function _calc_polyhedra_for_path(
 
     
 
-    out = Vector{Polyhedron}(undef, length(edge_paths))
+    out = Vector{Any}(undef, length(edge_paths))
     @info "Start building polyhedra for paths (total: $(length(edge_paths)))"
     @showprogress Threads.@threads for i in eachindex(edge_paths)
-        p = intersect(edge_poly[edge_paths[i]]...)
-        out[i] = projected_cleanup ? clean!(p) : p
+        path_edge_polys = edge_poly[edge_paths[i]]
+        empty_idx = findfirst(isempty, path_edge_polys)
+        if !isnothing(empty_idx)
+            out[i] = path_edge_polys[empty_idx]
+            continue
+        end
+
+        p = intersect(path_edge_polys...)
+        out[i] = isempty(p) ? p : (projected_cleanup ? _clean_polyhedron_if_possible(p) : p)
     end
     return out
 end
@@ -821,11 +836,11 @@ get_idx(grh::AbstractChangePaths, pth::Integer) = pth
 
 
 """
-    get_polyhedra(grh::AbstractChangePaths, pth_idx=nothing) -> Vector{Polyhedron}
+    get_polyhedra(grh::AbstractChangePaths, pth_idx=nothing) -> Vector
 
 Return polyhedra for selected SISO paths.
 """
-function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing} = nothing)::Vector{Polyhedron}
+function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing} = nothing)::Vector
     pth_idx = let 
             if isnothing(pth_idx)
                 1:length(grh.rgm_paths)
@@ -845,7 +860,7 @@ function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,N
     return grh.path_polys[pth_idx]
 end
 """
-    get_polyhedron(grh::AbstractChangePaths, pth) -> Polyhedron
+    get_polyhedron(grh::AbstractChangePaths, pth)
 
 Return the polyhedron for a single SISO path.
 """
@@ -887,11 +902,18 @@ function get_volumes(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Not
                 end
 
         polys = get_polyhedra(grh, idxes_to_calculate)
+        nonempty_pairs = [(idx, poly) for (idx, poly) in zip(idxes_to_calculate, polys) if !isempty(poly)]
 
-        rlts = calc_volume(polys; rebase_mat=rebase_mat, kwargs...)
-        for (i, idx) in enumerate(idxes_to_calculate)
-            grh.path_volume[idx] = rlts[i]
+        for idx in idxes_to_calculate
+            grh.path_volume[idx] = Volume(0.0, 0.0)
             grh.path_volume_is_calc[idx] = true
+        end
+
+        if !isempty(nonempty_pairs)
+            rlts = calc_volume(Polyhedron[poly for (_, poly) in nonempty_pairs]; rebase_mat=rebase_mat, kwargs...)
+            for ((idx, _), vol) in zip(nonempty_pairs, rlts)
+                grh.path_volume[idx] = vol
+            end
         end
     end
     return grh.path_volume[pth_idx]
@@ -1027,12 +1049,22 @@ Deduplicate consecutive reaction-order values while preserving discontinuities.
 """
 function _dedup(ord_path::AbstractVector{T})::Vector{T} where T<:Real
     isempty(ord_path) && return T[]
-    out = T[ord_path[1]]
-    pending_nan = false
-    last_out = out[1]  
-    @assert !isnan(last_out) "The first element cannot be NaN for deduplication."
 
-    for x in @view ord_path[2:end]
+    first_finite_idx = findfirst(x -> !isnan(x), ord_path)
+    if isnothing(first_finite_idx)
+        return T[T(NaN)]
+    end
+
+    out = T[]
+    if first_finite_idx > firstindex(ord_path)
+        push!(out, T(NaN))
+    end
+
+    push!(out, ord_path[first_finite_idx])
+    pending_nan = false
+    last_out = out[end]
+
+    for x in @view ord_path[(first_finite_idx+1):end]
         if isnan(x)
             pending_nan = true
             continue
@@ -1058,13 +1090,21 @@ end
 function _dedup(ord_path::AbstractVector{<:AbstractVector{<:Real}})::Vector{Vector{Float64}}
     isempty(ord_path) && return Vector{Float64}[]
 
-    first_vec = Float64[Float64(x) for x in ord_path[1]]
-    out = Vector{Float64}[first_vec]
+    first_finite_idx = findfirst(x -> !_all_nan(x), ord_path)
+    if isnothing(first_finite_idx)
+        return [fill(NaN, length(ord_path[1]))]
+    end
+
+    first_vec = Float64[Float64(x) for x in ord_path[first_finite_idx]]
+    out = Vector{Float64}[]
+    if first_finite_idx > firstindex(ord_path)
+        push!(out, fill(NaN, length(first_vec)))
+    end
+    push!(out, first_vec)
     pending_nan = false
     last_out = first_vec
-    _all_nan(last_out) && throw(ArgumentError("The first element cannot be all-NaN for deduplication."))
 
-    for x_raw in @view ord_path[2:end]
+    for x_raw in @view ord_path[(first_finite_idx+1):end]
         x = Float64[Float64(v) for v in x_raw]
         if _all_nan(x)
             pending_nan = true

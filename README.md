@@ -17,6 +17,10 @@ Biocircuits-Explorer/
 └── README.md
 ```
 
+## Project Wiki
+
+A repo-local wiki is available under [`wiki/`](wiki/README.md), including quick start, architecture, API notes, atlas workflows, packaging, deployment, and development guidance.
+
 ## Requirements
 
 - Julia 1.10 or newer

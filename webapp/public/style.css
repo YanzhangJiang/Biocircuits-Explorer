@@ -21,10 +21,11 @@ body {
   background: var(--bg);
   color: var(--text);
   height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
 }
 
-#app { display: flex; flex-direction: column; height: 100vh; }
+#app { display: flex; flex-direction: column; height: 100vh; min-height: 100dvh; }
 
 #header {
   display: flex; align-items: center; gap: 16px;
@@ -165,12 +166,18 @@ label input, label select { display: block; margin-top: 4px; width: 100%; }
   padding: 8px; margin-top: 8px;
 }
 .path-item {
+  display: block; width: 100%; text-align: left;
   padding: 4px 8px; cursor: pointer; border-radius: 4px;
   font-family: var(--font); font-size: 12px;
   margin-bottom: 2px;
+  background: none; border: none; color: inherit;
 }
 .path-item:hover { background: var(--surface2); }
 .path-item.selected { background: var(--accent); color: #fff; }
+.path-item:focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 1px;
+}
 
 /* Model info */
 #model-info-text {
@@ -184,3 +191,63 @@ label input, label select { display: block; margin-top: 4px; width: 100%; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+
+@media (max-width: 900px) {
+  body {
+    height: auto;
+    overflow: auto;
+  }
+
+  #app {
+    height: auto;
+  }
+
+  #header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 6px;
+  }
+
+  .subtitle {
+    flex-basis: 100%;
+  }
+
+  .badge {
+    margin-left: 0;
+  }
+
+  #main-layout {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  #left-panel {
+    width: 100%;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  #right-panel {
+    min-height: 60vh;
+  }
+
+  #viz-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 8px;
+  }
+
+  .tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .tab-content {
+    min-height: 320px;
+  }
+
+  .plot-container {
+    min-height: 320px;
+  }
+}

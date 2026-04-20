@@ -369,6 +369,7 @@ function _fill_inv_info!(vtx::Vertex)
                 H = _adj_singular_matrix(vtx.M)[1]
                 vtx.H = droptol!(sparse(H),1e-10).* Bnc.direction
             end
+            vtx.H0 = - vtx.H * vtx.M0
         else # nullity>1 , H, HO is nolonger avaliable
             vtx.H = spzeros(Bnc.n, Bnc.n) # fill value as a sign that this regime is fully computed
         end
@@ -800,9 +801,9 @@ get_C0_qK(args...) = get_C_C0_nullity_qK(args...)[2]
 """
     get_H_H0(args...) -> (SparseMatrixCSC, Vector)
 
-Return `(H, H0)` for a non-singular vertex.
+Return `(H, H0)` for a vertex with nullity at most 1.
 """
-get_H_H0(args...) = is_singular(args...) ? @error("Vertex is singular, cannot get H0") : get_vertex(args...; inv_info=true) |> vtx -> (vtx.H, vtx.H0)
+get_H_H0(args...) = get_nullity(args...) > 1 ? @error("Vertex's nullity is bigger than 1, cannot get H0") : get_vertex(args...; inv_info=true) |> vtx -> (vtx.H, vtx.H0)
 """
     get_H(args...) -> SparseMatrixCSC
 

@@ -1,8 +1,8 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.12.3"
+julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "569a45929b4d754b5d84cd137e34ceb0dc5b807e"
+project_hash = "76eecfd9aae1793882b93f0e0e755b3037beb457"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f7304359109c768cf32dc5fa2d371565bb63b68a"
@@ -180,6 +180,12 @@ deps = ["CDDLib", "DataStructures", "DiffEqCallbacks", "Distributions", "GraphMa
 path = "../Bnc_julia"
 uuid = "b532a4b1-2c45-4c12-bcaf-8695372aa40c"
 version = "1.0.0-DEV"
+
+[[deps.BiocircuitsExplorerBackend]]
+deps = ["Base64", "BindingAndCatalysis", "CDDLib", "DBInterface", "Dates", "Graphs", "HTTP", "JSON3", "LinearAlgebra", "Logging", "Polyhedra", "Random", "SHA", "SQLite", "SparseArrays"]
+path = "."
+uuid = "67d10611-6cfe-4cce-80b3-3428f29739d0"
+version = "0.1.0"
 
 [[deps.BitFlags]]
 git-tree-sha1 = "0691e34b3bb8be9307330f88d1a3c3f25466c24d"
@@ -1553,7 +1559,7 @@ version = "0.3.7"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
-version = "2025.5.20"
+version = "2025.11.4"
 
 [[deps.MuladdMacro]]
 git-tree-sha1 = "cac9cc5499c25554cba55cd3c30543cff5ca4fab"
@@ -2160,12 +2166,6 @@ version = "2.11.2"
 deps = ["InteractiveUtils", "JuliaSyntaxHighlighting", "Markdown", "Sockets", "StyledStrings", "Unicode"]
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 version = "1.11.0"
-
-[[deps.BiocircuitsExplorerBackend]]
-deps = ["BindingAndCatalysis", "CDDLib", "DBInterface", "Dates", "Graphs", "HTTP", "JSON3", "LinearAlgebra", "Logging", "Polyhedra", "Random", "SHA", "SQLite", "SparseArrays"]
-path = "."
-uuid = "67d10611-6cfe-4cce-80b3-3428f29739d0"
-version = "0.1.0"
 
 [[deps.Random]]
 deps = ["SHA"]
