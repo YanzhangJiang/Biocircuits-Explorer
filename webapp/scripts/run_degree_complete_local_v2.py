@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WEBAPP_DIR = REPO_ROOT / "webapp"
 ATLAS_STORE_DIR = WEBAPP_DIR / "atlas_store"
 RUN_SCAN_CHUNKED = WEBAPP_DIR / "scripts" / "run_atlas_scan_chunked.jl"
+RUN_SCAN_STREAMING = WEBAPP_DIR / "scripts" / "run_atlas_scan_streaming.jl"
 
 
 @dataclass(frozen=True)
@@ -193,10 +194,18 @@ def _load_json(path: Path) -> dict[str, object]:
 
 
 def _is_completed_summary(summary: dict[str, object]) -> bool:
-    return (
-        summary.get("status") == "completed"
-        and summary.get("completed_chunk_count") == summary.get("total_chunk_count")
-    )
+    if summary.get("status") != "completed":
+        return False
+    total_chunk_count = summary.get("total_chunk_count")
+    completed_chunk_count = summary.get("completed_chunk_count")
+    if total_chunk_count is None or completed_chunk_count is None:
+        return True
+    return completed_chunk_count == total_chunk_count
+
+
+def _summary_execution_mode(summary: dict[str, object]) -> str:
+    raw = summary.get("execution_mode") or summary.get("scan_mode") or "chunked"
+    return str(raw)
 
 
 def _family_spec_payload(
@@ -205,11 +214,12 @@ def _family_spec_payload(
     raw_db_path: Path,
     network_parallelism: int,
     chunk_size: int,
+    scan_mode: str,
+    flush_network_count: int,
     discover_only: bool,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "source_label": f"report_d{degree}_{family.slug}_complete_local",
-        "chunk_size": chunk_size,
         "network_parallelism": network_parallelism,
         "skip_existing": False,
         "persist_sqlite": not discover_only,
@@ -224,9 +234,14 @@ def _family_spec_payload(
             "degree": degree,
             "family": family.slug,
             "prepared_by": "run_degree_complete_local_v2.py",
+            "scan_mode": scan_mode,
             "complete_families_for_degree": [item.slug for item in _families_for_degree(degree)],
         },
     }
+    if scan_mode == "chunked":
+        payload["chunk_size"] = chunk_size
+    else:
+        payload["stream_flush_network_count"] = flush_network_count
     if discover_only:
         payload["discover_only"] = True
         payload["persist_sqlite"] = False
@@ -252,6 +267,8 @@ def _write_plan(
     network_parallelism: int,
     julia_threads: int,
     chunk_size: int,
+    scan_mode: str,
+    flush_network_count: int,
     families: list[FamilySpec],
     paths: dict[str, Path],
 ) -> None:
@@ -262,32 +279,39 @@ def _write_plan(
         "path_only_db": str(paths["path_only_db"]),
         "network_parallelism": network_parallelism,
         "julia_threads": julia_threads,
+        "scan_mode": scan_mode,
         "chunk_size": chunk_size,
+        "flush_network_count": flush_network_count,
         "complete_condition": {
             "family_slugs": [family.slug for family in families],
-            "rule": "Each listed family summary must finish with status=completed and completed_chunk_count=total_chunk_count. The per-degree path-only database is complete when every family has completed against the same per-degree sqlite. Because families overlap, final path counts are not expected to equal the sum of per-family generated_network_count.",
+            "rule": "Each listed family summary must finish with status=completed. Chunked runs additionally report completed_chunk_count=total_chunk_count. The per-degree path-only database is complete when every family has completed against the same per-degree sqlite. Because families overlap, final path counts are not expected to equal the sum of per-family generated_network_count.",
         },
         "storage_format": {
             "path_only_db": str(paths["path_only_db"]),
             "meta_dir": str(paths["meta_dir"]),
             "notes": "The path_only sqlite is the authoritative artifact. It stores only path_record_id and behavior_code in the narrow path_only_records table. Per-family specs and summaries live under meta/ for recovery and audit.",
         },
+        "execution_notes": {
+            "streaming_resume": "Streaming runs are treated as fresh-run only. If a streaming summary exists and is not completed, reuse the completed output or rerun into a fresh run_root instead of resuming against the same sqlite.",
+        },
     }
     _write_json(paths["plan_path"], plan)
 
 
-def _run_chunked_scan(
+def _run_scan(
     julia_bin: str,
     julia_threads: int,
     spec_path: Path,
     summary_path: Path,
+    scan_mode: str,
 ) -> dict[str, object]:
     env = dict(os.environ)
     env["JULIA_NUM_THREADS"] = str(julia_threads)
+    runner = RUN_SCAN_CHUNKED if scan_mode == "chunked" else RUN_SCAN_STREAMING
     cmd = [
         julia_bin,
         f"--project={WEBAPP_DIR}",
-        str(RUN_SCAN_CHUNKED),
+        str(runner),
         str(spec_path),
         str(summary_path),
     ]
@@ -306,12 +330,14 @@ def main() -> None:
     parser.add_argument("--run-root", type=Path, default=None, help="Override the degree output root.")
     parser.add_argument("--network-parallelism", type=int, default=16, help="Network build parallelism.")
     parser.add_argument("--julia-threads", type=int, default=16, help="Julia thread count.")
+    parser.add_argument("--scan-mode", choices=["chunked", "streaming"], default="chunked", help="Chunked keeps the historical static chunk runner; streaming uses a global worker pool and flushes completed networks to sqlite in small batches.")
     parser.add_argument("--chunk-size", type=int, default=128, help="Networks per chunk.")
+    parser.add_argument("--flush-network-count", type=int, default=8, help="When scan-mode=streaming, flush completed network batches to sqlite after this many finished networks.")
     parser.add_argument("--julia-bin", default=None, help="Optional Julia executable.")
     args = parser.parse_args()
 
-    if args.network_parallelism < 1 or args.julia_threads < 1 or args.chunk_size < 1:
-        raise SystemExit("network-parallelism, julia-threads, and chunk-size must all be positive.")
+    if args.network_parallelism < 1 or args.julia_threads < 1 or args.chunk_size < 1 or args.flush_network_count < 1:
+        raise SystemExit("network-parallelism, julia-threads, chunk-size, and flush-network-count must all be positive.")
 
     degree = args.degree
     run_root = _run_root(degree, args.run_root)
@@ -321,7 +347,17 @@ def main() -> None:
     paths["summaries_dir"].mkdir(parents=True, exist_ok=True)
     paths["path_only_dir"].mkdir(parents=True, exist_ok=True)
 
-    _write_plan(degree, run_root, args.network_parallelism, args.julia_threads, args.chunk_size, families, paths)
+    _write_plan(
+        degree,
+        run_root,
+        args.network_parallelism,
+        args.julia_threads,
+        args.chunk_size,
+        args.scan_mode,
+        args.flush_network_count,
+        families,
+        paths,
+    )
 
     julia_bin = args.julia_bin or _detect_julia()
     run_meta = {
@@ -332,7 +368,9 @@ def main() -> None:
         "julia_bin": julia_bin,
         "julia_threads": args.julia_threads,
         "network_parallelism": args.network_parallelism,
+        "scan_mode": args.scan_mode,
         "chunk_size": args.chunk_size,
+        "flush_network_count": args.flush_network_count,
         "families": [family.slug for family in families],
         "path_only_db": str(paths["path_only_db"]),
         "storage_mode": "path_only_narrow",
@@ -352,6 +390,8 @@ def main() -> None:
             paths["path_only_db"],
             args.network_parallelism,
             args.chunk_size,
+            args.scan_mode,
+            args.flush_network_count,
             discover_only=discover_only,
         )
         _write_json(spec_path, spec_payload)
@@ -359,15 +399,21 @@ def main() -> None:
             existing_summary = _load_json(summary_path)
             if _is_completed_summary(existing_summary):
                 summary = existing_summary
+            elif args.scan_mode == "streaming" or _summary_execution_mode(existing_summary) == "streaming":
+                raise RuntimeError(
+                    f"Found incomplete streaming summary at {summary_path}. "
+                    "Streaming mode is fresh-run only; rerun into a fresh run_root or remove the stale summary and partial sqlite first."
+                )
             else:
-                summary = _run_chunked_scan(julia_bin, args.julia_threads, spec_path, summary_path)
+                summary = _run_scan(julia_bin, args.julia_threads, spec_path, summary_path, args.scan_mode)
         else:
-            summary = _run_chunked_scan(julia_bin, args.julia_threads, spec_path, summary_path)
+            summary = _run_scan(julia_bin, args.julia_threads, spec_path, summary_path, args.scan_mode)
         family_results.append({
             "family": family.slug,
             "spec_path": str(spec_path),
             "summary_path": str(summary_path),
             "status": summary.get("status"),
+            "execution_mode": summary.get("execution_mode", args.scan_mode),
             "generated_network_count": summary.get("enumeration", {}).get("generated_network_count"),
             "total_network_count": summary.get("total_network_count"),
             "total_chunk_count": summary.get("total_chunk_count"),
