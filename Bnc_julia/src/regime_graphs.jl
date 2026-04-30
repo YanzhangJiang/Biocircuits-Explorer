@@ -317,6 +317,18 @@ end
 
 _clean_polyhedron_if_possible(p) = p isa Polyhedron ? (detecthlinearity!(p); removehredundancy!(p); p) : p
 
+function _has_extra_constraint(constraint_C, constraint_C0)::Bool
+    if isnothing(constraint_C) != isnothing(constraint_C0)
+        error("constraint_C and constraint_C0 must be provided together")
+    end
+    return !isnothing(constraint_C)
+end
+
+function _constraint_polyhedron(constraint_C, constraint_C0, constraint_nullity::Int)
+    _has_extra_constraint(constraint_C, constraint_C0) || return nothing
+    return _clean_polyhedron_if_possible(get_polyhedron(constraint_C, constraint_C0, constraint_nullity))
+end
+
 """
     _calc_polyhedra_for_path(model::Bnc, paths, change_qK_indices) -> Vector
 
@@ -327,17 +339,30 @@ function _calc_polyhedra_for_path(
     model::Bnc,
     paths::AbstractVector{<:AbstractVector{<:Integer}},
     change_qK_indices::AbstractVector{<:Integer},
+    ;
+    constraint_C=nothing,
+    constraint_C0=nothing,
+    constraint_nullity::Int=0,
 )::Vector{Any}
 
     el_dim = BitSet(Int[idx for idx in change_qK_indices])
     projected_cleanup = length(change_qK_indices) == 1
+    additional_poly = _constraint_polyhedron(constraint_C, constraint_C0, constraint_nullity)
 
     #dict: node: polyhedron 
     node_polyhedra = let
                         unique_rgms = unique(vcat(paths...))
                         dic = Dict{Int,Polyhedron}()
                         for r in unique_rgms
-                            pr = _clean_polyhedron_if_possible(get_polyhedron(model, r))
+                            pr = get_polyhedron(model, r)
+                            if additional_poly !== nothing
+                                pr = intersect(pr, additional_poly)
+                                if isempty(pr)
+                                    dic[Int(r)] = pr
+                                    continue
+                                end
+                            end
+                            pr = _clean_polyhedron_if_possible(pr)
                             dic[Int(r)] = pr        
                         end
                         dic
@@ -840,7 +865,13 @@ get_idx(grh::AbstractChangePaths, pth::Integer) = pth
 
 Return polyhedra for selected SISO paths.
 """
-function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing} = nothing)::Vector
+function get_polyhedra(
+    grh::AbstractChangePaths,
+    pth_idx::Union{AbstractVector,Nothing} = nothing;
+    constraint_C=nothing,
+    constraint_C0=nothing,
+    constraint_nullity::Int=0,
+)::Vector
     pth_idx = let 
             if isnothing(pth_idx)
                 1:length(grh.rgm_paths)
@@ -848,6 +879,18 @@ function get_polyhedra(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,N
                 get_idx.(Ref(grh), pth_idx)
             end
         end
+
+    has_constraint = _has_extra_constraint(constraint_C, constraint_C0)
+    if has_constraint
+        return _calc_polyhedra_for_path(
+            get_binding_network(grh),
+            grh.rgm_paths[pth_idx],
+            change_qK_indices(grh);
+            constraint_C=constraint_C,
+            constraint_C0=constraint_C0,
+            constraint_nullity=constraint_nullity,
+        )
+    end
     
     pth_poly_to_calc = filter(x -> !grh.path_polys_is_calc[x], pth_idx)
     
@@ -864,7 +907,7 @@ end
 
 Return the polyhedron for a single SISO path.
 """
-get_polyhedron(grh::AbstractChangePaths, pth)= get_polyhedra(grh, [get_idx(grh, pth)])[1]
+get_polyhedron(grh::AbstractChangePaths, pth; kwargs...) = get_polyhedra(grh, [get_idx(grh, pth)]; kwargs...)[1]
 
 
 
@@ -876,7 +919,11 @@ Compute volumes for SISO paths.
 function get_volumes(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Nothing}=nothing; 
     rebase_K = false,
     rebase_mat = nothing,
-    recalculate=false, kwargs...)
+    recalculate=false,
+    constraint_C=nothing,
+    constraint_C0=nothing,
+    constraint_nullity::Int=0,
+    kwargs...)
 
     pth_idx = let 
             if isnothing(pth_idx)
@@ -885,22 +932,41 @@ function get_volumes(grh::AbstractChangePaths, pth_idx::Union{AbstractVector,Not
                 get_idx.(Ref(grh), pth_idx)
             end
         end
+
+    rebase_mat = if  !isnothing(rebase_mat)
+                @assert !rebase_K "Cannot specify both rebase_K and providing rebase_mat"
+                rebase_mat
+            elseif rebase_K
+                Bnc = get_binding_network(grh) 
+                Q = rebase_mat_lgK(Bnc.N)
+                blockdiag(spdiagm(fill(Rational(1), Bnc.d-1)), Q)
+            else
+                nothing
+            end
+
+    has_constraint = _has_extra_constraint(constraint_C, constraint_C0)
+    if has_constraint
+        polys = get_polyhedra(
+            grh,
+            pth_idx;
+            constraint_C=constraint_C,
+            constraint_C0=constraint_C0,
+            constraint_nullity=constraint_nullity,
+        )
+        out = [Volume(0.0, 0.0) for _ in eachindex(pth_idx)]
+        nonempty_pairs = [(idx, poly) for (idx, poly) in enumerate(polys) if !isempty(poly)]
+        if !isempty(nonempty_pairs)
+            rlts = calc_volume(Polyhedron[poly for (_, poly) in nonempty_pairs]; rebase_mat=rebase_mat, kwargs...)
+            for ((idx, _), vol) in zip(nonempty_pairs, rlts)
+                out[idx] = vol
+            end
+        end
+        return out
+    end
     
     idxes_to_calculate = recalculate ? pth_idx : filter(x -> !grh.path_volume_is_calc[x], pth_idx)
     
     if !isempty(idxes_to_calculate)
-
-        rebase_mat = if  !isnothing(rebase_mat)
-                    @assert !rebase_K "Cannot specify both rebase_K and providing rebase_mat"
-                    rebase_mat
-                elseif rebase_K
-                    Bnc = get_binding_network(grh) 
-                    Q = rebase_mat_lgK(Bnc.N)
-                    blockdiag(spdiagm(fill(Rational(1), Bnc.d-1)), Q)
-                else
-                    nothing
-                end
-
         polys = get_polyhedra(grh, idxes_to_calculate)
         nonempty_pairs = [(idx, poly) for (idx, poly) in zip(idxes_to_calculate, polys) if !isempty(poly)]
 
@@ -1610,11 +1676,15 @@ function get_behavior_families(
     include_path_labels::Bool=true,
     include_path_details::Bool=true,
     include_family_path_indices::Bool=true,
+    constraint_C=nothing,
+    constraint_C0=nothing,
+    constraint_nullity::Int=0,
     volume_kwargs...,
 )
     path_scope = _normalize_behavior_scope(path_scope)
     path_scope == :robust && !compute_volume && error("path_scope=:robust requires compute_volume=true")
-    graph_only_multi_change = grh isa ChangePaths && path_scope == :all && !compute_volume
+    has_constraint = _has_extra_constraint(constraint_C, constraint_C0)
+    graph_only_multi_change = grh isa ChangePaths && path_scope == :all && !compute_volume && !has_constraint
 
     total_paths = length(grh.rgm_paths)
     ord_paths = get_RO_paths(
@@ -1626,7 +1696,12 @@ function get_behavior_families(
     )
 
     feasible_mask = graph_only_multi_change ? trues(total_paths) : begin
-        polys = get_polyhedra(grh)
+        polys = get_polyhedra(
+            grh;
+            constraint_C=constraint_C,
+            constraint_C0=constraint_C0,
+            constraint_nullity=constraint_nullity,
+        )
         map(poly -> !isempty(poly), polys)
     end
     feasible_ids = compute_volume ? findall(feasible_mask) : Int[]
@@ -1634,7 +1709,14 @@ function get_behavior_families(
     volumes_by_path = Vector{Union{Nothing,Volume}}(undef, total_paths)
     fill!(volumes_by_path, nothing)
     if compute_volume && !isempty(feasible_ids)
-        vols = get_volumes(grh, feasible_ids; volume_kwargs...)
+        vols = get_volumes(
+            grh,
+            feasible_ids;
+            constraint_C=constraint_C,
+            constraint_C0=constraint_C0,
+            constraint_nullity=constraint_nullity,
+            volume_kwargs...,
+        )
         for (path_idx, vol) in zip(feasible_ids, vols)
             volumes_by_path[path_idx] = vol
         end

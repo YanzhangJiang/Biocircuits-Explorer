@@ -729,6 +729,36 @@ textarea {
   gap: 6px;
 }
 
+.siso-plot-section {
+  min-height: 0;
+}
+
+.siso-plot-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.siso-plot-toolbar label {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.siso-plot-toolbar select {
+  min-width: 0;
+}
+
+.siso-plot-refresh {
+  margin-top: 0;
+  width: auto;
+}
+
+.siso-active-plot {
+  flex: 0 0 auto;
+  min-height: 320px;
+}
+
 .summary-chip {
   background: var(--chip-bg);
   border: 1px solid var(--panel-border);
@@ -1396,6 +1426,13 @@ textarea {
   gap: 10px;
 }
 
+.siso-path-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .siso-path-title {
   color: var(--siso-path-title-color);
   font-size: 12px;
@@ -1437,6 +1474,58 @@ textarea {
 .siso-inline-btn {
   margin-top: 0;
   width: auto;
+}
+
+.siso-inline-btn.active {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-color);
+}
+
+.siso-condition-panel {
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.siso-condition-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.siso-condition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.siso-condition-row {
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
+.siso-condition-index {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  padding-top: 2px;
+}
+
+.siso-condition-row code {
+  color: var(--siso-profile-cell-color);
+  font-family: 'Consolas', monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* ===== Toolbar ===== */

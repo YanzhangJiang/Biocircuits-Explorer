@@ -21,7 +21,7 @@ import { updateRegimeGraphMode, plotRegimeGraph } from './regime-graph.js';
 import { plotTrajectory, plotHeatmap } from './plotting.js';
 import { plotParameterScan1D, plotParameterScan2D, plotROPPolyhedron, renderROPPolyhedronOutput, updateScan1DConfig, updateScan2DConfig, updateROPPolyConfig, updateROPPolyDimension } from './scan.js';
 import { plotQKPolyhedron, renderQKPolyhedronResult, renderBehaviorFamiliesResult, normalizeSISOConfig } from './siso.js';
-import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
+import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasNetworkDefinitionState, renderAtlasNetworkDefinitionPreview, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
 import { runConnectedWorkspace } from './nodes.js';
 import { serializeNodeBySchema, restoreNodeBySchema, NODE_SCHEMAS } from './node-schema.js';
 
@@ -192,6 +192,8 @@ export function getNodeSerialData(nodeId, type) {
       const { reactions, kds } = getReactionsFromNode(nodeId);
       return { reactions: reactions.map((rule, i) => ({ rule, kd: kds[i] })) };
     }
+    case 'network-id-definition':
+      return readAtlasNetworkDefinitionState(nodeId);
     case 'atlas-spec':
       return readAtlasSpecEditorState(nodeId);
     case 'atlas-query-config':
@@ -365,6 +367,16 @@ export function restoreNodeData(nodeId, type, data) {
       }
       break;
     }
+    case 'network-id-definition': {
+      const el = document.getElementById(`${nodeId}-network-id`);
+      if (el && data.networkId != null) el.value = data.networkId;
+      if (nodeRegistry[nodeId]) {
+        nodeRegistry[nodeId].data = nodeRegistry[nodeId].data || {};
+        nodeRegistry[nodeId].data.config = readAtlasNetworkDefinitionState(nodeId);
+      }
+      renderAtlasNetworkDefinitionPreview(nodeId);
+      break;
+    }
     case 'atlas-spec': {
       // Atlas spec has many fields — restore via DOM element IDs
       const fieldMap = {
@@ -379,7 +391,7 @@ export function restoreNodeData(nodeId, type, data) {
         maxSupport: 'max-support', minEnumerationReactions: 'min-enum-reactions',
         maxEnumerationReactions: 'max-enum-reactions', enumerationLimit: 'enum-limit',
       };
-      const floatFields = { minVolumeMean: 'min-volume' };
+      const floatFields = { minVolumeMean: 'min-volume', logqkMin: 'logqk-min', logqkMax: 'logqk-max' };
       const boolFields = {
         persistSqlite: 'persist-sqlite', skipExisting: 'skip-existing',
         keepSingular: 'keep-singular', keepNonasymptotic: 'keep-nonasym',

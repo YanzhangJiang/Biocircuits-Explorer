@@ -1,4 +1,6 @@
 .DS_Store
+__pycache__/
+*.pyc
 *.aux
 *.bbl
 *.bcf
@@ -19,26 +21,37 @@ frontend-swift/**/.DS_Store
 
 /.claude/
 webapp/.claude/
-webapp/atlas_store/
+
+# Atlas databases and generated local stores.
+atlas_store/
+**/atlas_store/
 *.sqlite
-*.sqlite-shm
-*.sqlite-wal
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.duckdb
+*.duckdb.wal
 
-!doc/
-doc/*
-!doc/generate_slice_multidim_math_figure.py
-!doc/slice_multidim_input.md
-!doc/assets/
-doc/assets/*
-!doc/assets/slice_multidim_input_textbook.png
-!doc/assets/slice_multidim_input_textbook.svg
+# Local docs, reports, and TeX drafts.
+doc/
+docs/
+wiki/
+reports/
 request_doc/
+test/
+tests/
+**/test/
+**/tests/
+*.tex
+*.doc
+*.docx
+*.pdf
 
-doc/atlas_behavior_inverse_design_spec.tex
-doc/*.pdf
-doc/*.aux
-doc/*.fdb_latexmk
-doc/*.fls
-doc/*.log
-doc/*.out
-atlas_behavior_inverse_design_spec.pdf
+# Periodic table runtime outputs can grow quickly; keep generated runs local.
+results/periodic_table/runs/*
+!results/periodic_table/runs/.gitkeep
+results/periodic_table/latest
+scratch/
+logs/

@@ -8,6 +8,19 @@ import { commitWorkspaceSnapshot } from './workspace.js';
 
 // ===== Reaction Editor =====
 export function getReactionsFromNode(nodeId) {
+  const info = nodeRegistry[nodeId];
+  if (info?.type === 'network-id-definition') {
+    const config = info.data?.config || {};
+    const resolved = config.resolvedDefinition || null;
+    const reactions = Array.isArray(resolved?.raw_rules)
+      ? resolved.raw_rules.map(rule => String(rule))
+      : [];
+    return {
+      reactions,
+      kds: reactions.map(() => 1),
+    };
+  }
+
   const list = document.getElementById(`${nodeId}-reactions-list`);
   if (!list) return { reactions: [], kds: [] };
   const rows = list.querySelectorAll('.reaction-row');
@@ -69,10 +82,10 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
     return false;
   };
-  // Find connected reaction-network
+  // Find connected reaction source
   const conn = connections.find(c => c.toNode === modelBuilderNodeId && c.toPort === 'reactions');
   if (!conn) {
-    return fail('Model Builder has no Reaction Network connected');
+    return fail('Model Builder has no reaction source connected');
   }
   const rnNodeId = conn.fromNode;
   const { reactions, kds } = getReactionsFromNode(rnNodeId);

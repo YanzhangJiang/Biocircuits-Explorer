@@ -8,7 +8,7 @@ import {
 // Lazy imports to avoid circular dependency issues at evaluation time.
 // These modules import from theme.js, and theme.js imports from them.
 // All accesses happen inside functions (runtime), so this is safe.
-let _plotRegimeGraph, _plotTrajectory, _plotQKPolyhedron, _plotParameterScan1D,
+let _plotRegimeGraph, _plotTrajectory, _plotSISOBehaviorOverlay, _plotQKPolyhedron, _plotParameterScan1D,
     _plotROPCloud, _plotHeatmap, _plotParameterScan2D, _plotROPPolyhedron;
 const lightThemeStylesheetState = {
   link: null,
@@ -28,6 +28,7 @@ async function ensurePlotImports() {
   _plotRegimeGraph = regimeGraph.plotRegimeGraph;
   _plotTrajectory = plotting.plotTrajectory;
   _plotHeatmap = plotting.plotHeatmap;
+  _plotSISOBehaviorOverlay = siso.plotSISOBehaviorOverlay;
   _plotQKPolyhedron = siso.plotQKPolyhedron;
   _plotParameterScan1D = scan.plotParameterScan1D;
   _plotParameterScan2D = scan.plotParameterScan2D;
@@ -372,7 +373,9 @@ export async function refreshThemeAwarePlots() {
           break;
 
         case 'siso-result':
-          if (nodeData.trajectoryData && document.getElementById(`${nodeId}-traj-plot`)) {
+          if (nodeData.sisoPlotMode === 'overlay' && nodeData.behaviorData && document.getElementById(`${nodeId}-traj-plot`)) {
+            _plotSISOBehaviorOverlay(nodeId);
+          } else if (nodeData.trajectoryData && document.getElementById(`${nodeId}-traj-plot`)) {
             _plotTrajectory(nodeData.trajectoryData, `${nodeId}-traj-plot`);
           }
           break;

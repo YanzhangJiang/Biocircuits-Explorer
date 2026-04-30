@@ -358,8 +358,8 @@ export const NODE_SCHEMAS = {
   },
 
   'siso-result': {
-    dataRaw: ['selectedPath'],
-    data: ['behaviorData', 'trajectoryData'],
+    dataRaw: ['selectedPath', 'sisoPlotMode'],
+    data: ['behaviorData', 'trajectoryData', 'overlayTrajectoryData'],
   },
 
   'qk-poly-result': {

@@ -198,13 +198,17 @@ export function setNodeLoading(nodeId, loading) {
 
 // ===== Auto-Chain Generation =====
 
+function isReactionSourceNodeType(type) {
+  return type === 'reaction-network' || type === 'network-id-definition';
+}
+
 // Find an existing chain ending with a model-builder that has a model output
 export function findExistingModelBuilder() {
   for (const [id, info] of Object.entries(nodeRegistry)) {
     if (info.type === 'model-builder') {
-      // Check if this model-builder is connected to a reaction-network
+      // Check if this model-builder is connected to a reaction source
       const conn = connections.find(c => c.toNode === id && c.toPort === 'reactions');
-      if (conn && nodeRegistry[conn.fromNode]?.type === 'reaction-network') {
+      if (conn && isReactionSourceNodeType(nodeRegistry[conn.fromNode]?.type)) {
         return { modelBuilderId: id, reactionNetworkId: conn.fromNode };
       }
     }
@@ -214,7 +218,7 @@ export function findExistingModelBuilder() {
 
 export function findExistingReactionNetwork() {
   for (const [id, info] of Object.entries(nodeRegistry)) {
-    if (info.type === 'reaction-network') return id;
+    if (isReactionSourceNodeType(info.type)) return id;
   }
   return null;
 }
@@ -588,6 +592,7 @@ export function triggerConfigUpdate(nodeId, nodeType) {
   info.data = info.data || {};
   info.data.config = getNodeSerialData(nodeId, nodeType);
   if (nodeType === 'atlas-query-config') refreshAtlasQueryDesigner(nodeId);
+  if (nodeType === 'network-id-definition') triggerAutoModelBuild(nodeId);
 }
 
 // ===== Auto-build Model =====
