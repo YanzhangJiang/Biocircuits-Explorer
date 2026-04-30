@@ -43,7 +43,8 @@ struct ContentView: View {
             id: "input",
             title: "Input",
             items: [
-                NodeMenuItem(id: "reaction-network", title: "Reaction Network", systemImage: "point.3.connected.trianglepath")
+                NodeMenuItem(id: "reaction-network", title: "Reaction Network", systemImage: "point.3.connected.trianglepath"),
+                NodeMenuItem(id: "network-id-definition", title: "Network ID", systemImage: "number.square")
             ]
         ),
         NodeMenuSection(

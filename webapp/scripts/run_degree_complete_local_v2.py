@@ -97,9 +97,27 @@ FAMILY_ORDER: tuple[FamilySpec, ...] = (
     ),
 )
 
+FAMILY_BY_SLUG: dict[str, FamilySpec] = {family.slug: family for family in FAMILY_ORDER}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    commit = result.stdout.strip()
+    return commit or None
 
 
 def _detect_julia() -> str:
@@ -123,14 +141,45 @@ def _detect_julia() -> str:
     raise RuntimeError("Unable to find Julia in PATH.")
 
 
-def _run_root(degree: int, root: Path | None = None) -> Path:
+def _run_root(degree: int, root: Path | None = None, storage_mode: str = "behavior_aggregate") -> Path:
     if root is not None:
         return root.expanduser().resolve()
+    if storage_mode == "behavior_aggregate":
+        return (ATLAS_STORE_DIR / "degree_complete_behavior_aggregate" / f"d{degree}").resolve()
     return (ATLAS_STORE_DIR / "by_degree" / f"d{degree}").resolve()
 
 
 def _families_for_degree(degree: int) -> list[FamilySpec]:
     return [family for family in FAMILY_ORDER if degree >= family.min_degree]
+
+
+def _parse_family_subset(raw: str | None, degree: int) -> list[FamilySpec]:
+    allowed = {family.slug: family for family in _families_for_degree(degree)}
+    if raw is None or not raw.strip():
+        return list(allowed.values())
+
+    requested: list[FamilySpec] = []
+    seen: set[str] = set()
+    missing: list[str] = []
+    for part in raw.split(","):
+        slug = part.strip()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        family = allowed.get(slug)
+        if family is None:
+            missing.append(slug)
+            continue
+        requested.append(family)
+
+    if missing:
+        raise SystemExit(
+            f"Unsupported families for degree d={degree}: {missing}. "
+            f"Choose from {sorted(allowed)}."
+        )
+    if not requested:
+        raise SystemExit("At least one family must be selected.")
+    return requested
 
 
 def _search_profile_for_family(family: FamilySpec, degree: int) -> dict[str, object]:
@@ -162,16 +211,25 @@ def _enumeration_for_family(family: FamilySpec, degree: int) -> dict[str, object
     }
 
 
-def _behavior_config() -> dict[str, object]:
-    return {
+def _behavior_config(logqk_min: float | None, logqk_max: float | None, storage_mode: str) -> dict[str, object]:
+    payload: dict[str, object] = {
         "path_scope": "feasible",
         "compute_volume": False,
-        "include_path_records": True,
+        "include_path_records": storage_mode == "path_only",
         "min_volume_mean": 0.0,
         "deduplicate": True,
         "keep_singular": True,
         "keep_nonasymptotic": False,
+        "ro_quantization_digits": 3,
+        "ro_quantization_scale": 1000,
+        "program_identity": "exact_profile_v1",
+        "support_semantics": "included_exact_family_path_count_v1",
     }
+    if logqk_min is not None:
+        payload["logqk_min"] = logqk_min
+    if logqk_max is not None:
+        payload["logqk_max"] = logqk_max
+    return payload
 
 
 def _change_expansion(degree: int) -> dict[str, object]:
@@ -212,29 +270,41 @@ def _family_spec_payload(
     degree: int,
     family: FamilySpec,
     raw_db_path: Path,
+    storage_mode: str,
     network_parallelism: int,
     chunk_size: int,
     scan_mode: str,
     flush_network_count: int,
     discover_only: bool,
+    logqk_min: float | None,
+    logqk_max: float | None,
 ) -> dict[str, object]:
+    campaign = "degree_complete_behavior_aggregate_v1" if storage_mode == "behavior_aggregate" else "degree_complete_path_only_v1"
     payload: dict[str, object] = {
-        "source_label": f"report_d{degree}_{family.slug}_complete_local",
+        "source_label": f"report_d{degree}_{family.slug}_{storage_mode}_complete_local",
         "network_parallelism": network_parallelism,
         "skip_existing": False,
         "persist_sqlite": not discover_only,
         "sqlite_path": str(raw_db_path),
-        "sqlite_persist_mode": "path_only",
+        "sqlite_persist_mode": storage_mode,
         "search_profile": _search_profile_for_family(family, degree),
-        "behavior_config": _behavior_config(),
+        "behavior_config": _behavior_config(logqk_min, logqk_max, storage_mode),
         "change_expansion": _change_expansion(degree),
         "enumeration": _enumeration_for_family(family, degree),
         "source_metadata": {
-            "campaign": "degree_complete_path_only_v1",
+            "campaign": campaign,
             "degree": degree,
             "family": family.slug,
             "prepared_by": "run_degree_complete_local_v2.py",
             "scan_mode": scan_mode,
+            "sqlite_persist_mode": storage_mode,
+            "program_codec_version": "RPB1",
+            "program_identity_scheme": "exact_profile_v1",
+            "support_semantics": "included_exact_family_path_count_v1",
+            "schema_version": "0.3.0",
+            "code_git_commit": _git_commit(),
+            "logqk_min": logqk_min,
+            "logqk_max": logqk_max,
             "complete_families_for_degree": [item.slug for item in _families_for_degree(degree)],
         },
     }
@@ -248,15 +318,20 @@ def _family_spec_payload(
     return payload
 
 
-def _build_paths(run_root: Path, degree: int) -> dict[str, Path]:
+def _build_paths(run_root: Path, degree: int, storage_mode: str) -> dict[str, Path]:
+    storage_dir_name = "behavior_aggregate" if storage_mode == "behavior_aggregate" else "path_only"
+    db_suffix = "behavior_aggregate" if storage_mode == "behavior_aggregate" else "path_only"
+    sqlite_db = run_root / storage_dir_name / f"report_d{degree}_complete_{db_suffix}.sqlite"
     return {
         "run_root": run_root,
-        "path_only_dir": run_root / "path_only",
+        "storage_dir": run_root / storage_dir_name,
+        "path_only_dir": run_root / storage_dir_name,
         "meta_dir": run_root / "meta",
         "specs_dir": run_root / "meta" / "specs",
         "summaries_dir": run_root / "meta" / "summaries",
         "plan_path": run_root / "meta" / f"report_d{degree}_complete.plan.json",
-        "path_only_db": run_root / "path_only" / f"report_d{degree}_complete_path_only.sqlite",
+        "sqlite_db": sqlite_db,
+        "path_only_db": sqlite_db,
         "run_meta": run_root / "meta" / f"report_d{degree}_complete_local.run.meta.json",
     }
 
@@ -264,11 +339,14 @@ def _build_paths(run_root: Path, degree: int) -> dict[str, Path]:
 def _write_plan(
     degree: int,
     run_root: Path,
+    storage_mode: str,
     network_parallelism: int,
     julia_threads: int,
     chunk_size: int,
     scan_mode: str,
     flush_network_count: int,
+    logqk_min: float | None,
+    logqk_max: float | None,
     families: list[FamilySpec],
     paths: dict[str, Path],
 ) -> None:
@@ -276,20 +354,25 @@ def _write_plan(
         "degree": degree,
         "created_at": _now_iso(),
         "run_root": str(run_root),
+        "storage_mode": storage_mode,
+        "sqlite_db": str(paths["sqlite_db"]),
         "path_only_db": str(paths["path_only_db"]),
         "network_parallelism": network_parallelism,
         "julia_threads": julia_threads,
         "scan_mode": scan_mode,
         "chunk_size": chunk_size,
         "flush_network_count": flush_network_count,
+        "logqk_min": logqk_min,
+        "logqk_max": logqk_max,
         "complete_condition": {
             "family_slugs": [family.slug for family in families],
-            "rule": "Each listed family summary must finish with status=completed. Chunked runs additionally report completed_chunk_count=total_chunk_count. The per-degree path-only database is complete when every family has completed against the same per-degree sqlite. Because families overlap, final path counts are not expected to equal the sum of per-family generated_network_count.",
+            "rule": "Each listed family summary must finish with status=completed. Chunked runs additionally report completed_chunk_count=total_chunk_count. The per-degree SQLite database is complete when every family has completed against the same artifact. Because families overlap, final support counts are not expected to equal the sum of per-family generated_network_count.",
         },
         "storage_format": {
-            "path_only_db": str(paths["path_only_db"]),
+            "sqlite_db": str(paths["sqlite_db"]),
+            "sqlite_persist_mode": storage_mode,
             "meta_dir": str(paths["meta_dir"]),
-            "notes": "The path_only sqlite is the authoritative artifact. It stores only path_record_id and behavior_code in the narrow path_only_records table. Per-family specs and summaries live under meta/ for recovery and audit.",
+            "notes": "behavior_aggregate stores canonical behavior programs and support tables without full path occurrences. path_only remains available for route debugging and legacy audits.",
         },
         "execution_notes": {
             "streaming_resume": "Streaming runs persist a checkpoint next to the summary. Re-invoking the same family will resume from the latest checkpoint when the summary is incomplete.",
@@ -324,15 +407,19 @@ def _record_run_meta(paths: dict[str, Path], payload: dict[str, object]) -> None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run one degree of the complete atlas family set into a per-degree path-only sqlite output.")
+    parser = argparse.ArgumentParser(description="Run one degree of the complete atlas family set into a per-degree SQLite output.")
     parser.add_argument("--degree", type=int, required=True, choices=[2, 3, 4], help="Degree to build.")
     parser.add_argument("--phase", choices=["discover", "run"], default="discover", help="Whether to only enumerate/planning or to execute and migrate.")
+    parser.add_argument("--storage-mode", choices=["behavior_aggregate", "path_only"], default="behavior_aggregate", help="SQLite persist mode. behavior_aggregate is the B0 archive used for behavior complexity.")
     parser.add_argument("--run-root", type=Path, default=None, help="Override the degree output root.")
     parser.add_argument("--network-parallelism", type=int, default=16, help="Network build parallelism.")
     parser.add_argument("--julia-threads", type=int, default=16, help="Julia thread count.")
     parser.add_argument("--scan-mode", choices=["chunked", "streaming"], default="chunked", help="Chunked keeps the historical static chunk runner; streaming uses a global worker pool and flushes completed networks to sqlite in small batches.")
     parser.add_argument("--chunk-size", type=int, default=128, help="Networks per chunk.")
     parser.add_argument("--flush-network-count", type=int, default=8, help="When scan-mode=streaming, flush completed network batches to sqlite after this many finished networks.")
+    parser.add_argument("--logqk-min", type=float, default=None, help="Optional lower bound applied to every log qK coordinate during atlas path feasibility.")
+    parser.add_argument("--logqk-max", type=float, default=None, help="Optional upper bound applied to every log qK coordinate during atlas path feasibility.")
+    parser.add_argument("--families", default=None, help="Optional comma-separated subset of families to run. Default: all families valid for the selected degree.")
     parser.add_argument("--julia-bin", default=None, help="Optional Julia executable.")
     args = parser.parse_args()
 
@@ -340,21 +427,25 @@ def main() -> None:
         raise SystemExit("network-parallelism, julia-threads, chunk-size, and flush-network-count must all be positive.")
 
     degree = args.degree
-    run_root = _run_root(degree, args.run_root)
-    families = _families_for_degree(degree)
-    paths = _build_paths(run_root, degree)
+    storage_mode = args.storage_mode
+    run_root = _run_root(degree, args.run_root, storage_mode)
+    families = _parse_family_subset(args.families, degree)
+    paths = _build_paths(run_root, degree, storage_mode)
     paths["specs_dir"].mkdir(parents=True, exist_ok=True)
     paths["summaries_dir"].mkdir(parents=True, exist_ok=True)
-    paths["path_only_dir"].mkdir(parents=True, exist_ok=True)
+    paths["storage_dir"].mkdir(parents=True, exist_ok=True)
 
     _write_plan(
         degree,
         run_root,
+        storage_mode,
         args.network_parallelism,
         args.julia_threads,
         args.chunk_size,
         args.scan_mode,
         args.flush_network_count,
+        args.logqk_min,
+        args.logqk_max,
         families,
         paths,
     )
@@ -365,15 +456,18 @@ def main() -> None:
         "degree": degree,
         "started_at": _now_iso(),
         "run_root": str(run_root),
+        "storage_mode": storage_mode,
         "julia_bin": julia_bin,
         "julia_threads": args.julia_threads,
         "network_parallelism": args.network_parallelism,
         "scan_mode": args.scan_mode,
         "chunk_size": args.chunk_size,
         "flush_network_count": args.flush_network_count,
+        "logqk_min": args.logqk_min,
+        "logqk_max": args.logqk_max,
         "families": [family.slug for family in families],
+        "sqlite_db": str(paths["sqlite_db"]),
         "path_only_db": str(paths["path_only_db"]),
-        "storage_mode": "path_only_narrow",
         "plan_path": str(paths["plan_path"]),
     }
     _record_run_meta(paths, run_meta)
@@ -381,18 +475,21 @@ def main() -> None:
     family_results: list[dict[str, object]] = []
     discover_only = args.phase == "discover"
     for family in families:
-        spec_path = paths["specs_dir"] / f"report_d{degree}_{family.slug}_complete_local.spec.json"
+        spec_path = paths["specs_dir"] / f"report_d{degree}_{family.slug}_{storage_mode}_complete_local.spec.json"
         summary_suffix = "discover.summary.json" if discover_only else "run.summary.json"
-        summary_path = paths["summaries_dir"] / f"report_d{degree}_{family.slug}_complete_local.{summary_suffix}"
+        summary_path = paths["summaries_dir"] / f"report_d{degree}_{family.slug}_{storage_mode}_complete_local.{summary_suffix}"
         spec_payload = _family_spec_payload(
             degree,
             family,
-            paths["path_only_db"],
+            paths["sqlite_db"],
+            storage_mode,
             args.network_parallelism,
             args.chunk_size,
             args.scan_mode,
             args.flush_network_count,
             discover_only=discover_only,
+            logqk_min=args.logqk_min,
+            logqk_max=args.logqk_max,
         )
         _write_json(spec_path, spec_payload)
         if summary_path.exists():

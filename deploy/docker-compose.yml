@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     expose:
       - "8088"
-    volumes:
-      - julia-cache:/home/rop/.julia/compiled
     deploy:
       resources:
         limits:
@@ -18,7 +16,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 600s
 
   nginx:
     image: nginx:alpine
@@ -34,6 +32,3 @@ services:
     depends_on:
       julia-app:
         condition: service_healthy
-
-volumes:
-  julia-cache:

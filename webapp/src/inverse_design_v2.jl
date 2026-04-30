@@ -951,6 +951,8 @@ function _summary_behavior_config(config::AtlasBehaviorConfig)
         compute_volume=false,
         motif_zero_tol=config.motif_zero_tol,
         include_path_records=false,
+        logqk_min=config.logqk_min,
+        logqk_max=config.logqk_max,
     )
 end
 
@@ -1474,12 +1476,12 @@ function _unsupported_multidimensional_refinement_trial(change_spec, output_symb
     )
 end
 
-function _attach_proxy_metrics!(paths, model, change_spec)
+function _attach_proxy_metrics!(paths, model, change_spec, behavior_config::AtlasBehaviorConfig=atlas_behavior_config_default())
     for path in paths
         path_idx = Int(_raw_get(path, :path_idx, 0))
         path_idx > 0 || continue
         try
-            poly_dict = _candidate_polyhedron(model, change_spec, path_idx)
+            poly_dict = _candidate_polyhedron(model, change_spec, path_idx; behavior_config=behavior_config)
             path["volume_proxy"] = _polyhedron_proxy_summary(poly_dict)
         catch err
             path["volume_proxy"] = Dict(
@@ -1557,8 +1559,11 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
         compute_volume=volume_policy == "estimated",
         motif_zero_tol=classifier_config.motif_zero_tol,
         include_path_records=true,
+        logqk_min=classifier_config.logqk_min,
+        logqk_max=classifier_config.logqk_max,
     )
     model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
+    constraint_kwargs = _behavior_constraint_kwargs(model, material_config)
     change_spec = _change_spec_from_slice(model, slice)
     change_paths = _build_change_paths(model, change_spec)
     result = get_behavior_families(
@@ -1571,6 +1576,7 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
         keep_nonasymptotic=material_config.keep_nonasymptotic,
         motif_zero_tol=material_config.motif_zero_tol,
         compute_volume=material_config.compute_volume,
+        constraint_kwargs...,
     )
 
     slice_graph_payload = _build_slice_regime_transition_records(
@@ -1593,7 +1599,7 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
         slice_graph_payload["regime_by_vertex"],
         slice_graph_payload["transition_by_edge"],
     )
-    volume_policy == "proxy" && _attach_proxy_metrics!(temp_paths, model, change_spec)
+    volume_policy == "proxy" && _attach_proxy_metrics!(temp_paths, model, change_spec, material_config)
 
     bucket_paths = _bucket_paths(temp_paths, bucket)
     accepted_paths, accepted = _matching_automaton_witness_paths(bucket_paths, gamma_q, query)
@@ -1998,6 +2004,7 @@ function retrieve_candidates(gamma_q, library, profile::AtlasSearchProfile; poli
             "matched_transition_records" => matched_transition_records,
             "matched_witness_paths" => matched_witness_paths,
             "best_witness_path" => best_witness_path,
+            "classifier_config" => _raw_get(slice, :classifier_config, nothing),
             "matched_bucket_count" => length(matched_motif_buckets) + length(matched_exact_buckets),
             "matched_robust_path_count" => sum(_bucket_known_robust_count(bucket) for bucket in matched_bucket_union),
             "matched_regime_count" => length(matched_regime_records),
@@ -2208,9 +2215,10 @@ function _candidate_change_spec(model, io)
     return _normalize_change_spec(io.input_symbol, model)
 end
 
-function _candidate_polyhedron(model, change_spec, path_idx::Int)
+function _candidate_polyhedron(model, change_spec, path_idx::Int; behavior_config::AtlasBehaviorConfig=atlas_behavior_config_default())
     change_paths = _build_change_paths(model, change_spec)
-    poly = get_polyhedra(change_paths, [path_idx])[1]
+    constraint_kwargs = _behavior_constraint_kwargs(model, behavior_config)
+    poly = get_polyhedra(change_paths, [path_idx]; constraint_kwargs...)[1]
     return polyhedron_to_dict(poly)
 end
 
@@ -2231,7 +2239,15 @@ function _best_seeded_trial(result, gamma_q, refinement::InverseRefinementSpec, 
     path_idx = Int(_raw_get(witness, :path_idx, 0))
     path_idx > 0 || return nothing, "invalid_witness_path"
 
-    poly_dict = _candidate_polyhedron(model, change_spec, path_idx)
+    behavior_config = if _raw_haskey(result, :classifier_config)
+        atlas_behavior_config_from_raw(_raw_get(result, :classifier_config, nothing))
+    elseif _raw_haskey(result, :best_classifier_config)
+        atlas_behavior_config_from_raw(_raw_get(result, :best_classifier_config, nothing))
+    else
+        atlas_behavior_config_default()
+    end
+
+    poly_dict = _candidate_polyhedron(model, change_spec, path_idx; behavior_config=behavior_config)
     haskey(poly_dict, "dimension") || return nothing, "polyhedron_unavailable"
     qk_count = length(qK_sym(model))
     poly_dim = Int(_raw_get(poly_dict, :dimension, -1))

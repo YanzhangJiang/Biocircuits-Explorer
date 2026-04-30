@@ -155,6 +155,118 @@ end
     @test sanitized["nested"][2]["x"] == "-Inf"
 end
 
+@testset "Behavior Program Codec Round Trips" begin
+    cfg = Dict(
+        "ro_quantization_digits" => 3,
+        "ro_quantization_scale" => 1000,
+        "motif_zero_tol" => 1e-6,
+    )
+
+    scalar_profile = Any[0.0, -1.0, 1.0, 0.0]
+    vector_profile = Any[Any[0.0, 1.0], Any[-1.0, 1.0], Any[-1.0, 0.0]]
+    singular_profile = Any[NaN, Inf, -Inf, 1 / 3]
+
+    for profile in (scalar_profile, vector_profile, singular_profile)
+        blob = encode_program_blob(profile, cfg)
+        @test startswith(String(blob[1:4]), "RPB1")
+        @test decode_program_blob(blob, cfg) == canonical_program_profile(profile, cfg)
+        @test behavior_program_hash(blob) == behavior_program_hash(encode_program_blob(profile, cfg))
+    end
+
+    @test program_exact_label(scalar_profile, cfg) == "0 -> -1 -> +1 -> 0"
+    @test program_exact_label(Any[1 / 3], cfg) == "+0.333"
+    features = program_features(vector_profile, cfg)
+    @test features["len"] == 3
+    @test features["dim"] == 2
+    @test features["c_distinct"] == 3.0
+end
+
+@testset "Behavior Aggregate SQLite Writer" begin
+    mktempdir() do dir
+        db_path = joinpath(dir, "behavior_aggregate.sqlite")
+        network_id = "[1]+[2]<->[1,2]"
+        cfg = BiocircuitsExplorerBackend.atlas_behavior_config_to_dict(AtlasBehaviorConfig(
+            path_scope=:feasible,
+            min_volume_mean=0.0,
+            include_path_records=false,
+        ))
+        atlas = Dict(
+            "atlas_schema_version" => "0.2.0",
+            "generated_at" => "test",
+            "network_entries" => Any[Dict(
+                "network_id" => network_id,
+                "canonical_code" => network_id,
+                "analysis_status" => "ok",
+                "base_species_count" => 2,
+                "reaction_count" => 1,
+                "total_species_count" => 3,
+                "max_support" => 2,
+                "support_mass" => 2,
+                "source_label" => "codec_test",
+                "source_kind" => "explicit",
+                "motif_union" => Any["0 -> +"],
+                "exact_union" => Any["0.0 -> 1.0"],
+                "slice_ids" => Any["slice-1"],
+            )],
+            "input_graph_slices" => Any[Dict(
+                "graph_slice_id" => "graph-1",
+                "network_id" => network_id,
+                "input_symbol" => "tA",
+                "change_signature" => "tA:+",
+                "vertex_count" => 2,
+                "edge_count" => 1,
+                "path_count" => 2,
+            )],
+            "behavior_slices" => Any[Dict(
+                "slice_id" => "slice-1",
+                "network_id" => network_id,
+                "graph_slice_id" => "graph-1",
+                "input_symbol" => "tA",
+                "change_signature" => "tA:+",
+                "output_symbol" => "AB",
+                "analysis_status" => "ok",
+                "path_scope" => "feasible",
+                "min_volume_mean" => 0.0,
+                "total_paths" => 2,
+                "feasible_paths" => 2,
+                "included_paths" => 2,
+                "excluded_paths" => 0,
+                "motif_union" => Any["0 -> +"],
+                "exact_union" => Any["0.0 -> 1.0"],
+                "classifier_config" => cfg,
+            )],
+            "regime_records" => Any[],
+            "transition_records" => Any[],
+            "family_buckets" => Any[Dict(
+                "bucket_id" => "slice-1::exact::1",
+                "slice_id" => "slice-1",
+                "family_kind" => "exact",
+                "family_idx" => 1,
+                "exact_profile" => Any[0.0, 1.0],
+                "family_label" => "0.0 -> 1.0",
+                "motif_profile" => Any[0, 1],
+                "parent_motif" => "0 -> +",
+                "path_count" => 2,
+                "robust_path_count" => 0,
+                "volume_mean" => nothing,
+                "representative_path_idx" => 1,
+                "representative_vertex_indices" => Any[1, 2],
+                "representative_path_length" => 2,
+            )],
+            "path_records" => Any[],
+            "duplicate_inputs" => Any[],
+        )
+
+        summary = atlas_sqlite_append_atlas!(db_path, atlas; persist_mode=:behavior_aggregate)
+        @test summary["persist_mode"] == "behavior_aggregate"
+        @test summary["behavior_program_count"] == 1
+        @test summary["slice_program_support_count"] == 1
+        @test summary["network_program_support_count"] == 1
+        @test summary["witness_path_count"] == 1
+        @test summary["path_record_count"] == 0
+    end
+end
+
 @testset "Parent Watchdog Exit Logic" begin
     @test BiocircuitsExplorerBackend.parent_watchdog_should_exit(nothing, 1) == false
     @test BiocircuitsExplorerBackend.parent_watchdog_should_exit(3210, 3210) == false
@@ -491,6 +603,36 @@ end
         db = BiocircuitsExplorerBackend.atlas_sqlite_connect(sqlite_path)
         try
             @test BiocircuitsExplorerBackend._atlas_sqlite_metadata_text(db, "persist_mode") == "lightweight"
+        finally
+            BiocircuitsExplorerBackend.SQLite.close(db)
+        end
+    end
+end
+
+@testset "SQLite Helpers Do Not Accumulate Registered Statements" begin
+    mktempdir() do tmpdir
+        sqlite_path = joinpath(tmpdir, "atlas_stmt_lifecycle.sqlite")
+        db = BiocircuitsExplorerBackend.atlas_sqlite_connect(sqlite_path)
+        try
+            @test length(db.stmt_wrappers) == 0
+
+            BiocircuitsExplorerBackend._atlas_sqlite_execute(db, "CREATE TABLE tmp_values (x INTEGER)")
+            @test length(db.stmt_wrappers) == 0
+
+            for value in 1:5
+                BiocircuitsExplorerBackend._atlas_sqlite_execute(db, "INSERT INTO tmp_values (x) VALUES (?)", (value,))
+            end
+            @test length(db.stmt_wrappers) == 0
+
+            query = BiocircuitsExplorerBackend._atlas_sqlite_query(db, "SELECT x FROM tmp_values ORDER BY x")
+            try
+                @test [Int(row[:x]) for row in query] == collect(1:5)
+                @test length(db.stmt_wrappers) == 0
+            finally
+                BiocircuitsExplorerBackend.DBInterface.close!(query)
+            end
+
+            @test length(db.stmt_wrappers) == 0
         finally
             BiocircuitsExplorerBackend.SQLite.close(db)
         end

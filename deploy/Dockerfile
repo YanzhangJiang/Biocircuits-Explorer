@@ -1,5 +1,8 @@
 FROM julia:1.12
 
+# Keep Julia package images portable across EC2 host changes.
+ENV JULIA_CPU_TARGET=generic
+
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libcdd-dev curl && \
