@@ -111,6 +111,7 @@ export const PORT_TYPES = {
   'atlas-spec': 'atlas-spec',
   atlas: 'atlas',
   'atlas-query': 'atlas-query',
+  'atlas-network': 'atlas-network',
 };
 
 export const PORT_COLOR_GROUPS = {
@@ -121,6 +122,7 @@ export const PORT_COLOR_GROUPS = {
   'atlas-spec': 'params',
   atlas: 'model',
   'atlas-query': 'params',
+  'atlas-network': 'params',
 };
 
 export function getPortColor(port) {

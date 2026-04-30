@@ -2,10 +2,15 @@ import { nodeRegistry, connections, SISO_FAMILY_COLORS, ensureNodeData, getNodeD
 import { api, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalFloat, cloneSerializable } from './api.js';
 import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, themedColorbar } from './theme.js';
 import { plotTrajectory, convexHull2D, formatPolyNumber, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
-import { setNodeLoading, setupPlotResize, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { NODE_TYPES } from './node-types/index.js';
+
+const SISO_PLOT_MODE_SINGLE = 'single';
+const SISO_PLOT_MODE_OVERLAY = 'overlay';
+const SISO_PLOT_MODE_VALUES = new Set([SISO_PLOT_MODE_SINGLE, SISO_PLOT_MODE_OVERLAY]);
+const SISO_OVERLAY_CONCURRENCY = 4;
 
 export function recomputeSISO(nodeId) {
   const typeDef = NODE_TYPES['siso-analysis'];
@@ -36,6 +41,137 @@ export function buildPathFamilyMaps(data) {
   });
 
   return { exactFamilyByPath };
+}
+
+function getSISOPlotMode(nodeId) {
+  const rawMode = nodeRegistry[nodeId]?.data?.sisoPlotMode;
+  return SISO_PLOT_MODE_VALUES.has(rawMode) ? rawMode : SISO_PLOT_MODE_SINGLE;
+}
+
+function setSISOPlotMode(nodeId, mode) {
+  const safeMode = SISO_PLOT_MODE_VALUES.has(mode) ? mode : SISO_PLOT_MODE_SINGLE;
+  const nodeData = ensureNodeData(nodeId);
+  nodeData.sisoPlotMode = safeMode;
+  const selectEl = document.getElementById(`${nodeId}-plot-mode`);
+  if (selectEl) selectEl.value = safeMode;
+  return safeMode;
+}
+
+function selectedPathIdxForNode(nodeId) {
+  const raw = getNodeData(nodeId).selectedPath?.path_idx;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sisoOverlayPathCandidates(data) {
+  const { exactFamilyByPath } = buildPathFamilyMaps(data || {});
+  return (data?.paths || [])
+    .filter(path => path.feasible)
+    .sort((a, b) => {
+      const exactA = exactFamilyByPath.get(a.path_idx) || Number.MAX_SAFE_INTEGER;
+      const exactB = exactFamilyByPath.get(b.path_idx) || Number.MAX_SAFE_INTEGER;
+      return exactA - exactB || a.path_idx - b.path_idx;
+    });
+}
+
+function sisoOverlayRequestKey(data, config, pathIndices) {
+  return JSON.stringify({
+    change_qK: data?.change_qK || config?.change_qK || '',
+    observe_x: data?.observe_x || config?.observe_x || '',
+    start: config?.min ?? -6,
+    stop: config?.max ?? 6,
+    path_indices: pathIndices,
+  });
+}
+
+function trajectoryOutputIndex(trajectory, behaviorData) {
+  const names = trajectory?.x_sym || [];
+  const target = behaviorData?.observe_x || '';
+  const byName = names.findIndex(name => name === target);
+  if (byName >= 0) return byName;
+  const byBackendIndex = Number(behaviorData?.observe_x_idx) - 1;
+  return Number.isInteger(byBackendIndex) && byBackendIndex >= 0 ? byBackendIndex : 0;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function renderSISOPlotControls(nodeId, data) {
+  const mode = getSISOPlotMode(nodeId);
+  const familyCount = (data.exact_families || []).length;
+  const includedCount = data.included_paths ?? (data.paths || []).filter(path => path.included).length;
+  const fixedLabel = `${escapeHtml(data.change_qK || data.change_label || 'input')} -> ${escapeHtml(data.observe_x || 'output')}`;
+
+  return `
+    <section class="siso-section siso-plot-section">
+      <div class="siso-section-head">
+        <div class="siso-section-title">Behavior Plot</div>
+        <div class="text-dim">${fixedLabel}</div>
+      </div>
+      <div class="siso-plot-toolbar">
+        <label for="${nodeId}-plot-mode">Mode</label>
+        <select id="${nodeId}-plot-mode" data-action="updateSISOPlotMode" data-node="${nodeId}">
+          <option value="${SISO_PLOT_MODE_SINGLE}" ${mode === SISO_PLOT_MODE_SINGLE ? 'selected' : ''}>Selected trajectory</option>
+          <option value="${SISO_PLOT_MODE_OVERLAY}" ${mode === SISO_PLOT_MODE_OVERLAY ? 'selected' : ''}>All path overlay</option>
+        </select>
+        <button type="button" class="btn btn-small siso-plot-refresh" data-action="refreshSISOPlot" data-node="${nodeId}">Refresh</button>
+      </div>
+      <div class="siso-summary-line">
+        <span class="summary-chip">exact families ${familyCount}</span>
+        <span class="summary-chip">included paths ${includedCount}</span>
+      </div>
+      <div class="plot-container siso-active-plot" id="${nodeId}-traj-plot" style="display:none;"></div>
+    </section>
+  `;
+}
+
+function sisoConditionPanelId(nodeId, pathIdx) {
+  return `${nodeId}-path-condition-${pathIdx}`;
+}
+
+function renderSISOConditionPanel(nodeId, pathIdx) {
+  return `
+    <div
+      class="siso-condition-panel"
+      id="${sisoConditionPanelId(nodeId, pathIdx)}"
+      data-loaded="false"
+      style="display:none;"
+    >
+      <span class="text-dim">Condition not loaded.</span>
+    </div>
+  `;
+}
+
+function renderSISOConditionContent(data) {
+  const conditions = data.conditions || [];
+  const conditionRows = conditions.length
+    ? conditions.map((condition, idx) => `
+        <div class="siso-condition-row">
+          <span class="siso-condition-index">C${idx + 1}</span>
+          <code>${escapeHtml(condition)}</code>
+        </div>
+      `).join('')
+    : '<div class="text-dim">No path conditions returned.</div>';
+
+  const qkSymbols = (data.qk_symbols || []).map(escapeHtml).join(', ') || 'n/a';
+  return `
+    <div class="siso-condition-meta">
+      <span class="summary-chip">Path #${data.path_idx}</span>
+      <span class="summary-chip">Fixed coordinates: ${qkSymbols}</span>
+    </div>
+    <div class="siso-condition-list">${conditionRows}</div>
+  `;
 }
 
 export function buildSISOSelection(nodeId, changeQK, pathIdx) {
@@ -80,10 +216,11 @@ export function clearSISOSelection(nodeId, notify = true) {
 }
 
 export function renderPathChips(nodeId, changeQK, pathIndices, accent) {
+  const selectedPathIdx = selectedPathIdxForNode(nodeId);
   return (pathIndices || []).map(pathIdx => `
     <button
       type="button"
-      class="path-chip"
+      class="path-chip ${selectedPathIdx === pathIdx ? 'selected' : ''}"
       data-path-idx="${pathIdx}"
       style="--path-chip-accent:${accent}; --path-chip-soft:${hexToRgba(accent, 0.16)};"
       data-action="plotSISOPath"
@@ -134,6 +271,7 @@ export function renderFamilyTable(nodeId, changeQK, families) {
 
 export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
   const { exactFamilyByPath } = buildPathFamilyMaps(data);
+  const selectedPathIdx = selectedPathIdxForNode(nodeId);
   const feasiblePaths = (data.paths || [])
     .filter(path => path.feasible)
     .sort((a, b) => {
@@ -141,7 +279,6 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
       const exactB = exactFamilyByPath.get(b.path_idx) || Number.MAX_SAFE_INTEGER;
       return exactA - exactB || a.path_idx - b.path_idx;
     });
-  const includedFeasiblePaths = feasiblePaths.filter(path => path.included);
 
   let html = '';
 
@@ -166,7 +303,7 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
 
     html += `
       <div
-        class="path-item siso-path-item ${path.included ? 'is-included' : 'is-excluded'}"
+        class="path-item siso-path-item ${path.included ? 'is-included' : 'is-excluded'} ${selectedPathIdx === path.path_idx ? 'selected' : ''}"
         data-idx="${path.path_idx}"
         data-path-idx="${path.path_idx}"
         data-qk="${changeQK}"
@@ -176,7 +313,10 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
       >
         <div class="siso-path-head">
           <div class="siso-path-title">Path #${path.path_idx}</div>
-          <button type="button" class="btn btn-small siso-inline-btn" data-action="plotSISOPath" data-node="${nodeId}" data-qk="${changeQK}" data-idx="${path.path_idx}">Plot</button>
+          <div class="siso-path-actions">
+            <button type="button" class="btn btn-small siso-inline-btn" data-action="plotSISOPath" data-node="${nodeId}" data-qk="${changeQK}" data-idx="${path.path_idx}">Plot</button>
+            <button type="button" class="btn btn-small siso-inline-btn" data-action="toggleSISOPathCondition" data-node="${nodeId}" data-qk="${changeQK}" data-idx="${path.path_idx}">Condition</button>
+          </div>
         </div>
         <div class="siso-path-badges">
           ${exactFamilyIdx ? `<span class="family-badge family-badge-exact" style="--badge-accent:${exactAccent}; --badge-soft:${hexToRgba(exactAccent, 0.18)};">Exact ${exactFamilyIdx}</span>` : ''}
@@ -187,6 +327,7 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
           <span>RO ${path.exact_label}</span>
           <span>Vol ${formatVolumeSummary(path.volume)}</span>
         </div>
+        ${renderSISOConditionPanel(nodeId, path.path_idx)}
       </div>
     `;
   });
@@ -196,9 +337,183 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
     </section>
   `;
 
-  const showPlot = includedFeasiblePaths.length > 0 ? '' : 'display:none;';
-  html += `<div class="plot-container" id="${nodeId}-traj-plot" style="${showPlot}"></div>`;
+  html += renderSISOPlotControls(nodeId, data);
   return html;
+}
+
+function renderSISOBehaviorOverlayPlot(nodeId, overlayData) {
+  const plotId = `${nodeId}-traj-plot`;
+  const plotEl = document.getElementById(plotId);
+  if (!plotEl || !overlayData) return;
+
+  const traces = (overlayData.trajectories || []).map((trajectory, idx) => {
+    const accent = trajectory.exact_family_idx
+      ? getFamilyColor(trajectory.exact_family_idx, 0)
+      : getFamilyColor(idx + 1, 0);
+    const familyLabel = trajectory.exact_family_idx ? `E${trajectory.exact_family_idx}` : 'unclassified';
+    return {
+      x: trajectory.change_values,
+      y: trajectory.output_values,
+      type: 'scatter',
+      mode: 'lines',
+      name: `Path #${trajectory.path_idx}`,
+      customdata: trajectory.change_values.map(() => [
+        trajectory.path_idx,
+        familyLabel,
+        trajectory.exact_label || 'n/a',
+        trajectory.included ? 'included' : (trajectory.exclusion_reason || 'excluded'),
+      ]),
+      line: {
+        color: accent,
+        width: trajectory.included ? 1.8 : 1.2,
+      },
+      opacity: trajectory.included ? 0.88 : 0.42,
+      hovertemplate: 'Path #%{customdata[0]} · %{customdata[1]}<br>log input=%{x:.3g}<br>log output=%{y:.3g}<br>%{customdata[2]}<br>%{customdata[3]}<extra></extra>',
+    };
+  });
+
+  if (!traces.length) {
+    Plotly.purge(plotEl);
+    plotEl.style.display = 'none';
+    return;
+  }
+
+  const plotTheme = getPlotTheme();
+  const hiddenFailures = (overlayData.failures || []).length;
+  const titleSuffix = hiddenFailures ? ` (${hiddenFailures} failed)` : '';
+  const layout = {
+    showlegend: traces.length <= 80,
+    margin: { t: 42, b: 58, l: 70, r: 20 },
+    title: {
+      text: `All paths: ${overlayData.change_qK} -> ${overlayData.observe_x}${titleSuffix}`,
+      font: { color: plotTheme.titleColor, size: 11 },
+      y: 0.98,
+      yanchor: 'top',
+    },
+    xaxis: { title: `log ${overlayData.change_qK}` },
+    yaxis: { title: `log(${overlayData.observe_x})` },
+    legend: { font: { color: plotTheme.fontColor, size: 9 } },
+  };
+
+  plotEl.style.display = '';
+  Plotly.newPlot(plotId, traces, applyPlotLayoutTheme(layout), { responsive: true, displayModeBar: false, scrollZoom: true });
+  setupPlotInteractionGuard(plotEl);
+  setupPlotResize(nodeId, plotId);
+}
+
+export function plotSISOBehaviorOverlay(nodeId) {
+  renderSISOBehaviorOverlayPlot(nodeId, nodeRegistry[nodeId]?.data?.overlayTrajectoryData);
+}
+
+export async function loadAndPlotSISOBehaviorOverlay(nodeId, { force = false } = {}) {
+  const nodeData = nodeRegistry[nodeId]?.data;
+  const data = nodeData?.behaviorData;
+  const config = getConnectedSISOConfig(nodeId);
+  const sessionId = getSessionIdForNode(nodeId);
+  const plotEl = document.getElementById(`${nodeId}-traj-plot`);
+  if (!plotEl || !data || !config || !sessionId) return;
+
+  const paths = sisoOverlayPathCandidates(data);
+  if (!paths.length) {
+    if (nodeData) nodeData.overlayTrajectoryData = null;
+    Plotly.purge(plotEl);
+    plotEl.style.display = 'none';
+    return;
+  }
+
+  const pathIndices = paths.map(path => path.path_idx);
+  const requestKey = sisoOverlayRequestKey(data, config, pathIndices);
+  if (!force && nodeData?.overlayTrajectoryData?.requestKey === requestKey) {
+    renderSISOBehaviorOverlayPlot(nodeId, nodeData.overlayTrajectoryData);
+    return;
+  }
+
+  const requestId = (nodeData?.sisoOverlayRequestId || 0) + 1;
+  if (nodeData) nodeData.sisoOverlayRequestId = requestId;
+
+  const { exactFamilyByPath } = buildPathFamilyMaps(data);
+  setNodeLoading(nodeId, true);
+  try {
+    const results = await mapWithConcurrency(paths, SISO_OVERLAY_CONCURRENCY, async path => {
+      try {
+        const trajectory = await api('siso_trajectory', {
+          session_id: sessionId,
+          change_qK: data.change_qK || config.change_qK,
+          path_idx: path.path_idx,
+          start: config?.min ?? -6,
+          stop: config?.max ?? 6,
+        });
+        const outputIdx = trajectoryOutputIndex(trajectory, data);
+        const outputValues = (trajectory.logx || []).map(row => row?.[outputIdx]).map(Number);
+        return {
+          ok: true,
+          path_idx: path.path_idx,
+          exact_family_idx: exactFamilyByPath.get(path.path_idx) || null,
+          exact_label: path.exact_label,
+          included: path.included,
+          exclusion_reason: path.exclusion_reason,
+          change_values: trajectory.change_values || [],
+          output_values: outputValues,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          path_idx: path.path_idx,
+          error: error?.message || String(error),
+        };
+      }
+    });
+
+    if (nodeRegistry[nodeId]?.data?.sisoOverlayRequestId !== requestId) return;
+
+    const overlayData = {
+      requestKey,
+      change_qK: data.change_qK || config.change_qK,
+      observe_x: data.observe_x || config.observe_x,
+      start: config?.min ?? -6,
+      stop: config?.max ?? 6,
+      trajectories: results.filter(result => result?.ok),
+      failures: results.filter(result => result && !result.ok),
+    };
+
+    if (nodeRegistry[nodeId]) {
+      ensureNodeData(nodeId).overlayTrajectoryData = overlayData;
+    }
+    renderSISOBehaviorOverlayPlot(nodeId, overlayData);
+    commitWorkspaceSnapshot('siso-all-path-overlay');
+  } finally {
+    setNodeLoading(nodeId, false);
+  }
+}
+
+export async function refreshSISOPlot(nodeId) {
+  const mode = getSISOPlotMode(nodeId);
+  if (mode === SISO_PLOT_MODE_OVERLAY) {
+    await loadAndPlotSISOBehaviorOverlay(nodeId, { force: true });
+    return;
+  }
+
+  const selection = getNodeData(nodeId).selectedPath;
+  if (selection?.path_idx != null) {
+    await plotSISOPath(nodeId, selection.change_qK, selection.path_idx);
+    return;
+  }
+
+  const plotEl = document.getElementById(`${nodeId}-traj-plot`);
+  if (plotEl) {
+    Plotly.purge(plotEl);
+    plotEl.style.display = 'none';
+  }
+}
+
+export async function updateSISOPlotMode(nodeId, mode) {
+  const safeMode = setSISOPlotMode(nodeId, mode);
+  commitWorkspaceSnapshot('siso-plot-mode');
+  if (safeMode === SISO_PLOT_MODE_OVERLAY) {
+    await loadAndPlotSISOBehaviorOverlay(nodeId);
+    return;
+  }
+  await refreshSISOPlot(nodeId);
 }
 
 export function normalizeSISOConfig(rawConfig) {
@@ -248,6 +563,7 @@ export async function computeSISOResult(nodeId) {
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
   const previousSelectedPath = getNodeData(nodeId).selectedPath?.path_idx || null;
+  const plotMode = getSISOPlotMode(nodeId);
 
   try {
     const sessionId = getSessionIdForNode(nodeId);
@@ -273,7 +589,11 @@ export async function computeSISOResult(nodeId) {
     contentEl.innerHTML = renderBehaviorFamiliesResult(nodeId, config.change_qK, data);
     commitWorkspaceSnapshot('siso-behavior');
     const pathStillExists = previousSelectedPath && (data.paths || []).some(path => path.path_idx === previousSelectedPath);
-    if (pathStillExists) {
+    if (plotMode === SISO_PLOT_MODE_OVERLAY) {
+      if (pathStillExists) setSISOSelection(nodeId, config.change_qK, previousSelectedPath);
+      else clearSISOSelection(nodeId, previousSelectedPath !== null);
+      await loadAndPlotSISOBehaviorOverlay(nodeId, { force: true });
+    } else if (pathStillExists) {
       await plotSISOPath(nodeId, config.change_qK, previousSelectedPath);
     } else {
       clearSISOSelection(nodeId, previousSelectedPath !== null);
@@ -301,6 +621,7 @@ export async function plotSISOPath(nodeId, changeQK, pathIdx, selectedEl = null)
   const config = getConnectedSISOConfig(nodeId);
   const sessionId = getSessionIdForNode(nodeId);
   if (!sessionId) return;
+  setSISOPlotMode(nodeId, SISO_PLOT_MODE_SINGLE);
   const nodeData = nodeRegistry[nodeId]?.data;
   const requestId = (nodeData?.sisoTrajectoryRequestId || 0) + 1;
   if (nodeData) {
@@ -348,6 +669,41 @@ export async function selectSISOPath(el) {
   const changeQK = el.dataset.qk;
   const nodeId = el.dataset.node;
   await plotSISOPath(nodeId, changeQK, pathIdx, el);
+}
+
+export async function toggleSISOPathCondition(el) {
+  const pathIdx = parseInt(el.dataset.idx, 10);
+  const changeQK = el.dataset.qk;
+  const nodeId = el.dataset.node;
+  const panel = document.getElementById(sisoConditionPanelId(nodeId, pathIdx));
+  if (!panel) return;
+
+  const isVisible = panel.style.display !== 'none';
+  if (isVisible) {
+    panel.style.display = 'none';
+    el.classList.remove('active');
+    return;
+  }
+
+  panel.style.display = '';
+  el.classList.add('active');
+  if (panel.dataset.loaded === 'true') return;
+
+  panel.innerHTML = '<span class="text-dim">Loading path condition...</span>';
+  try {
+    const sessionId = getSessionIdForNode(nodeId);
+    if (!sessionId) throw new Error('Build the connected model first');
+    const data = await api('siso_path_condition', {
+      session_id: sessionId,
+      change_qK: changeQK,
+      path_idx: pathIdx,
+    });
+    panel.innerHTML = renderSISOConditionContent(data);
+    panel.dataset.loaded = 'true';
+  } catch (error) {
+    handleNodeError(error, nodeId, 'SISO path condition');
+    panel.innerHTML = `<div class="node-error">${escapeHtml(error?.message || String(error))}</div>`;
+  }
 }
 
 export function getConnectedSISOSelection(nodeId) {

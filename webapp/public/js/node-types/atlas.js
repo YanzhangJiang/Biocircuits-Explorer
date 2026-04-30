@@ -6,7 +6,7 @@ export const ATLAS_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'Atlas Spec',
-    inputs: [],
+    inputs: [{ port: 'atlas-network', label: 'Network' }],
     outputs: [{ port: 'atlas-spec', label: 'Spec' }],
     defaultWidth: 420,
     defaultHeight: 620,
@@ -94,6 +94,14 @@ export const ATLAS_TYPES = {
             <div class="param-row">
               <label>Store path records eagerly:</label>
               <input type="checkbox" id="${nodeId}-include-path-records" class="auto-update">
+            </div>
+            <div class="param-row">
+              <label>logqk min:</label>
+              <input type="number" id="${nodeId}-logqk-min" value="" step="any" class="auto-update" placeholder="optional">
+            </div>
+            <div class="param-row">
+              <label>logqk max:</label>
+              <input type="number" id="${nodeId}-logqk-max" value="" step="any" class="auto-update" placeholder="optional">
             </div>
           </div>
         </div>

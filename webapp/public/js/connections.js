@@ -3,6 +3,7 @@ import { canvasState, wiringState, connections, setConnections, nodeRegistry, sc
 import { showToast } from './api.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { hasModelContextForNode } from './nodes.js';
+import { getReactionsFromNode } from './model.js';
 
 // Module-level DOM refs, set by initSocketEvents()
 let svgLayer = null;
@@ -174,7 +175,7 @@ export function initSocketEvents() {
                 // Check if we have the necessary data before executing
                 const shouldExecute =
                   (toPort === 'model' && hasModelContextForNode(toNode)) || // Has model data
-                  (toPort === 'reactions') || // Has reactions data
+                  (toPort === 'reactions' && getReactionsFromNode(fromNode).reactions.length > 0) || // Has reactions data
                   (toPort === 'params'); // Params connection
 
                 if (shouldExecute) {

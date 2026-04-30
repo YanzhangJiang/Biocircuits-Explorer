@@ -293,6 +293,298 @@ export function renderAtlasBehaviorSketch(payload) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Network ID definition                                              */
+/* ------------------------------------------------------------------ */
+
+export function readAtlasNetworkDefinitionState(nodeId) {
+  const networkId = document.getElementById(`${nodeId}-network-id`)?.value || '';
+  let resolvedDefinition = null;
+  let parseError = '';
+  let sourceFormat = '';
+
+  if (String(networkId).trim()) {
+    try {
+      resolvedDefinition = decodeNetworkIdentifier(networkId);
+      sourceFormat = resolvedDefinition?.source_format || '';
+    } catch (error) {
+      parseError = error?.message || String(error);
+    }
+  }
+
+  return {
+    networkId,
+    resolvedDefinition,
+    parseError,
+    sourceFormat,
+  };
+}
+
+function base64UrlToBytes(text) {
+  const normalized = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+  let binary = '';
+  try {
+    binary = window.atob(padded);
+  } catch (error) {
+    throw new Error('Bad compact network identifier encoding.');
+  }
+  return Uint8Array.from(binary, ch => ch.charCodeAt(0));
+}
+
+function readVarUint(bytes, startIdx) {
+  let value = 0;
+  let shift = 0;
+  let idx = startIdx;
+  while (idx < bytes.length) {
+    const byte = bytes[idx++];
+    value |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value, nextIdx: idx };
+    shift += 7;
+    if (shift > 35) break;
+  }
+  throw new Error('Malformed compact network identifier.');
+}
+
+function atlasBaseSymbolName(index) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const safeIndex = Math.max(1, Number(index) || 1);
+  if (safeIndex <= alphabet.length) return alphabet[safeIndex - 1];
+  const offset = safeIndex - 1;
+  return `${alphabet[offset % alphabet.length]}${Math.floor(offset / alphabet.length)}`;
+}
+
+function parseCanonicalSupportTerm(termText) {
+  const text = String(termText || '').trim();
+  if (!text.startsWith('[') || !text.endsWith(']')) {
+    throw new Error(`Bad canonical support term: ${text || '(empty)'}`);
+  }
+
+  const inner = text.slice(1, -1).trim();
+  if (!inner) return [];
+
+  return inner.split(',').map(piece => {
+    const value = parseInt(piece.trim(), 10);
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`Bad canonical support index: ${piece}`);
+    }
+    return value;
+  });
+}
+
+function parseCanonicalReactionSide(sideText) {
+  const text = String(sideText || '').trim();
+  if (!text) return [];
+  return text.split('+').map(parseCanonicalSupportTerm);
+}
+
+function formatCanonicalSupportTerm(term) {
+  return `[${term.join(',')}]`;
+}
+
+function supportKey(support) {
+  return support.join(',');
+}
+
+function speciesNameFromSupport(support) {
+  const counts = new Map();
+  support.forEach(index => {
+    counts.set(index, (counts.get(index) || 0) + 1);
+  });
+
+  return Array.from(counts.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([index, count]) => {
+      const base = atlasBaseSymbolName(index);
+      return count > 1 ? `${base}${count}` : base;
+    })
+    .join('');
+}
+
+function formatCanonicalReactionSide(terms) {
+  if (!Array.isArray(terms) || !terms.length) {
+    throw new Error('Canonical reaction side cannot be empty.');
+  }
+
+  const counts = new Map();
+  terms.forEach(term => {
+    const key = supportKey(term);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+
+  return Array.from(counts.entries())
+    .map(([key, count]) => {
+      const support = key.split(',').filter(Boolean).map(value => parseInt(value, 10));
+      const symbol = speciesNameFromSupport(support);
+      return count > 1 ? `${count}${symbol}` : symbol;
+    })
+    .sort((a, b) => a.localeCompare(b))
+    .join(' + ');
+}
+
+export function decodeCanonicalNetworkId(networkId) {
+  const text = String(networkId || '').trim();
+  if (!text) return null;
+
+  const canonicalReactions = text.split('|').map(piece => piece.trim()).filter(Boolean);
+  if (!canonicalReactions.length) {
+    throw new Error('network_id is empty.');
+  }
+
+  const rawRules = canonicalReactions.map(reactionText => {
+    const parts = reactionText.split('<->');
+    if (parts.length !== 2) {
+      throw new Error(`Bad canonical reaction: ${reactionText}`);
+    }
+
+    const left = formatCanonicalReactionSide(parseCanonicalReactionSide(parts[0]));
+    const right = formatCanonicalReactionSide(parseCanonicalReactionSide(parts[1]));
+    return `${left} <-> ${right}`;
+  });
+
+  return {
+    network_id: text,
+    source_label: text,
+    source_kind: 'network_id',
+    source_format: 'canonical_network_id',
+    raw_rules: rawRules,
+    reactions: rawRules,
+  };
+}
+
+export function decodeCompactNetworkSegment(encodedNetwork) {
+  const bytes = base64UrlToBytes(encodedNetwork);
+  let idx = 0;
+  const reactionCountState = readVarUint(bytes, idx);
+  const reactionCount = reactionCountState.value;
+  idx = reactionCountState.nextIdx;
+  const reactions = [];
+
+  for (let reactionIdx = 0; reactionIdx < reactionCount; reactionIdx += 1) {
+    const sides = [];
+    for (let sideIdx = 0; sideIdx < 2; sideIdx += 1) {
+      const termCountState = readVarUint(bytes, idx);
+      const termCount = termCountState.value;
+      idx = termCountState.nextIdx;
+      const terms = [];
+
+      for (let termIdx = 0; termIdx < termCount; termIdx += 1) {
+        const atomCountState = readVarUint(bytes, idx);
+        const atomCount = atomCountState.value;
+        idx = atomCountState.nextIdx;
+        const atoms = [];
+        for (let atomIdx = 0; atomIdx < atomCount; atomIdx += 1) {
+          const atomState = readVarUint(bytes, idx);
+          atoms.push(atomState.value);
+          idx = atomState.nextIdx;
+        }
+        terms.push(atoms);
+      }
+      sides.push(terms);
+    }
+    reactions.push(`${sides[0].map(formatCanonicalSupportTerm).join('+')}<->${sides[1].map(formatCanonicalSupportTerm).join('+')}`);
+  }
+
+  if (idx !== bytes.length) {
+    throw new Error('Compact network identifier has trailing bytes.');
+  }
+
+  const canonicalNetworkId = reactions.join('|');
+  const decoded = decodeCanonicalNetworkId(canonicalNetworkId);
+  return {
+    ...decoded,
+    compact_network_id: String(encodedNetwork || '').trim(),
+    source_format: 'compact_network_id',
+  };
+}
+
+function extractCompactNetworkSegment(idText) {
+  const text = String(idText || '').trim();
+  if (!text) return '';
+  if (text.startsWith('p3.')) {
+    const parts = text.split('.');
+    if (parts.length < 2 || !parts[1]) {
+      throw new Error('Bad path_record_id: missing compact network segment.');
+    }
+    return parts[1];
+  }
+  return text;
+}
+
+export function decodeNetworkIdentifier(idText) {
+  const text = String(idText || '').trim();
+  if (!text) return null;
+  if (text.includes('[') || text.includes('<->')) {
+    throw new Error('Network ID node only accepts compressed IDs from atlas storage.');
+  }
+
+  const compactSegment = extractCompactNetworkSegment(text);
+  const decoded = decodeCompactNetworkSegment(compactSegment);
+  return {
+    ...decoded,
+    input_id: text,
+    source_format: text.startsWith('p3.') ? 'path_record_id' : 'compact_network_id',
+  };
+}
+
+export function renderAtlasNetworkDefinitionPreview(nodeId, state = null) {
+  const previewEl = document.getElementById(`${nodeId}-network-preview`);
+  if (!previewEl) return;
+
+  const liveState = state || readAtlasNetworkDefinitionState(nodeId);
+
+  if (liveState?.parseError) {
+    previewEl.style.display = '';
+    previewEl.innerHTML = `<div class="node-error">${escapeHtml(liveState.parseError)}</div>`;
+    return;
+  }
+
+  previewEl.style.display = 'none';
+  previewEl.innerHTML = '';
+}
+
+export function atlasNetworkDefinitionPayloadFromState(rawState) {
+  const state = { ...rawState };
+  const networkId = String(state.networkId || '').trim();
+  const resolved = state.resolvedDefinition && typeof state.resolvedDefinition === 'object' ? state.resolvedDefinition : null;
+
+  if (!networkId) {
+    throw new Error('Network ID node requires a network_id.');
+  }
+  if (state.parseError) {
+    throw new Error(state.parseError);
+  }
+  if (!resolved || !Array.isArray(resolved.raw_rules) || !resolved.raw_rules.length) {
+    throw new Error('Network ID node could not decode the supplied network_id.');
+  }
+
+  const network = {
+    label: resolved.network_id,
+    reactions: [...resolved.raw_rules],
+    source_kind: 'network_id',
+    source_metadata: {
+      input_id: networkId,
+      network_id: resolved.network_id,
+      source_format: state.sourceFormat || resolved.source_format || '',
+    },
+    kd: resolved.raw_rules.map(() => 1),
+  };
+
+  return {
+    serial: state,
+    network,
+    defaults: {},
+  };
+}
+
+export function getConnectedAtlasNetworkDefinition(nodeId) {
+  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas-network');
+  if (!conn) return null;
+  const sourceNodeId = conn.fromNode;
+  const sourceType = nodeRegistry[sourceNodeId]?.type || 'network-id-definition';
+  return atlasNetworkDefinitionPayloadFromState(getNodeSerialData(sourceNodeId, sourceType));
+}
+
+/* ------------------------------------------------------------------ */
 /*  Query designer                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -330,6 +622,8 @@ export function readAtlasSpecEditorState(nodeId) {
     keepSingular: document.getElementById(`${nodeId}-keep-singular`)?.checked ?? true,
     keepNonasymptotic: document.getElementById(`${nodeId}-keep-nonasym`)?.checked ?? false,
     includePathRecords: document.getElementById(`${nodeId}-include-path-records`)?.checked ?? false,
+    logqkMin: parseOptionalFloat(document.getElementById(`${nodeId}-logqk-min`)?.value),
+    logqkMax: parseOptionalFloat(document.getElementById(`${nodeId}-logqk-max`)?.value),
     enableEnumeration: document.getElementById(`${nodeId}-enable-enumeration`)?.checked ?? true,
     enumerationMode: document.getElementById(`${nodeId}-enum-mode`)?.value || 'pairwise_binding',
     baseSpeciesCountsText: document.getElementById(`${nodeId}-base-species-counts`)?.value || '2,3',
@@ -340,8 +634,9 @@ export function readAtlasSpecEditorState(nodeId) {
   };
 }
 
-export function atlasSpecPayloadFromState(rawState) {
+export function atlasSpecPayloadFromState(rawState, nodeId = null) {
   const state = { ...rawState };
+  const connectedNetwork = nodeId ? getConnectedAtlasNetworkDefinition(nodeId) : null;
   const explicitNetworks = parseAtlasExplicitNetworks(state.explicitNetworksText);
   const baseSpeciesCounts = splitCommaList(state.baseSpeciesCountsText)
     .map(item => parseInt(item, 10))
@@ -363,6 +658,11 @@ export function atlasSpecPayloadFromState(rawState) {
     },
   };
 
+  const effectiveLogqkMin = state.logqkMin != null ? state.logqkMin : connectedNetwork?.defaults?.logqkMin ?? null;
+  const effectiveLogqkMax = state.logqkMax != null ? state.logqkMax : connectedNetwork?.defaults?.logqkMax ?? null;
+  if (effectiveLogqkMin != null) spec.behavior_config.logqk_min = effectiveLogqkMin;
+  if (effectiveLogqkMax != null) spec.behavior_config.logqk_max = effectiveLogqkMax;
+
   const sourceLabel = String(state.sourceLabel || '').trim();
   const libraryLabel = String(state.libraryLabel || '').trim();
   const sqlitePath = String(state.sqlitePath || '').trim();
@@ -372,8 +672,15 @@ export function atlasSpecPayloadFromState(rawState) {
   spec.skip_existing = !!state.skipExisting;
   if (sqlitePath) spec.persist_sqlite = !!state.persistSqlite;
 
+  const specNetworks = [];
   if (explicitNetworks.length) {
-    spec.networks = explicitNetworks;
+    specNetworks.push(...explicitNetworks);
+  }
+  if (connectedNetwork?.network) {
+    specNetworks.push(connectedNetwork.network);
+  }
+  if (specNetworks.length) {
+    spec.networks = specNetworks;
   }
 
   if (state.enableEnumeration) {
@@ -397,7 +704,7 @@ export function getConnectedAtlasSpec(nodeId) {
   const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas-spec');
   if (!conn) return null;
   const sourceNodeId = conn.fromNode;
-  return atlasSpecPayloadFromState(getNodeSerialData(sourceNodeId, 'atlas-spec'));
+  return atlasSpecPayloadFromState(getNodeSerialData(sourceNodeId, 'atlas-spec'), sourceNodeId);
 }
 
 /* ------------------------------------------------------------------ */

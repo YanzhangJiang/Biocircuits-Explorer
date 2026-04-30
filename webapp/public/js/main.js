@@ -21,7 +21,7 @@ import {
 } from './workspace.js';
 import {
   computeSISOResult, recomputeSISO, recomputeROPCloud, recomputeHeatmap,
-  plotSISOPath, selectSISOPath, executeQKPolyResult,
+  plotSISOPath, selectSISOPath, toggleSISOPathCondition, executeQKPolyResult, updateSISOPlotMode, refreshSISOPlot,
 } from './siso.js';
 import {
   executeROPCloudResult, updateROPCloudMode, refreshROPCloudPlot,
@@ -48,6 +48,9 @@ const ACTION_HANDLERS = {
   recomputeSISO: (el) => recomputeSISO(el.dataset.node),
   selectSISOPath: (el) => selectSISOPath(el),
   plotSISOPath: (el) => plotSISOPath(el.dataset.node, el.dataset.qk, parseInt(el.dataset.idx), el),
+  toggleSISOPathCondition: (el) => toggleSISOPathCondition(el),
+  updateSISOPlotMode: (el) => updateSISOPlotMode(el.dataset.node, el.value),
+  refreshSISOPlot: (el) => refreshSISOPlot(el.dataset.node),
   executeQKPolyResult: (el) => executeQKPolyResult(el.dataset.node),
   // ROP Cloud
   recomputeROPCloud: (el) => recomputeROPCloud(el.dataset.node),

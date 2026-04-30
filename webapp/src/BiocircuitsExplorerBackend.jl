@@ -8,6 +8,7 @@ export atlas_library_default, is_atlas_library
 export atlas_sqlite_default_path, atlas_sqlite_connect, atlas_sqlite_init!, atlas_sqlite_has_library
 export atlas_sqlite_load_library, atlas_sqlite_save_library!, atlas_sqlite_summary
 export atlas_sqlite_existing_ok_slice_ids, atlas_sqlite_merge_atlas!, atlas_sqlite_record_skip_only_event!, atlas_sqlite_append_atlas!
+export canonical_program_profile, encode_program_blob, decode_program_blob, behavior_program_hash, program_exact_label, program_motif_label, program_features
 export enumerate_network_specs
 export build_behavior_atlas, build_behavior_atlas_from_spec
 export build_atlas_library, build_atlas_library_from_spec
@@ -965,6 +966,7 @@ function behavior_result_to_dict(model, siso, result)
 end
 
 include(joinpath(@__DIR__, "atlas.jl"))
+include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
 include(joinpath(@__DIR__, "inverse_design_v2.jl"))
 
@@ -1119,6 +1121,33 @@ function handle_siso_polyhedra(req)
         "change_qK" => string(qK_sym(model)[siso.change_qK_idx]),
         "qk_symbols" => string.(qK_sym(siso)),
         "polyhedra" => poly_data,
+    ))
+end
+
+function handle_siso_path_condition(req)
+    body = read_json(req)
+    sid = String(body[:session_id])
+    sess = get_session(sid)
+    sess === nothing && return error_response("Invalid session_id"; status=404)
+
+    model = sess["model"]
+    change_key = "siso_$(body[:change_qK])"
+    siso = get(sess, change_key, nothing)
+    siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
+
+    path_idx = Int(body[:path_idx])
+    if path_idx < 1 || path_idx > length(siso.rgm_paths)
+        return error_response("path_idx out of range (1-$(length(siso.rgm_paths)))"; status=400)
+    end
+
+    conditions = BindingAndCatalysis.show_condition_path(siso, path_idx)
+    return json_response(Dict(
+        "change_qK" => string(qK_sym(model)[siso.change_qK_idx]),
+        "qk_symbols" => string.(qK_sym(siso)),
+        "path_idx" => path_idx,
+        "path" => collect(siso.rgm_paths[path_idx]),
+        "perms" => [collect(get_perm(model, idx)) for idx in siso.rgm_paths[path_idx]],
+        "conditions" => [sprint(show, condition) for condition in conditions],
     ))
 end
 
@@ -1800,6 +1829,7 @@ const API_ROUTES = Dict{String, Function}(
     "/api/build_graph" => handle_build_graph,
     "/api/siso_paths" => handle_siso_paths,
     "/api/siso_polyhedra" => handle_siso_polyhedra,
+    "/api/siso_path_condition" => handle_siso_path_condition,
     "/api/siso_trajectory" => handle_siso_trajectory,
     "/api/behavior_families" => handle_behavior_families,
     "/api/rop_cloud" => handle_rop_cloud,

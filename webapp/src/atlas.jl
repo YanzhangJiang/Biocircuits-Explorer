@@ -23,6 +23,12 @@ Base.@kwdef struct AtlasBehaviorConfig
     compute_volume::Bool = false
     motif_zero_tol::Float64 = 1e-6
     include_path_records::Bool = false
+    logqk_min::Union{Nothing,Float64} = nothing
+    logqk_max::Union{Nothing,Float64} = nothing
+    ro_quantization_digits::Int = 3
+    ro_quantization_scale::Int = 1000
+    program_identity::String = "exact_profile_v1"
+    support_semantics::String = "included_exact_family_path_count_v1"
 end
 
 Base.@kwdef struct AtlasEnumerationSpec
@@ -764,6 +770,18 @@ function atlas_behavior_config_from_raw(raw=nothing)
         compute_volume=Bool(_raw_get(raw, :compute_volume, config.compute_volume)),
         motif_zero_tol=Float64(_raw_get(raw, :motif_zero_tol, config.motif_zero_tol)),
         include_path_records=Bool(_raw_get(raw, :include_path_records, config.include_path_records)),
+        logqk_min=begin
+            value = _raw_get(raw, :logqk_min, config.logqk_min)
+            value === nothing ? nothing : Float64(value)
+        end,
+        logqk_max=begin
+            value = _raw_get(raw, :logqk_max, config.logqk_max)
+            value === nothing ? nothing : Float64(value)
+        end,
+        ro_quantization_digits=Int(_raw_get(raw, :ro_quantization_digits, config.ro_quantization_digits)),
+        ro_quantization_scale=Int(_raw_get(raw, :ro_quantization_scale, config.ro_quantization_scale)),
+        program_identity=String(_raw_get(raw, :program_identity, config.program_identity)),
+        support_semantics=String(_raw_get(raw, :support_semantics, config.support_semantics)),
     )
 end
 
@@ -982,6 +1000,12 @@ function atlas_behavior_config_to_dict(config::AtlasBehaviorConfig)
         "compute_volume" => config.compute_volume,
         "motif_zero_tol" => config.motif_zero_tol,
         "include_path_records" => config.include_path_records,
+        "logqk_min" => config.logqk_min,
+        "logqk_max" => config.logqk_max,
+        "ro_quantization_digits" => config.ro_quantization_digits,
+        "ro_quantization_scale" => config.ro_quantization_scale,
+        "program_identity" => config.program_identity,
+        "support_semantics" => config.support_semantics,
     )
 end
 
@@ -1680,7 +1704,52 @@ function _config_signature(config::AtlasBehaviorConfig)
         "keep_nonasymptotic=" * string(config.keep_nonasymptotic),
         "compute_volume=" * string(config.compute_volume),
         "motif_zero_tol=" * string(config.motif_zero_tol),
+        "logqk_min=" * string(config.logqk_min),
+        "logqk_max=" * string(config.logqk_max),
+        "ro_quantization_digits=" * string(config.ro_quantization_digits),
+        "ro_quantization_scale=" * string(config.ro_quantization_scale),
+        "program_identity=" * config.program_identity,
+        "support_semantics=" * config.support_semantics,
     ], ";")
+end
+
+function _behavior_constraint_spec(model, config::AtlasBehaviorConfig)
+    config.logqk_min === nothing && config.logqk_max === nothing && return nothing
+
+    n_qk = length(qK_sym(model))
+    row_count = (config.logqk_min === nothing ? 0 : n_qk) + (config.logqk_max === nothing ? 0 : n_qk)
+    C = zeros(Float64, row_count, n_qk)
+    C0 = zeros(Float64, row_count)
+
+    row_idx = 1
+    if config.logqk_min !== nothing
+        lower = Float64(config.logqk_min)
+        for qk_idx in 1:n_qk
+            C[row_idx, qk_idx] = 1.0
+            C0[row_idx] = -lower
+            row_idx += 1
+        end
+    end
+
+    if config.logqk_max !== nothing
+        upper = Float64(config.logqk_max)
+        for qk_idx in 1:n_qk
+            C[row_idx, qk_idx] = -1.0
+            C0[row_idx] = upper
+            row_idx += 1
+        end
+    end
+
+    return (
+        constraint_C=C,
+        constraint_C0=C0,
+        constraint_nullity=0,
+    )
+end
+
+_behavior_constraint_kwargs(model, config::AtlasBehaviorConfig) = let
+    spec = _behavior_constraint_spec(model, config)
+    spec === nothing ? (; ) : spec
 end
 
 function _resolve_input_symbols(raw_network, model, profile::AtlasSearchProfile)
@@ -2328,20 +2397,33 @@ function _path_family_maps(result)
     return exact_by_path, motif_by_path
 end
 
-function _build_family_buckets!(family_buckets, result, slice_id::String, config::AtlasBehaviorConfig)
+function _representative_vertex_indices(change_paths, path_idx::Integer)
+    path_idx > 0 || return Int[]
+    hasproperty(change_paths, :rgm_paths) || return Int[]
+    paths = getproperty(change_paths, :rgm_paths)
+    path_idx <= length(paths) || return Int[]
+    return collect(paths[path_idx])
+end
+
+function _build_family_buckets!(family_buckets, result, slice_id::String, config::AtlasBehaviorConfig, change_paths=nothing)
     for family in result.exact_families
+        representative_vertices = change_paths === nothing ? Int[] : _representative_vertex_indices(change_paths, family.representative_path_idx)
         bucket = Dict(
             "bucket_id" => slice_id * "::exact::" * string(family.family_idx),
             "slice_id" => slice_id,
             "family_kind" => "exact",
             "family_idx" => family.family_idx,
+            "exact_profile" => json_safe_profile(family.exact_profile),
             "family_label" => family.exact_label,
+            "motif_profile" => collect(family.motif_profile),
             "parent_motif" => family.motif_label,
             "path_count" => family.n_paths,
             "robust_path_count" => hasproperty(family, :robust_path_count) ? Int(family.robust_path_count) : _robust_path_count(family.path_indices, result.path_records, config.min_volume_mean),
             "volume_mean" => hasproperty(family, :volume_mean) ? family.volume_mean : _family_volume_mean(family.path_indices, result.path_records),
             "total_volume" => volume_to_dict(family.total_volume),
             "representative_path_idx" => family.representative_path_idx,
+            "representative_vertex_indices" => representative_vertices,
+            "representative_path_length" => length(representative_vertices),
             "representative_path_signature" => family.exact_label,
         )
         config.include_path_records && (bucket["path_indices"] = collect(family.path_indices))
@@ -2349,11 +2431,13 @@ function _build_family_buckets!(family_buckets, result, slice_id::String, config
     end
 
     for family in result.motif_families
+        representative_vertices = change_paths === nothing ? Int[] : _representative_vertex_indices(change_paths, family.representative_path_idx)
         bucket = Dict(
             "bucket_id" => slice_id * "::motif::" * string(family.family_idx),
             "slice_id" => slice_id,
             "family_kind" => "motif",
             "family_idx" => family.family_idx,
+            "motif_profile" => collect(family.motif_profile),
             "family_label" => family.motif_label,
             "parent_motif" => nothing,
             "path_count" => family.n_paths,
@@ -2361,6 +2445,8 @@ function _build_family_buckets!(family_buckets, result, slice_id::String, config
             "volume_mean" => hasproperty(family, :volume_mean) ? family.volume_mean : _family_volume_mean(family.path_indices, result.path_records),
             "total_volume" => volume_to_dict(family.total_volume),
             "representative_path_idx" => family.representative_path_idx,
+            "representative_vertex_indices" => representative_vertices,
+            "representative_path_length" => length(representative_vertices),
             "representative_path_signature" => family.motif_label,
             "exact_family_indices" => collect(family.exact_family_indices),
         )
@@ -2477,6 +2563,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
     slice_id = _atlas_slice_id(network_id, change_spec, string(observe_x), config)
     change_record = _change_spec_record(change_spec)
     input_symbol = _change_input_symbol(change_spec)
+    constraint_kwargs = _behavior_constraint_kwargs(model, config)
 
     try
         result = get_behavior_families(
@@ -2492,6 +2579,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
             include_path_labels=config.include_path_records,
             include_path_details=config.include_path_records,
             include_family_path_indices=config.include_path_records,
+            constraint_kwargs...,
         )
 
         return Dict(
@@ -2604,7 +2692,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
         )
         append!(regime_records, slice_graph_payload["regime_records"])
         append!(transition_records, slice_graph_payload["transition_records"])
-        _build_family_buckets!(family_buckets, result, slice["slice_id"], config)
+        _build_family_buckets!(family_buckets, result, slice["slice_id"], config, change_paths)
         _build_path_records!(
             path_records,
             result,
@@ -3884,6 +3972,7 @@ function _collapse_results_by_network(results, query::AtlasQuerySpec)
             "best_change_kind" => String(_raw_get(best, :change_kind, "")),
             "best_change_spec" => _raw_get(best, :change_spec, nothing),
             "best_output_symbol" => String(_raw_get(best, :output_symbol, "")),
+            "best_classifier_config" => _raw_get(best, :classifier_config, nothing),
             "best_ranking_key" => collect(_raw_get(best, :ranking_key, Any[])),
             "robustness_score" => Float64(_raw_get(best, :robustness_score, 0.0)),
             "matching_slice_count" => length(slices),
