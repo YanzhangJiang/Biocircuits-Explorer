@@ -11,7 +11,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.periodic_table.complete_definition import STATUS_NO_COMPLETE, STATUS_UNKNOWN, STATUS_YES_EXISTENCE, STATUS_YES_MINIMAL
+from src.periodic_table.complete_definition import (
+    STATUS_INHERITED_WITNESS,
+    STATUS_NO_COMPLETE,
+    STATUS_UNKNOWN,
+    STATUS_WITNESS_ONLY,
+    STATUS_YES_EXISTENCE,
+    STATUS_YES_MINIMAL,
+)
 from src.periodic_table.result_schema import read_jsonl
 from scripts.periodic_table.reproduce_witness import verify_witness_payload
 
@@ -56,7 +63,7 @@ def verify_run_dir(run_dir: str | Path, *, require_witness_reproduction: bool = 
         status = record.get("status")
         if record.get("profile_hash") != profile_hash:
             errors.append(f"cell row {idx} profile hash mismatch")
-        if status in {STATUS_YES_EXISTENCE, STATUS_YES_MINIMAL} and not record.get("witness_id"):
+        if status in {STATUS_YES_EXISTENCE, STATUS_YES_MINIMAL, STATUS_WITNESS_ONLY, STATUS_INHERITED_WITNESS} and not record.get("witness_id"):
             errors.append(f"positive row lacks witness_id: {record}")
         if record.get("witness_id") and record.get("witness_id") not in witness_ids:
             errors.append(f"cell row references missing witness: {record.get('witness_id')}")

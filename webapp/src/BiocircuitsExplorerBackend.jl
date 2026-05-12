@@ -21,6 +21,9 @@ export run_bounding_screen, run_exact_support_screen
 export plan_delta_build, build_summary_delta, merge_atlas_delta
 export retrieve_candidates, materialize_witnesses, refine_top_k
 export record_negative, check_negative
+export submit_biocircuits_job_from_spec, get_biocircuits_job, get_biocircuits_job_result, cancel_biocircuits_job
+export run_biocircuits_job_payload, run_biocircuits_job_from_uri
+export biocircuits_explorer_version, biocircuits_explorer_build_info
 
 using HTTP
 using JSON3
@@ -969,6 +972,8 @@ include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
 include(joinpath(@__DIR__, "inverse_design_v2.jl"))
+include(joinpath(@__DIR__, "version.jl"))
+include(joinpath(@__DIR__, "jobs.jl"))
 
 # ─── API Route Handlers ───
 
@@ -995,6 +1000,10 @@ end
 function handle_run_inverse_design(req)
     body = read_json(req)
     return json_response(run_inverse_design_from_spec(body))
+end
+
+function handle_version(req)
+    return json_response(biocircuits_explorer_build_info())
 end
 
 function handle_build_model(req)
@@ -1795,8 +1804,7 @@ end
 
 function serve_static(req)
     path = HTTP.URI(req.target).path
-    # Default to node edition
-    relative_path = path == "/" ? "index-node.html" : lstrip(path, '/')
+    relative_path = path == "/" ? "index.html" : lstrip(path, '/')
     root = static_dir()
     filepath = normpath(joinpath(root, relative_path))
 
@@ -1812,6 +1820,11 @@ function serve_static(req)
         ".json" => "application/json",
         ".png" => "image/png",
         ".svg" => "image/svg+xml",
+        ".jpg" => "image/jpeg",
+        ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".mp4" => "video/mp4",
+        ".webm" => "video/webm",
     )
     content_type = get(mime, ext, "application/octet-stream")
     return HTTP.Response(200, ["Content-Type" => content_type], read(filepath))
@@ -1856,6 +1869,27 @@ function router(req)
 
     if haskey(API_ROUTES, path) && req.method != "POST"
         return error_response("Method not allowed"; status=405)
+    end
+
+    if path == "/api/version"
+        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
+        return handle_version(req)
+    end
+
+    if path == "/api/jobs" || startswith(path, "/api/jobs/")
+        client_id = debug_client_id_from_request(req)
+        return with_debug_client_scope(client_id) do
+            try
+                return handle_jobs_route(req, path)
+            catch e
+                @error "API error" path exception=(e, catch_backtrace())
+                if is_request_error(e)
+                    return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
+                else
+                    return error_response("Internal server error"; status=500)
+                end
+            end
+        end
     end
 
     if haskey(API_ROUTES, path)

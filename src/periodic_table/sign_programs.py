@@ -57,6 +57,42 @@ def transition_label(left: int, right: int) -> str:
     return f"{format_sign(left)}->{format_sign(right)}"
 
 
+def sign_word_label(signs: Sequence[int]) -> str:
+    return "->".join(format_sign(sign) for sign in signs) if signs else "empty"
+
+
+def sign_mechanism_classes(signs: Sequence[int], singular: Sequence[dict[str, object]] | None = None) -> list[str]:
+    """Classify a three-state finite sign word without deleting zero.
+
+    These classes follow the paper's distinction between saturation-like
+    zero transitions and genuine polarity reversals.
+    """
+    classes: set[str] = set()
+    pairs = list(zip(signs, signs[1:]))
+    windows3 = _windows(signs, 3)
+    if any(pair == (0, 1) for pair in pairs):
+        classes.add("activation_from_zero")
+    if any(pair == (0, -1) for pair in pairs):
+        classes.add("repression_from_zero")
+    if any(left in (-1, 1) and right == 0 for left, right in pairs):
+        classes.add("settle_to_zero")
+    if len(signs) > 1 and signs[-1] == 0 and any(sign != 0 for sign in signs[:-1]):
+        classes.add("terminal_settle_to_zero")
+    if any(pair in ((1, -1), (-1, 1)) for pair in pairs):
+        classes.add("direct_polarity_reversal")
+    if any(window in ([1, 0, -1], [-1, 0, 1]) for window in windows3):
+        classes.add("zero_mediated_polarity_reversal")
+    if {"direct_polarity_reversal", "zero_mediated_polarity_reversal"} & classes:
+        classes.add("polarity_reversal")
+    if max(0, len(signs) - 1) > 1:
+        classes.add("multi_turn")
+    if set(signs) == {-1, 0, 1}:
+        classes.add("three_state_word")
+    if singular:
+        classes.add("singular_touched")
+    return sorted(classes)
+
+
 def finite_signs(values: Iterable[object], eps: float = DEFAULT_SIGN_EPS) -> tuple[list[int], list[dict[str, object]]]:
     signs: list[int] = []
     singular: list[dict[str, object]] = []
@@ -78,20 +114,27 @@ def sign_program_summary(values: Sequence[object], eps: float = DEFAULT_SIGN_EPS
     via_zero = any(window in ([1, 0, -1], [-1, 0, 1]) for window in _windows(rle, 3))
     direct = any(pair in ((1, -1), (-1, 1)) for pair in transition_pairs)
     opposite = 1 in rle and -1 in rle
-    settle_to_zero = len(rle) > 1 and rle[-1] == 0 and any(sign != 0 for sign in rle[:-1])
+    settle_to_zero = any(left in (-1, 1) and right == 0 for left, right in transition_pairs)
+    terminal_settle_to_zero = len(rle) > 1 and rle[-1] == 0 and any(sign != 0 for sign in rle[:-1])
+    mechanism_classes = sign_mechanism_classes(rle, singular)
     return {
         "eps": eps,
         "program_signs": signs,
         "program_sign_rle": rle,
+        "sign_word": sign_word_label(rle),
         "singular": singular,
         "sign_state_set": state_set,
         "sign_transitions": transitions,
+        "mechanism_classes": mechanism_classes,
         "three_state": set(rle) == {-1, 0, 1},
         "opposite_sign_program": opposite,
         "via_zero_opposite_switch": via_zero,
         "direct_opposite_switch": direct,
+        "polarity_reversal": direct or via_zero,
         "settle_to_zero": settle_to_zero,
+        "terminal_settle_to_zero": terminal_settle_to_zero,
         "max_sign_switch_count": max(0, len(rle) - 1),
+        "legacy_any_sign_change": max(0, len(rle) - 1) > 0,
     }
 
 

@@ -5,6 +5,7 @@
 
 // ===== Module Imports =====
 import { showToast } from './api.js';
+import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { applyThemeMode, installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
 import { initSocketEvents, updateConnections } from './connections.js';
@@ -106,6 +107,8 @@ window.addNodeFromMenu = addNodeFromMenu;
 window.addQuickAddChain = addQuickAddChain;
 window.resetView = resetView;
 window.toggleDebugConsole = toggleDebugConsole;
+window.toggleCloudComputeEnabled = toggleCloudComputeEnabled;
+window.setCloudComputeEnabled = setCloudComputeEnabled;
 window.showToast = showToast;
 window.runConnectedWorkspace = runConnectedWorkspace;
 window.saveState = saveState;
@@ -114,6 +117,7 @@ window.loadState = loadState;
 async function boot() {
   initWorkspaceShell();
   await installThemeChangeObserver();
+  initCloudComputeToggleEvents();
   initCanvasEvents();
   initSocketEvents();
   initDebugConsoleEvents();

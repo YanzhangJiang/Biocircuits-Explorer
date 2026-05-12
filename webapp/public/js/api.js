@@ -1,10 +1,13 @@
 // Biocircuits Explorer — API Communication & Utility Functions
 
 import { API, ensureDebugClientId } from './state.js';
+import { isCloudComputeEnabled } from './cloud-compute.js';
 
 let activeApiRequests = 0;
 let statusRevision = 0;
 let readyResetTimer = null;
+const CLOUD_JOB_ENDPOINTS = new Set(['build_atlas', 'run_inverse_design']);
+const JOB_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 function apiHeaders() {
   return {
@@ -69,6 +72,90 @@ export async function api(endpoint, data) {
     setStatus('error', e.message);
     throw e;
   }
+}
+
+async function jobApi(path, { method = 'GET', data = null } = {}) {
+  const resp = await fetch(path, {
+    method,
+    headers: data == null ? {
+      'X-Biocircuits-Explorer-Debug-Client': ensureDebugClientId(),
+      'X-ROP-Debug-Client': ensureDebugClientId(),
+    } : apiHeaders(),
+    body: data == null ? undefined : JSON.stringify(data),
+  });
+  const contentType = resp.headers.get('content-type');
+  if (!contentType || !contentType.includes('application/json')) {
+    throw new Error(`Backend server not responding (${resp.status})`);
+  }
+  const json = await resp.json();
+  if (!resp.ok || json.error) {
+    throw new Error(json.error || `Server error (${resp.status})`);
+  }
+  return json;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export async function submitJob(kind, spec, execution = { mode: 'local_async' }) {
+  return jobApi(`${API}/api/jobs`, {
+    method: 'POST',
+    data: { kind, spec, execution },
+  });
+}
+
+export async function getJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
+}
+
+export async function getJobResult(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/result`, { method: 'POST', data: {} });
+}
+
+export async function cancelJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
+}
+
+export async function runCloudJob(kind, spec) {
+  activeApiRequests += 1;
+  setStatus('working', activeApiRequests > 1 ? `Submitting cloud job... (${activeApiRequests})` : 'Submitting cloud job...');
+  try {
+    let job = await submitJob(kind, spec, { mode: 'aws_batch' });
+    const jobId = job.job_id;
+    if (!jobId) throw new Error('Backend did not return a job id.');
+
+    while (!JOB_TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())) {
+      const status = String(job.status || 'queued');
+      setStatus('working', status === 'running' ? 'Cloud job running...' : 'Cloud job queued...');
+      await sleep(1500);
+      job = await getJob(jobId);
+    }
+
+    if (job.status !== 'succeeded') {
+      throw new Error(job.error || `Cloud job ${job.status}`);
+    }
+
+    const payload = await getJobResult(jobId);
+    activeApiRequests = Math.max(0, activeApiRequests - 1);
+    if (activeApiRequests > 0) {
+      setStatus('working', `Computing... (${activeApiRequests})`);
+    } else {
+      setStatus('done', 'Done');
+    }
+    return payload.result;
+  } catch (e) {
+    activeApiRequests = Math.max(0, activeApiRequests - 1);
+    setStatus('error', e.message);
+    throw e;
+  }
+}
+
+export async function computeApi(endpoint, data) {
+  if (isCloudComputeEnabled() && CLOUD_JOB_ENDPOINTS.has(endpoint)) {
+    return runCloudJob(endpoint, data);
+  }
+  return api(endpoint, data);
 }
 
 // ===== Status Badge =====

@@ -82,6 +82,12 @@
   --toolbar-debug-active-color: #f8fbff;
   --toolbar-debug-active-shadow: 0 6px 16px rgba(21, 34, 55, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
+  /* --- Toolbar cloud active --- */
+  --toolbar-cloud-active-bg: rgba(67, 176, 143, 0.22);
+  --toolbar-cloud-active-border: rgba(142, 226, 199, 0.34);
+  --toolbar-cloud-active-color: #f2fff9;
+  --toolbar-cloud-active-shadow: 0 6px 16px rgba(15, 64, 49, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
   /* --- Debug indicator --- */
   --debug-indicator-bg: #ff8c42;
   --debug-indicator-glow: rgba(255, 140, 66, 0.7);

@@ -38,6 +38,42 @@ async function api(endpoint, data) {
   }
 }
 
+async function jobApi(path, { method = 'GET', data = null } = {}) {
+  const resp = await fetch(path, {
+    method,
+    headers: data == null ? {} : { 'Content-Type': 'application/json' },
+    body: data == null ? undefined : JSON.stringify(data),
+  });
+  const ct = resp.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    throw new Error(`Backend server not responding (${resp.status})`);
+  }
+  const json = await resp.json();
+  if (!resp.ok || json.error) {
+    throw new Error(json.error || `Server error (${resp.status})`);
+  }
+  return json;
+}
+
+async function submitJob(kind, spec, execution = { mode: 'local_async' }) {
+  return jobApi(`${API}/api/jobs`, {
+    method: 'POST',
+    data: { kind, spec, execution },
+  });
+}
+
+async function getJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}`);
+}
+
+async function getJobResult(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/result`);
+}
+
+async function cancelJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+}
+
 function setStatus(cls, text) {
   const badge = document.getElementById('status-badge');
   badge.className = `badge ${cls}`;

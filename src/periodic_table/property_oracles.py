@@ -13,11 +13,48 @@ from .complete_definition import DEFAULT_SIGN_EPS
 from .sign_programs import matrix_sign_pattern, sign_program_summary
 
 
+def observe_sign_response_envelope(program: Sequence[object], eps: float = DEFAULT_SIGN_EPS) -> dict[str, object]:
+    summary = sign_program_summary(program, eps)
+    return {
+        "hit": bool(summary["mechanism_classes"]),
+        "strength": summary,
+        "program_summary": summary,
+    }
+
+
 def observe_sign_switch(program: Sequence[object], eps: float = DEFAULT_SIGN_EPS) -> dict[str, object]:
     summary = sign_program_summary(program, eps)
     return {
         "hit": int(summary["max_sign_switch_count"]) > 0,
-        "strength": summary,
+        "strength": {
+            **summary,
+            "definition": "legacy_any_finite_sign_state_change",
+            "note": "Use sign_polarity_reversal.v1 and mechanism classes for scientific sign topology.",
+        },
+        "program_summary": summary,
+    }
+
+
+def observe_sign_polarity_reversal(program: Sequence[object], eps: float = DEFAULT_SIGN_EPS) -> dict[str, object]:
+    summary = sign_program_summary(program, eps)
+    return {
+        "hit": bool(summary["polarity_reversal"]),
+        "strength": {
+            **summary,
+            "definition": "direct_or_zero_mediated_opposite_sign_reversal",
+        },
+        "program_summary": summary,
+    }
+
+
+def observe_settle_to_zero(program: Sequence[object], eps: float = DEFAULT_SIGN_EPS) -> dict[str, object]:
+    summary = sign_program_summary(program, eps)
+    return {
+        "hit": bool(summary["settle_to_zero"]),
+        "strength": {
+            **summary,
+            "definition": "finite_nonzero_to_zero_transition_zero_preserved",
+        },
         "program_summary": summary,
     }
 

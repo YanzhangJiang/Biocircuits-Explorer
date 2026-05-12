@@ -166,6 +166,14 @@ if (!window.Plotly) {
         </span>
         <span>Run Connected</span>
       </button>
+      <button class="toolbar-btn toolbar-btn-cloud" id="cloud-compute-btn" title="Cloud Compute" aria-pressed="false">
+        <span class="toolbar-symbol" aria-hidden="true">
+          <svg viewBox="0 0 16 16">
+            <path d="M5.1 11.8H11.3a2.45 2.45 0 0 0 .35-4.87 3.65 3.65 0 0 0-6.95-1.1A2.95 2.95 0 0 0 5.1 11.8z"></path>
+          </svg>
+        </span>
+        <span>Cloud Compute</span>
+      </button>
       <div class="toolbar-menu-group">
         <button class="toolbar-btn" id="theme-mode-btn">
           <span class="toolbar-symbol" aria-hidden="true">
@@ -232,7 +240,10 @@ if (!window.Plotly) {
 <aside id="debug-console" aria-hidden="true">
   <div class="debug-console-header">
     <div>
-      <div class="debug-console-title">Debug Console</div>
+      <div class="debug-console-title-row">
+        <div class="debug-console-title">Debug Console</div>
+        <span class="debug-console-version" id="app-version-badge" title="Application version">v...</span>
+      </div>
       <div class="debug-console-subtitle">Current browser session</div>
     </div>
     <div class="debug-console-actions">

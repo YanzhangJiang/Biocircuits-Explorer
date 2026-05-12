@@ -6,6 +6,7 @@ from .complete_definition import (
     PROFILE_VERSION,
     PROPERTY_IDS,
     STATUS_ERROR,
+    STATUS_INHERITED_WITNESS,
     STATUS_NO_COMPLETE,
     STATUS_UNKNOWN,
     STATUS_WITNESS_ONLY,
@@ -15,7 +16,7 @@ from .complete_definition import (
     profile_hash,
 )
 from .complex_generator import ComplexVector, Reaction, allowed_binding_reactions, complex_space
-from .sign_programs import rle_keep_zero, sign3, sign_program_summary
+from .sign_programs import rle_keep_zero, sign3, sign_mechanism_classes, sign_program_summary, sign_word_label
 
 __all__ = [
     "ComplexVector",
@@ -25,6 +26,7 @@ __all__ = [
     "PROFILE_VERSION",
     "PROPERTY_IDS",
     "STATUS_ERROR",
+    "STATUS_INHERITED_WITNESS",
     "STATUS_NO_COMPLETE",
     "STATUS_UNKNOWN",
     "STATUS_WITNESS_ONLY",
@@ -36,5 +38,7 @@ __all__ = [
     "profile_hash",
     "rle_keep_zero",
     "sign3",
+    "sign_mechanism_classes",
     "sign_program_summary",
+    "sign_word_label",
 ]
