@@ -1,5 +1,5 @@
 import { nodeRegistry, connections, ATLAS_ROLE_OPTIONS, ATLAS_ORDER_OPTIONS, ATLAS_SINGULAR_OPTIONS } from './state.js';
-import { api, apiSilent, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable, syncSelectOptions } from './api.js';
+import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { setNodeLoading, getModelContextForNode, findUpstreamNodeByType, getSessionIdForNode } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
@@ -2043,7 +2043,7 @@ export async function executeAtlasBuilder(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    const data = await api('build_atlas', payload.spec);
+    const data = await computeApi('build_atlas', payload.spec);
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2163,7 +2163,7 @@ export async function executeAtlasInverseDesignResult(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    const data = await api('run_inverse_design', request);
+    const data = await computeApi('run_inverse_design', request);
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};

@@ -8,6 +8,44 @@ const debugConsoleCounter = document.getElementById('debug-console-counter');
 const debugConsoleIndicator = document.getElementById('debug-console-indicator');
 const debugConsoleCloseBtn = document.getElementById('debug-console-close');
 const debugConsoleRefreshBtn = document.getElementById('debug-console-refresh');
+const appVersionBadge = document.getElementById('app-version-badge');
+
+function shortRevision(revision) {
+  const text = String(revision || '').trim();
+  if (!text || text === 'unknown') return '';
+  return text.length > 12 ? text.slice(0, 12) : text;
+}
+
+function renderAppVersionBadge(buildInfo) {
+  if (!appVersionBadge) return;
+  const version = String(buildInfo?.version || '').trim();
+  const revision = shortRevision(buildInfo?.revision);
+  appVersionBadge.textContent = version ? `v${version}` : 'v unknown';
+  appVersionBadge.title = [
+    version ? `Version ${version}` : 'Version unknown',
+    revision ? `Revision ${revision}` : '',
+    buildInfo?.created && buildInfo.created !== 'unknown' ? `Built ${buildInfo.created}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+export async function refreshAppVersion() {
+  if (!appVersionBadge || debugConsoleState.versionFetchInFlight) return;
+  if (debugConsoleState.buildInfo) {
+    renderAppVersionBadge(debugConsoleState.buildInfo);
+    return;
+  }
+
+  debugConsoleState.versionFetchInFlight = true;
+  try {
+    const buildInfo = await apiSilent('version', {});
+    debugConsoleState.buildInfo = buildInfo;
+    renderAppVersionBadge(buildInfo);
+  } catch (_) {
+    renderAppVersionBadge(null);
+  } finally {
+    debugConsoleState.versionFetchInFlight = false;
+  }
+}
 
 export function debugConsoleShouldStickToBottom() {
   if (!debugConsoleBody) return true;
@@ -114,6 +152,7 @@ export function openDebugConsole() {
   debugConsolePanel?.setAttribute('aria-hidden', 'false');
   debugConsoleBtn?.classList.add('active');
   updateDebugConsoleIndicator();
+  refreshAppVersion();
   refreshDebugConsole(debugConsoleState.entries.length === 0 ? true : false);
   startDebugConsolePolling();
 }

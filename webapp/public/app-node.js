@@ -14,7 +14,14 @@ const debugConsoleState = {
   lastSeq: 0,
   pollTimer: null,
   fetchInFlight: false,
+  versionFetchInFlight: false,
+  buildInfo: null,
   unseenPriority: false,
+};
+
+const CLOUD_COMPUTE_STORAGE_KEY = 'biocircuits-explorer.cloud-compute-enabled';
+const cloudComputeState = {
+  enabled: false,
 };
 
 const WORKSPACE_DOCUMENT_VERSION = 1;
@@ -168,6 +175,15 @@ const biocircuitsExplorerWorkspaceShell = {
 
   getThemeMode() {
     return themeState.mode;
+  },
+
+  setCloudComputeEnabled(enabled) {
+    setCloudComputeEnabled(!!enabled);
+    return true;
+  },
+
+  getCloudComputeEnabled() {
+    return isCloudComputeEnabled();
   },
 
   runConnectedWorkspace() {
@@ -2624,6 +2640,7 @@ const addNodeMenu = document.getElementById('add-node-menu');
 const legacyNodesBtn = document.getElementById('legacy-nodes-btn');
 const legacyNodesMenu = document.getElementById('legacy-nodes-menu');
 const runConnectedBtn = document.getElementById('run-connected-btn');
+const cloudComputeBtn = document.getElementById('cloud-compute-btn');
 const themeModeBtn = document.getElementById('theme-mode-btn');
 const themeModeMenu = document.getElementById('theme-mode-menu');
 const debugConsoleBtn = document.getElementById('debug-console-btn');
@@ -2633,6 +2650,7 @@ const debugConsoleCounter = document.getElementById('debug-console-counter');
 const debugConsoleIndicator = document.getElementById('debug-console-indicator');
 const debugConsoleCloseBtn = document.getElementById('debug-console-close');
 const debugConsoleRefreshBtn = document.getElementById('debug-console-refresh');
+const appVersionBadge = document.getElementById('app-version-badge');
 
 addNodeBtn.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -2658,6 +2676,11 @@ themeModeBtn?.addEventListener('click', (e) => {
 runConnectedBtn?.addEventListener('click', (e) => {
   e.stopPropagation();
   void runConnectedWorkspace();
+});
+
+cloudComputeBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleCloudComputeEnabled();
 });
 
 document.addEventListener('click', (e) => {
@@ -2834,6 +2857,86 @@ async function apiSilent(endpoint, data) {
   return json;
 }
 
+function readStoredCloudComputeEnabled() {
+  try {
+    return window.localStorage.getItem(CLOUD_COMPUTE_STORAGE_KEY) === 'true';
+  } catch (_) {
+    return false;
+  }
+}
+
+function persistCloudComputeEnabled(enabled) {
+  try {
+    window.localStorage.setItem(CLOUD_COMPUTE_STORAGE_KEY, enabled ? 'true' : 'false');
+  } catch (_) {}
+}
+
+function renderCloudComputeToggle() {
+  if (!cloudComputeBtn) return;
+  cloudComputeBtn.classList.toggle('active', cloudComputeState.enabled);
+  cloudComputeBtn.setAttribute('aria-pressed', cloudComputeState.enabled ? 'true' : 'false');
+  cloudComputeBtn.title = cloudComputeState.enabled ? 'Cloud Compute on' : 'Cloud Compute off';
+}
+
+function isCloudComputeEnabled() {
+  return !!cloudComputeState.enabled;
+}
+
+function setCloudComputeEnabled(enabled, { persist = true } = {}) {
+  cloudComputeState.enabled = !!enabled;
+  if (persist) persistCloudComputeEnabled(cloudComputeState.enabled);
+  renderCloudComputeToggle();
+  window.dispatchEvent(new CustomEvent('biocircuits-explorer:cloud-compute-changed', {
+    detail: { enabled: cloudComputeState.enabled },
+  }));
+  return cloudComputeState.enabled;
+}
+
+function toggleCloudComputeEnabled() {
+  return setCloudComputeEnabled(!cloudComputeState.enabled);
+}
+
+function initCloudComputeToggleEvents() {
+  setCloudComputeEnabled(readStoredCloudComputeEnabled(), { persist: false });
+}
+
+function shortRevision(revision) {
+  const text = String(revision || '').trim();
+  if (!text || text === 'unknown') return '';
+  return text.length > 12 ? text.slice(0, 12) : text;
+}
+
+function renderAppVersionBadge(buildInfo) {
+  if (!appVersionBadge) return;
+  const version = String(buildInfo?.version || '').trim();
+  const revision = shortRevision(buildInfo?.revision);
+  appVersionBadge.textContent = version ? `v${version}` : 'v unknown';
+  appVersionBadge.title = [
+    version ? `Version ${version}` : 'Version unknown',
+    revision ? `Revision ${revision}` : '',
+    buildInfo?.created && buildInfo.created !== 'unknown' ? `Built ${buildInfo.created}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function refreshAppVersion() {
+  if (!appVersionBadge || debugConsoleState.versionFetchInFlight) return;
+  if (debugConsoleState.buildInfo) {
+    renderAppVersionBadge(debugConsoleState.buildInfo);
+    return;
+  }
+
+  debugConsoleState.versionFetchInFlight = true;
+  try {
+    const buildInfo = await apiSilent('version', {});
+    debugConsoleState.buildInfo = buildInfo;
+    renderAppVersionBadge(buildInfo);
+  } catch (_) {
+    renderAppVersionBadge(null);
+  } finally {
+    debugConsoleState.versionFetchInFlight = false;
+  }
+}
+
 function debugConsoleShouldStickToBottom() {
   if (!debugConsoleBody) return true;
   const threshold = 32;
@@ -2939,6 +3042,7 @@ function openDebugConsole() {
   debugConsolePanel?.setAttribute('aria-hidden', 'false');
   debugConsoleBtn?.classList.add('active');
   updateDebugConsoleIndicator();
+  refreshAppVersion();
   refreshDebugConsole(debugConsoleState.entries.length === 0 ? true : false);
   startDebugConsolePolling();
 }
@@ -2995,6 +3099,80 @@ async function api(endpoint, data) {
     setStatus('error', e.message);
     throw e;
   }
+}
+
+async function jobApi(path, { method = 'GET', data = null } = {}) {
+  const resp = await fetch(path, {
+    method,
+    headers: data == null ? {} : { 'Content-Type': 'application/json' },
+    body: data == null ? undefined : JSON.stringify(data),
+  });
+  const contentType = resp.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(`Backend server not responding (${resp.status})`);
+  }
+  const json = await resp.json();
+  if (!resp.ok || json.error) {
+    throw new Error(json.error || `Server error (${resp.status})`);
+  }
+  return json;
+}
+
+async function submitJob(kind, spec, execution = { mode: 'local_async' }) {
+  return jobApi(`${API}/api/jobs`, {
+    method: 'POST',
+    data: { kind, spec, execution },
+  });
+}
+
+async function getJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}`);
+}
+
+async function getJobResult(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/result`);
+}
+
+async function cancelJob(jobId) {
+  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function runCloudJob(kind, spec) {
+  setStatus('working', 'Submitting cloud job...');
+  try {
+    let job = await submitJob(kind, spec, { mode: 'aws_batch' });
+    const jobId = job.job_id;
+    if (!jobId) throw new Error('Backend did not return a job id.');
+
+    while (!['succeeded', 'failed', 'cancelled'].includes(String(job.status || '').toLowerCase())) {
+      const status = String(job.status || 'queued');
+      setStatus('working', status === 'running' ? 'Cloud job running...' : 'Cloud job queued...');
+      await sleep(1500);
+      job = await getJob(jobId);
+    }
+
+    if (job.status !== 'succeeded') {
+      throw new Error(job.error || `Cloud job ${job.status}`);
+    }
+
+    const payload = await getJobResult(jobId);
+    setStatus('done', 'Done');
+    return payload.result;
+  } catch (e) {
+    setStatus('error', e.message);
+    throw e;
+  }
+}
+
+async function computeApi(endpoint, data) {
+  if (isCloudComputeEnabled() && ['build_atlas', 'run_inverse_design'].includes(endpoint)) {
+    return runCloudJob(endpoint, data);
+  }
+  return api(endpoint, data);
 }
 
 function setStatus(cls, text) {
@@ -3876,7 +4054,7 @@ async function executeAtlasBuilder(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    const data = await api('build_atlas', payload.spec);
+    const data = await computeApi('build_atlas', payload.spec);
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -8174,4 +8352,5 @@ function installWorkspaceShellObservers() {
 
 installWorkspaceShellObservers();
 installThemeChangeObserver();
+initCloudComputeToggleEvents();
 (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).markReady();

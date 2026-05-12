@@ -196,6 +196,13 @@ textarea,
   box-shadow: var(--toolbar-debug-active-shadow);
 }
 
+.toolbar-btn-cloud.active {
+  background: var(--toolbar-cloud-active-bg);
+  border-color: var(--toolbar-cloud-active-border);
+  color: var(--toolbar-cloud-active-color);
+  box-shadow: var(--toolbar-cloud-active-shadow);
+}
+
 .debug-console-indicator {
   width: 8px;
   height: 8px;
@@ -386,6 +393,24 @@ body.debug-console-open #editor {
   font-size: 12px;
   font-weight: 600;
   color: var(--debug-title-color);
+}
+
+.debug-console-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.debug-console-version {
+  flex: 0 1 auto;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--debug-subtitle-color);
+  font-size: 10px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .debug-console-subtitle {

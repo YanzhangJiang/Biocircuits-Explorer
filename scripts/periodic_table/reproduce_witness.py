@@ -11,7 +11,14 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.periodic_table.property_oracles import observe_mimo_gain, observe_sign_switch, observe_ultrasensitivity
+from src.periodic_table.property_oracles import (
+    observe_mimo_gain,
+    observe_settle_to_zero,
+    observe_sign_polarity_reversal,
+    observe_sign_response_envelope,
+    observe_sign_switch,
+    observe_ultrasensitivity,
+)
 from src.periodic_table.result_schema import read_jsonl
 from src.periodic_table.sign_programs import sign_program_summary
 
@@ -29,13 +36,21 @@ def verify_witness_payload(witness: dict[str, Any]) -> list[str]:
     mu = int(witness.get("mu", 0))
     errors: list[str] = []
     try:
-        if property_id == "sign_switch.v1":
+        if property_id == "sign_response_envelope.v1":
+            obs = observe_sign_response_envelope(program)
+            if not obs["hit"]:
+                errors.append("stored program does not satisfy sign_response_envelope.v1")
+        elif property_id == "sign_switch.v1":
             obs = observe_sign_switch(program)
             if not obs["hit"]:
                 errors.append("stored program does not satisfy sign_switch.v1")
+        elif property_id == "sign_polarity_reversal.v1":
+            obs = observe_sign_polarity_reversal(program)
+            if not obs["hit"]:
+                errors.append("stored program does not satisfy sign_polarity_reversal.v1")
         elif property_id == "settle_to_zero.v1":
-            summary = sign_program_summary(program)
-            if not summary.get("settle_to_zero"):
+            obs = observe_settle_to_zero(program)
+            if not obs["hit"]:
                 errors.append("stored program does not satisfy settle_to_zero.v1")
         elif property_id == "ultrasensitivity.v1":
             obs = observe_ultrasensitivity(program, mu)

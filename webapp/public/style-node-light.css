@@ -62,6 +62,12 @@
   --toolbar-debug-active-color: #1f3f66;
   --toolbar-debug-active-shadow: 0 6px 16px rgba(65, 104, 163, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.95);
 
+  /* --- Toolbar cloud active --- */
+  --toolbar-cloud-active-bg: rgba(202, 235, 220, 0.8);
+  --toolbar-cloud-active-border: rgba(102, 169, 139, 0.82);
+  --toolbar-cloud-active-color: #17513b;
+  --toolbar-cloud-active-shadow: 0 6px 16px rgba(54, 126, 95, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
   /* --- Nodes --- */
   --node-bg-full: linear-gradient(180deg, #fbfdff 0%, #f4f8fc 100%);
   --node-shadow: 0 16px 36px rgba(79, 97, 122, 0.16);

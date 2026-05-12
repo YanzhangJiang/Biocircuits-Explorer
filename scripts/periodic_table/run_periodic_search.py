@@ -29,6 +29,7 @@ from src.periodic_table.complete_definition import (
     profile_hash,
 )
 from src.periodic_table.dry_run import SUMMARY_NAMES, _strength_template, normalize_properties
+from src.periodic_table.inheritance import apply_inherited_witnesses
 from src.periodic_table.result_schema import (
     append_event,
     cell_result,
@@ -42,7 +43,9 @@ from src.periodic_table.witness_codec import make_certificate_id, make_witness_i
 
 
 SUPPORTED_WITNESS_PROPERTIES = {
+    "sign_response_envelope.v1",
     "sign_switch.v1",
+    "sign_polarity_reversal.v1",
     "ultrasensitivity.v1",
     "settle_to_zero.v1",
 }
@@ -239,6 +242,7 @@ def main() -> int:
                 "error_count": len(errors),
             })
 
+    all_cells = apply_inherited_witnesses(all_cells, all_witnesses)
     write_jsonl(run_dir / "cell_results.jsonl.gz", all_cells)
     write_jsonl(run_dir / "witnesses.jsonl.gz", all_witnesses)
     write_jsonl(run_dir / "certificates.jsonl.gz", all_certificates)
@@ -403,6 +407,12 @@ def _cell_records_from_best(
         if property_id in best:
             hit = best[property_id]
             features = hit.get("source_metadata", {}).get("features", {})
+            notes = "witness found by bounded property-mode search; not a negative or minimality certificate"
+            if property_id == "sign_switch.v1":
+                notes = (
+                    "legacy any-sign-change witness; use sign_response_envelope.v1 "
+                    "and sign_polarity_reversal.v1 for mechanism-level conclusions"
+                )
             cells.append(
                 cell_result(
                     run_id=run_id,
@@ -415,7 +425,7 @@ def _cell_records_from_best(
                     witness_id=witness_by_property[property_id],
                     min_r=features.get("reaction_count"),
                     min_assembly_depth=features.get("assembly_depth"),
-                    notes="witness found by bounded property-mode search; not a negative or minimality certificate",
+                    notes=notes,
                 )
             )
         else:
@@ -511,11 +521,13 @@ def _write_summary_tables(
                 "mu": witness.get("mu"),
                 "reaction_count": witness.get("source_metadata", {}).get("features", {}).get("reaction_count"),
                 "assembly_depth": witness.get("source_metadata", {}).get("features", {}).get("assembly_depth"),
+                "sign_word": witness.get("program_summary", {}).get("sign_word"),
+                "mechanism_classes": ",".join(witness.get("program_summary", {}).get("mechanism_classes", [])),
                 "network_canonical": witness.get("network_canonical"),
             }
             for witness in witnesses
         ],
-        ["witness_id", "property_id", "d", "mu", "reaction_count", "assembly_depth", "network_canonical"],
+        ["witness_id", "property_id", "d", "mu", "reaction_count", "assembly_depth", "sign_word", "mechanism_classes", "network_canonical"],
     )
     _write_csv(
         summary_dir / "cell_search_summary.csv",

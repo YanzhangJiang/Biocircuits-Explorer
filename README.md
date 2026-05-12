@@ -87,6 +87,8 @@ The `deploy/` directory contains a source-based Docker deployment:
 - `deploy/Dockerfile` builds the Julia backend image
 - `deploy/docker-compose.yml` runs the Julia app behind Nginx
 - `deploy/nginx.conf` serves static assets and proxies API traffic
+- `deploy/build_image.sh` builds and optionally pushes versioned Docker images
+- `deploy/setup_aws_batch.sh` creates the optional S3/AWS Batch cloud-compute stack
 
 Build and start the server:
 
@@ -97,6 +99,68 @@ docker compose up -d
 ```
 
 The backend runs on port `8088` inside the container, and Nginx exposes the service on ports `80` and `443`.
+Set `BIOCIRCUITS_EXPLORER_IMAGE` to run a prebuilt ECR image instead of building
+on the EC2 host.
+
+## Versioned Docker Images
+
+The application version lives in the repository-root `VERSION` file. Keep it in
+sync with Julia project metadata using:
+
+```bash
+scripts/set_version.sh 0.1.1
+```
+
+Build a local Linux/amd64 image tagged with the app version and current git
+revision:
+
+```bash
+deploy/build_image.sh
+```
+
+Build and push to Amazon ECR:
+
+```bash
+deploy/build_image.sh \
+  --push \
+  --create-ecr-repo \
+  --latest \
+  --repo <account>.dkr.ecr.<region>.amazonaws.com/biocircuits-explorer
+```
+
+Useful environment variables:
+
+- `IMAGE_REPOSITORY` or `ECR_REPOSITORY_URI` sets the image repository.
+- `PLATFORM` defaults to `linux/amd64`, which is the safest first target for AWS Batch EC2 compute.
+- `BIOCIRCUITS_EXPLORER_VERSION` overrides `VERSION` for a one-off build.
+
+The image is tagged as both `<version>` and `<version>-<git-sha>`. If the
+worktree is dirty, the git tag suffix becomes `<git-sha>-dirty`; pass
+`--require-clean` for release builds. Runtime build metadata is available from:
+
+```bash
+curl http://127.0.0.1:8088/api/version
+```
+
+## AWS Batch Cloud Compute
+
+Cloud compute uses ECR for the Docker image, S3 for job artifacts, and AWS Batch
+for worker execution. The S3 bucket stores only per-job JSON files, not Docker
+images.
+
+The setup helper creates the S3 bucket, IAM roles/policies, CloudWatch log
+group, Batch compute environment, queue, and job definition:
+
+```bash
+deploy/setup_aws_batch.sh \
+  --region us-west-2 \
+  --image <account>.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:latest
+```
+
+The setup caller needs the permissions in
+`deploy/aws_setup_permissions_policy.json`. After setup, copy or source the
+generated `deploy/aws-runtime.env` on the EC2 website host or macOS local
+backend. Full notes are in `deploy/AWS_BATCH.md`.
 
 ## Build Release Artifacts
 
@@ -168,6 +232,57 @@ The backend exposes JSON APIs under `/api/`, including:
 - `POST /api/fret_heatmap`
 
 Sessions expire after one hour of inactivity.
+
+### Async Job API
+
+Longer-running computations can also be submitted through the asynchronous job
+surface. Jobs can run locally in the Julia backend process or be submitted to
+AWS Batch. Local jobs store artifacts under `webapp/job_store/` by default.
+
+- `POST /api/jobs`
+- `GET /api/jobs/{job_id}`
+- `GET /api/jobs/{job_id}/result`
+- `POST /api/jobs/{job_id}/cancel`
+
+Local execution request:
+
+```json
+{
+  "kind": "build_atlas",
+  "execution": { "mode": "local_async" },
+  "spec": {}
+}
+```
+
+AWS Batch execution request:
+
+```json
+{
+  "kind": "build_atlas",
+  "execution": { "mode": "aws_batch" },
+  "spec": {}
+}
+```
+
+The Batch executor reads these server-side environment variables:
+
+- `BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE`
+- `BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION`
+- `BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX`, for example `s3://bucket/prefix`
+- `BIOCIRCUITS_EXPLORER_AWS_CLI`, optional path to the `aws` CLI
+
+For trusted internal deployments, request-level overrides for Batch queue,
+job definition, artifact prefix, and container environment can be enabled with
+`BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG=true`.
+
+The worker command used by the Batch container is:
+
+```bash
+julia -t auto --project=webapp webapp/scripts/run_batch_job.jl \
+  --input-uri s3://bucket/prefix/job/input.json \
+  --status-uri s3://bucket/prefix/job/status.json \
+  --result-uri s3://bucket/prefix/job/result.json
+```
 
 ## Atlas Batch Prototype
 

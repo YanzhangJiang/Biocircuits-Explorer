@@ -101,6 +101,63 @@ end
 
 format_sign(sign::Integer) = sign == 1 ? "+" : (sign == -1 ? "-" : "0")
 
+sign_word_label(signs) = isempty(signs) ? "empty" : join(format_sign.(signs), "->")
+
+function adjacent_pairs(signs)
+    pairs = Tuple{Int, Int}[]
+    if length(signs) < 2
+        return pairs
+    end
+    for idx in 1:(length(signs) - 1)
+        push!(pairs, (Int(signs[idx]), Int(signs[idx + 1])))
+    end
+    return pairs
+end
+
+function sign_mechanism_classes(signs, singular)
+    classes = Set{String}()
+    pairs = adjacent_pairs(signs)
+    if any(pair -> pair == (0, 1), pairs)
+        push!(classes, "activation_from_zero")
+    end
+    if any(pair -> pair == (0, -1), pairs)
+        push!(classes, "repression_from_zero")
+    end
+    if any(pair -> first(pair) in (-1, 1) && last(pair) == 0, pairs)
+        push!(classes, "settle_to_zero")
+    end
+    if length(signs) > 1 && signs[end] == 0 && any(sign -> sign != 0, signs[1:end-1])
+        push!(classes, "terminal_settle_to_zero")
+    end
+    direct = any(pair -> pair == (1, -1) || pair == (-1, 1), pairs)
+    if direct
+        push!(classes, "direct_polarity_reversal")
+    end
+    via_zero = false
+    for idx in 1:max(0, length(signs) - 2)
+        window = signs[idx:idx+2]
+        if window == [1, 0, -1] || window == [-1, 0, 1]
+            via_zero = true
+        end
+    end
+    if via_zero
+        push!(classes, "zero_mediated_polarity_reversal")
+    end
+    if direct || via_zero
+        push!(classes, "polarity_reversal")
+    end
+    if max(0, length(signs) - 1) > 1
+        push!(classes, "multi_turn")
+    end
+    if Set(signs) == Set([-1, 0, 1])
+        push!(classes, "three_state_word")
+    end
+    if !isempty(singular)
+        push!(classes, "singular_touched")
+    end
+    return sort!(collect(classes))
+end
+
 function scalar_profile(profile)
     profile isa AbstractVector || return nothing
     values = collect(profile)
@@ -123,25 +180,32 @@ function sign_program_summary(profile)
         end
     end
     rle = rle_keep_zero(signs)
-    transitions = String[string(format_sign(left), "->", format_sign(right)) for (left, right) in zip(rle[1:end-1], rle[2:end])]
-    transition_pairs = collect(zip(rle[1:end-1], rle[2:end]))
+    transition_pairs = adjacent_pairs(rle)
+    transitions = String[string(format_sign(left), "->", format_sign(right)) for (left, right) in transition_pairs]
     via_zero = any(i -> rle[i:i+2] == [1, 0, -1] || rle[i:i+2] == [-1, 0, 1], 1:max(0, length(rle) - 2))
     direct = any(pair -> pair == (1, -1) || pair == (-1, 1), transition_pairs)
-    settle = length(rle) > 1 && rle[end] == 0 && any(sign -> sign != 0, rle[1:end-1])
+    settle = any(pair -> first(pair) in (-1, 1) && last(pair) == 0, transition_pairs)
+    terminal_settle = length(rle) > 1 && rle[end] == 0 && any(sign -> sign != 0, rle[1:end-1])
+    mechanisms = sign_mechanism_classes(rle, singular)
     return Dict(
         "eps" => 1e-9,
         "program" => values,
         "program_signs" => signs,
         "program_sign_rle" => rle,
+        "sign_word" => sign_word_label(rle),
         "singular" => singular,
         "sign_state_set" => sort!(unique(format_sign.(rle))),
         "sign_transitions" => transitions,
+        "mechanism_classes" => mechanisms,
         "three_state" => Set(rle) == Set([-1, 0, 1]),
         "opposite_sign_program" => (1 in rle) && (-1 in rle),
         "via_zero_opposite_switch" => via_zero,
         "direct_opposite_switch" => direct,
+        "polarity_reversal" => direct || via_zero,
         "settle_to_zero" => settle,
+        "terminal_settle_to_zero" => terminal_settle,
         "max_sign_switch_count" => max(0, length(rle) - 1),
+        "legacy_any_sign_change" => max(0, length(rle) - 1) > 0,
     )
 end
 
@@ -231,12 +295,26 @@ function collect_scalar_hits!(hits, atlas, mu::Integer)
         summary = sign_program_summary(profile)
         summary === nothing && continue
 
+        if !isempty(collect(raw_get(summary, "mechanism_classes", Any[])))
+            payload = witness_payload("sign_response_envelope.v1", entry, slice, family, summary, summary)
+            better_hit(payload, get(hits, "sign_response_envelope.v1", nothing)) && (hits["sign_response_envelope.v1"] = payload)
+        end
         if Int(raw_get(summary, "max_sign_switch_count", 0)) > 0
-            payload = witness_payload("sign_switch.v1", entry, slice, family, summary, summary)
+            strength = merge(Dict(
+                "definition" => "legacy_any_finite_sign_state_change",
+                "note" => "Use sign_polarity_reversal.v1 and mechanism classes for scientific sign topology.",
+            ), summary)
+            payload = witness_payload("sign_switch.v1", entry, slice, family, summary, strength)
             better_hit(payload, get(hits, "sign_switch.v1", nothing)) && (hits["sign_switch.v1"] = payload)
         end
+        if Bool(raw_get(summary, "polarity_reversal", false))
+            strength = merge(Dict("definition" => "direct_or_zero_mediated_opposite_sign_reversal"), summary)
+            payload = witness_payload("sign_polarity_reversal.v1", entry, slice, family, summary, strength)
+            better_hit(payload, get(hits, "sign_polarity_reversal.v1", nothing)) && (hits["sign_polarity_reversal.v1"] = payload)
+        end
         if Bool(raw_get(summary, "settle_to_zero", false))
-            payload = witness_payload("settle_to_zero.v1", entry, slice, family, summary, summary)
+            strength = merge(Dict("definition" => "finite_nonzero_to_zero_transition_zero_preserved"), summary)
+            payload = witness_payload("settle_to_zero.v1", entry, slice, family, summary, strength)
             better_hit(payload, get(hits, "settle_to_zero.v1", nothing)) && (hits["settle_to_zero.v1"] = payload)
         end
 

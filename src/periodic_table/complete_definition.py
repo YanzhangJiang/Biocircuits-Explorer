@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 
 PROFILE_ID = "periodic_d_mu_v0"
-PROFILE_VERSION = "0.1.0"
+PROFILE_VERSION = "0.2.0"
 DEFAULT_SIGN_EPS = 1e-9
 
 PROPERTY_IDS = (
+    "sign_response_envelope.v1",
     "sign_switch.v1",
+    "sign_polarity_reversal.v1",
     "ultrasensitivity.v1",
     "upper_bound_reachable.v1",
     "turning_dependency.v1",
@@ -26,6 +28,7 @@ STATUS_YES_EXISTENCE = "YES_EXISTENCE"
 STATUS_YES_MINIMAL = "YES_MINIMAL"
 STATUS_NO_COMPLETE = "NO_COMPLETE"
 STATUS_WITNESS_ONLY = "WITNESS_ONLY"
+STATUS_INHERITED_WITNESS = "INHERITED_WITNESS"
 STATUS_UNKNOWN = "UNKNOWN"
 STATUS_ERROR = "ERROR"
 
@@ -75,6 +78,18 @@ def default_profile() -> dict[str, Any]:
             "finite_signs": [-1, 0, 1],
             "singular_tokens": ["pos_inf", "neg_inf", "nan"],
             "compression": "run_length_only_keep_zero",
+            "mechanism_classes": [
+                "activation_from_zero",
+                "repression_from_zero",
+                "settle_to_zero",
+                "terminal_settle_to_zero",
+                "direct_polarity_reversal",
+                "zero_mediated_polarity_reversal",
+                "polarity_reversal",
+                "multi_turn",
+                "three_state_word",
+                "singular_touched",
+            ],
         },
         "storage_policy": {
             "store_full_atlas": False,

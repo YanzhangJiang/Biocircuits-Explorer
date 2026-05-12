@@ -9,6 +9,7 @@ import {
 } from './state.js';
 import { showToast, cloneSerializable, escapeHtml, syncSelectOptions } from './api.js';
 import { applyThemeMode } from './theme.js';
+import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
 
@@ -168,6 +169,15 @@ export function initWorkspaceShell() {
 
     getThemeMode() {
       return themeState.mode;
+    },
+
+    setCloudComputeEnabled(enabled) {
+      setCloudComputePreference(!!enabled);
+      return true;
+    },
+
+    getCloudComputeEnabled() {
+      return isCloudComputeEnabled();
     },
 
     runConnectedWorkspace() {

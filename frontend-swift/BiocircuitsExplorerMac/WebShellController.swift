@@ -147,6 +147,10 @@ final class WebShellController: NSObject, ObservableObject {
         evaluateNativeShellScript("typeof window.toggleDebugConsole === 'function' && window.toggleDebugConsole();")
     }
 
+    func setCloudComputeEnabled(_ enabled: Bool) {
+        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setCloudComputeEnabled?.(\(enabled ? "true" : "false"));")
+    }
+
     func setThemeMode(_ mode: String, effectiveThemeOverride: String? = nil, completion: (() -> Void)? = nil) {
         prepareInitialThemeMode(mode)
         do {

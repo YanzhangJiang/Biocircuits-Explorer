@@ -5,6 +5,7 @@
 export const API = '';
 export const DEBUG_CLIENT_STORAGE_KEY = 'biocircuits-explorer.debug-client-id';
 export const LEGACY_DEBUG_CLIENT_STORAGE_KEY = 'rop-explorer.debug-client-id';
+export const CLOUD_COMPUTE_STORAGE_KEY = 'biocircuits-explorer.cloud-compute-enabled';
 
 export const state = {
   sessionId: null,
@@ -18,7 +19,13 @@ export const debugConsoleState = {
   lastSeq: 0,
   pollTimer: null,
   fetchInFlight: false,
+  versionFetchInFlight: false,
+  buildInfo: null,
   unseenPriority: false,
+};
+
+export const cloudComputeState = {
+  enabled: false,
 };
 
 export const WORKSPACE_DOCUMENT_VERSION = 1;

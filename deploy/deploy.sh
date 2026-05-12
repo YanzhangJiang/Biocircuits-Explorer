@@ -32,7 +32,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=nonin
 # 2. Install Docker
 if ! command -v docker &> /dev/null; then
     echo "[2/4] Installing Docker..."
-    sudo apt-get install -y ca-certificates curl gnupg
+    sudo apt-get install -y ca-certificates curl gnupg awscli
     sudo install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     sudo chmod a+r /etc/apt/keyrings/docker.gpg
@@ -44,6 +44,10 @@ if ! command -v docker &> /dev/null; then
     echo "Docker installed. You may need to re-login for group changes."
 else
     echo "[2/4] Docker already installed, skipping."
+    if ! command -v aws &> /dev/null; then
+        echo "Installing AWS CLI for optional ECR login..."
+        sudo apt-get install -y awscli
+    fi
 fi
 
 # 3. Clone or update repository
@@ -61,8 +65,32 @@ fi
 # NOTE: Firewall is managed by AWS Security Group, no need for UFW
 echo "[4/4] Building and starting Docker services..."
 cd "$INSTALL_DIR/deploy"
-sudo docker compose build
-sudo docker compose up -d
+
+ENV_FILE="${BIOCIRCUITS_EXPLORER_ENV_FILE:-./aws-runtime.env}"
+if [ -f "$ENV_FILE" ]; then
+    echo "Loading deployment environment from $ENV_FILE"
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
+
+if [ -n "${BIOCIRCUITS_EXPLORER_IMAGE:-}" ]; then
+    echo "Using prebuilt image: $BIOCIRCUITS_EXPLORER_IMAGE"
+    REGISTRY="${BIOCIRCUITS_EXPLORER_IMAGE%%/*}"
+    if [[ "$REGISTRY" =~ ^[0-9]+\.dkr\.ecr\.[A-Za-z0-9-]+\.amazonaws\.com$ ]]; then
+        ECR_REGION="$(printf '%s' "$REGISTRY" | sed -E 's/^[0-9]+\.dkr\.ecr\.([A-Za-z0-9-]+)\.amazonaws\.com$/\1/')"
+        AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$ECR_REGION}}"
+        export AWS_REGION AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+        echo "Logging Docker into ECR registry $REGISTRY in $AWS_REGION"
+        aws ecr get-login-password --region "$AWS_REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+    fi
+    sudo -E docker compose pull julia-app
+else
+    sudo -E docker compose build
+fi
+
+sudo -E docker compose up -d
 
 # Output
 PUBLIC_IP=$(curl -s http://checkip.amazonaws.com || echo "<your-server-ip>")

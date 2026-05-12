@@ -1,0 +1,94 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BiocircuitsSetupReadAccount",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupEc2Discovery",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupS3Artifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:HeadBucket",
+        "s3:GetBucketLocation",
+        "s3:PutBucketEncryption",
+        "s3:PutPublicAccessBlock",
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupIam",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AddRoleToInstanceProfile",
+        "iam:AttachRolePolicy",
+        "iam:CreateInstanceProfile",
+        "iam:CreatePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:CreateRole",
+        "iam:CreateServiceLinkedRole",
+        "iam:GetInstanceProfile",
+        "iam:GetPolicy",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:PutRolePolicy"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupBatch",
+      "Effect": "Allow",
+      "Action": [
+        "batch:CreateComputeEnvironment",
+        "batch:CreateJobQueue",
+        "batch:DescribeComputeEnvironments",
+        "batch:DescribeJobDefinitions",
+        "batch:DescribeJobQueues",
+        "batch:RegisterJobDefinition"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DescribeLogGroups",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupEcrRead",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:DescribeRepositories",
+        "ecr:GetAuthorizationToken",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

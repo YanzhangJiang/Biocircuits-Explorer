@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @AppStorage("biocircuitsExplorer.themeMode") private var themeMode = "auto"
+    @AppStorage("biocircuitsExplorer.cloudComputeEnabled") private var cloudComputeEnabled = false
     @StateObject private var store: ProjectStore
     @StateObject private var backendController: BiocircuitsBackendController
     @StateObject private var webController: WebShellController
@@ -261,6 +262,17 @@ struct ContentView: View {
                     .disabled(!canUseEmbeddedWorkspaceControls)
 
                     Button {
+                        cloudComputeEnabled.toggle()
+                        webController.setCloudComputeEnabled(cloudComputeEnabled)
+                    } label: {
+                        Label(
+                            cloudComputeEnabled ? "Cloud Compute On" : "Cloud Compute",
+                            systemImage: cloudComputeEnabled ? "cloud.fill" : "cloud"
+                        )
+                    }
+                    .disabled(!canUseEmbeddedWorkspaceControls)
+
+                    Button {
                         webController.saveWorkspace()
                     } label: {
                         Label("Save Workspace", systemImage: "square.and.arrow.down")
@@ -355,7 +367,7 @@ struct ContentView: View {
                 return
             }
 
-            webController.loadBackend(url: backendController.baseURL)
+            webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
             syncCurrentSelectionIntoWeb()
         }
         .onChange(of: store.projects.map(\.id)) { _, ids in
@@ -372,6 +384,14 @@ struct ContentView: View {
             }
 
             syncThemeModeToWeb(themeMode)
+            webController.setCloudComputeEnabled(cloudComputeEnabled)
+        }
+        .onChange(of: cloudComputeEnabled) { _, enabled in
+            guard webController.isReady else {
+                return
+            }
+
+            webController.setCloudComputeEnabled(enabled)
         }
     }
 
@@ -646,7 +666,7 @@ struct ContentView: View {
         do {
             applyAppAppearance(themeMode)
             try await backendController.startIfNeeded()
-            webController.loadBackend(url: backendController.baseURL)
+            webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
             syncCurrentSelectionIntoWeb()
         } catch {
             errorMessage = error.localizedDescription
@@ -657,7 +677,7 @@ struct ContentView: View {
         Task {
             do {
                 try await backendController.restart()
-                webController.loadBackend(url: backendController.baseURL)
+                webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
                 syncCurrentSelectionIntoWeb()
             } catch {
                 errorMessage = error.localizedDescription

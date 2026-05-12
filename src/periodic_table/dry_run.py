@@ -20,10 +20,13 @@ from .result_schema import (
 from .witness_codec import make_certificate_id
 
 SUMMARY_NAMES = {
+    "sign_response_envelope.v1": "periodic_table_sign_response.csv",
     "sign_switch.v1": "periodic_table_sign_switch.csv",
+    "sign_polarity_reversal.v1": "periodic_table_sign_polarity_reversal.csv",
     "ultrasensitivity.v1": "periodic_table_ultrasensitivity.csv",
     "upper_bound_reachable.v1": "periodic_table_ubr.csv",
     "mimo_gain.v1": "periodic_table_mimo.csv",
+    "settle_to_zero.v1": "periodic_table_settle_to_zero.csv",
 }
 
 
@@ -41,10 +44,14 @@ def normalize_properties(raw: str | list[str] | tuple[str, ...] | None) -> list[
 
 
 def _strength_template(property_id: str, *, dry_run: bool, mu: int) -> dict[str, Any]:
-    if property_id == "sign_switch.v1":
+    if property_id in {"sign_response_envelope.v1", "sign_switch.v1", "sign_polarity_reversal.v1", "settle_to_zero.v1"}:
         return {
             "max_sign_switch_count": 0,
             "transition_types": [],
+            "sign_words_observed": [],
+            "mechanism_classes": [],
+            "polarity_reversal": False,
+            "settle_to_zero": False,
             "three_state": False,
             "dry_run": dry_run,
         }
