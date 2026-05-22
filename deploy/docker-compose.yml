@@ -44,7 +44,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: ${BIOCIRCUITS_EXPLORER_MEMORY_LIMIT:-6G}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/"]
       interval: 30s
