@@ -4,6 +4,7 @@ using BindingAndCatalysis
 using Logging
 using HTTP
 using JSON3
+using Base64
 
 const SIMPLE_NETWORK = Dict(
     "label" => "monomer_dimer",
@@ -1363,6 +1364,7 @@ end
 @testset "Atlas Landscape 2D Scan From Raw Rules" begin
     result = BiocircuitsExplorerBackend.atlas_landscape_2d_from_spec(Dict(
         "reactions" => Any["A + B <-> AB"],
+        "kd" => Any[1e-9],
         "output_expr" => "AB",
         "preferred_param_symbols" => Any["tA", "tB"],
         "n_grid" => 24,
@@ -1373,6 +1375,7 @@ end
     @test result["output_expr"] == "AB"
     @test result["param_symbol_options"] == ["tA", "tB", "Kd1"]
     @test result["output_symbol_options"] == ["A", "B", "AB"]
+    @test Float64.(result["fixed_qK"]) == [0.0, 0.0, -9.0]
     @test length(result["param1_values"]) == 24
     @test length(result["param2_values"]) == 24
     @test length(result["output_grid"]) == 24
@@ -1381,6 +1384,72 @@ end
     @test length(first(result["regime_grid"])) == 24
     @test length(result["bounds"]) == 24
     @test length(first(result["bounds"])) == 24
+end
+
+@testset "Parameter Scans Default To Session Kd" begin
+    sid = "kd-default-scan-test"
+    build_response = router(HTTP.Request(
+        "POST",
+        "/api/build_model",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "session_id" => sid,
+            "reactions" => Any["A + B <-> AB"],
+            "kd" => Any[1e-8],
+        )),
+    ))
+    @test build_response.status == 200
+    @test Float64.(response_json(build_response)["kd"]) == [1e-8]
+
+    scan_response = router(HTTP.Request(
+        "POST",
+        "/api/parameter_scan_1d",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "session_id" => sid,
+            "param_symbol" => "tA",
+            "param_min" => -2,
+            "param_max" => 2,
+            "n_points" => 10,
+            "output_exprs" => Any["AB"],
+        )),
+    ))
+    @test scan_response.status == 200
+    @test Float64.(response_json(scan_response)["fixed_qK"]) == [0.0, 0.0, -8.0]
+
+    bad_fixed_response = router(HTTP.Request(
+        "POST",
+        "/api/parameter_scan_1d",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "session_id" => sid,
+            "param_symbol" => "tA",
+            "output_exprs" => Any["AB"],
+            "fixed_qK" => Any[0.0],
+        )),
+    ))
+    @test bad_fixed_response.status == 400
+    @test occursin("Length of `fixed_qK`", String(bad_fixed_response.body))
+end
+
+@testset "Atlas Query Results Preserve Source Kd Metadata" begin
+    atlas = build_behavior_atlas_from_spec(Dict(
+        "networks" => Any[merge(SIMPLE_NETWORK, Dict("kd" => Any[1e-7]))],
+        "behavior_config" => Dict(
+            "compute_volume" => false,
+            "include_path_records" => false,
+            "min_volume_mean" => 0.0,
+        ),
+    ))
+
+    query_result = query_behavior_atlas(atlas, Dict(
+        "input_symbols" => Any["tA"],
+        "output_symbols" => Any["AB"],
+        "limit" => 1,
+    ))
+
+    @test query_result["result_count"] == 1
+    @test Float64.(first(query_result["results"])["kd"]) == [1e-7]
 end
 
 @testset "Higher Nullity Off-Path Vertices Do Not Break Materialization" begin

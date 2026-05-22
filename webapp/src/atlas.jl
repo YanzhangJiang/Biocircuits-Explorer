@@ -2771,7 +2771,7 @@ function _build_network_summary(slice_dicts)
     )
 end
 
-function _initial_network_entry(raw_network, network_idx::Integer, canonical_code::String, rules::Vector{String}, validation, search_profile::AtlasSearchProfile)
+function _initial_network_entry(raw_network, network_idx::Integer, canonical_code::String, rules::Vector{String}, kd::Vector{Float64}, validation, search_profile::AtlasSearchProfile)
     label = String(_raw_get(raw_network, :label, "network_$(network_idx)"))
     metrics = validation["metrics"]
     return Dict(
@@ -2781,6 +2781,7 @@ function _initial_network_entry(raw_network, network_idx::Integer, canonical_cod
         "source_metadata" => _raw_get(raw_network, :source_metadata, nothing),
         "canonical_code" => canonical_code,
         "raw_rules" => rules,
+        "kd" => collect(kd),
         "search_profile" => atlas_search_profile_to_dict(search_profile),
         "analysis_status" => validation["valid"] ? "pending" : "excluded_by_search_profile",
         "build_state" => validation["valid"] ? "pending" : "excluded_by_search_profile",
@@ -2803,7 +2804,7 @@ function _prepare_network_build_job(raw_network, network_idx::Integer, search_pr
     catch
         "uncanonicalized::" * join(sort(strip.(rules)), "|")
     end
-    network_entry = _initial_network_entry(raw_network, network_idx, canonical_code, rules, validation, search_profile)
+    network_entry = _initial_network_entry(raw_network, network_idx, canonical_code, rules, kd, validation, search_profile)
     return (
         raw_network=raw_network,
         network_idx=network_idx,
@@ -3966,6 +3967,7 @@ function _collapse_results_by_network(results, query::AtlasQuerySpec)
             "max_support" => _raw_get(best, :max_support, nothing),
             "support_mass" => _raw_get(best, :support_mass, nothing),
             "raw_rules" => collect(_raw_get(best, :raw_rules, Any[])),
+            "kd" => collect(_raw_get(best, :kd, Any[])),
             "best_slice_id" => String(_raw_get(best, :slice_id, "")),
             "best_input_symbol" => String(_raw_get(best, :input_symbol, "")),
             "best_change_signature" => String(_raw_get(best, :change_signature, "")),
