@@ -1996,6 +1996,7 @@ function retrieve_candidates(gamma_q, library, profile::AtlasSearchProfile; poli
             "support_mass" => _raw_get(network_entry, :support_mass, nothing),
             "support_signature" => support_signature,
             "raw_rules" => collect(_raw_get(network_entry, :raw_rules, Any[])),
+            "kd" => collect(_raw_get(network_entry, :kd, Any[])),
             "motif_union" => collect(_raw_get(slice, :motif_union, Any[])),
             "exact_union" => collect(_raw_get(slice, :exact_union, Any[])),
             "matched_motif_buckets" => matched_motif_buckets,

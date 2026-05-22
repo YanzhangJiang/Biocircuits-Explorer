@@ -1217,6 +1217,7 @@ function atlasLandscapeCandidate(result, resultUnit) {
       changeSpec: result.best_change_spec || null,
       changeSignature: result.best_change_signature || '',
       inputSymbol: result.best_input_symbol || '',
+      kd: Array.isArray(result.kd) ? result.kd : null,
       baseSpeciesCount: Number(result.base_species_count || 0),
     };
   }
@@ -1226,6 +1227,7 @@ function atlasLandscapeCandidate(result, resultUnit) {
     changeSpec: result.change_spec || null,
     changeSignature: result.change_signature || '',
     inputSymbol: result.input_symbol || '',
+    kd: Array.isArray(result.kd) ? result.kd : null,
     baseSpeciesCount: Number(result.base_species_count || 0),
   };
 }
@@ -1301,7 +1303,7 @@ function renderAtlasLandscapeShell(result, resultUnit, idx) {
         </label>
         <button type="button" class="btn btn-small atlas-landscape-run">Generate</button>
       </div>
-      <div class="atlas-landscape-meta text-dim">Defaults follow ${escapeHtml(queryHint)}; other coordinates stay fixed at 0 in log space.</div>
+      <div class="atlas-landscape-meta text-dim">Defaults follow ${escapeHtml(queryHint)}; totals stay at log 1 and Kd uses the network default when available.</div>
       <div class="atlas-landscape-status text-dim">Ready to render.</div>
       <div class="atlas-landscape-plot-wrap">
         <div class="atlas-landscape-plot"></div>
@@ -1956,6 +1958,9 @@ async function runAtlasLandscapeShell(nodeId, shell, queryData) {
     output_expr: selection.output || candidate.outputSymbol || '',
     n_grid: selection.nGrid,
   };
+  if (Array.isArray(candidate.kd) && candidate.kd.length === candidate.rawRules.length) {
+    request.kd = candidate.kd;
+  }
 
   if (selection.param1) request.param1_symbol = selection.param1;
   if (selection.param2) request.param2_symbol = selection.param2;

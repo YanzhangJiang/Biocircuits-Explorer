@@ -337,16 +337,17 @@ export function plotRegimeGraph(data, plotId, options = {}) {
         showlegend: false,
       });
 
-      // Adaptive arrow length based on edge distance distribution
-      const relDist = (dist - minDist) / Math.max(maxDist - minDist, 1e-9);
-      const baseArrowLength = 0.08 + 0.12 * Math.sqrt(relDist);
-      const arrowLength = Math.min(dist * 0.35, Math.max(0.06, baseArrowLength));
+      // Cone size is controlled solely by trace-level sizeref; feed unit vectors
+      // so every cone is the same physical size regardless of edge length or
+      // per-graph distance distribution. (Previously u/v/w were scaled by an
+      // adaptive arrowLength, which combined with sizemode:'absolute' produced
+      // ~3x intra-graph and ~10x inter-graph cone-size variation.)
       coneX.push(x1);
       coneY.push(y1);
       coneZ.push(z1);
-      coneU.push(ux * arrowLength);
-      coneV.push(uy * arrowLength);
-      coneW.push(uz * arrowLength);
+      coneU.push(ux);
+      coneV.push(uy);
+      coneW.push(uz);
     } else {
       traces.push({
         x: [x0, x1],

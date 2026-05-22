@@ -10,36 +10,15 @@ let gridBg = null;
 let editorResizeObserver = null;
 let themeChangeListenerInstalled = false;
 const GRID_SPACING = 50;
-const SVG_OVERSCAN_VIEWPORTS = 1;
 const MIN_GRID_PIXEL_STEP = 12;
-const svgCoverage = {
-  ready: false,
-  left: 0,
-  top: 0,
-  right: 0,
-  bottom: 0,
-};
 
-function snapGridStart(value) {
-  return Math.floor(value / GRID_SPACING) * GRID_SPACING;
-}
-
-function snapGridEnd(value) {
-  return Math.ceil(value / GRID_SPACING) * GRID_SPACING;
-}
-
-function resetSvgCoverage() {
-  svgCoverage.ready = false;
-}
-
-function getVisibleWorldBounds(overscanViewports = 0) {
+function getVisibleWorldBounds() {
   const viewportWidth = Math.max(editor.clientWidth, 1);
   const viewportHeight = Math.max(editor.clientHeight, 1);
   const visibleLeft = -canvasState.panX / scale;
   const visibleTop = -canvasState.panY / scale;
   const visibleRight = visibleLeft + viewportWidth / scale;
   const visibleBottom = visibleTop + viewportHeight / scale;
-  const overscanWorld = Math.max(viewportWidth, viewportHeight) * overscanViewports / scale;
 
   return {
     viewportWidth,
@@ -48,10 +27,6 @@ function getVisibleWorldBounds(overscanViewports = 0) {
     visibleTop,
     visibleRight,
     visibleBottom,
-    left: visibleLeft - overscanWorld,
-    top: visibleTop - overscanWorld,
-    right: visibleRight + overscanWorld,
-    bottom: visibleBottom + overscanWorld,
   };
 }
 
@@ -76,7 +51,7 @@ function renderGrid() {
   ctx.clearRect(0, 0, pixelWidth, pixelHeight);
 
   const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim() || '#2b2b2b';
-  const worldBounds = getVisibleWorldBounds(0);
+  const worldBounds = getVisibleWorldBounds();
   let displayedGridStep = GRID_SPACING;
   while (displayedGridStep * scale < MIN_GRID_PIXEL_STEP) {
     displayedGridStep *= 2;
@@ -108,45 +83,21 @@ function renderGrid() {
   ctx.stroke();
 }
 
-function ensureSvgCoverage(force = false) {
+// svgLayer is pinned at editor inset:0 (sibling of #grid-bg, NOT inside #canvas),
+// so its CSS geometry never changes during pan/zoom. Only the viewBox is updated
+// to track the visible world rectangle. This avoids Safari/Chrome paint ghosts
+// that would otherwise appear when the SVG element itself is resized/moved
+// while its parent has a CSS transform.
+function updateSvgViewBox() {
   if (!editor || !svgLayer) return;
-
-  const worldBounds = getVisibleWorldBounds(SVG_OVERSCAN_VIEWPORTS);
-  const neededLeft = worldBounds.left;
-  const neededTop = worldBounds.top;
-  const neededRight = worldBounds.right;
-  const neededBottom = worldBounds.bottom;
-
-  const alreadyCovered = svgCoverage.ready
-    && neededLeft >= svgCoverage.left
-    && neededTop >= svgCoverage.top
-    && neededRight <= svgCoverage.right
-    && neededBottom <= svgCoverage.bottom;
-
-  if (!force && alreadyCovered) return;
-
-  const left = snapGridStart(neededLeft);
-  const top = snapGridStart(neededTop);
-  const right = Math.max(snapGridEnd(neededRight), left + GRID_SPACING * 2);
-  const bottom = Math.max(snapGridEnd(neededBottom), top + GRID_SPACING * 2);
-  const width = right - left;
-  const height = bottom - top;
-
-  svgLayer.style.left = `${left}px`;
-  svgLayer.style.top = `${top}px`;
-  svgLayer.style.width = `${width}px`;
-  svgLayer.style.height = `${height}px`;
-  svgLayer.setAttribute('viewBox', `${left} ${top} ${width} ${height}`);
-
-  svgCoverage.ready = true;
-  svgCoverage.left = left;
-  svgCoverage.top = top;
-  svgCoverage.right = right;
-  svgCoverage.bottom = bottom;
+  const { viewportWidth, viewportHeight, visibleLeft, visibleTop } = getVisibleWorldBounds();
+  const visibleW = viewportWidth / scale;
+  const visibleH = viewportHeight / scale;
+  svgLayer.setAttribute('viewBox', `${visibleLeft} ${visibleTop} ${visibleW} ${visibleH}`);
 }
 
-function syncViewportLayers(force = false) {
-  ensureSvgCoverage(force);
+function syncViewportLayers() {
+  updateSvgViewBox();
   renderGrid();
 }
 
@@ -166,12 +117,11 @@ function clientToWorld(clientX, clientY) {
 export function applyViewportTransform() {
   if (!canvas || !svgLayer || !gridBg) return;
 
-  // Keep a single transform source for world-space layers while svgLayer uses a world-space viewBox.
+  // Only #canvas is CSS-transformed. #svg-layer and #grid-bg are siblings of #canvas
+  // (not inside it), pinned to the editor at inset:0; they track pan/zoom through
+  // viewBox (SVG) / explicit redraw (canvas) instead of inheriting a transform.
   syncViewportLayers();
-  const viewportTransform = `translate(${canvasState.panX}px, ${canvasState.panY}px) scale(${scale})`;
-  canvas.style.transform = viewportTransform;
-  svgLayer.style.transform = 'none';
-  gridBg.style.transform = 'none';
+  canvas.style.transform = `translate(${canvasState.panX}px, ${canvasState.panY}px) scale(${scale})`;
 }
 
 export function findScrollableAncestor(target, stopAt = editor) {
@@ -250,14 +200,12 @@ export function initCanvasEvents() {
   if (editorResizeObserver) editorResizeObserver.disconnect();
   if (window.ResizeObserver && editor) {
     editorResizeObserver = new ResizeObserver(() => {
-      resetSvgCoverage();
       applyViewportTransform();
       scheduleUpdateConnections();
     });
     editorResizeObserver.observe(editor);
   }
 
-  resetSvgCoverage();
   applyViewportTransform();
 
   // Canvas panning (middle/right mouse button, or left-click on blank area)

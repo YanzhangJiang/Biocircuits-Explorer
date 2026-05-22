@@ -9,6 +9,7 @@ services:
     expose:
       - "8088"
     environment:
+      - JULIA_NUM_THREADS=${JULIA_NUM_THREADS:-auto}
       - AWS_REGION=${AWS_REGION:-us-west-2}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
       # Credential passthrough so the in-container AWS CLI can submit Batch

@@ -454,6 +454,33 @@ function build_model(rules::Vector{String}, kd::Vector{Float64})
     return model, species, free_syms, prod_syms
 end
 
+function _default_log_qK(model, kd::AbstractVector{<:Real}; default_logq::Real=0.0)
+    kd_vec = Float64.(collect(kd))
+    length(kd_vec) == model.r || error("Length of Kd values ($(length(kd_vec))) must match model reaction dimension ($(model.r)).")
+    any(x -> x <= 0, kd_vec) && error("All Kd values must be positive (> 0).")
+    return vcat(fill(Float64(default_logq), model.d), log10.(kd_vec))
+end
+
+function _fixed_qK_or_default(body, model, kd::AbstractVector{<:Real})
+    fixed_qK = if haskey(body, :fixed_qK)
+        Float64.(body[:fixed_qK])
+    else
+        _default_log_qK(model, kd)
+    end
+    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
+    return fixed_qK
+end
+
+function _fixed_qK_or_default_raw(body, model, kd::AbstractVector{<:Real})
+    fixed_qK = if _raw_haskey(body, :fixed_qK)
+        Float64.(collect(_raw_get(body, :fixed_qK, Float64[])))
+    else
+        _default_log_qK(model, kd)
+    end
+    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
+    return fixed_qK
+end
+
 # ─── JSON helpers ───
 # Convert Matrix to Vector of Vectors for proper JSON serialization
 mat2vv(M::AbstractMatrix) = [collect(M[i,:]) for i in 1:size(M,1)]
@@ -1059,6 +1086,7 @@ function handle_build_model(req)
         "x_sym" => string.(model.x_sym),
         "q_sym" => string.(model.q_sym),
         "K_sym" => string.(model.K_sym),
+        "kd" => collect(kd),
         "N" => mat2vv(Matrix(model.N)),
         "L" => mat2vv(Matrix(model.L)),
     ))
@@ -1417,12 +1445,11 @@ function handle_parameter_scan_1d(req)
         end
     end
 
-    # Fixed parameters (all qK except the scanned one)
-    fixed_qK = if haskey(body, :fixed_qK)
-        Float64.(body[:fixed_qK])
-    else
-        # Default: all zeros (log-space), meaning all parameters = 1
-        zeros(Float64, model.n)
+    # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
+    fixed_qK = try
+        _fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+    catch e
+        return error_response(sprint(showerror, e); status=400)
     end
 
     # Remove scanned parameter from fixed_qK
@@ -1442,6 +1469,7 @@ function handle_parameter_scan_1d(req)
         "output_traj" => mat2vv(output_traj),
         "regimes" => regimes,
         "x_sym" => string.(model.x_sym),
+        "fixed_qK" => collect(fixed_qK),
     ))
 end
 
@@ -1476,11 +1504,11 @@ function handle_parameter_scan_2d(req)
         return error_response("Invalid expression '$output_expr': $(sprint(showerror, e))"; status=400)
     end
 
-    # Fixed parameters
-    fixed_qK = if haskey(body, :fixed_qK)
-        Float64.(body[:fixed_qK])
-    else
-        zeros(Float64, model.n)
+    # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
+    fixed_qK = try
+        _fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+    catch e
+        return error_response(sprint(showerror, e); status=400)
     end
 
     # Remove both scanned parameters (in descending order to avoid index shifts)
@@ -1508,6 +1536,7 @@ function handle_parameter_scan_2d(req)
         "output_expr" => output_expr,
         "output_grid" => mat2vv(output_grid),
         "regime_grid" => mat2vv(regime_grid),
+        "fixed_qK" => collect(fixed_qK),
     ))
 end
 
@@ -1621,12 +1650,7 @@ function atlas_landscape_2d_from_spec(body)
     param2_max > param2_min || error("param2_max must be greater than param2_min.")
     n_grid = clamp(Int(_raw_get(body, :n_grid, 72)), 20, 160)
 
-    fixed_qK = if _raw_haskey(body, :fixed_qK)
-        Float64.(collect(_raw_get(body, :fixed_qK, Float64[])))
-    else
-        zeros(Float64, model.n)
-    end
-    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
+    fixed_qK = _fixed_qK_or_default_raw(body, model, ctx.kd)
 
     indices_to_remove = sort([param1_idx, param2_idx], rev=true)
     fixed_params = copy(fixed_qK)
