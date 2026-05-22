@@ -1,7 +1,15 @@
 const JOBS = Dict{String, Dict{String, Any}}()
 const JOBS_LOCK = ReentrantLock()
 const JOB_TASKS = Dict{String, Task}()
+const JOB_DESCRIBE_LAST_AT = Dict{String, Float64}()
 const LOCAL_JOB_STORE_DIR = Ref{Union{Nothing, String}}(nothing)
+
+function _aws_batch_describe_min_interval()
+    raw = strip(get(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL", ""))
+    isempty(raw) && return 3.0
+    parsed = tryparse(Float64, raw)
+    return parsed === nothing ? 3.0 : max(parsed, 0.0)
+end
 
 const JOB_STATUSES = Set([
     "queued",
@@ -19,6 +27,92 @@ const LOCAL_JOB_KINDS = Set([
     "query_atlas",
     "run_inverse_design",
 ])
+
+struct QuotaExceeded <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::QuotaExceeded) = print(io, "QuotaExceeded: ", e.msg)
+
+const ANONYMOUS_USER_SUB = "anonymous"
+# Cognito subs are UUIDs but we keep the allow set generous so other IdPs
+# (Auth0, internal admin tokens, "anonymous") also pass cleanly. We reject any
+# character that could let a hostile principal escape the S3 prefix.
+const _USER_SUB_ALLOWED = r"^[A-Za-z0-9_\-.:@]{1,128}$"
+
+function _sanitize_user_sub(raw)
+    raw === nothing && return ANONYMOUS_USER_SUB
+    text = strip(String(raw))
+    isempty(text) && return ANONYMOUS_USER_SUB
+    occursin(_USER_SUB_ALLOWED, text) || throw(ArgumentError("Invalid user_sub: must match $(_USER_SUB_ALLOWED.pattern)"))
+    return text
+end
+
+# Tags propagated to AWS Batch jobs / S3 objects must be limited to the
+# Cost Allocation tag character set: letters, digits, spaces, and _.:/=+-@
+_sanitize_tag_value(raw) = replace(String(raw), r"[^A-Za-z0-9_.:/=+\-@]" => "_")
+
+# DynamoDB-backed per-user submission quota. Off by default; activate by
+# setting BIOCIRCUITS_EXPLORER_QUOTA_TABLE to the table name. The table must
+# have HASH key `user_sub` (String) and RANGE key `window` (String). On each
+# submit we conditionally bump a counter for (sub, today). If the counter
+# would exceed BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT (default 50) we reject.
+function _quota_table_name()
+    return strip(get(ENV, "BIOCIRCUITS_EXPLORER_QUOTA_TABLE", ""))
+end
+
+function _quota_daily_limit()
+    raw = strip(get(ENV, "BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT", ""))
+    isempty(raw) && return 50
+    parsed = tryparse(Int, raw)
+    return parsed === nothing ? 50 : max(parsed, 0)
+end
+
+function _quota_today_window(now_epoch::Real=time())
+    return Dates.format(Dates.unix2datetime(Float64(now_epoch)), dateformat"yyyymmdd")
+end
+
+function _quota_expires_at(now_epoch::Real=time())
+    # Window TTL: 48h after the start of the day. DynamoDB TTL expects epoch
+    # seconds in a Number attribute. We don't trim sub-second precision since
+    # DynamoDB tolerates that.
+    return Int(floor(Float64(now_epoch))) + 2 * 24 * 3600
+end
+
+# Returns true if quota accepted, false if rejected. Any AWS CLI error
+# propagates as a thrown ArgumentError so submit fails closed.
+function _check_and_consume_quota!(user_sub::AbstractString;
+                                   table::AbstractString=_quota_table_name(),
+                                   daily_limit::Integer=_quota_daily_limit(),
+                                   now_epoch::Real=time())
+    isempty(table) && return true  # quota disabled
+    user_sub == ANONYMOUS_USER_SUB && return true  # don't account for unauth dev traffic
+    window = _quota_today_window(now_epoch)
+    expires_at = string(_quota_expires_at(now_epoch))
+    expression_values = Dict(
+        ":one" => Dict("N" => "1"),
+        ":limit" => Dict("N" => string(daily_limit)),
+        ":exp" => Dict("N" => expires_at),
+    )
+    try
+        run(pipeline(
+            Cmd([
+                _aws_cli(), "dynamodb", "update-item",
+                "--table-name", String(table),
+                "--key", JSON3.write(Dict(
+                    "user_sub" => Dict("S" => String(user_sub)),
+                    "window" => Dict("S" => window),
+                )),
+                "--update-expression", "ADD submitted :one SET expires_at = if_not_exists(expires_at, :exp)",
+                "--condition-expression", "attribute_not_exists(submitted) OR submitted < :limit",
+                "--expression-attribute-values", JSON3.write(expression_values),
+            ]);
+            stdout=devnull, stderr=devnull,
+        ))
+        return true
+    catch
+        return false
+    end
+end
 
 function local_job_store_dir()
     if LOCAL_JOB_STORE_DIR[] === nothing
@@ -107,6 +201,7 @@ function _job_public_record(record::AbstractDict)
         "kind" => String(record["kind"]),
         "status" => String(record["status"]),
         "executor" => String(record["executor"]),
+        "user_sub" => String(get(record, "user_sub", ANONYMOUS_USER_SUB)),
         "created_at" => record["created_at"],
         "updated_at" => record["updated_at"],
         "result_available" => Bool(get(record, "result_available", false)),
@@ -114,6 +209,7 @@ function _job_public_record(record::AbstractDict)
     )
 
     haskey(record, "batch_job_id") && (out["external_job_id"] = record["batch_job_id"])
+    haskey(record, "log_stream_name") && (out["log_stream_name"] = record["log_stream_name"])
 
     for key in ("started_at", "finished_at", "progress", "error", "cancel_requested_at")
         haskey(record, key) && (out[key] = record[key])
@@ -137,9 +233,15 @@ end
 function _persist_job_status_unlocked(record::AbstractDict)
     status = _job_public_record(record)
     _write_job_json(String(record["status_path"]), status)
-    status_uri = get(record, "status_uri", record["status_path"])
-    if String(status_uri) != String(record["status_path"])
-        _write_json_uri(String(status_uri), status)
+    # For AWS Batch jobs the worker container is the sole writer of the
+    # remote status.json artifact, so the host backend never publishes to
+    # the S3 status URI — this avoids a last-writer-wins race between the
+    # describe-jobs poller and the worker's progress updates.
+    if String(get(record, "executor", "")) != "aws_batch"
+        status_uri = get(record, "status_uri", record["status_path"])
+        if String(status_uri) != String(record["status_path"])
+            _write_json_uri(String(status_uri), status)
+        end
     end
     return nothing
 end
@@ -182,9 +284,21 @@ function _load_job_status_from_disk(job_id::AbstractString)
     return _read_job_json(path)
 end
 
-function get_biocircuits_job(job_id::AbstractString)
+function _check_user_owns_record(record, requesting_user_sub::AbstractString, job_id::AbstractString)
+    requesting_user_sub = _sanitize_user_sub(requesting_user_sub)
+    owner = String(get(record, "user_sub", ANONYMOUS_USER_SUB))
+    # Mirror the "404 not 403" convention: do not confirm the existence of
+    # jobs owned by other users to a probing client.
+    if owner != requesting_user_sub
+        throw(ArgumentError("Unknown job_id: $(job_id)"))
+    end
+    return nothing
+end
+
+function get_biocircuits_job(job_id::AbstractString; user_sub::AbstractString=ANONYMOUS_USER_SUB)
     record = _job_record(job_id)
     if record !== nothing
+        _check_user_owns_record(record, user_sub, job_id)
         if String(get(record, "executor", "")) == "aws_batch"
             refreshed = _refresh_aws_batch_job!(job_id)
             refreshed !== nothing && return _job_public_record(refreshed)
@@ -194,19 +308,54 @@ function get_biocircuits_job(job_id::AbstractString)
 
     status = _load_job_status_from_disk(job_id)
     status === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
+    _check_user_owns_record(status, user_sub, job_id)
     return status
 end
 
-function get_biocircuits_job_result(job_id::AbstractString)
-    status = get_biocircuits_job(job_id)
+function get_biocircuits_job_result(job_id::AbstractString; user_sub::AbstractString=ANONYMOUS_USER_SUB)
+    status = get_biocircuits_job(job_id; user_sub=user_sub)
     String(status["status"]) == "succeeded" || throw(ArgumentError("Job $(job_id) has not succeeded."))
     record = _job_record(job_id)
     record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
+    _check_user_owns_record(record, user_sub, job_id)
     result_uri = String(get(record, "result_uri", _job_result_path(job_id)))
     return Dict(
         "job" => status,
         "result" => _read_json_uri(result_uri),
     )
+end
+
+function _presign_s3_get(uri::AbstractString; expires_in::Integer=3600)
+    _is_s3_uri(uri) || throw(ArgumentError("Cannot presign non-S3 URI: $(uri)"))
+    output = read(Cmd([_aws_cli(), "s3", "presign", String(uri), "--expires-in", string(expires_in)]), String)
+    return strip(output)
+end
+
+# Returns a short-lived pre-signed GET URL for result.json so clients can
+# fetch large results directly from S3 instead of round-tripping through the
+# broker. Only available for AWS Batch jobs (which store result.json in S3).
+function get_biocircuits_job_result_url(job_id::AbstractString;
+                                        user_sub::AbstractString=ANONYMOUS_USER_SUB,
+                                        expires_in::Integer=3600)
+    status = get_biocircuits_job(job_id; user_sub=user_sub)
+    String(status["status"]) == "succeeded" || throw(ArgumentError("Job $(job_id) has not succeeded."))
+    record = _job_record(job_id)
+    record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
+    _check_user_owns_record(record, user_sub, job_id)
+    result_uri = String(get(record, "result_uri", ""))
+    _is_s3_uri(result_uri) ||
+        throw(ArgumentError("Pre-signed URLs are only available for AWS Batch jobs."))
+    expires_at = _now_iso_timestamp_after(expires_in)
+    return Dict{String, Any}(
+        "job_id" => String(job_id),
+        "result_url" => _presign_s3_get(result_uri; expires_in=expires_in),
+        "expires_at" => expires_at,
+        "expires_in" => Int(expires_in),
+    )
+end
+
+function _now_iso_timestamp_after(seconds::Integer)
+    return Dates.format(Dates.now(Dates.UTC) + Dates.Second(seconds), dateformat"yyyy-mm-ddTHH:MM:SSZ")
 end
 
 function _execute_local_job(kind::AbstractString, spec)
@@ -373,16 +522,47 @@ function _job_execution_mode(raw)
     return lowercase(String(_raw_get(execution, :mode, "local_async")))
 end
 
-function _aws_cli_json(args::Vector{String})
-    output = read(Cmd([_aws_cli(); args]), String)
+function _aws_cli_json(args::Vector{<:AbstractString})
+    output = read(Cmd([_aws_cli(); String.(args)]), String)
     return _materialize(JSON3.read(output))
+end
+
+function _s3_uri_bucket_key(uri::AbstractString)
+    text = String(uri)
+    _is_s3_uri(text) || return nothing
+    body = text[6:end]
+    slash = findfirst('/', body)
+    slash === nothing && return nothing
+    bucket = body[1:slash - 1]
+    key = body[slash + 1:end]
+    (isempty(bucket) || isempty(key)) && return nothing
+    return (bucket, key)
+end
+
+function _artifact_exists(uri::AbstractString)
+    isempty(strip(String(uri))) && return false
+    if !_is_s3_uri(uri)
+        return isfile(_uri_local_path(uri))
+    end
+    parsed = _s3_uri_bucket_key(uri)
+    parsed === nothing && return false
+    bucket, key = parsed
+    try
+        run(pipeline(
+            Cmd([_aws_cli(), "s3api", "head-object", "--bucket", String(bucket), "--key", String(key)]);
+            stdout=devnull, stderr=devnull,
+        ))
+        return true
+    catch
+        return false
+    end
 end
 
 function _required_config(value, name::AbstractString)
     value === nothing && throw(ArgumentError("Missing required AWS Batch config: $(name)."))
     text = strip(String(value))
     isempty(text) && throw(ArgumentError("Missing required AWS Batch config: $(name)."))
-    return text
+    return String(text)
 end
 
 function _allow_aws_batch_request_config()
@@ -397,9 +577,9 @@ function _aws_batch_config_value(execution, key::Symbol, env_name::AbstractStrin
     return get(ENV, env_name, "")
 end
 
-function _aws_batch_artifact_uri(prefix::AbstractString, job_id::AbstractString, filename::AbstractString)
+function _aws_batch_artifact_uri(prefix::AbstractString, user_sub::AbstractString, job_id::AbstractString, filename::AbstractString)
     cleaned = replace(String(prefix), r"/+$" => "")
-    return "$(cleaned)/$(job_id)/$(filename)"
+    return "$(cleaned)/users/$(user_sub)/jobs/$(job_id)/$(filename)"
 end
 
 function _aws_batch_container_overrides(input_uri::AbstractString, status_uri::AbstractString, result_uri::AbstractString, execution)
@@ -430,10 +610,10 @@ function _aws_batch_container_overrides(input_uri::AbstractString, status_uri::A
 
     resources = Dict{String, String}[]
     if _raw_haskey(execution, :vcpus)
-        push!(resources, Dict("type" => "VCPU", "value" => String(_raw_get(execution, :vcpus, ""))))
+        push!(resources, Dict("type" => "VCPU", "value" => string(_raw_get(execution, :vcpus, ""))))
     end
     if _raw_haskey(execution, :memory_mib)
-        push!(resources, Dict("type" => "MEMORY", "value" => String(_raw_get(execution, :memory_mib, ""))))
+        push!(resources, Dict("type" => "MEMORY", "value" => string(_raw_get(execution, :memory_mib, ""))))
     end
     isempty(resources) || (overrides["resourceRequirements"] = resources)
 
@@ -457,6 +637,8 @@ end
 
 function _aws_batch_submit!(record::AbstractDict, execution)
     job_id = String(record["job_id"])
+    user_sub = String(get(record, "user_sub", ANONYMOUS_USER_SUB))
+    kind = String(record["kind"])
     job_queue = _required_config(
         _aws_batch_config_value(execution, :job_queue, "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE"),
         "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
@@ -470,17 +652,18 @@ function _aws_batch_submit!(record::AbstractDict, execution)
         "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX",
     )
 
-    input_uri = _aws_batch_artifact_uri(artifact_prefix, job_id, "input.json")
-    status_uri = _aws_batch_artifact_uri(artifact_prefix, job_id, "status.json")
-    result_uri = _aws_batch_artifact_uri(artifact_prefix, job_id, "result.json")
+    input_uri = _aws_batch_artifact_uri(artifact_prefix, user_sub, job_id, "input.json")
+    status_uri = _aws_batch_artifact_uri(artifact_prefix, user_sub, job_id, "status.json")
+    result_uri = _aws_batch_artifact_uri(artifact_prefix, user_sub, job_id, "result.json")
     record["input_uri"] = input_uri
     record["status_uri"] = status_uri
     record["result_uri"] = result_uri
 
     payload = Dict(
         "job_id" => job_id,
-        "kind" => record["kind"],
+        "kind" => kind,
         "executor" => "aws_batch",
+        "user_sub" => user_sub,
         "spec" => record["spec"],
         "artifacts" => Dict(
             "input" => input_uri,
@@ -496,6 +679,7 @@ function _aws_batch_submit!(record::AbstractDict, execution)
     short_job_id = job_id[1:min(lastindex(job_id), 24)]
     job_name = "$(isempty(job_name_prefix) ? "biocircuits" : job_name_prefix)-$(short_job_id)"
     container_overrides = _aws_batch_container_overrides(input_uri, status_uri, result_uri, execution)
+    tag_value = "User=$(_sanitize_tag_value(user_sub)),JobKind=$(_sanitize_tag_value(kind))"
     response = _aws_cli_json([
         "batch",
         "submit-job",
@@ -507,6 +691,9 @@ function _aws_batch_submit!(record::AbstractDict, execution)
         job_definition,
         "--container-overrides",
         container_overrides,
+        "--tags",
+        tag_value,
+        "--propagate-tags",
     ])
 
     record["batch_job_id"] = String(_raw_get(response, :jobId, ""))
@@ -528,12 +715,37 @@ function _refresh_aws_batch_job!(job_id::AbstractString)
         haskey(record, "batch_job_id") || return record
         String(get(record, "status", "")) in ("succeeded", "failed", "cancelled") && return record
 
+        now_epoch = time()
+        last_at = get(JOB_DESCRIBE_LAST_AT, String(job_id), 0.0)
+        if now_epoch - last_at < _aws_batch_describe_min_interval()
+            return record
+        end
+        JOB_DESCRIBE_LAST_AT[String(job_id)] = now_epoch
+
         response = _aws_cli_json(["batch", "describe-jobs", "--jobs", String(record["batch_job_id"])])
         jobs = collect(_raw_get(response, :jobs, Any[]))
         isempty(jobs) && return record
         aws_job = jobs[1]
         aws_status = String(_raw_get(aws_job, :status, "UNKNOWN"))
         status = _aws_batch_status_to_job_status(aws_status)
+
+        container = _raw_get(aws_job, :container, Dict{String, Any}())
+        log_stream = String(_raw_get(container, :logStreamName, ""))
+        if !isempty(log_stream)
+            record["log_stream_name"] = log_stream
+        end
+
+        # AWS Batch SUCCEEDED only confirms that the container exited 0. If the
+        # worker failed to upload result.json (e.g. transient S3 error) we must
+        # not flip the record to succeeded, or the next GET /result will 500.
+        if status == "succeeded"
+            result_uri = String(get(record, "result_uri", ""))
+            if !isempty(result_uri) && !_artifact_exists(result_uri)
+                status = "failed"
+                record["error"] = "AWS Batch job exited successfully but result artifact is missing: $(result_uri)"
+            end
+        end
+
         record["status"] = status
         record["updated_at"] = _now_iso_timestamp()
         record["result_available"] = status == "succeeded"
@@ -548,8 +760,7 @@ function _refresh_aws_batch_job!(job_id::AbstractString)
         if status in ("succeeded", "failed")
             record["finished_at"] = record["updated_at"]
         end
-        if status == "failed"
-            container = _raw_get(aws_job, :container, Dict{String, Any}())
+        if status == "failed" && !haskey(record, "error")
             reason = String(_raw_get(aws_job, :statusReason, _raw_get(container, :reason, "AWS Batch job failed")))
             record["error"] = reason
         end
@@ -576,7 +787,7 @@ function _cancel_aws_batch_job!(record::AbstractDict)
     return nothing
 end
 
-function submit_biocircuits_job_from_spec(raw)
+function submit_biocircuits_job_from_spec(raw; user_sub::AbstractString=ANONYMOUS_USER_SUB)
     _raw_haskey(raw, :kind) || throw(ArgumentError("Job request must include `kind`."))
     _raw_haskey(raw, :spec) || throw(ArgumentError("Job request must include `spec`."))
 
@@ -589,6 +800,10 @@ function submit_biocircuits_job_from_spec(raw)
         throw(ArgumentError("Unsupported job execution mode: $(mode)"))
     end
 
+    user_sub = _sanitize_user_sub(user_sub)
+    if !_check_and_consume_quota!(user_sub)
+        throw(QuotaExceeded("Daily submission quota exceeded for user $(user_sub). Limit: $(_quota_daily_limit())"))
+    end
     job_id = string(rand(UInt128), base=16, pad=32)
     now = _now_iso_timestamp()
     spec = _materialize(_raw_get(raw, :spec, Dict{String, Any}()))
@@ -599,6 +814,7 @@ function submit_biocircuits_job_from_spec(raw)
         "kind" => kind,
         "status" => "queued",
         "executor" => executor,
+        "user_sub" => user_sub,
         "created_at" => now,
         "updated_at" => now,
         "result_available" => false,
@@ -617,6 +833,7 @@ function submit_biocircuits_job_from_spec(raw)
         "job_id" => job_id,
         "kind" => kind,
         "executor" => record["executor"],
+        "user_sub" => user_sub,
         "spec" => spec,
         "artifacts" => Dict(
             "input" => record["input_uri"],
@@ -655,10 +872,10 @@ function submit_biocircuits_job_from_spec(raw)
         end
     end
 
-    return get_biocircuits_job(job_id)
+    return get_biocircuits_job(job_id; user_sub=user_sub)
 end
 
-function cancel_biocircuits_job(job_id::AbstractString)
+function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString=ANONYMOUS_USER_SUB)
     job_id = String(job_id)
     lock(JOBS_LOCK) do
         record = get(JOBS, job_id, nothing)
@@ -670,6 +887,7 @@ function cancel_biocircuits_job(job_id::AbstractString)
             end
         end
         record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
+        _check_user_owns_record(record, user_sub, job_id)
         status = String(record["status"])
         status in ("succeeded", "failed", "cancelled") && return _job_public_record(record)
 
@@ -692,30 +910,79 @@ function cancel_biocircuits_job(job_id::AbstractString)
             end
         end
 
+        delete!(JOB_DESCRIBE_LAST_AT, job_id)
         return _job_public_record(record)
     end
 end
 
+function _request_header(req, name::AbstractString)
+    headers = req.headers
+    headers === nothing && return nothing
+    target = lowercase(String(name))
+    for header in headers
+        lowercase(String(first(header))) == target || continue
+        return String(last(header))
+    end
+    return nothing
+end
+
+function _bearer_token_from_request(req)
+    raw = _request_header(req, "authorization")
+    raw === nothing && return nothing
+    text = strip(raw)
+    startswith(lowercase(text), "bearer ") || return nothing
+    return strip(text[8:end])
+end
+
+function _cognito_user_pool_id()
+    return strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID", ""))
+end
+
+function _request_user_sub(req)
+    # Two modes:
+    #  - Production (Cognito configured): require Authorization: Bearer <JWT>
+    #    and verify the RS256 signature against the user pool's JWKs. No
+    #    fallback to X-User-Sub so a hostile client cannot spoof identity.
+    #  - Dev / test (no Cognito): trust the X-User-Sub header; falls back to
+    #    "anonymous" when neither is present.
+    if !isempty(_cognito_user_pool_id())
+        token = _bearer_token_from_request(req)
+        token === nothing && throw(ArgumentError("Missing Authorization Bearer token"))
+        claims = verify_cognito_jwt(token)
+        return _sanitize_user_sub(claims["sub"])
+    end
+    raw = _request_header(req, "x-user-sub")
+    raw === nothing && return ANONYMOUS_USER_SUB
+    return _sanitize_user_sub(raw)
+end
+
 function handle_jobs_route(req, path::AbstractString)
     parts = split(strip(String(path), '/'), '/')
+    user_sub = _request_user_sub(req)
+
     if parts == ["api", "jobs"]
         req.method == "POST" || return error_response("Method not allowed"; status=405)
-        return json_response(submit_biocircuits_job_from_spec(read_json(req)); status=202)
+        return json_response(submit_biocircuits_job_from_spec(read_json(req); user_sub=user_sub); status=202)
     end
 
     if length(parts) == 3 && parts[1] == "api" && parts[2] == "jobs"
         req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return json_response(get_biocircuits_job(parts[3]))
+        return json_response(get_biocircuits_job(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result"
         req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return json_response(get_biocircuits_job_result(parts[3]))
+        return json_response(get_biocircuits_job_result(parts[3]; user_sub=user_sub))
+    end
+
+    if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result-url"
+        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
+        return json_response(get_biocircuits_job_result_url(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "cancel"
         req.method == "POST" || return error_response("Method not allowed"; status=405)
-        return json_response(cancel_biocircuits_job(parts[3]))
+        return json_response(cancel_biocircuits_job(parts[3]; user_sub=user_sub))
     end
 
     return error_response("Unknown jobs route"; status=404)

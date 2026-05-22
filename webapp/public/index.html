@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Biocircuits Explorer is a visual workbench for Reaction Order Polyhedra analysis, SISO behavior paths, atlas search, and binding-network design.">
-<title>Biocircuits Explorer — Reaction Order Polyhedra workbench</title>
+<meta name="description" content="Biocircuits Explorer is the CAD workbench for synthetic-biology binding networks: sketch reactions, verify response geometry, and commit to designs that survive parameter drift.">
+<title>Biocircuits Explorer — CAD for binding networks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -20,22 +20,29 @@
     <a href="#variants">Editions</a>
     <a href="#features">Capabilities</a>
     <a href="#workflow">Workflow</a>
+    <a href="/wiki.html">Wiki</a>
     <a href="#download">Download</a>
   </nav>
+  <span class="lang-switch" role="group" aria-label="Language">
+    <a href="/index.html" class="active" aria-current="page" lang="en">EN</a>
+    <a href="/index.zh.html" lang="zh-CN">中文</a>
+  </span>
   <a class="nav-cta" href="/index-node.html">Open Web App</a>
 </header>
 
 <main>
   <section class="hero" aria-labelledby="hero-title">
     <div class="hero-inner">
+      <p class="hero-eyebrow">CAD for synthetic-biology binding networks</p>
       <h1 id="hero-title">Biocircuits Explorer</h1>
       <p class="hero-lede">
-        A visual workbench for equilibrium binding networks. Sketch reactions, enumerate regimes, and trace how design choices move response across polyhedral space — all in one canvas.
+        The design workbench for binding-network engineers. Sketch reactions, verify the response geometry your circuit can reach, and commit to the design that survives parameter drift — all on one canvas, before a single primer is ordered.
       </p>
       <div class="hero-links" aria-label="Primary actions">
-        <a href="/index-node.html">Launch web version <span aria-hidden="true">→</span></a>
+        <a href="/index-node.html">Launch web app <span aria-hidden="true">→</span></a>
         <a href="#download">Get macOS app <span aria-hidden="true">→</span></a>
         <a href="#features">See capabilities <span aria-hidden="true">→</span></a>
+        <a href="/wiki.html">Read the wiki <span aria-hidden="true">→</span></a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub <span aria-hidden="true">→</span></a>
       </div>
     </div>
@@ -47,9 +54,9 @@
         <img src="media/main.png" alt="Biocircuits Explorer workbench overview" loading="eager">
       </figure>
       <div class="section-heading section-heading-centered">
-        <h2 id="overview-title">A single canvas from reaction sketch to regime geometry.</h2>
+        <h2 id="overview-title">Reaction sketch in. Verified response surface out.</h2>
         <p>
-          Biocircuits Explorer turns binding-network hypotheses into inspectable behavior landscapes. Build reactions, enumerate regimes, visualize responses, and search atlases — all in the same workspace.
+          Hardware CAD let chip designers stop fabricating prototypes to find out what their circuit would do. Biocircuits Explorer does the same for binding networks: the polyhedron of every regime your circuit can occupy is computed up front, so you commit to the design that survives parameter drift — not the one that happened to work in the last experiment.
         </p>
       </div>
     </div>
@@ -58,8 +65,8 @@
   <section class="section section-muted" id="variants" aria-labelledby="variants-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="variants-title">Two editions, one workspace model.</h2>
-        <p>Run the browser version on a shared server or use the native macOS shell with local projects. Workspaces are portable JSON between them.</p>
+        <h2 id="variants-title">Same workspace model. Three ways to run it.</h2>
+        <p>Deploy to a browser, install the native macOS app, or stay on the original form UI for scripted work. Workspaces and atlas libraries are portable JSON across all three.</p>
       </div>
       <div class="variants-grid">
         <article class="variant-card">
@@ -67,11 +74,11 @@
             <span class="variant-tag">Web</span>
             <h3>Biocircuits Web</h3>
           </div>
-          <p>Launches instantly in any modern browser. Best for deployed servers, shared workstations, and quick review sessions against a running backend.</p>
+          <p>The full design canvas, served from any modern browser. Best for teams behind a shared backend, classroom deployments, and remote collaborators on a managed server.</p>
           <ul class="variant-list">
-            <li>Full node canvas in the browser</li>
-            <li>Workspace JSON import and export</li>
-            <li>Atlas queries against the server library</li>
+            <li>Full node canvas with zero install</li>
+            <li>Cloud Compute for long-running atlas builds</li>
+            <li>Cognito-backed accounts and per-user quotas</li>
           </ul>
           <a class="variant-link" href="/index-node.html">Open web app <span aria-hidden="true">→</span></a>
         </article>
@@ -80,7 +87,7 @@
             <span class="variant-tag">macOS</span>
             <h3>Biocircuits for macOS</h3>
           </div>
-          <p>SwiftUI shell with a local project drawer and app-managed backend. Best when you want workspace files on disk and an atlas library that stays local.</p>
+          <p>SwiftUI shell with an on-device project drawer and an app-managed backend. Best for individual designers who want workspace files on disk and an atlas library that never leaves the machine.</p>
           <ul class="variant-list">
             <li>Local project drawer and document files</li>
             <li>App-managed Julia backend</li>
@@ -93,10 +100,10 @@
             <span class="variant-tag">Classic</span>
             <h3>Classic form UI</h3>
           </div>
-          <p>The original form-based interface, still available for reproducing legacy analyses or scripting against the backend without the node canvas.</p>
+          <p>The original form-based interface, kept around for reproducible scripting, headless reruns, and benchmarking against the canvas workflow.</p>
           <ul class="variant-list">
             <li>Direct form-based parameter entry</li>
-            <li>Compatible with existing scripts</li>
+            <li>Compatible with existing notebooks and scripts</li>
             <li>Useful for headless reproduction</li>
           </ul>
           <a class="variant-link" href="/classic.html">Open classic UI <span aria-hidden="true">→</span></a>
@@ -108,15 +115,15 @@
   <section class="section" id="features" aria-labelledby="features-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="features-title">Capabilities, one at a time.</h2>
-        <p>Each capability is a live node on the canvas. Wire them up, run, and watch the workspace update in place.</p>
+        <h2 id="features-title">Five primitives. One design surface.</h2>
+        <p>Each primitive is a live node on the canvas. Wire them up, run, and the workspace updates in place — the same iteration loop a hardware designer expects from EDA.</p>
       </div>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">01 · ROP polyhedron</p>
-          <h3>Exact polyhedron geometry for every regime.</h3>
-          <p>Enumerate vertices, edges, and faces of the Reaction Order Polyhedron. Rotate, inspect supports, and read dominant orders directly off the geometry.</p>
+          <p class="feature-kicker">01 · Response-surface geometry</p>
+          <h3>The polyhedron of every regime your circuit can occupy.</h3>
+          <p>Enumerate the exact vertices, edges, and faces of the Reaction Order Polyhedron. Rotate the geometry, inspect supports, and read dominant orders directly off the surface — the same way an EDA tool exposes timing margin instead of a binary yes/no.</p>
           <ul>
             <li>Exact vertex and face enumeration</li>
             <li>Interactive 3D rotation and inspection</li>
@@ -134,13 +141,13 @@
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">02 · SISO behaviors</p>
-          <h3>Trace single-input, single-output paths across regimes.</h3>
-          <p>Walk SISO paths between regimes, compare asymptotic and singular families, and see how design choices move the response signature across the polyhedron.</p>
+          <p class="feature-kicker">02 · Input-output verification</p>
+          <h3>What the circuit will actually do between regimes.</h3>
+          <p>Walk the SISO paths your input/output pair traces as parameters change. Compare asymptotic and singular families side by side. Spot the regimes a circuit will live in, before a single wet-lab cycle confirms it.</p>
           <ul>
             <li>SISO path traversal with regime overlays</li>
-            <li>Asymptotic and singular family comparison</li>
-            <li>Behavior signatures aligned to inputs and outputs</li>
+            <li>Asymptotic vs. singular family comparison</li>
+            <li>Behavior signatures pinned to inputs and outputs</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -154,9 +161,9 @@
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">03 · Parameter scan</p>
-          <h3>Sweep parameters and watch the response surface respond.</h3>
-          <p>Run 1D and 2D parameter scans with live plotting. Pin a crosshair, drag across the grid, and the result node updates without leaving the canvas.</p>
+          <p class="feature-kicker">03 · Tolerance analysis</p>
+          <h3>Sweep parameters before the bench commits to them.</h3>
+          <p>Run 1D and 2D parameter scans with live plotting. Pin a crosshair, drag across the grid, and the result node updates without leaving the canvas. The same tolerance loop a board designer runs against component variance — except the variance here is biology.</p>
           <ul>
             <li>1D and 2D scans with live plotting</li>
             <li>Interactive crosshair and value readout</li>
@@ -174,13 +181,13 @@
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">04 · ROP cloud</p>
-          <h3>Sample the polyhedron as a response point cloud.</h3>
-          <p>Generate ROP point clouds to see how sampled regions of parameter space land on the polyhedron. Useful for spotting robust regimes before committing to experiments.</p>
+          <p class="feature-kicker">04 · Robustness under noise</p>
+          <h3>Which regimes survive in the parameter cloud?</h3>
+          <p>Sample parameter space stochastically and overlay the cloud onto the polyhedron. Robust regimes show up as dense clusters; fragile ones are sparse outliers. Pick the design that lands in a robust regime under cell-to-cell variation — not just the one that looks clean on the schematic.</p>
           <ul>
             <li>Stochastic sampling across parameter space</li>
             <li>Point cloud overlaid on polyhedron geometry</li>
-            <li>Filter by region, regime, or behavior family</li>
+            <li>Volume-fraction robustness score per regime</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -194,13 +201,13 @@
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">05 · More on the canvas</p>
-          <h3>Atlas search, workspace management, and more.</h3>
-          <p>Atlas-backed inverse design, workspace JSON import and export, project drawer, theming, and the rest of the canvas-level features that keep an analysis session moving.</p>
+          <p class="feature-kicker">05 · Inverse design, AI Import, remote compute</p>
+          <h3>The library, the agent, and the cluster.</h3>
+          <p>Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Cloud Compute offloads heavy atlas builds to AWS Batch. Workspaces stay versionable JSON across all of it.</p>
           <ul>
-            <li>Atlas libraries with SQLite merge and reuse</li>
-            <li>Workspace save, restore, and share</li>
-            <li>Project drawer and native shell integration</li>
+            <li>Atlas inverse design with motif, witness, and robustness queries</li>
+            <li>AI Import via Claude or DeepSeek (key stays in your browser)</li>
+            <li>Cloud Compute with Cognito accounts and per-user quotas</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -217,36 +224,36 @@
   <section class="section section-muted" id="workflow" aria-labelledby="workflow-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="workflow-title">Move from hypothesis to evidence in four steps.</h2>
-        <p>The same path works in the browser or the native macOS shell. Workspaces and atlas libraries stay portable between them.</p>
+        <h2 id="workflow-title">From hypothesis to a design you can defend in review.</h2>
+        <p>Four steps that follow the same path in the browser, the native macOS shell, or the classic form UI. Workspaces and atlas libraries stay portable between them.</p>
       </div>
       <ol class="workflow-list" aria-label="Workflow steps">
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">01</span>
           <div>
             <h3>Sketch the binding network</h3>
-            <p>Start with reactions, constants, totals, and observable species in the browser or native shell.</p>
+            <p>Type the reactions, Kd values, conserved totals, and observable species — or have AI Import extract them from a paper in one pass.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">02</span>
           <div>
-            <h3>Build the symbolic model</h3>
-            <p>Assemble model structure, enumerate regimes, and prepare vertices, graphs, and SISO paths for analysis.</p>
+            <h3>Compile the symbolic model</h3>
+            <p>The model-builder turns the sketch into the matrices N and L, enumerates the regime vertices, and hands you a session every downstream node reuses.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">03</span>
           <div>
-            <h3>Explore transitions</h3>
-            <p>Trace SISO paths, compare behavior families, and inspect response surfaces for robust design signals.</p>
+            <h3>Verify response geometry</h3>
+            <p>Walk SISO paths, run parameter scans, sample the parameter cloud, and search the atlas. Exercise every regime your circuit can reach before you commit to a build.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">04</span>
           <div>
-            <h3>Save, reuse, publish</h3>
-            <p>Keep workspace JSON, project drawers, atlas libraries, and SQLite stores aligned across web and macOS.</p>
+            <h3>Ship the design</h3>
+            <p>Export the workspace as portable JSON, hand off SQLite atlas libraries, and reproduce the same analysis on a teammate's machine — or on a CI worker.</p>
           </div>
         </li>
       </ol>
@@ -256,20 +263,20 @@
   <section class="section" id="download" aria-labelledby="download-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="download-title">Get Biocircuits Explorer.</h2>
-        <p>Use the browser version against a deployed backend, or install the macOS app for local projects and an app-managed backend.</p>
+        <h2 id="download-title">Start designing biocircuits.</h2>
+        <p>Open the web app for instant access, or install the macOS app for on-device projects and an app-managed backend. Both ship with the full canvas.</p>
       </div>
       <div class="download-grid">
         <article class="download-card">
           <p class="platform-label">Web version</p>
-          <h3>Launch instantly in your browser.</h3>
-          <p>Best for deployed servers, shared machines, and quick analysis sessions. The full node workbench runs at the current host.</p>
+          <h3>Open the canvas in your browser.</h3>
+          <p>Zero install. Best for shared deployments, classroom sessions, and reviewing teammates' workspaces against a managed backend.</p>
           <a class="download-link" href="/index-node.html">Open Web App <span aria-hidden="true">→</span></a>
         </article>
         <article class="download-card">
           <p class="platform-label">macOS version</p>
-          <h3>Native shell with local projects.</h3>
-          <p>Use the SwiftUI shell when you want a local project drawer, workspace files, and an app-managed backend on your Mac. Packaged downloads live in GitHub Releases.</p>
+          <h3>Run the design loop on your Mac.</h3>
+          <p>SwiftUI shell with an on-device project drawer, document files, and an app-managed Julia backend. Packaged builds ship through GitHub Releases.</p>
           <div class="download-actions">
             <a class="download-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release downloads <span aria-hidden="true">→</span></a>
             <a class="download-link download-link-muted" href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">Build from source <span aria-hidden="true">→</span></a>
@@ -302,6 +309,8 @@
     <div class="footer-col">
       <h4>Resources</h4>
       <ul>
+        <li><a href="/wiki.html">Wiki — Introduction to ROP (EN)</a></li>
+        <li><a href="/wiki.zh.html">Wiki — ROP 入门 (中文)</a></li>
         <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub repository</a></li>
         <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">Build from source</a></li>
         <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release notes</a></li>
@@ -317,7 +326,7 @@
     </div>
 
     <div class="footer-tagline">
-      <p class="footer-tagline-text">Design biological response <br>through regime geometry.</p>
+      <p class="footer-tagline-text">Design before assembly.<br>Verify before commit.</p>
     </div>
   </div>
 
@@ -327,7 +336,7 @@
       <div class="footer-bottom-links">
         <a href="#download">Download</a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub</a>
-        <span>Reaction Order Polyhedra for binding-network design.</span>
+        <span>CAD for synthetic-biology binding networks.</span>
       </div>
     </div>
   </div>

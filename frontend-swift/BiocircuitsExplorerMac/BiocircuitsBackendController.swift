@@ -144,6 +144,68 @@ final class BiocircuitsBackendController: ObservableObject {
         return nil
     }
 
+    // Parse a deploy/aws-runtime.env style file: KEY=VALUE lines, # comments,
+    // optional surrounding quotes. Missing files return [:] silently so the
+    // local-only path keeps working when Cognito has not been provisioned.
+    private static func loadEnvFile(at url: URL) -> [String: String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return [:]
+        }
+        var env: [String: String] = [:]
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            guard let eqIdx = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eqIdx]).trimmingCharacters(in: .whitespaces)
+            var value = String(line[line.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
+            if value.count >= 2 {
+                let first = value.first
+                let last = value.last
+                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                    value = String(value.dropFirst().dropLast())
+                }
+            }
+            if !key.isEmpty { env[key] = value }
+        }
+        return env
+    }
+
+    // Discover the runtime configuration written by deploy/setup_aws_batch.sh.
+    // Search order (first match wins) — explicit overrides win, then per-user
+    // persistent config, then the repo's deploy/ dir for dev builds.
+    private func loadAwsRuntimeEnv(repoRoots: [URL]) -> [String: String] {
+        if let override = Self.environmentValue(
+            keys: ["BIOCIRCUITS_EXPLORER_AWS_RUNTIME_ENV"],
+            from: environment
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty
+        {
+            let expanded = (override as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expanded)
+            return Self.loadEnvFile(at: url)
+        }
+
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let supportEnv = appSupport
+                .appendingPathComponent("BiocircuitsExplorer", isDirectory: true)
+                .appendingPathComponent("aws-runtime.env")
+            if fileManager.fileExists(atPath: supportEnv.path) {
+                return Self.loadEnvFile(at: supportEnv)
+            }
+        }
+
+        for root in repoRoots {
+            let candidate = root
+                .appendingPathComponent("deploy", isDirectory: true)
+                .appendingPathComponent("aws-runtime.env")
+            if fileManager.fileExists(atPath: candidate.path) {
+                return Self.loadEnvFile(at: candidate)
+            }
+        }
+
+        return [:]
+    }
+
     private func resolveLaunchSpec() throws -> LaunchSpec {
         let repoRoots = configuredRepoRoots()
 
@@ -245,19 +307,28 @@ final class BiocircuitsBackendController: ObservableObject {
             return nil
         }
 
+        // Layer the runtime config produced by deploy/setup_aws_batch.sh on
+        // top of the bootstrap vars. Without this the local Julia process has
+        // no Cognito / AWS Batch knowledge and the Sign-in button stays
+        // hidden because /api/auth/config reports enabled: false.
+        var spawnEnv: [String: String] = [
+            "HOME": NSHomeDirectory(),
+            "BIOCIRCUITS_EXPLORER_PORT": String(port),
+            "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
+            "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
+            "ROP_PORT": String(port),
+            "ROP_PUBLIC_DIR": publicDir.path,
+            "ROP_PARENT_PID": parentProcessIdentifierString,
+        ]
+        for (key, value) in loadAwsRuntimeEnv(repoRoots: configuredRepoRoots()) {
+            spawnEnv[key] = value
+        }
+
         return LaunchSpec(
             executableURL: executableURL,
             arguments: [],
             currentDirectoryURL: backendRoot,
-            environment: [
-                "HOME": NSHomeDirectory(),
-                "BIOCIRCUITS_EXPLORER_PORT": String(port),
-                "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
-                "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
-                "ROP_PORT": String(port),
-                "ROP_PUBLIC_DIR": publicDir.path,
-                "ROP_PARENT_PID": parentProcessIdentifierString,
-            ],
+            environment: spawnEnv,
             startupTimeout: 90,
             startupStatus: "Starting compiled backend"
         )
@@ -278,6 +349,19 @@ final class BiocircuitsBackendController: ObservableObject {
             }
 
             let juliaURL = try resolveJuliaExecutable()
+            var spawnEnv: [String: String] = [
+                "HOME": NSHomeDirectory(),
+                "BIOCIRCUITS_EXPLORER_PORT": String(port),
+                "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
+                "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
+                "ROP_PORT": String(port),
+                "ROP_PUBLIC_DIR": publicDir.path,
+                "ROP_PARENT_PID": parentProcessIdentifierString,
+            ]
+            for (key, value) in loadAwsRuntimeEnv(repoRoots: repoRoots) {
+                spawnEnv[key] = value
+            }
+
             return LaunchSpec(
                 executableURL: juliaURL,
                 arguments: [
@@ -286,15 +370,7 @@ final class BiocircuitsBackendController: ObservableObject {
                     serverPath.path,
                 ],
                 currentDirectoryURL: webappDir,
-                environment: [
-                    "HOME": NSHomeDirectory(),
-                    "BIOCIRCUITS_EXPLORER_PORT": String(port),
-                    "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
-                    "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
-                    "ROP_PORT": String(port),
-                    "ROP_PUBLIC_DIR": publicDir.path,
-                    "ROP_PARENT_PID": parentProcessIdentifierString,
-                ],
+                environment: spawnEnv,
                 startupTimeout: 900,
                     startupStatus: "Starting Julia backend from source"
             )

@@ -8,7 +8,6 @@ body, html {
   overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Tahoma, sans-serif;
   background-color: var(--bg-color); color: var(--text-color);
 }
-
 body {
   -webkit-user-select: none;
   user-select: none;
@@ -1828,3 +1827,282 @@ textarea {
 }
 
 .menu-color.color-note { background: #F39C12; }
+
+/* ===== AI Import node ===== */
+.agent-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.agent-node-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-node-row-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-color);
+  font-size: 11px;
+}
+.agent-node-row-inline input { margin: 0; }
+.agent-node-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.agent-node-input {
+  background: var(--input-bg);
+  color: var(--input-text-color);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.agent-node-input-custom { margin-top: 4px; }
+
+.agent-node-textarea {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  background: var(--input-bg);
+  color: var(--input-text-color);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  padding: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  box-sizing: border-box;
+}
+.agent-node-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-node-files input[type="file"] {
+  color: var(--text-color);
+  font-size: 11px;
+}
+.agent-node-files-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.agent-node-files-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  background: var(--input-bg);
+  border-radius: 3px;
+  font-size: 11px;
+}
+.agent-node-files-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.agent-node-files-size {
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.agent-node-files-remove {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.agent-node-files-remove:hover { color: #e0716a; }
+.agent-node-files-empty,
+.agent-node-files-total {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: transparent !important;
+  padding: 2px 0 !important;
+  font-style: italic;
+}
+.agent-node-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin: 4px 0 0;
+}
+
+.agent-node-actions {
+  display: flex;
+  gap: 6px;
+}
+.agent-node-cancel {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--input-border);
+}
+.agent-node-cancel:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.agent-node-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  min-height: 14px;
+}
+.agent-node-status[data-kind="error"] { color: #e0716a; }
+.agent-node-status[data-kind="ok"] { color: #7ab977; }
+.agent-node-status[data-kind="warn"] { color: #c4a346; }
+.agent-node-status[data-kind="busy"] { color: #c4a346; }
+
+.agent-node-result.hidden { display: none; }
+.agent-node-summary {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.agent-node-network {
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.agent-node-network summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.agent-node-rxn-list {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.agent-node-rxn-list li {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 2px 4px;
+  background: var(--input-bg);
+  border-radius: 3px;
+}
+.agent-node-rxn-list code {
+  color: var(--text-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.agent-node-meta,
+.agent-node-notes {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.agent-node-meta code {
+  background: var(--input-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+.agent-node-warnings {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #c4a346;
+}
+.agent-node-warnings ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.agent-node-raw {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 6px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-color);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.agent-node-copy-raw {
+  margin: 6px 0 4px;
+  font-size: 11px;
+}
+
+.agent-conf {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 4px;
+}
+.agent-conf-high { background: rgba(122, 185, 119, 0.18); color: #7ab977; }
+.agent-conf-medium { background: rgba(196, 163, 70, 0.18); color: #c4a346; }
+.agent-conf-low { background: rgba(224, 113, 106, 0.18); color: #e0716a; }
+
+/* ===== Marquee "thinking" border (Apple-Intelligence style) ===== */
+@property --agent-thinking-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes agent-thinking-rotate {
+  to { --agent-thinking-angle: 360deg; }
+}
+@keyframes agent-thinking-rotate-fallback {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+
+/* Container clips overflow, so the marquee is drawn inside the border
+   instead of around the outside. The mask leaves a 2px ring visible at
+   the edge of the node. */
+.node.node-thinking {
+  isolation: isolate;
+}
+.node.node-thinking::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--agent-thinking-angle, 0deg),
+    transparent 0deg,
+    #FF5252 60deg,
+    #FF9800 120deg,
+    #FFEB3B 180deg,
+    #4CAF50 220deg,
+    #2196F3 270deg,
+    #9C27B0 320deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: agent-thinking-rotate 2.4s linear infinite;
+  pointer-events: none;
+  z-index: 100;
+  filter: saturate(1.15);
+}
+@supports not (background: conic-gradient(from 0deg, red, blue)) {
+  .node.node-thinking::after {
+    background: linear-gradient(90deg, #FF5252, #FF9800, #FFEB3B, #4CAF50, #2196F3, #9C27B0, #FF5252);
+    background-size: 300% 100%;
+    animation: agent-thinking-rotate-fallback 2.4s linear infinite;
+  }
+}

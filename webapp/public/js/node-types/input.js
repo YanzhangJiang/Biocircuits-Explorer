@@ -1,8 +1,19 @@
 import { setupAutoUpdate } from '../nodes.js';
 import { addReactionRow } from '../model.js';
 import { renderAtlasNetworkDefinitionPreview } from '../atlas.js';
+import { buildAgentNodeBody, setupAgentNode } from '../agent-node.js';
 
 export const INPUT_TYPES = {
+  'ai-import': {
+    category: 'input',
+    headerClass: 'header-input',
+    title: 'AI Import',
+    inputs: [],
+    outputs: [],
+    defaultWidth: 340,
+    createBody(nodeId) { return buildAgentNodeBody(nodeId); },
+    onInit(nodeId) { setupAgentNode(nodeId); },
+  },
   'reaction-network': {
     category: 'input',
     headerClass: 'header-input',

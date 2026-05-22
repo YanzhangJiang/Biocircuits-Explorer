@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import WebKit
@@ -38,6 +39,7 @@ final class WebShellController: NSObject, ObservableObject {
         super.init()
 
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         contentController.add(self, name: Self.bridgeName)
     }
 
@@ -364,6 +366,35 @@ extension WebShellController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         lastErrorMessage = error.localizedDescription
+    }
+}
+
+extension WebShellController: WKUIDelegate {
+    // WKWebView does not show a file picker for <input type="file"> by itself
+    // on macOS — the host app must implement this delegate method and bridge
+    // through to NSOpenPanel. Without this, clicks on the AI Import file
+    // chooser are silently swallowed.
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.resolvesAliases = true
+
+        let handle: (NSApplication.ModalResponse) -> Void = { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+
+        if let host = webView.window {
+            panel.beginSheetModal(for: host, completionHandler: handle)
+        } else {
+            panel.begin(completionHandler: handle)
+        }
     }
 }
 

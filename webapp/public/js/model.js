@@ -42,22 +42,34 @@ export function addReactionRow(nodeId, rule = '', kd = 1e-3) {
   if (!list) return;
   const row = document.createElement('div');
   row.className = 'reaction-row';
-  row.innerHTML = `
-    <input type="text" class="reaction-input" value="${rule}" placeholder="A + B <-> C">
-    <input type="number" class="kd-input" value="${kd == null ? '' : kd}" step="any" min="1e-12" placeholder="required">
-    <button class="btn-remove" title="Remove">&times;</button>
-  `;
 
-  const removeBtn = row.querySelector('.btn-remove');
+  const reactionInput = document.createElement('input');
+  reactionInput.type = 'text';
+  reactionInput.className = 'reaction-input';
+  reactionInput.value = String(rule ?? '');
+  reactionInput.placeholder = 'A + B <-> C';
+
+  const kdInput = document.createElement('input');
+  kdInput.type = 'number';
+  kdInput.className = 'kd-input';
+  kdInput.value = kd == null ? '' : String(kd);
+  kdInput.step = 'any';
+  kdInput.min = '1e-12';
+  kdInput.placeholder = 'required';
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn-remove';
+  removeBtn.title = 'Remove';
+  removeBtn.textContent = '\u00d7';
+
+  row.append(reactionInput, kdInput, removeBtn);
+
   removeBtn.onclick = () => {
     row.remove();
     triggerAutoModelBuild(nodeId);
   };
 
   // Add event listeners for auto-build
-  const reactionInput = row.querySelector('.reaction-input');
-  const kdInput = row.querySelector('.kd-input');
-
   [reactionInput, kdInput].forEach(input => {
     input.addEventListener('input', () => {
       clearTimeout(input._autoTimer);

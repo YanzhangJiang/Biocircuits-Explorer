@@ -12,6 +12,31 @@ function renderMarkdown(nodeId) {
   preview.innerHTML = simpleMarkdownToHTML(markdown);
 }
 
+function resolveMarkdownImageSrc(rawSrc) {
+  // simpleMarkdownToHTML escapes & → &amp; before this regex runs; undo for URLs.
+  const src = rawSrc.trim().replace(/&amp;/g, '&');
+  if (!src) return '';
+
+  if (/^https?:\/\//i.test(src)) return src;
+  if (/^data:image\//i.test(src)) return src;
+
+  let local = null;
+  if (/^file:\/\//i.test(src)) {
+    try { local = decodeURIComponent(src.replace(/^file:\/\//i, '')); }
+    catch { local = src.replace(/^file:\/\//i, ''); }
+  } else if (src.startsWith('/') || src.startsWith('~')) {
+    local = src;
+  }
+
+  if (local !== null) {
+    return `/api/local-image?path=${encodeURIComponent(local)}`;
+  }
+
+  // Reject anything with an unknown scheme (e.g., javascript:); allow plain relative paths.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src)) return '';
+  return src;
+}
+
 function simpleMarkdownToHTML(markdown) {
   if (!markdown) return '<p class="text-dim">No content yet.</p>';
 
@@ -35,6 +60,13 @@ function simpleMarkdownToHTML(markdown) {
 
   // Code inline
   html = html.replace(/`(.+?)`/g, '<code>$1</code>');
+
+  // Images — must precede links so ![alt](src) isn't consumed by the link rule.
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, src) => {
+    const resolved = resolveMarkdownImageSrc(src);
+    if (!resolved) return '';
+    return `<img alt="${alt}" src="${resolved}" style="max-width:100%;height:auto;">`;
+  });
 
   // Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Signing you in… — Biocircuits Explorer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      background: #fafafa;
+      color: #222;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      max-width: 420px;
+      padding: 2rem;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      background: #fff;
+      text-align: center;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.04);
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      margin: 0 auto 1rem;
+      border: 3px solid #d0d0d0;
+      border-top-color: #4a6cf7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error { color: #b00020; }
+    .actions { margin-top: 1.5rem; }
+    a {
+      color: #4a6cf7;
+      text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #eee; }
+      .card { background: #242424; border-color: #333; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="spinner" class="spinner"></div>
+    <h2 id="title">Signing you in…</h2>
+    <p id="message">Finishing up. You'll be redirected in a moment.</p>
+    <div id="actions" class="actions" style="display:none">
+      <a href="/index-node.html">Continue to the app</a>
+      &nbsp;·&nbsp;
+      <a href="/">Back to home</a>
+    </div>
+  </div>
+  <script type="module">
+    import { handleCallback } from '/js/auth.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const spinner = document.getElementById('spinner');
+    const title = document.getElementById('title');
+    const message = document.getElementById('message');
+    const actions = document.getElementById('actions');
+
+    handleCallback(params)
+      .then((returnTo) => {
+        spinner.style.display = 'none';
+        title.textContent = 'Signed in';
+        message.textContent = 'Redirecting…';
+        window.location.replace(returnTo || '/index-node.html');
+      })
+      .catch((err) => {
+        spinner.style.display = 'none';
+        title.textContent = 'Sign-in failed';
+        title.classList.add('error');
+        message.textContent = err && err.message ? err.message : String(err);
+        actions.style.display = 'block';
+        console.error('Sign-in callback error:', err);
+      });
+  </script>
+</body>
+</html>

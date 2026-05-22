@@ -186,7 +186,7 @@ function _build_Nρ_cache_parallel!(Bnc::Bnc{T},perms::Vector{Vector{T}}) where 
     inv_list = Vector{SparseMatrixCSC{Float64,Int}}(undef, nk)
     nullity_list = Vector{T}(undef, nk)
 
-    @showprogress Threads.@threads for i in eachindex(keys)
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") Threads.@threads for i in eachindex(keys)
         key = keys[i]
         Nρ = @view Bnc.N[:, key]
         inv_list[i], nullity_list[i] = _calc_Nρ_inverse(Nρ)
@@ -421,7 +421,7 @@ function find_all_vertices!(Bnc::Bnc{T};) where T # cheap enough for now
         nullity = Vector{T}(undef, length(all_vertices))
 
         @info "2.Calculating nullity for each vertex in parallel..."
-        @showprogress Threads.@threads for i in  eachindex(all_vertices)
+        @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") Threads.@threads for i in  eachindex(all_vertices)
             perm_set = Set(all_vertices[i])
             nullity_P =  Bnc.d -length(perm_set)
             _ , nullity_N =  _get_Nρ_inv_from_perm!(Bnc,perm_set) 
