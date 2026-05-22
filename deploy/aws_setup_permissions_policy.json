@@ -26,8 +26,8 @@
         "s3:CreateBucket",
         "s3:HeadBucket",
         "s3:GetBucketLocation",
-        "s3:PutBucketEncryption",
-        "s3:PutPublicAccessBlock",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketPublicAccessBlock",
         "s3:ListBucket",
         "s3:GetObject",
         "s3:PutObject",
@@ -47,9 +47,13 @@
         "iam:CreatePolicyVersion",
         "iam:CreateRole",
         "iam:CreateServiceLinkedRole",
+        "iam:DeletePolicyVersion",
         "iam:GetInstanceProfile",
         "iam:GetPolicy",
+        "iam:GetPolicyVersion",
         "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListPolicyVersions",
         "iam:PassRole",
         "iam:PutRolePolicy"
       ],
@@ -61,10 +65,13 @@
       "Action": [
         "batch:CreateComputeEnvironment",
         "batch:CreateJobQueue",
+        "batch:DeregisterJobDefinition",
         "batch:DescribeComputeEnvironments",
         "batch:DescribeJobDefinitions",
         "batch:DescribeJobQueues",
-        "batch:RegisterJobDefinition"
+        "batch:RegisterJobDefinition",
+        "batch:UpdateComputeEnvironment",
+        "batch:UpdateJobQueue"
       ],
       "Resource": "*"
     },
@@ -87,6 +94,50 @@
         "ecr:DescribeRepositories",
         "ecr:GetAuthorizationToken",
         "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupCognito",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:CreateUserPool",
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:ListUserPoolClients",
+        "cognito-idp:ListUserPools",
+        "cognito-idp:UpdateUserPool",
+        "cognito-idp:UpdateUserPoolClient"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupDynamoDB",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:TagResource",
+        "dynamodb:UpdateTimeToLive"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BiocircuitsSetupSES",
+      "Effect": "Allow",
+      "Action": [
+        "ses:GetEmailIdentity",
+        "ses:GetIdentityVerificationAttributes",
+        "ses:GetIdentityDkimAttributes",
+        "ses:ListEmailIdentities",
+        "ses:ListIdentities",
+        "ses:GetAccount",
+        "ses:VerifyDomainDkim",
+        "ses:VerifyDomainIdentity"
       ],
       "Resource": "*"
     }

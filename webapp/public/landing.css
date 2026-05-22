@@ -130,6 +130,43 @@ button {
   background: var(--ink-2);
 }
 
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.lang-switch a {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 10px;
+  color: var(--muted);
+  transition: background var(--t) var(--ease), color var(--t) var(--ease);
+}
+
+.lang-switch a + a {
+  border-left: 1px solid var(--line);
+}
+
+.lang-switch a:hover {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.lang-switch a.active {
+  background: var(--ink);
+  color: #ffffff;
+}
+
 /* ---------- Hero ---------- */
 .hero {
   padding: 104px 0 48px;
@@ -140,6 +177,15 @@ button {
   width: var(--container);
   margin: 0 auto;
   max-width: 960px;
+}
+
+.hero-eyebrow {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .hero h1 {
@@ -761,6 +807,10 @@ button {
 
   .site-nav {
     display: none;
+  }
+
+  .lang-switch {
+    margin-left: auto;
   }
 
   .hero {

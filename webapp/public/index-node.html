@@ -18,6 +18,12 @@ if (!window.Plotly) {
   document.write('<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"><\\/script>');
 }
 </script>
+<script src="vendor/jszip-3.10.1.min.js"></script>
+<script>
+if (!window.JSZip) {
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\\/script>');
+}
+</script>
 <link rel="stylesheet" href="style-node-base.css">
 <link rel="stylesheet" href="style-node.css">
 </head>
@@ -48,6 +54,9 @@ if (!window.Plotly) {
           </div>
           <div class="menu-item" data-type="network-id-definition">
             <span class="menu-color color-input"></span> Network ID
+          </div>
+          <div class="menu-item" data-type="ai-import">
+            <span class="menu-color color-input"></span> AI Import
           </div>
           <div class="menu-section-title">Parameters</div>
           <div class="menu-item" data-type="siso-params">
@@ -173,6 +182,15 @@ if (!window.Plotly) {
           </svg>
         </span>
         <span>Cloud Compute</span>
+      </button>
+      <button class="toolbar-btn toolbar-btn-auth" id="auth-btn" hidden>
+        <span class="toolbar-symbol" aria-hidden="true">
+          <svg viewBox="0 0 16 16">
+            <path d="M8 2.5a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5z"></path>
+            <path d="M3 13.5c0-2.5 2.5-3.75 5-3.75s5 1.25 5 3.75v.25H3z"></path>
+          </svg>
+        </span>
+        <span id="auth-btn-label">Sign in</span>
       </button>
       <div class="toolbar-menu-group">
         <button class="toolbar-btn" id="theme-mode-btn">

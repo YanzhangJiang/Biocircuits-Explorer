@@ -1,0 +1,1827 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="反应级数多面体（ROP）理论入门，以及 Biocircuits Explorer 工作台的实用使用指南：节点、操作流程与设计应用。">
+<title>Wiki · 反应级数多面体入门 — Biocircuits Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap">
+<link rel="stylesheet" href="wiki.css">
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [["\\(", "\\)"]],
+      displayMath: [["\\[", "\\]"]]
+    },
+    svg: { fontCache: "global" }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+</head>
+<body>
+
+<header class="wiki-topbar" role="banner">
+  <a class="wiki-brand" href="/">Biocircuits Explorer</a>
+  <nav class="wiki-breadcrumb" aria-label="位置导航">
+    <a href="/">首页</a>
+    <span class="sep">›</span>
+    <span>Wiki</span>
+    <span class="sep">›</span>
+    <span>ROP 入门</span>
+  </nav>
+  <nav class="wiki-topnav" aria-label="顶部导航">
+    <a href="/#features">功能</a>
+    <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub</a>
+    <span class="lang-switch" role="group" aria-label="语言">
+      <a href="/wiki.html" lang="en">EN</a>
+      <a href="/wiki.zh.html" class="active" aria-current="page" lang="zh-CN">中文</a>
+    </span>
+    <a class="cta" href="/index-node.html">打开 Web App</a>
+  </nav>
+</header>
+
+<div class="wiki-shell">
+
+  <!-- ============ 左侧目录 ============ -->
+  <aside class="wiki-sidebar" aria-label="Wiki 目录">
+    <h4>目录</h4>
+    <ol>
+      <li>
+        <a href="#sec-1"><span class="num">1</span><span>本 Wiki 是什么</span></a>
+      </li>
+      <li>
+        <a href="#sec-2"><span class="num">2</span><span>反应级数多面体的理论</span></a>
+        <ol>
+          <li><a href="#sec-2-1">2.1 什么是 ROP？</a></li>
+          <li><a href="#sec-2-2">2.2 为什么是主导分析、为什么用 log-log？</a></li>
+          <li><a href="#sec-2-3">2.3 多面体上的几何对象</a></li>
+          <li><a href="#sec-2-4">2.4 多面体能告诉你什么</a></li>
+          <li><a href="#sec-2-5">2.5 例子：A + B ⇌ AB</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-3"><span class="num">3</span><span>一分钟上手画布</span></a>
+        <ol>
+          <li><a href="#sec-3-1">3.1 节点、端口与连线</a></li>
+          <li><a href="#sec-3-2">3.2 节点家族</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-4"><span class="num">4</span><span>操作流程 — 一步一步怎么做</span></a>
+        <ol>
+          <li><a href="#sec-4-1">4.1 建立模型、查看 regime</a></li>
+          <li><a href="#sec-4-2">4.2 追踪一条 SISO 行为路径</a></li>
+          <li><a href="#sec-4-3">4.3 运行参数扫描</a></li>
+          <li><a href="#sec-4-4">4.4 可视化 ROP 多面体与点云</a></li>
+          <li><a href="#sec-4-5">4.5 Atlas 检索与逆向设计</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-5"><span class="num">5</span><span>它能解决什么 — 设计应用</span></a>
+      </li>
+      <li>
+        <a href="#sec-6"><span class="num">6</span><span>如何读输出</span></a>
+        <ol>
+          <li><a href="#sec-6-1">6.1 Regime 表检查清单</a></li>
+          <li><a href="#sec-6-2">6.2 SISO 判读清单</a></li>
+          <li><a href="#sec-6-3">6.3 数值扫描与渐近分析</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-7"><span class="num">7</span><span>节点参考</span></a>
+      </li>
+      <li>
+        <a href="#sec-8"><span class="num">8</span><span>Atlas 与逆向设计</span></a>
+      </li>
+      <li>
+        <a href="#sec-9"><span class="num">9</span><span>AI Import — 从论文到模型</span></a>
+        <ol>
+          <li><a href="#sec-9-1">9.1 节点做什么</a></li>
+          <li><a href="#sec-9-2">9.2 选择 Provider 与 API Key</a></li>
+          <li><a href="#sec-9-3">9.3 输入：文本、PDF、Notebook</a></li>
+          <li><a href="#sec-9-4">9.4 读结果与自动生成的节点链</a></li>
+          <li><a href="#sec-9-5">9.5 诚实约束与丢弃规则</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-10"><span class="num">10</span><span>账户与登录</span></a>
+        <ol>
+          <li><a href="#sec-10-1">10.1 什么时候需要登录</a></li>
+          <li><a href="#sec-10-2">10.2 登录流程</a></li>
+          <li><a href="#sec-10-3">10.3 macOS 同一套流程</a></li>
+          <li><a href="#sec-10-4">10.4 按用户配额</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-11"><span class="num">11</span><span>云计算 — 把重任务远程跑</span></a>
+        <ol>
+          <li><a href="#sec-11-1">11.1 切换 Cloud Compute</a></li>
+          <li><a href="#sec-11-2">11.2 哪些任务会走云端</a></li>
+          <li><a href="#sec-11-3">11.3 部署栈</a></li>
+          <li><a href="#sec-11-4">11.4 观察远程任务</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-12"><span class="num">12</span><span>排错与边界</span></a>
+      </li>
+      <li>
+        <a href="#sec-13"><span class="num">13</span><span>参考资料</span></a>
+      </li>
+    </ol>
+  </aside>
+
+  <!-- ============ 主内容 ============ -->
+  <main class="wiki-content" id="content">
+
+    <div class="wiki-title-block">
+      <p class="eyebrow">Wiki · 第一章</p>
+      <h1>反应级数多面体与 Biocircuits Explorer 工作台入门</h1>
+      <p class="subtitle">
+        一篇教科书式的短文，介绍多面体背后的数学、画布上各个对象的含义，
+        以及从&ldquo;勾勒一个结合网络&rdquo;到&ldquo;得出设计结论&rdquo;的实用操作流程。
+      </p>
+    </div>
+
+    <!-- ============ §1 ============ -->
+    <section id="sec-1">
+      <h2><span class="sec-num">1</span>本 Wiki 是什么</h2>
+      <p>
+        Biocircuits Explorer 是一个通过 <em>反应级数多面体</em>（Reaction Order
+        Polyhedra，ROP）来设计与分析平衡结合网络的工作台。首页用一组截图与短视频
+        介绍了它的功能，本 Wiki 则深入一层：解释应用实际在计算什么、画布上各种几何
+        对象叫什么名字，以及一系列把&ldquo;关于回路的问题&rdquo;变成
+        &ldquo;关于回路的答案&rdquo;的操作流程。
+      </p>
+      <p>
+        第一次阅读请按章节顺序通读。当你已经搭过几个网络之后，每一节都可以独立作为
+        参考。
+      </p>
+
+      <div class="callout callout-tip">
+        <p class="callout-head">面向谁</p>
+        <p>
+          适合刚接触 Web 版或 macOS 版应用、希望理解 regime 图、SISO 路径与多面体
+          <em>到底在画什么</em> 的新用户，而不仅仅是&ldquo;按哪个按钮&rdquo;。无需
+          代数几何或化学反应网络理论的背景，但建议先了解基本的化学平衡（质量作用、
+          守恒量）。
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ §2 ============ -->
+    <section id="sec-2">
+      <h2><span class="sec-num">2</span>反应级数多面体的理论</h2>
+
+      <section id="sec-2-1">
+        <h3><span class="sec-num">2.1</span>什么是反应级数多面体？</h3>
+        <p>
+          <strong>反应级数多面体</strong>（ROP）是一个几何对象，它在你尚未对结合常数
+          或守恒总量赋具体数值之前，就把一个平衡结合网络可能呈现的全部
+          <em>定性行为</em> 一次性总结出来。
+        </p>
+        <p>
+          ROP 分析的输入是一个 <strong>结合网络</strong>：
+        </p>
+        <ul>
+          <li>
+            一组 <em>基本物种</em>  \( X_{1}, \ldots, X_{n} \)。
+          </li>
+          <li>
+            一组 <em>复合物</em>（complex），即基本物种以整数计量构成的组合，例如
+            \(AB\)、\(AAB\)、\(ABCD\)。复合物可写作一个整数向量
+            \( a \in \mathbb{N}^{d} \setminus \{0\}\)，其大小
+            \( |a|_{1} = \sum_{i} a_{i} \le \mu \)，其中 \(\mu\) 是允许的复合物最大尺寸。
+          </li>
+          <li>
+            一组 <em>可逆结合反应</em>
+            \( C_{a} + C_{b} \rightleftharpoons C_{a+b} \)，各自带一个平衡常数。
+          </li>
+          <li>
+            一个化学计量矩阵 \(N\)（每一行是一个反应），以及一个守恒律矩阵 \(L\)，
+            其各行编码了守恒总量
+            \( q_{i} = \sum_{j} L_{ij}\,x_{j} \)。
+          </li>
+          <li>
+            选择哪些总量充当 <strong>输入</strong> \(u\)、哪些是固定的守恒总量 \(q\)，
+            以及哪个复合物浓度作为 <strong>输出</strong> \(y\)。
+          </li>
+        </ul>
+        <p>
+          输出 <em>不是</em> 一条平衡曲线，而是一个生活在
+          log-浓度 / log-参数空间中的 <strong>多面体</strong>。多面体上的每个点
+          对应一种 <em>主导模式</em>（dominance mode）—— 一张快照，记录每个守恒池里
+          哪一种物种&ldquo;占主导&rdquo;。每个 <em>顶点</em> 对应一个完整的渐近 regime；
+          每个 <em>面</em> 或 <em>棱</em> 则是 regime 之间的过渡。
+        </p>
+        <p>
+          为什么是多面体而不是曲线？因为平衡方程
+        </p>
+        \[
+          N \log x \;=\; \log k, \qquad L\,x \;=\; q
+        \]
+        <p>
+          虽然对浓度是非线性的，但在渐近极限下是 <em>分片 log-线性</em> 的。
+          只要每个总量都被某一项主导，每个物种浓度就坍缩为基本物种自由浓度的单项式，
+          输出便成为 log-参数的线性函数。多面体就是描绘
+          &ldquo;哪一项在哪里取胜&rdquo; 的地图。曲线只描述一组参数；多面体一次性
+          描述整个参数空间，并将其划分为 regime。
+        </p>
+
+        <figure class="wiki-figure">
+          <img src="media/rop-polyhedron-poster.jpg" alt="一张带顶点标注的 3D 反应级数多面体。">
+          <figcaption>
+            <span class="fig-label">图 1.</span>
+            工作台中渲染的反应级数多面体。每个顶点是一个完整的主导 regime；每个面
+            是一次 regime 过渡。
+          </figcaption>
+        </figure>
+      </section>
+
+      <section id="sec-2-2">
+        <h3><span class="sec-num">2.2</span>为什么是主导分析、为什么用 log-log？</h3>
+        <p>
+          化学平衡下，所有物种浓度由质量作用与守恒共同决定。每个守恒总量都是基本
+          物种自由浓度的单项式之和：
+        </p>
+        \[
+          q_{i} \;=\; \sum_{j \,:\, L_{ij} > 0} L_{ij}\, x_{j}.
+        \]
+        <p>
+          以最简单的 \( A + B \rightleftharpoons AB \) 为例，其平衡常数
+          \( K = [AB] / ([A]\,[B]) \)，\(A\) 的总量就是关于自由浓度 \([A]\) 与
+          \([B]\) 的两项单项式之和：
+        </p>
+        \[
+          q_{A} \;=\; [A] + [AB] \;=\; [A] + K\,[A]\,[B].
+        \]
+        <p>
+          ROP 的核心观察是：<strong>在大多数参数组合下，这些单项式中只有一个会
+          远大于其它项</strong>。在 log-浓度空间任取一个一般位置，每一个和式中都
+          只有一项胜出；当你改动参数，会越过若干薄薄的边界，&ldquo;胜出项&rdquo;
+          会切换。在每一个 regime 内部，浓度之间的关系都是纯粹的幂律。
+        </p>
+        <p>
+          换到 log-log 坐标后，图像变得很干净。若输出 \(y\) 与输入 \(u\) 在某个
+          regime 下满足 \( y \asymp C\,u^{\rho} \)，则
+          \( \log y = \rho \log u + \mathrm{const.} \)。这里的斜率就是
+          <strong>反应级数</strong>：
+        </p>
+        \[
+          \rho \;=\; \frac{\partial \log y}{\partial \log u}.
+        \]
+        <p>
+          有两个关键事实：
+        </p>
+        <ol>
+          <li>
+            在一个 regime 内，\( \rho \) 是 <em>整数</em>（或来自化学计量的简单
+            有理数），因为占主导的单项式就是整数幂次的乘积。
+          </li>
+          <li>
+            沿一维输入扫描，响应在 log-log 下是 <em>分段线性</em>：一串带整数斜率
+            的直线段，在某个单项式被另一个反超的 <em>转折点</em> 处相接。
+          </li>
+        </ol>
+        <p>
+          于是回路的整个定性行为就被一个有限的反应级数符号程序所捕获：
+        </p>
+        \[
+          b \;=\; (\rho_{1}, \rho_{2}, \ldots, \rho_{L}),
+          \quad\text{例如}\quad 0 \to -1 \to +1 \to 0 \to -2.
+        \]
+        <p>
+          每一项是一段斜率；每次切换对应多面体上的一个转折点。对多输入/多输出切片，
+          与之对应的对象是一串增益矩阵
+          \( G_{\ell} = \partial \log y / \partial \log u \)。
+        </p>
+      </section>
+
+      <section id="sec-2-3">
+        <h3><span class="sec-num">2.3</span>多面体上的几何对象</h3>
+        <p>
+          Biocircuits Explorer 使用 ROP 论文中确立的术语体系。下面每一个对象都是
+          应用可以计算或在画布上绘制的东西。
+        </p>
+        <dl>
+          <dt>反应级数矩阵 (reaction-order matrix)</dt>
+          <dd>
+            \(\log x\) 对 \(\log(q, k)\) 的雅可比矩阵，其元素正是局部的反应级数。
+            顶点、面以及多面体本身都围绕该矩阵如何变化而组织。
+          </dd>
+
+          <dt>指派 (assignment)</dt>
+          <dd>
+            为每个守恒总量选定一个&ldquo;占主导&rdquo;的物种：在守恒池 \(i\) 中，
+            物种 \(j\) 拥有（几乎）全部质量。
+          </dd>
+
+          <dt>指派多胞形 &nbsp;\(\mathrm{AssignP}(L)\)</dt>
+          <dd>
+            所有合法指派的凸包 —— 一个粗糙的外包络，是每个守恒总量对应单纯形的
+            笛卡尔积。
+          </dd>
+
+          <dt>主导 regime (dominance regime)</dt>
+          <dd>
+            可以被某个 \( x \in \mathbb{R}^{n}_{>0} \) 真正实现的指派。某些指派
+            是&ldquo;虚的&rdquo;；只有真正可实现的才是真实 regime。
+          </dd>
+
+          <dt>主导多胞形 &nbsp;\(\mathrm{DomP}(L)\)</dt>
+          <dd>
+            主导 regime 的凸包。这是主导模式
+            \( A(x) = \Lambda_{Lx}^{-1} L\, \Lambda_{x} \) 紧致的多面体外包络，
+            其每一个顶点都是可达的 regime。
+          </dd>
+
+          <dt>顶点 · 面 · 棱</dt>
+          <dd>
+            顶点 = 完整的渐近 regime（每个总量只有唯一胜者）；面 = 多个物种打平的
+            部分 regime；棱 = 某次打平被打破的单步过渡。沿多面体游走，就是真实回路
+            在参数变化时所经历的 regime 序列。
+          </dd>
+
+          <dt>支撑集 (support)</dt>
+          <dd>
+            在给定 regime 下幸存下来的单项式集合。支撑集随顶点变化。
+          </dd>
+
+          <dt>输入/输出投影</dt>
+          <dd>
+            选定一个被扫描的输入 \(u\) 和一个输出 \(y\)，等价于把多面体投影到
+            \((\log u, \log y)\) 平面，得到的像就是 SISO regime 结构。
+          </dd>
+
+          <dt>SISO 路径</dt>
+          <dd>
+            当被扫描输入从 \(0\) 扫到 \(\infty\) 时，系统所经过的顶点序列。
+            反应级数程序 \( b = (\rho_{1}, \ldots, \rho_{L}) \) 就是沿该路径读到
+            的一串斜率。
+          </dd>
+
+          <dt>渐近 vs. 奇异 regime</dt>
+          <dd>
+            在顶点内 \( \rho \) 是有限整数。在某些面上它可能是无穷或未定义
+            （log-log 下的竖直跳跃）。应用会保留这一区分 —— 奇异 token
+            \(\pm \infty\) 与 <code>NaN</code> 不会被并入有限的反应级数。
+          </dd>
+
+          <dt>能力周期表 (capability periodic table)</dt>
+          <dd>
+            一个由 \((d, \mu)\)（基本物种数与最大复合物大小）构成的二维索引，每个
+            格子是一整个设计空间。格子并不是简单的&ldquo;能 / 不能&rdquo;，而是带一个
+            <em>能力包络</em>：可实现的机制类、强度极值、鲁棒性极值、最小见证网络
+            以及不可达证明。
+          </dd>
+
+          <dt>符号字 (sign word)</dt>
+          <dd>
+            对 \(\{-, 0, +\}\) 三态做行程长度压缩得到的程序。零态是真实状态
+            （饱和、不变），永远不会被压缩消除。机制类别包括：从零激活
+            \(0 \to +\)、回到零 \(+ \to 0\)、直接反转 \(+ \to -\)、零中介反转
+            \(+ \to 0 \to -\) 等。
+          </dd>
+        </dl>
+      </section>
+
+      <section id="sec-2-4">
+        <h3><span class="sec-num">2.4</span>多面体能告诉你关于回路的什么？</h3>
+        <p>
+          多面体一旦建好、SISO（或 MIMO）投影一旦选定，下面几样实用对象就自然
+          浮现出来：
+        </p>
+        <ul>
+          <li>
+            <strong>响应级数。</strong> SISO 路径上的斜率 \(\rho_{\ell}\) 就是局部
+            的 Hill 型指数。\(\rho \approx 0\) 是饱和；\(\rho \approx 1\) 是线性；
+            \(\rho > \mu\) 则相对最大复合物尺寸而言是 <em>超敏感</em>。
+          </li>
+          <li>
+            <strong>敏感区 vs. 饱和区。</strong> 多面体直接告诉你它们在
+            log-参数空间中的位置，无需任何数值扫描。
+          </li>
+          <li>
+            <strong>切换轨迹 / 转折点。</strong> 多面体的面投影到输入轴上，给出
+            定性行为发生切换时的输入值。一个边界在 log 空间下是仿射的：
+            \[
+              a_{u}\,\log u + a_{q}^{\top}\!\log q + a_{K}^{\top}\!\log K + c = 0,
+            \]
+            因此转折点位于
+            \[
+              \log u^{\ast} \;=\;
+              -\,\frac{a_{q}^{\top}\!\log q + a_{K}^{\top}\!\log K + c}{a_{u}}.
+            \]
+            切换是被结合常数主导、被守恒总量主导，还是混合控制，都是一种内置的
+            机制分类。
+          </li>
+          <li>
+            <strong>上界可达性。</strong> 守恒给出
+            \( x_{a} \le U_{a}(q) = \min_{\,i:\,a_{i}>0}\, q_{i}/a_{i} \)。
+            输出对应的顶点是否恰好坐在这个上界上，就回答了&ldquo;回路是否能被驱动到
+            化学计量上限&rdquo;。
+          </li>
+          <li>
+            <strong>鲁棒区域。</strong> 一个程序可以&ldquo;强但脆弱&rdquo;、
+            &ldquo;弱但鲁棒&rdquo;，也可以&ldquo;强且鲁棒&rdquo;。多面体正是用来
+            计算体积分数鲁棒性指标（R-index）的几何对象。
+          </li>
+          <li>
+            <strong>可达行为族。</strong> 不同机制可能产生同一个 regime 图与符号字；
+            周期表将它们归入若干机制类（激活、抑制、回到零、零中介反转、多回合程序、
+            MIMO 秩扩展等）。Atlas 工作流就是在这个行为族空间里检索。
+          </li>
+        </ul>
+      </section>
+
+      <section id="sec-2-5">
+        <h3><span class="sec-num">2.5</span>一个直观例子：\(A + B \rightleftharpoons AB\)</h3>
+        <p>
+          取最简单的非平凡结合网络，其平衡常数与守恒律为
+        </p>
+        \[
+          K \;=\; \frac{[AB]}{[A]\,[B]},
+          \qquad
+          q_{A} = [A] + [AB], \qquad
+          q_{B} = [B] + [AB].
+        \]
+        <p>
+          以 \(q_{A}\) 作为被扫描的输入 \(u\)，固定 \(q_{B}\)，取 \(y = [AB]\)
+          为输出。守恒矩阵为
+        </p>
+        \[
+          L \;=\;
+          \begin{bmatrix} 1 & 0 & 1 \\ 0 & 1 & 1 \end{bmatrix},
+        \]
+        <p>
+          因此主导模式矩阵 \(A(x)\) 的每一行都是一维单纯形：\(q_{A}\) 那一行的质量
+          在 \(A\) 与 \(AB\) 之间分配，\(q_{B}\) 那一行在 \(B\) 与 \(AB\) 之间。
+          四个指派恰好是结果方形的四个角；本网络中四个指派全部可实现，所以主导
+          多胞形 <em>就是</em> 这个正方形。其四个顶点的含义如下：
+        </p>
+        <ul>
+          <li>
+            \((A, B)\)：两种物种基本都游离。
+            \([AB] \approx K\,q_{A}\,q_{B}\)，故 \(\rho = 1\)。
+          </li>
+          <li>
+            \((AB, B)\)：\(A\) 基本被结合，\(B\) 基本游离。
+            \([AB] \approx q_{A}\)，仍是 \(\rho = 1\)，但输出已抵达 \(A\) 的上限。
+          </li>
+          <li>
+            \((A, AB)\)：\(B\) 基本被结合，\(A\) 基本游离。
+            \([AB] \approx q_{B}\)，对 \(u\) 而言是常数，\(\rho = 0\) —— 饱和。
+          </li>
+          <li>
+            \((AB, AB)\)：两个总量都坍缩到同一个复合物上；限制性物种在 \(A\) 与
+            \(B\) 之间切换。
+          </li>
+        </ul>
+        <p>
+          当 \(u = q_{A}\) 不断增大时，一次典型的 SISO 扫描会走过
+          \( (A,B) \to (AB,B) \to (A,AB) \)，读出反应级数程序
+        </p>
+        \[
+          \rho \,:\, 1 \to 1 \to 0,
+        \]
+        <p>
+          经行程长度符号压缩后得到一个干净的&ldquo;回归到零&rdquo;响应
+          \( S(b) \,:\, + \to 0 \)。正方形的每个顶点都是一个 regime，每条棱都是
+          一个转折点，整个正方形就是这个回路的主导多胞形。增大 \(\mu\) 或 \(d\)
+          （转到二聚体或三物种网络），这个正方形会膨胀为顶点结构更丰富的高维多面体
+          —— 这正是能力周期表所要刻画的设计空间。
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §3 ============ -->
+    <section id="sec-3">
+      <h2><span class="sec-num">3</span>一分钟上手画布</h2>
+
+      <section id="sec-3-1">
+        <h3><span class="sec-num">3.1</span>节点、端口、连线</h3>
+        <p>
+          Web 版在
+          <a href="/index-node.html">空白画布</a>
+          中打开。你通过放置 <em>节点</em> 并连接它们的 <em>端口</em> 来搭建一次分析：
+        </p>
+        <ul>
+          <li>
+            <strong>添加节点。</strong> 点击工具栏的 <em>Add Node</em>，在分类菜单
+            （Utilities、Input、Parameters、Process、Results）中选择。
+          </li>
+          <li>
+            <strong>连接端口。</strong> 每个节点左侧是带类型的输入端口，右侧是
+            输出端口。从输出拖到匹配的输入即可。
+          </li>
+          <li>
+            <strong>运行。</strong> 大多数节点都有 <em>Run</em> 按钮。工具栏的
+            <em>Run Connected</em> 会按依赖顺序执行整个连通子图；
+            <em>Cloud Compute</em> 把重计算下发到远端后端。
+          </li>
+          <li>
+            <strong>保存。</strong> <em>Save Workspace</em> 把整张画布（节点、参数、
+            连线）导出为可移植的 JSON。
+          </li>
+        </ul>
+      </section>
+
+      <section id="sec-3-2">
+        <h3><span class="sec-num">3.2</span>节点家族</h3>
+        <p>
+          反复出现的就是这五类：
+        </p>
+        <dl>
+          <dt>Input（输入）</dt>
+          <dd>
+            <code>reaction-network</code> 用于手工输入反应；
+            <code>network-id-definition</code> 用于加载压缩后的网络 ID。
+          </dd>
+          <dt>Process（处理）</dt>
+          <dd>
+            <code>model-builder</code> 把反应转成符号模型（\(N\)、\(L\)、会话 ID）。
+            <code>atlas-builder</code> 根据 atlas 规格构建一个网络库。
+          </dd>
+          <dt>Parameters（参数）</dt>
+          <dd>
+            <code>siso-params</code>、<code>scan-1d-params</code>、
+            <code>scan-2d-params</code>、<code>rop-cloud-params</code>、
+            <code>rop-poly-params</code>、<code>fret-params</code>、
+            <code>atlas-spec</code>、<code>atlas-query-config</code>。
+          </dd>
+          <dt>Results（结果）</dt>
+          <dd>
+            <code>model-summary</code>、<code>vertices-table</code>、
+            <code>regime-graph</code>、<code>siso-result</code>、
+            <code>qk-poly-result</code>、<code>scan-1d-result</code>、
+            <code>scan-2d-result</code>、<code>rop-cloud-result</code>、
+            <code>rop-poly-result</code>、<code>fret-result</code>、
+            <code>atlas-query-result</code>、<code>atlas-inverse-result</code>。
+          </dd>
+          <dt>Utilities（工具）</dt>
+          <dd>
+            <code>markdown-note</code> 用于在工作区中保留自由格式的笔记。
+          </dd>
+        </dl>
+      </section>
+    </section>
+
+    <!-- ============ §4 ============ -->
+    <section id="sec-4">
+      <h2><span class="sec-num">4</span>操作流程 — 一步一步怎么做</h2>
+      <p>
+        下面每条流程都是自包含的工作流。开头那条 &ldquo;flow line&rdquo;
+        就是你需要在画布上搭建的连线示意。
+      </p>
+
+      <section id="sec-4-1">
+        <h3><span class="sec-num">4.1</span>建立模型并查看 regime</h3>
+        <p>
+          这是所有其它流程的前置步骤。
+        </p>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">model-summary</span>
+          <span class="arrow">+</span>
+          <span class="node">vertices-table</span>
+          <span class="arrow">+</span>
+          <span class="node">regime-graph</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>录入反应</h4>
+            <p>
+              添加一个 <code>reaction-network</code> 节点。逐行输入反应，例如
+              <code>E + S &lt;-&gt; C_ES</code>，并填一个解离常数
+              <code>Kd</code>。需要多少行就加多少行。
+            </p>
+          </li>
+          <li>
+            <h4>构建模型</h4>
+            <p>
+              把 <code>reaction-network</code> 连到 <code>model-builder</code>，
+              点 <em>Run</em>。builder 会固定下物种、复合物、总量与常数的符号顺序，
+              并返回一个供下游节点复用的会话 ID。
+            </p>
+          </li>
+          <li>
+            <h4>查看模型</h4>
+            <p>
+              把 <code>model-builder</code> 连到 <code>model-summary</code>，
+              即可看到 \(n\)、\(d\)、\(r\)、物种列表、总量、结合常数符号，以及矩阵
+              \(N\) 与 \(L\)。
+            </p>
+          </li>
+          <li>
+            <h4>列出顶点</h4>
+            <p>
+              再连一个 <code>vertices-table</code>。每一行是多面体的一个顶点：
+              它的物种排列、类型（渐近 / 非渐近）、奇异 / 可逆状态、零空间维数。
+            </p>
+          </li>
+          <li>
+            <h4>查看 regime 图</h4>
+            <p>
+              添加 <code>regime-graph</code>。下拉框可在
+              <em>qK-neighbor</em>（参数单步过渡相连的 regime）与 <em>SISO</em>
+              两种模式之间切换。
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-note">
+          <p class="callout-head">如何读这些输出</p>
+          <p>
+            顶点表是多面体的离散索引；regime 图是它的一维骨架。两者结合就告诉你
+            当前网络的定性行为有多丰富 —— 甚至在你还没选定任何具体数字之前。
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-4-2">
+        <h3><span class="sec-num">4.2</span>追踪一条 SISO 行为路径</h3>
+        <p>
+          当你想知道&ldquo;回路对某一特定输入的响应长什么样&rdquo;时用它。
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">siso-params</span>
+          <span class="arrow">→</span>
+          <span class="node">siso-result</span>
+          <span class="arrow">→</span>
+          <span class="node">qk-poly-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>选输入、输出、扫描范围</h4>
+            <p>
+              在 <code>siso-params</code> 中选择 \(qK\) 变量（被扫描输入）、
+              目标物种 \(x\)（输出）、路径范围（<em>feasible</em>、<em>robust</em>
+              或 <em>all</em>）、最小体积分数与 log\(_{10}\) 扫描边界。
+            </p>
+          </li>
+          <li>
+            <h4>枚举行为族</h4>
+            <p>
+              运行 <code>siso-result</code>。节点返回按排序的 SISO 路径列表 ——
+              每条路径就是一个反应级数程序
+              \( b = (\rho_{1}, \ldots, \rho_{L}) \)，附带可行体积。
+            </p>
+          </li>
+          <li>
+            <h4>可视化所选路径</h4>
+            <p>
+              点列表中的一条路径，连到 <code>qk-poly-result</code> 上，即可看到
+              在 \(qK\)-空间中该路径所对应的投影多面体。
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-tip">
+          <p class="callout-head">读懂斜率</p>
+          <p>
+            SISO 路径上的整数序列就是每一步的局部 log-log 斜率。看到
+            <code>0 → 1 → 0</code> 就是&ldquo;干净的激活并饱和&rdquo;；
+            <code>1 → 0 → −1</code> 是&ldquo;有峰的非单调响应&rdquo;。仅取符号
+            并做行程长度压缩，就得到周期表所索引的&ldquo;符号字&rdquo;。
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-4-3">
+        <h3><span class="sec-num">4.3</span>运行参数扫描</h3>
+        <p>
+          想要数值响应曲线（而不仅是符号路径）时使用。
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">scan-1d-params</span>
+          <span class="arrow">→</span>
+          <span class="node">scan-1d-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>选参数与范围</h4>
+            <p>
+              在 <code>scan-1d-params</code> 中选 \(qK\) 变量、log 区间与点数，
+              填入输出表达式 —— 例如 <code>2*C_ES + E</code>。
+            </p>
+          </li>
+          <li>
+            <h4>运行并读取</h4>
+            <p>
+              <code>scan-1d-result</code> 绘制输出表达式相对扫描变量的曲线，
+              十字光标与数值读数可以馈送到下游节点。
+            </p>
+          </li>
+          <li>
+            <h4>需要时换 2D</h4>
+            <p>
+              改用 <code>scan-2d-params</code> /
+              <code>scan-2d-result</code>，即可同时横扫两个参数得到热图。
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="sec-4-4">
+        <h3><span class="sec-num">4.4</span>可视化 ROP 多面体与点云</h3>
+        <p>
+          多面体本身是一个节点；在参数空间中采样得到的点云是另一个。两者结合
+          可以帮你发现鲁棒区域。
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-poly-params</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-poly-result</span>
+        </div>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-cloud-params</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-cloud-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>配置多面体视图</h4>
+            <p>
+              在 <code>rop-poly-params</code> 中选 2D 或 3D，并为每条坐标轴配上
+              一对（物种 \(x\)，\(qK\) 参数）。内部样本数控制内部如何填充。
+            </p>
+          </li>
+          <li>
+            <h4>采样点云</h4>
+            <p>
+              <code>rop-cloud-params</code> 选采样模式（<em>x-space</em> 或
+              <em>qK-based</em>）、采样数、目标物种以及 log 范围。结果节点把点云
+              叠加在多面体上绘制。
+            </p>
+          </li>
+          <li>
+            <h4>寻找致密区域</h4>
+            <p>
+              周围点云稠密的顶点对应鲁棒 regime —— 在很大一部分合理参数组合下，
+              回路都会落到这里。点云稀疏的顶点则是脆弱 regime。
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="sec-4-5">
+        <h3><span class="sec-num">4.5</span>Atlas 检索与逆向设计</h3>
+        <p>
+          Atlas 工作流走的是反方向：给定你想要的行为，去寻找能实现它的网络。
+        </p>
+        <div class="flow-line">
+          <span class="node">atlas-spec</span>
+          <span class="arrow">→</span>
+          <span class="node">atlas-builder</span>
+          <span class="arrow">+</span>
+          <span class="node">atlas-query-config</span>
+          <span class="arrow">→</span>
+          <span class="node">atlas-query-result</span>
+          <span class="arrow">/</span>
+          <span class="node">atlas-inverse-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>指定搜索空间</h4>
+            <p>
+              <code>atlas-spec</code> 有四个标签页：<em>Basic</em>（来源标签、
+              SQLite 路径、profile）、<em>Behavior</em>（路径范围、最小体积）、
+              <em>Enumeration</em>（成对结合、反应数）以及 <em>Explicit</em>（显式
+              JSON 网络列表）。
+            </p>
+          </li>
+          <li>
+            <h4>预览库</h4>
+            <p>
+              连接到 <code>atlas-builder</code>，点 <em>Build Preview</em>
+              —— 这只会生成 atlas 的一个切片，便于你在投入完整构建前先校验规格。
+            </p>
+          </li>
+          <li>
+            <h4>定义设计目标</h4>
+            <p>
+              <code>atlas-query-config</code> 让你陈述目标：一对 I/O（例如
+              <code>tA -&gt; AB</code>）、一个 motif 标签、精确行为、见证路径或
+              禁止 regime。选择排序策略 —— <em>minimal_first</em> 或
+              <em>robustness_first</em>。
+            </p>
+          </li>
+          <li>
+            <h4>正向或逆向</h4>
+            <p>
+              <code>atlas-query-result</code> 返回排序后的匹配列表；
+              <code>atlas-inverse-result</code> 进一步在&ldquo;构建 + 查询&rdquo;
+              循环中加入反例细化，并返回带证据的候选网络。
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-warning">
+          <p class="callout-head">注意</p>
+          <p>
+            画布上的 builder 适合做预览和小型临时 atlas。如需大规模库构建，请使用
+            <code>webapp/build_atlas.jl</code> 等 CLI 脚本，然后让查询节点指向
+            生成的 SQLite 文件。
+          </p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ §5 ============ -->
+    <section id="sec-5">
+      <h2><span class="sec-num">5</span>它能解决什么 — 设计应用</h2>
+      <p>
+        ROP 分析在以下三类情形中尤其有用：
+      </p>
+      <ol>
+        <li>
+          <strong>不靠曲线拟合直接读出 Hill 型指数。</strong> SISO 路径上的
+          整数斜率就是局部响应级数，在你选定任何常数之前就已确定。只需检查是否存在
+          某个 regime 满足 \( \rho &gt; \mu \)，就能判断超敏感响应是否可能实现。
+        </li>
+        <li>
+          <strong>寻找鲁棒工作区。</strong> 每个顶点上的点云密度就是它的鲁棒性
+          打分：被大量参数样本访问的顶点，在各种细胞环境下都会被回路落入。
+        </li>
+        <li>
+          <strong>逆向设计。</strong> 给定一个目标信号处理行为（一段符号字、
+          一定的峰高、一个鲁棒的&ldquo;回到零&rdquo;响应），atlas 工具会枚举出
+          能实现它的结合网络，并按最简性或鲁棒性排序。
+        </li>
+      </ol>
+      <p>
+        还有一个不那么显然但同样实用的角度：ROP 分析能干净地解释 <em>为什么</em>
+        某个回路做不到某件事。如果你的目标响应不在你所检索的周期表格子
+        \((d, \mu)\) 中任何一个网络的多面体里，那么这种失败是<em>结构性</em>的，
+        不是数值问题 —— 没有任何结合常数取值能挽救它。应用会显式给出这类证书。
+      </p>
+
+      <figure class="wiki-figure">
+        <img src="media/results-showcase-poster.png" alt="一张工作区，同时展示 SISO 结果、多面体与参数扫描。">
+        <figcaption>
+          <span class="fig-label">图 2.</span>
+          一次典型的工作台会话：regime 图、SISO 路径枚举与参数扫描都接在同一个
+          模型上。
+        </figcaption>
+      </figure>
+    </section>
+
+    <!-- ============ §6 ============ -->
+    <section id="sec-6">
+      <h2><span class="sec-num">6</span>如何读输出</h2>
+      <p>
+        一次好的 ROP 分析不只是几张图。应用实际暴露的是多层证据：符号模型、有限个
+        regime、邻接结构、渐近响应级数，以及有限参数下的数值检查。本节给出一个
+        实用的阅读顺序。
+      </p>
+
+      <section id="sec-6-1">
+        <h3><span class="sec-num">6.1</span>Regime 表检查清单</h3>
+        <p>
+          先看 <code>model-summary</code> 与 <code>vertices-table</code>。它们回答：
+          你画的网络是否真的变成了你想分析的网络。
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>输出字段</th>
+                <th>含义</th>
+                <th>该检查什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>species</code>、<code>x_sym</code></td>
+                <td>后端采用的物种顺序。</td>
+                <td>确认 <code>AAB</code>、<code>C_ES</code> 等复合物命名前后一致。</td>
+              </tr>
+              <tr>
+                <td><code>q_sym</code>、<code>K_sym</code></td>
+                <td>构成 \(qK\) 坐标系的守恒总量与结合常数。</td>
+                <td>SISO 节点只能直接扫描这些变量。</td>
+              </tr>
+              <tr>
+                <td><code>N</code></td>
+                <td>反应约束的化学计量矩阵。</td>
+                <td>意外的秩或行数，通常说明反应列表有问题。</td>
+              </tr>
+              <tr>
+                <td><code>L</code></td>
+                <td>守恒律矩阵。</td>
+                <td>每一行都应该能对应一个你能解释的守恒池。</td>
+              </tr>
+              <tr>
+                <td>顶点类型</td>
+                <td>regime 是否渐近、奇异、可逆或退化。</td>
+                <td>有限响应级数来自规则的渐近顶点；奇异项需要单独解释。</td>
+              </tr>
+              <tr>
+                <td>Nullity</td>
+                <td>激活约束施加后还剩下的局部自由度。</td>
+                <td>高 nullity 往往意味着 regime 不只是一个孤立角点，而位于更大的面上。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          如果模型摘要已经不对，就先别继续跑 SISO。先修反应列表；为错误守恒池画出
+          再漂亮的多面体，也仍然是错误答案。
+        </p>
+      </section>
+
+      <section id="sec-6-2">
+        <h3><span class="sec-num">6.2</span>SISO 判读清单</h3>
+        <p>
+          SISO 结果至少要分三层读：完整斜率程序、压缩后的符号行为，以及支撑该行为的
+          几何证据。
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>模式</th>
+                <th>解释</th>
+                <th>设计问题</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>0 → +</code></td>
+                <td>从平坦基线开始激活。</td>
+                <td>输出是否只在输入越过边界后才打开？</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0</code></td>
+                <td>响应逐渐饱和。</td>
+                <td>输出上限是由守恒总量还是结合常数决定的？</td>
+              </tr>
+              <tr>
+                <td><code>+ → -</code></td>
+                <td>直接反转：输入继续增加反而压低输出。</td>
+                <td>反转时是哪一个复合物夺走了限制性物种？</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0 → -</code></td>
+                <td>带平台的零中介反转。</td>
+                <td>这个平台是否足够鲁棒，能作为工作窗口？</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0 → +</code></td>
+                <td>中间经过饱和的两阶段激活。</td>
+                <td>是否存在两个独立结合阈值？</td>
+              </tr>
+              <tr>
+                <td><code>NaN</code> 或 <code>±∞</code></td>
+                <td>投影坐标下出现奇异或竖直响应。</td>
+                <td>这是有意义的跃迁，还是该 regime 下输出本身消失了？</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          符号字只是摘要，不是全部信息。两条路径可以有同一个符号字，但强度、顶点序列、
+          切换控制因素和鲁棒性都不同。在把两个行为视为等价之前，请同时看完整斜率列表
+          与投影多面体。
+        </p>
+      </section>
+
+      <section id="sec-6-3">
+        <h3><span class="sec-num">6.3</span>数值扫描与渐近分析</h3>
+        <p>
+          ROP 多面体是渐近对象：它预测哪些单项式在宽阔的 log-参数区域中占主导。
+          参数扫描是有限数值计算。二者在大尺度形状上应当相互印证，但回答的问题不同。
+        </p>
+        <ul>
+          <li>
+            用 <strong>SISO 路径</strong> 判断哪些定性行为在结构上可能。
+          </li>
+          <li>
+            用 <strong>参数扫描</strong> 检查你实际想用的有限常数取值。
+          </li>
+          <li>
+            用 <strong>ROP 点云</strong> 估计哪些 regime 占据较大的参数体积。
+          </li>
+          <li>
+            当当前网络不能实现目标行为时，用 <strong>atlas 检索</strong> 寻找候选替代网络。
+          </li>
+        </ul>
+        <div class="callout callout-note">
+          <p class="callout-head">一个好用的节奏</p>
+          <p>
+            先建模、读顶点、选输入输出、枚举 SISO 路径、查看投影多面体，然后在相同坐标下
+            做数值扫描。若二者不一致，这种不一致本身就是信息：通常意味着有限尺度效应、
+            很窄的切换区，或输出表达式与渐近坐标不完全对齐。
+          </p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ §7 ============ -->
+    <section id="sec-7">
+      <h2><span class="sec-num">7</span>节点参考</h2>
+      <p>
+        画布是一个数据流系统。理解一个节点，关键是知道它消耗什么、产生什么，以及通常
+        对应哪个后端接口。
+      </p>
+
+      <div class="reference-grid">
+        <div class="reference-card">
+          <h4>模型构建</h4>
+          <p>
+            <code>reaction-network</code> 保存反应与解离常数。
+            <code>model-builder</code> 调用 <code>/api/build_model</code>，并输出供
+            多数下游节点复用的会话。
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Regime 结构</h4>
+          <p>
+            <code>model-summary</code>、<code>vertices-table</code> 与
+            <code>regime-graph</code> 通过 <code>/api/find_vertices</code> 和
+            <code>/api/build_graph</code> 暴露符号模型、顶点与邻接图。
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>SISO 分析</h4>
+          <p>
+            <code>siso-params</code> 定义 \(qK\) 坐标与输出。
+            <code>siso-result</code> 调用 <code>/api/siso_paths</code> 等接口；
+            <code>qk-poly-result</code> 渲染所选路径的几何。
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>扫描与曲面</h4>
+          <p>
+            <code>scan-1d-result</code>、<code>scan-2d-result</code>、
+            <code>fret-result</code>、<code>rop-cloud-result</code> 与
+            <code>rop-poly-result</code> 将一个会话转成数值曲线、热图、采样点云和
+            多面体投影。
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Atlas 工作流</h4>
+          <p>
+            <code>atlas-spec</code>、<code>atlas-builder</code>、
+            <code>atlas-query-config</code>、<code>atlas-query-result</code> 和
+            <code>atlas-inverse-result</code> 覆盖构建、查询与逆向设计。
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>工作区笔记</h4>
+          <p>
+            <code>markdown-note</code> 不依赖后端。它用于让保存下来的工作区携带假设、
+            候选机制，或记录为什么接受 / 排除某条路径。
+          </p>
+        </div>
+      </div>
+
+      <h3><span class="sec-num">7.1</span>常见连线模式</h3>
+      <div class="wiki-table-wrap">
+        <table class="wiki-table">
+          <thead>
+            <tr>
+              <th>问题</th>
+              <th>最小节点链</th>
+              <th>典型下一步</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>反应列表解析对了吗？</td>
+              <td><code>reaction-network → model-builder → model-summary</code></td>
+              <td>摘要无误后再加 <code>vertices-table</code>。</td>
+            </tr>
+            <tr>
+              <td>有哪些 regime？</td>
+              <td><code>model-builder → vertices-table</code></td>
+              <td>添加 <code>regime-graph</code> 查看过渡。</td>
+            </tr>
+            <tr>
+              <td>一个输入如何影响一个输出？</td>
+              <td><code>model-builder → siso-params → siso-result</code></td>
+              <td>选中一条路径，用 <code>qk-poly-result</code> 查看。</td>
+            </tr>
+            <tr>
+              <td>某组有限参数会给出什么曲线？</td>
+              <td><code>model-builder → scan-1d-params → scan-1d-result</code></td>
+              <td>把曲线与 SISO 斜率程序对照。</td>
+            </tr>
+            <tr>
+              <td>哪个网络能实现目标行为？</td>
+              <td><code>atlas-spec → atlas-query-config → atlas-query-result</code></td>
+              <td>使用 <code>atlas-inverse-result</code> 做构建 + 查询细化。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ §8 ============ -->
+    <section id="sec-8">
+      <h2><span class="sec-num">8</span>Atlas 与逆向设计</h2>
+      <p>
+        Atlas 层把大量单个 ROP 分析组织成可检索的设计库。到这里，项目就不再只是
+        单模型工作台，而变成了一张能力空间地图。
+      </p>
+
+      <h3><span class="sec-num">8.1</span>四个 atlas 对象</h3>
+      <dl>
+        <dt>Atlas spec</dt>
+        <dd>
+          描述要分析什么：显式网络、枚举搜索空间、行为配置、来源标签，以及可选的
+          SQLite 持久化设置。
+        </dd>
+        <dt>Atlas</dt>
+        <dd>
+          单次构建结果，通常包含 network entries、behavior slices 与 family buckets。
+        </dd>
+        <dt>Atlas library</dt>
+        <dd>
+          由一个或多个 atlas 构建结果聚合成的稳定库对象，适合版本化和反复查询。
+        </dd>
+        <dt>Atlas SQLite</dt>
+        <dd>
+          面向大型或增量库的持久化形式。查询节点与 CLI 脚本都可以直接读取。
+        </dd>
+      </dl>
+
+      <h3><span class="sec-num">8.2</span>如何表述查询</h3>
+      <p>
+        好的 atlas 查询会同时说明行为与证据。先从输入 / 输出对开始，再只添加真正重要的
+        约束。
+      </p>
+      <ul>
+        <li>
+          <strong>Motif 查询</strong> 查找激活、抑制、反转、回到零等宽泛机制类。
+        </li>
+        <li>
+          <strong>精确行为查询</strong> 要求一串具体斜率或符号字。
+        </li>
+        <li>
+          <strong>见证查询</strong> 不只匹配摘要标签，还要求一条具体顶点路径。
+        </li>
+        <li>
+          <strong>禁止 regime 查询</strong> 排除会经过不想要中间状态的回路。
+        </li>
+        <li>
+          <strong>鲁棒性查询</strong> 按体积分数过滤或排序，而不是只问是否存在。
+        </li>
+      </ul>
+
+      <h3><span class="sec-num">8.3</span>逆向设计返回什么</h3>
+      <p>
+        逆向设计不是简单地&ldquo;更用力搜索&rdquo;，而是把构建、查询、反例知识与候选
+        细化组合在一起。一个有用结果应当说明：
+      </p>
+      <ul>
+        <li>哪些网络匹配；</li>
+        <li>目标类型是什么（motif、精确行为、见证路径或 support）；</li>
+        <li>是否执行了新的 atlas 构建或合并；</li>
+        <li>哪些候选被拒绝，以及原因是什么；</li>
+        <li>匹配是结构上精确，还是只是软 support 匹配。</li>
+      </ul>
+      <p>
+        一次失败的逆向设计也可能很有价值。如果整个 \((d,\mu)\) 格子都无法通过精确
+        support screen，那么这就是证据：目标行为可能需要更多基本物种、更大的复合物，
+        或者不同的建模假设。
+      </p>
+
+      <h3><span class="sec-num">8.4</span>画布还是 CLI？</h3>
+      <p>
+        在塑造问题时使用画布；当问题已经稳定、运行规模变大时使用 CLI。
+      </p>
+      <pre><code>julia --project=webapp webapp/build_atlas.jl spec.json atlas.json
+julia --project=webapp webapp/query_atlas.jl atlas.json query.json result.json
+julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.json</code></pre>
+      <p>
+        如果你希望跨很多会话复用同一个库，或长期合并增量构建，SQLite 路线是更合适的选择。
+      </p>
+    </section>
+
+    <!-- ============ §9 ============ -->
+    <section id="sec-9">
+      <h2><span class="sec-num">9</span>AI Import — 把论文变成模型</h2>
+      <p>
+        逐行抄写论文里的反应、再去查表找每一个 Kd，是慢的那条路。红色 Input 家族里的
+        <code>ai-import</code> 节点替你跑这一步：它读你提供的素材，让大语言模型把素材
+        里描述的<em>每一个</em>不同的平衡结合网络抽取出来，并在画布上为每个网络落下一条
+        已经填好参数的分析链。
+      </p>
+
+      <div class="callout callout-tip">
+        <p class="callout-head">隐私模型</p>
+        <p>
+          API Key 不会离开你的浏览器。前端不会把 Key 转交给服务器，请求直接从浏览器
+          发往你选择的 provider。只有在你信任当前这台机器时，才需要勾选
+          &ldquo;Remember for browser session&rdquo;。
+        </p>
+      </div>
+
+      <section id="sec-9-1">
+        <h3><span class="sec-num">9.1</span>节点做什么</h3>
+        <p>
+          这个 Agent 的契约是封闭的，它<em>可以</em>做这些事：
+        </p>
+        <ul>
+          <li>
+            读你粘贴的文本、PDF 附件，或 Jupyter <code>.ipynb</code>
+            （只读源代码 cell，输出 cell 与 base64 图像在本地剥离后才上传）。
+          </li>
+          <li>
+            返回一个或多个 <em>network</em>，每个带一组可逆结合反应、一个 mol/L 单位的
+            Kd 数值，以及置信度标签。
+          </li>
+          <li>
+            从一份固定的白名单里挑选推荐的下游分析；超出白名单的请求会被静默丢弃。
+          </li>
+          <li>
+            返回一份 <em>warnings</em> 列表，记录每一次近似、单位换算和被丢弃的项。
+          </li>
+        </ul>
+        <p>
+          点击某个 network 卡片上的 <em>Insert chain</em>，节点会自动落下一个
+          <code>reaction-network</code>（已填好抽取到的反应）→ 接入
+          <code>model-builder</code> → 再为每个推荐分析挂一个结果节点。每个生成的节点都
+          是普通的画布节点，可以照常编辑反应、改 Kd、重跑、保存。
+        </p>
+      </section>
+
+      <section id="sec-9-2">
+        <h3><span class="sec-num">9.2</span>选择 Provider 与 API Key</h3>
+        <p>
+          目前支持两个 provider，二者都使用 Anthropic Messages API 形态：
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>模型</th>
+                <th>Endpoint</th>
+                <th>文档附件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Anthropic</td>
+                <td>Claude Opus 4.7、Sonnet 4.6、Haiku 4.5</td>
+                <td><code>api.anthropic.com/v1/messages</code></td>
+                <td>支持 PDF</td>
+              </tr>
+              <tr>
+                <td>DeepSeek</td>
+                <td>V4 Pro、V4 Flash（Anthropic 兼容）</td>
+                <td><code>api.deepseek.com/anthropic/v1/messages</code></td>
+                <td>仅支持文本与 notebook</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          在下拉框里选一个模型，或者填一个自定义 model ID。Provider 由模型名前缀自动
+          识别（<code>claude</code> 开头走 Anthropic，<code>deepseek</code> 开头走
+          DeepSeek）。API Key 输入框是 password 类型；如果你不勾选
+          &ldquo;Remember for browser session&rdquo;，Key 会在标签页关闭时立刻被遗忘。
+        </p>
+      </section>
+
+      <section id="sec-9-3">
+        <h3><span class="sec-num">9.3</span>输入：文本、PDF、Notebook</h3>
+        <p>
+          三个输入 tab，原则上互斥，必要时可组合：
+        </p>
+        <dl>
+          <dt>文本</dt>
+          <dd>
+            粘贴一段方法、补充材料、摘要等任何相关内容。当你只需要长论文里的几条反应时
+            最方便。
+          </dd>
+          <dt>PDF</dt>
+          <dd>
+            上传整篇论文。整个 PDF 会作为一个 <code>document</code> 内容块发送，
+            token 消耗会比纯文本路径高。仅在 Anthropic 模型上可用。
+          </dd>
+          <dt>Notebook</dt>
+          <dd>
+            上传 <code>.ipynb</code>。浏览器在本地解析，只发送源 cell（markdown + code）。
+            输出 cell、base64 图像与大块数据都不会离开你的机器。
+          </dd>
+        </dl>
+      </section>
+
+      <section id="sec-9-4">
+        <h3><span class="sec-num">9.4</span>读结果与自动生成的节点链</h3>
+        <p>
+          运行结束后，节点 body 里会渲染三件事：一段对论文的简短总结、每个抽取到的
+          network 一张卡片、以及一份 warnings 列表。每个 network 卡片上有
+          <em>Insert chain</em> 按钮，按下后落到画布上的结构是：
+        </p>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">[推荐结果节点]</span>
+        </div>
+        <p>
+          推荐结果会按 network 展开：<code>model-summary</code> 总是会有，再加上若干
+          来自固定白名单的节点 —— <code>vertices-table</code>、
+          <code>regime-graph</code>、<code>siso-result</code>、
+          <code>scan-1d-result</code>、<code>scan-2d-result</code>、
+          <code>rop-cloud-result</code>、<code>rop-poly-result</code>、
+          <code>fret-result</code>。Agent 不能要求白名单以外的节点类型。
+        </p>
+      </section>
+
+      <section id="sec-9-5">
+        <h3><span class="sec-num">9.5</span>诚实约束 —— 以及被丢弃的内容</h3>
+        <p>
+          系统提示词明确禁止模型胡编。常见的&ldquo;诚实抽取&rdquo;模式：
+        </p>
+        <ul>
+          <li>
+            <strong>论文没给 Kd。</strong>用占位值 <code>1e-3 M</code>，置信度标记
+            <em>low</em>，warning 中点名是哪条反应。拓扑会保留下来，数值需要你手动修。
+          </li>
+          <li>
+            <strong>只给 Ka。</strong>Agent 输出 \( K_{d} = 1 / K_{a} \) 并在 warnings
+            中记录这次取倒数。
+          </li>
+          <li>
+            <strong>只给 k<sub>on</sub> / k<sub>off</sub>。</strong>Agent 输出
+            \( K_{d} = k_{\mathrm{off}} / k_{\mathrm{on}} \) 并在 warnings 中记录。
+          </li>
+          <li>
+            <strong>Hill 函数、唯象 dose-response、催化周转。</strong>直接丢弃并记入
+            warnings；Agent 不会替你编一套结合机制。
+          </li>
+          <li>
+            <strong>单位换算。</strong>nM / µM / mM 都会被换算到 M，并在 warnings
+            中记录。
+          </li>
+        </ul>
+        <p>
+          如果一次运行返回 <em>零</em> network 加上一段说明，那不是失败，而是材料里
+          没有可抽取的平衡结合化学时<em>应有的</em>结果。返回零比胡编要好。
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §10 ============ -->
+    <section id="sec-10">
+      <h2><span class="sec-num">10</span>账户与登录</h2>
+      <p>
+        在面向公网的部署中，云端后端要求登录用户。在本地或 on-prem 部署里，登录按钮
+        会隐藏起来，所有分析直接走进程内的 Julia 后端，完全不需要账户。
+      </p>
+
+      <section id="sec-10-1">
+        <h3><span class="sec-num">10.1</span>什么时候需要登录</h3>
+        <p>
+          只有这些场景需要账户：
+        </p>
+        <ul>
+          <li>
+            提交 <a href="#sec-11">云计算</a>任务（atlas 构建、逆向设计）。
+          </li>
+          <li>
+            被按用户配额计数 —— 每日提交计数器按 Cognito 用户键。
+          </li>
+          <li>
+            在云端后端的 S3 前缀里持久化结果工件。
+          </li>
+        </ul>
+        <p>
+          本地的 SISO 分析、regime 图、点云、参数扫描、模型摘要 —— 也就是第 4 节里
+          的所有内容 —— 都不需要账户。工具栏上的 <em>Sign in</em> 按钮只在后端报告
+          已启用鉴权时才显示。
+        </p>
+      </section>
+
+      <section id="sec-10-2">
+        <h3><span class="sec-num">10.2</span>登录流程</h3>
+        <p>
+          身份验证使用 AWS Cognito Hosted UI，配合 OAuth 授权码 + PKCE 流程：
+        </p>
+        <ol class="step-list">
+          <li>
+            <h4>点击工具栏的 <em>Sign in</em></h4>
+            <p>
+              当 Cognito 未配置时该按钮隐藏。配置时，SPA 会先抓
+              <code>/api/auth/config</code>，从中拿到 Cognito 域名和公开的 app-client ID。
+            </p>
+          </li>
+          <li>
+            <h4>走 Cognito Hosted UI</h4>
+            <p>
+              浏览器跳转到 <code>…amazoncognito.com/oauth2/authorize</code>。在那里用
+              邮箱 + 密码注册或登录；邮箱验证和可选 MFA 都由 Cognito 处理。
+            </p>
+          </li>
+          <li>
+            <h4>经过 <code>/auth-callback.html</code> 回弹</h4>
+            <p>
+              Cognito 带着授权码重定向回 <code>/auth-callback.html</code>。SPA 使用
+              在跳转前缓存的 PKCE verifier，把授权码换成 ID / access / refresh token。
+            </p>
+          </li>
+          <li>
+            <h4>回到原页面</h4>
+            <p>
+              Token 写入 <code>localStorage</code>，SPA 跳回触发登录的那个页面。之后
+              每次云任务提交都会附上
+              <code>Authorization: Bearer &lt;id_token&gt;</code>。
+            </p>
+          </li>
+        </ol>
+        <p>
+          ID token 在过期前 5 分钟自动用 refresh token 续签。登出会清空本地 token，
+          并访问 Cognito 的 <code>/logout</code> 端点，让下一次登录回到干净的
+          Hosted UI。
+        </p>
+      </section>
+
+      <section id="sec-10-3">
+        <h3><span class="sec-num">10.3</span>macOS 同一套流程</h3>
+        <p>
+          Swift 版 macOS 应用在 <code>WKWebView</code> 内运行同一份
+          <code>auth.js</code>。Token 存在 WebView 自带的
+          <code>localStorage</code> 里。当前没有原生 Keychain 集成 —— 后续如果要换成
+          <code>ASWebAuthenticationSession</code> + Keychain，这只是 Swift 侧的改动，
+          不会影响 Web 代码。
+        </p>
+        <p>
+          Cognito app client 必须同时注册 macOS WebView 的回环回调
+          （默认 <code>http://127.0.0.1:18088/auth-callback.html</code>）以及 Web 源。
+          完整的回调 URL 清单见 <code>deploy/AWS_BATCH.md</code> §2.2。
+        </p>
+      </section>
+
+      <section id="sec-10-4">
+        <h3><span class="sec-num">10.4</span>按用户配额</h3>
+        <p>
+          当部署用 <code>--with-quota-table</code> 选项开启时，会按 Cognito
+          <code>sub</code> 在 DynamoDB 里建一个计数器。每次云任务提交都会写入；
+          通过 TTL 字段每天重置一次。
+        </p>
+        <p>
+          默认上限是 <strong>每人每天 50 个任务</strong>；运维可以用环境变量
+          <code>BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT</code> 调高或调低。超过上限时，
+          云端后端返回 HTTP&nbsp;429，不会真的去排队 Batch 任务。本地分析不计入。
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §11 ============ -->
+    <section id="sec-11">
+      <h2><span class="sec-num">11</span>云计算 — 把重任务远程跑</h2>
+      <p>
+        有两类分析可能跑几分钟到几小时：构建一个完整的 atlas、以及在大搜索格子上跑
+        逆向设计。<em>Cloud Compute</em> 开关把这些任务转给远程的 AWS Batch 队列，
+        其他分析仍然走进程内的 Julia 后端。
+      </p>
+
+      <section id="sec-11-1">
+        <h3><span class="sec-num">11.1</span>切换 Cloud Compute</h3>
+        <p>
+          工具栏上有一个 <em>Cloud Compute</em> 按钮，它翻转一个会话级的开关，
+          并写入 <code>localStorage</code>：
+        </p>
+        <ul>
+          <li>
+            <strong>开。</strong>Atlas 构建、逆向设计会被作为 job 提交到云端后端。
+            结果节点显示 job ID、实时状态徽章，以及任务结束后的工件链接。
+          </li>
+          <li>
+            <strong>关。</strong>同样的节点本地跑，期间画布会阻塞。适合小规模预览。
+          </li>
+        </ul>
+        <p>
+          对轻量分析（SISO 路径、扫描、多面体查看器）来说，Cloud Compute 开关无效，
+          它们永远本地跑。
+        </p>
+      </section>
+
+      <section id="sec-11-2">
+        <h3><span class="sec-num">11.2</span>哪些任务会走云端</h3>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>端点</th>
+                <th>Cloud Compute 开</th>
+                <th>Cloud Compute 关</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>build_atlas</code></td>
+                <td>AWS Batch 任务</td>
+                <td>本地 Julia worker</td>
+              </tr>
+              <tr>
+                <td><code>run_inverse_design</code></td>
+                <td>AWS Batch 任务</td>
+                <td>本地 Julia worker</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>build_model</code>、<code>find_vertices</code>、
+                  <code>siso_paths</code>、<code>parameter_scan_*</code>、
+                  <code>rop_*</code>、<code>fret_*</code>
+                </td>
+                <td colspan="2">始终本地 —— 开关被忽略。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="sec-11-3">
+        <h3><span class="sec-num">11.3</span>部署栈</h3>
+        <p>
+          在运维一侧，云端路径用到四个 AWS 表面。使用方不需要懂这些细节，但在排查
+          job 日志或规划部署时会派上用场：
+        </p>
+        <dl>
+          <dt>ECR</dt>
+          <dd>
+            存放 worker 的 Docker 镜像。它和本地后端是同一个镜像，区别只在
+            entrypoint：worker 入口从 S3 读 <code>input.json</code>，把
+            <code>status.json</code> / <code>result.json</code> 写回去。
+          </dd>
+          <dt>S3</dt>
+          <dd>
+            每个 job 一个前缀，存放 <code>input.json</code>、
+            <code>status.json</code>、<code>result.json</code>。前端轮询
+            <code>status.json</code>，状态变为 <em>succeeded</em> 时下载
+            <code>result.json</code>。
+          </dd>
+          <dt>AWS Batch</dt>
+          <dd>
+            把 worker 镜像作为容器跑在托管 compute environment 里。默认
+            <code>minvCpus=0</code>，没有任务时集群缩到 0。job 定义注册了执行角色，
+            使得 ECR 镜像拉取和 CloudWatch 日志投递在 EC2 启动型和 Fargate 启动型
+            环境下都能正常工作。
+          </dd>
+          <dt>DynamoDB（可选）</dt>
+          <dd>
+            按 Cognito <code>sub</code> 计数的每日任务表。通过
+            <code>setup_aws_batch.sh</code> 的 <code>--with-quota-table</code> 启用。
+            面向用户的行为见 §10.4。
+          </dd>
+        </dl>
+        <p>
+          当 Cognito 已配置时，所有 <code>POST /api/jobs</code> 请求必须带上签名的
+          Cognito ID token；否则云端后端会以 HTTP&nbsp;400&nbsp;&ldquo;Missing
+          Authorization Bearer token&rdquo; 拒绝。
+        </p>
+        <div class="callout callout-note">
+          <p class="callout-head">运维参考</p>
+          <p>
+            完整的部署脚本、IAM 策略和回调 URL 列表都在
+            <code>deploy/AWS_BATCH.md</code>。其中也包括 Cognito 集成与 DynamoDB
+            配额表。
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-11-4">
+        <h3><span class="sec-num">11.4</span>观察远程任务</h3>
+        <p>
+          结果节点会在原地渲染 job 生命周期：
+        </p>
+        <ul>
+          <li>
+            <strong>Job ID</strong> —— 提交成功后由 Batch 返回。
+          </li>
+          <li>
+            <strong>状态徽章</strong>，依次经过
+            <code>pending → submitted → running → succeeded / failed /
+            cancelled</code>。
+          </li>
+          <li>
+            <strong>结果工件链接</strong>，任务成功时显示。对 atlas 构建而言，
+            工件是一个 SQLite 文件，在以后任意一次画布会话里都可以再交给
+            <code>atlas-spec</code> 节点使用。
+          </li>
+          <li>
+            <strong>错误信息</strong>，任务失败时展示；更深的日志在 CloudWatch
+            对应 Batch job 的日志组里。
+          </li>
+        </ul>
+        <p>
+          完整生命周期 —— 提交、排队、容器启动、运行、上传结果 —— 在画布上是不透明的：
+          你只看到状态徽章。如果需要细节，请到 Batch 控制台和对应的 S3 前缀去看。
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §12 ============ -->
+    <section id="sec-12">
+      <h2><span class="sec-num">12</span>排错与边界</h2>
+      <p>
+        大多数令人困惑的结果来自三处：反应列表没有表达你想表达的化学、模型会话已经过期，
+        或输出表达式与所选坐标不一致。
+      </p>
+
+      <div class="wiki-table-wrap">
+        <table class="wiki-table">
+          <thead>
+            <tr>
+              <th>现象</th>
+              <th>可能原因</th>
+              <th>处理方式</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Invalid session_id</code></td>
+              <td>后端重启、页面刷新后节点仍引用旧会话，或会话已过期。</td>
+              <td>重新运行 <code>model-builder</code>，再重跑下游节点。</td>
+            </tr>
+            <tr>
+              <td>物种意外增多或复合物缺失</td>
+              <td>反应命名不一致，或反应语法写错。</td>
+              <td>先检查 <code>model-summary</code>，再运行任何结果节点。</td>
+            </tr>
+            <tr>
+              <td>没有返回 SISO 路径</td>
+              <td>当前 \(qK\) 坐标 / 输出组合在筛选条件下没有可行路径。</td>
+              <td>放宽路径范围或体积阈值，然后尝试另一个输出物种。</td>
+            </tr>
+            <tr>
+              <td>扫描曲线与预期符号字不一致</td>
+              <td>有限常数尚未进入渐近区域，或输出表达式混合了多个物种。</td>
+              <td>扩大 log 扫描范围，并与投影多面体对照。</td>
+            </tr>
+            <tr>
+              <td>Atlas 查询返回太多网络</td>
+              <td>查询只描述了很宽泛的 motif。</td>
+              <td>增加精确行为、见证路径、禁止 regime 或鲁棒性约束。</td>
+            </tr>
+            <tr>
+              <td>Atlas 查询完全没有结果</td>
+              <td>搜索格子、枚举 profile 或 support 条件过于严格。</td>
+              <td>尝试更大的 \((d,\mu)\) 格子，或查看 negative evidence。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="sec-num">12.1</span>建模边界</h3>
+      <p>
+        当前工作台面向的是带守恒总量的平衡结合网络。它不是通用的时间动力学模拟器，
+        也不直接处理不可逆生产 / 降解、空间转运、随机拷贝数噪声或任意 ODE 模型。
+        有些问题可以通过选择一个稳态结合子问题来近似，但这种近似应当被明确写下来。
+      </p>
+      <p>
+        它最强的回答是结构性的：行为可能 / 不可能、regime 过渡、渐近斜率，以及
+        log-参数空间中的鲁棒性。数值扫描用于把这些结构连接到有限参数值，而不是在
+        生物问题需要完整动力学模拟时替代它。
+      </p>
+    </section>
+
+    <!-- ============ §13 ============ -->
+    <section id="sec-13">
+      <h2><span class="sec-num">13</span>参考资料</h2>
+      <p>
+        关于形式化的展开，请参阅仓库中的论文：
+      </p>
+      <ul>
+        <li>
+          <em>结合网络的主导多胞形</em>（Dominance polytope of binding
+          networks）—— 证明多胞形定理的长文（位置：
+          <code>doc/ROP_paper/</code>）。
+        </li>
+        <li>
+          <em>结合回路的能力周期表</em>（Capability periodic table for binding
+          circuits）—— 建立 \((d, \mu)\) 索引、符号字、R-index 鲁棒性与
+          最小见证机制的短文（位置：
+          <code>docs/rop_capability_periodic_table_paper_en.pdf</code>）。
+        </li>
+        <li>
+          <em>periodic_complete_definition</em> —— 实现 profile 与术语对照
+          （位置：<code>docs/periodic_complete_definition.md</code>）。
+        </li>
+      </ul>
+      <p>
+        实操向的导览与细节，请参考仓库里 <code>wiki/</code> 目录中的 markdown wiki：
+        <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/quick-start.md" rel="noreferrer">quick start</a>、
+        <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/atlas-workflows.md" rel="noreferrer">atlas workflows</a>
+        与 <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/api-reference.md" rel="noreferrer">API reference</a>。
+      </p>
+
+      <nav class="wiki-pagenav" aria-label="页面导航">
+        <a href="/">
+          <span class="label">← 返回</span>
+          <span class="title">产品总览</span>
+        </a>
+        <a href="/index-node.html">
+          <span class="label">现在试试 →</span>
+          <span class="title">打开工作台</span>
+        </a>
+      </nav>
+
+      <div class="wiki-footer-strip">
+        <span>Copyright © 2026 Biocircuits Explorer</span>
+        <span>用 regime 几何来设计生物响应。</span>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ 右侧本页目录 ============ -->
+  <aside class="wiki-margin" aria-label="本页">
+    <h4>本页</h4>
+    <ul>
+      <li class="lvl-2"><a href="#sec-1">本 Wiki 是什么</a></li>
+      <li class="lvl-2"><a href="#sec-2">ROP 理论</a></li>
+      <li class="lvl-3"><a href="#sec-2-1">什么是 ROP？</a></li>
+      <li class="lvl-3"><a href="#sec-2-2">为何主导、log-log？</a></li>
+      <li class="lvl-3"><a href="#sec-2-3">多面体上的对象</a></li>
+      <li class="lvl-3"><a href="#sec-2-4">它能告诉你什么</a></li>
+      <li class="lvl-3"><a href="#sec-2-5">直观例子</a></li>
+      <li class="lvl-2"><a href="#sec-3">一分钟上手画布</a></li>
+      <li class="lvl-2"><a href="#sec-4">操作流程</a></li>
+      <li class="lvl-3"><a href="#sec-4-1">建模 &amp; 查看</a></li>
+      <li class="lvl-3"><a href="#sec-4-2">SISO 路径</a></li>
+      <li class="lvl-3"><a href="#sec-4-3">参数扫描</a></li>
+      <li class="lvl-3"><a href="#sec-4-4">多面体 &amp; 点云</a></li>
+      <li class="lvl-3"><a href="#sec-4-5">Atlas / 逆向</a></li>
+      <li class="lvl-2"><a href="#sec-5">设计应用</a></li>
+      <li class="lvl-2"><a href="#sec-6">如何读输出</a></li>
+      <li class="lvl-3"><a href="#sec-6-1">Regime 检查</a></li>
+      <li class="lvl-3"><a href="#sec-6-2">SISO 判读</a></li>
+      <li class="lvl-3"><a href="#sec-6-3">扫描 vs. 渐近</a></li>
+      <li class="lvl-2"><a href="#sec-7">节点参考</a></li>
+      <li class="lvl-2"><a href="#sec-8">Atlas / 逆向设计</a></li>
+      <li class="lvl-2"><a href="#sec-9">AI Import</a></li>
+      <li class="lvl-3"><a href="#sec-9-1">节点做什么</a></li>
+      <li class="lvl-3"><a href="#sec-9-2">Provider 与 Key</a></li>
+      <li class="lvl-3"><a href="#sec-9-3">文本 / PDF / Notebook</a></li>
+      <li class="lvl-3"><a href="#sec-9-4">自动生成节点链</a></li>
+      <li class="lvl-3"><a href="#sec-9-5">诚实约束</a></li>
+      <li class="lvl-2"><a href="#sec-10">账户</a></li>
+      <li class="lvl-3"><a href="#sec-10-1">何时需要</a></li>
+      <li class="lvl-3"><a href="#sec-10-2">登录流程</a></li>
+      <li class="lvl-3"><a href="#sec-10-3">macOS</a></li>
+      <li class="lvl-3"><a href="#sec-10-4">配额</a></li>
+      <li class="lvl-2"><a href="#sec-11">云计算</a></li>
+      <li class="lvl-3"><a href="#sec-11-1">开关</a></li>
+      <li class="lvl-3"><a href="#sec-11-2">哪些任务</a></li>
+      <li class="lvl-3"><a href="#sec-11-3">部署栈</a></li>
+      <li class="lvl-3"><a href="#sec-11-4">观察任务</a></li>
+      <li class="lvl-2"><a href="#sec-12">排错</a></li>
+      <li class="lvl-2"><a href="#sec-13">参考资料</a></li>
+    </ul>
+  </aside>
+
+</div>
+
+<script>
+  (function () {
+    "use strict";
+
+    const links = document.querySelectorAll(".wiki-margin a[href^='#']");
+    if (!links.length || !("IntersectionObserver" in window)) return;
+
+    const byId = new Map();
+    links.forEach((a) => {
+      const id = a.getAttribute("href").slice(1);
+      const target = document.getElementById(id);
+      if (target) byId.set(target, a);
+    });
+
+    const setActive = (a) => {
+      links.forEach((l) => l.classList.remove("active"));
+      if (a) a.classList.add("active");
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+        if (visible.length) {
+          setActive(byId.get(visible[0].target));
+        }
+      },
+      { rootMargin: "-80px 0px -60% 0px", threshold: 0 }
+    );
+
+    byId.forEach((_, el) => observer.observe(el));
+  })();
+</script>
+
+</body>
+</html>

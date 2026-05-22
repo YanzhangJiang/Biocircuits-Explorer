@@ -5,6 +5,7 @@
 
 // ===== Module Imports =====
 import { showToast } from './api.js';
+import { initAuthUiEvents } from './auth-ui.js';
 import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { applyThemeMode, installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
@@ -118,6 +119,7 @@ async function boot() {
   initWorkspaceShell();
   await installThemeChangeObserver();
   initCloudComputeToggleEvents();
+  initAuthUiEvents();
   initCanvasEvents();
   initSocketEvents();
   initDebugConsoleEvents();

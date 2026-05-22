@@ -1,0 +1,2016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Introduction to Reaction Order Polyhedra (ROP) theory and a hands-on guide to using Biocircuits Explorer: nodes, recipes, and design applications.">
+<title>Wiki · Introduction to ROP — Biocircuits Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap">
+<link rel="stylesheet" href="wiki.css">
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath: [["\\(", "\\)"]],
+      displayMath: [["\\[", "\\]"]]
+    },
+    svg: { fontCache: "global" }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+</head>
+<body>
+
+<header class="wiki-topbar" role="banner">
+  <a class="wiki-brand" href="/">Biocircuits Explorer</a>
+  <nav class="wiki-breadcrumb" aria-label="Breadcrumb">
+    <a href="/">Home</a>
+    <span class="sep">›</span>
+    <span>Wiki</span>
+    <span class="sep">›</span>
+    <span>Introduction to ROP</span>
+  </nav>
+  <nav class="wiki-topnav" aria-label="Top navigation">
+    <a href="/#features">Capabilities</a>
+    <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub</a>
+    <span class="lang-switch" role="group" aria-label="Language">
+      <a href="/wiki.html" class="active" aria-current="page" lang="en">EN</a>
+      <a href="/wiki.zh.html" lang="zh-CN">中文</a>
+    </span>
+    <a class="cta" href="/index-node.html">Open Web App</a>
+  </nav>
+</header>
+
+<div class="wiki-shell">
+
+  <!-- ============ LEFT SIDEBAR ============ -->
+  <aside class="wiki-sidebar" aria-label="Wiki contents">
+    <h4>Contents</h4>
+    <ol>
+      <li>
+        <a href="#sec-1"><span class="num">1</span><span>What this wiki is</span></a>
+      </li>
+      <li>
+        <a href="#sec-2"><span class="num">2</span><span>Theory of Reaction Order Polyhedra</span></a>
+        <ol>
+          <li><a href="#sec-2-1">2.1 What is an ROP?</a></li>
+          <li><a href="#sec-2-2">2.2 Why dominance, why log-log?</a></li>
+          <li><a href="#sec-2-3">2.3 The objects on the polyhedron</a></li>
+          <li><a href="#sec-2-4">2.4 What the polyhedron tells you</a></li>
+          <li><a href="#sec-2-5">2.5 Worked example: A + B ⇌ AB</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-3"><span class="num">3</span><span>The canvas, in one minute</span></a>
+        <ol>
+          <li><a href="#sec-3-1">3.1 Nodes, ports, wires</a></li>
+          <li><a href="#sec-3-2">3.2 Node families</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-4"><span class="num">4</span><span>Recipes — what to do, step by step</span></a>
+        <ol>
+          <li><a href="#sec-4-1">4.1 Build a model and inspect regimes</a></li>
+          <li><a href="#sec-4-2">4.2 Trace a SISO behavior path</a></li>
+          <li><a href="#sec-4-3">4.3 Run a parameter scan</a></li>
+          <li><a href="#sec-4-4">4.4 Visualize the ROP polyhedron and cloud</a></li>
+          <li><a href="#sec-4-5">4.5 Atlas search and inverse design</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-5"><span class="num">5</span><span>What it&rsquo;s for — design applications</span></a>
+      </li>
+      <li>
+        <a href="#sec-6"><span class="num">6</span><span>How to read the outputs</span></a>
+        <ol>
+          <li><a href="#sec-6-1">6.1 Regime table checklist</a></li>
+          <li><a href="#sec-6-2">6.2 SISO interpretation checklist</a></li>
+          <li><a href="#sec-6-3">6.3 Numerical scans vs. asymptotics</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-7"><span class="num">7</span><span>Node reference</span></a>
+      </li>
+      <li>
+        <a href="#sec-8"><span class="num">8</span><span>Atlas and inverse design</span></a>
+      </li>
+      <li>
+        <a href="#sec-9"><span class="num">9</span><span>AI Import — paper to model</span></a>
+        <ol>
+          <li><a href="#sec-9-1">9.1 What the node does</a></li>
+          <li><a href="#sec-9-2">9.2 Choosing a provider and key</a></li>
+          <li><a href="#sec-9-3">9.3 Inputs: text, PDF, notebook</a></li>
+          <li><a href="#sec-9-4">9.4 Results and auto-spawned chains</a></li>
+          <li><a href="#sec-9-5">9.5 Honesty rules</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-10"><span class="num">10</span><span>Accounts and sign-in</span></a>
+        <ol>
+          <li><a href="#sec-10-1">10.1 When you need to sign in</a></li>
+          <li><a href="#sec-10-2">10.2 The sign-in flow</a></li>
+          <li><a href="#sec-10-3">10.3 Same flow on macOS</a></li>
+          <li><a href="#sec-10-4">10.4 Per-user quotas</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-11"><span class="num">11</span><span>Cloud Compute — remote jobs</span></a>
+        <ol>
+          <li><a href="#sec-11-1">11.1 Toggling Cloud Compute</a></li>
+          <li><a href="#sec-11-2">11.2 Which jobs run remotely</a></li>
+          <li><a href="#sec-11-3">11.3 The deployment stack</a></li>
+          <li><a href="#sec-11-4">11.4 Watching a remote job</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#sec-12"><span class="num">12</span><span>Troubleshooting and limits</span></a>
+      </li>
+      <li>
+        <a href="#sec-13"><span class="num">13</span><span>Reference and further reading</span></a>
+      </li>
+    </ol>
+  </aside>
+
+  <!-- ============ MAIN CONTENT ============ -->
+  <main class="wiki-content" id="content">
+
+    <div class="wiki-title-block">
+      <p class="eyebrow">Wiki · Chapter 1</p>
+      <h1>Introduction to Reaction Order Polyhedra and the Biocircuits Explorer workbench</h1>
+      <p class="subtitle">
+        A short, textbook-style tour of the theory behind the polyhedron, the
+        objects you see on screen, and the recipes that take you from a sketched
+        binding network to a design conclusion.
+      </p>
+    </div>
+
+    <!-- ============ §1 ============ -->
+    <section id="sec-1">
+      <h2><span class="sec-num">1</span>What this wiki is</h2>
+      <p>
+        Biocircuits Explorer is a workbench for designing and analysing
+        equilibrium binding networks through the lens of <em>Reaction Order
+        Polyhedra</em> (ROP). The product page on the homepage shows the
+        capabilities at a glance; this wiki goes one level deeper. It explains
+        the mathematics the app is computing, the language it uses for the
+        objects it draws on the canvas, and the practical recipes that turn a
+        question about a circuit into an answer.
+      </p>
+      <p>
+        Read it linearly the first time. Once you have built a few networks,
+        each chapter section is meant to stand on its own as a reference.
+      </p>
+
+      <div class="callout callout-tip">
+        <p class="callout-head">Who this is for</p>
+        <p>
+          New users of the web or macOS app who want to know what the regime
+          graphs, SISO paths and polyhedra are <em>actually</em> showing them —
+          not just how to click the buttons. No prior background in algebraic
+          geometry or chemical reaction network theory is assumed; basic
+          equilibrium thermodynamics (mass action, conserved totals) is.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ §2 ============ -->
+    <section id="sec-2">
+      <h2><span class="sec-num">2</span>Theory of Reaction Order Polyhedra</h2>
+
+      <section id="sec-2-1">
+        <h3><span class="sec-num">2.1</span>What is a Reaction Order Polyhedron?</h3>
+        <p>
+          A <strong>Reaction Order Polyhedron</strong> is a geometric object
+          that summarizes everything an equilibrium binding network can do
+          <em>qualitatively</em>, before you commit to specific numerical values
+          for the binding constants or the conserved totals.
+        </p>
+        <p>
+          The input to an ROP analysis is a <strong>binding network</strong>:
+        </p>
+        <ul>
+          <li>
+            A finite set of <em>base species</em>
+            \( X_{1}, \ldots, X_{n} \).
+          </li>
+          <li>
+            A finite set of <em>complexes</em> — stoichiometric combinations
+            such as \(AB\), \(AAB\), \(ABCD\). A complex is an integer
+            vector \( a \in \mathbb{N}^{d} \setminus \{0\}\) with size
+            \( |a|_{1} = \sum_{i} a_{i} \le \mu \), where \(\mu\) is the
+            maximum allowed complex size.
+          </li>
+          <li>
+            A finite set of <em>reversible association reactions</em>
+            \( C_{a} + C_{b} \rightleftharpoons C_{a+b} \) with equilibrium
+            constants.
+          </li>
+          <li>
+            A stoichiometry matrix \(N\) (rows are reactions) and a
+            conservation-law matrix \(L\) whose rows encode the conserved totals
+            \( q_{i} = \sum_{j} L_{ij}\,x_{j} \).
+          </li>
+          <li>
+            A choice of which totals act as <strong>inputs</strong> \(u\), which
+            are fixed conserved totals \(q\), and which complex concentration
+            plays the role of the <strong>output</strong> \(y\).
+          </li>
+        </ul>
+        <p>
+          What comes out is not a single equilibrium curve but a
+          <strong>polyhedron</strong> in log-concentration / log-parameter
+          space. Each point of the polyhedron is a <em>dominance mode</em> — a
+          snapshot of which species &ldquo;wins&rdquo; inside each conserved
+          pool. Each <em>vertex</em> corresponds to a complete asymptotic
+          regime; each <em>face</em> or <em>edge</em> is a transition between
+          regimes.
+        </p>
+        <p>
+          The geometry is polyhedral because the equilibrium equations
+        </p>
+        \[
+          N \log x \;=\; \log k, \qquad L\,x \;=\; q
+        \]
+        <p>
+          are non-linear in concentrations but <em>piecewise log-linear</em> in
+          the asymptotic limit. As soon as one term dominates inside each total,
+          every species concentration collapses to a single monomial in the free
+          variables, and the output becomes a linear function of the
+          log-parameters. The polyhedron is the map of <em>which monomial wins
+          where</em>. A curve describes one parameter setting; the polyhedron
+          describes the whole parameter space at once.
+        </p>
+
+        <figure class="wiki-figure">
+          <img src="media/rop-polyhedron-poster.jpg" alt="A 3D Reaction Order Polyhedron with labelled vertices.">
+          <figcaption>
+            <span class="fig-label">Figure 1.</span>
+            A Reaction Order Polyhedron rendered in the workbench. Each vertex
+            is a complete dominance regime; each face is a regime transition.
+          </figcaption>
+        </figure>
+      </section>
+
+      <section id="sec-2-2">
+        <h3><span class="sec-num">2.2</span>Why dominance, why log-log?</h3>
+        <p>
+          At chemical equilibrium, every species concentration is determined by
+          mass action plus conservation. Each conserved total is a sum of
+          monomials in the free concentrations of the base species:
+        </p>
+        \[
+          q_{i} \;=\; \sum_{j \,:\, L_{ij} > 0} L_{ij}\, x_{j}.
+        \]
+        <p>
+          For the simplest example \( A + B \rightleftharpoons AB \) with
+          \( K = [AB] / ([A]\,[B]) \), the total of \(A\) is a sum of two
+          monomials in the free concentrations \([A]\) and \([B]\):
+        </p>
+        \[
+          q_{A} \;=\; [A] + [AB] \;=\; [A] + K\,[A]\,[B].
+        \]
+        <p>
+          The central observation behind ROP is that
+          <strong>at most parameter combinations, one of those monomials is
+          much larger than the others</strong>. Pick any generic point in
+          log-concentration space, and one term wins each sum. When you change
+          parameters, you cross thin boundaries where the winning term flips.
+          Inside one regime, the relationships among concentrations are pure
+          power laws.
+        </p>
+        <p>
+          In log-log coordinates the picture becomes clean. If the output \(y\)
+          and input \(u\) satisfy \( y \asymp C\,u^{\rho} \) in some regime,
+          then \( \log y = \rho \log u + \mathrm{const.} \) The slope is exactly
+          the <strong>reaction order</strong>:
+        </p>
+        \[
+          \rho \;=\; \frac{\partial \log y}{\partial \log u}.
+        \]
+        <p>
+          Two facts make this useful:
+        </p>
+        <ol>
+          <li>
+            Within a regime, \( \rho \) is an integer (or a simple rational
+            arising from stoichiometry), because the dominating monomial is a
+            single product of integer powers.
+          </li>
+          <li>
+            Across a one-dimensional input scan, the response is
+            <em>piecewise linear</em> in log-log: a sequence of straight segments
+            with integer slopes, joined at <em>turning points</em> where one
+            monomial overtakes another.
+          </li>
+        </ol>
+        <p>
+          The whole qualitative behavior of a circuit is therefore captured by
+          a finite symbolic program of reaction orders:
+        </p>
+        \[
+          b \;=\; (\rho_{1}, \rho_{2}, \ldots, \rho_{L}),
+          \quad\text{for example}\quad 0 \to -1 \to +1 \to 0 \to -2.
+        \]
+        <p>
+          Each entry is a slope; each transition is a turning point on the
+          polyhedron. For multi-input / multi-output slices the analogous object
+          is a sequence of gain matrices
+          \( G_{\ell} = \partial \log y / \partial \log u \).
+        </p>
+      </section>
+
+      <section id="sec-2-3">
+        <h3><span class="sec-num">2.3</span>The objects on the polyhedron</h3>
+        <p>
+          Biocircuits Explorer uses the vocabulary established in the ROP
+          papers. Each object below is something the app can compute or draw
+          on the canvas.
+        </p>
+        <dl>
+          <dt>Reaction-order matrix</dt>
+          <dd>
+            The Jacobian of \(\log x\) with respect to \(\log(q, k)\). Its
+            entries are the local reaction orders. Vertices, faces and the
+            polyhedron itself are organized around how this matrix changes.
+          </dd>
+
+          <dt>Assignment</dt>
+          <dd>
+            A choice of one dominating species per conserved total: in pool
+            \(i\), species \(j\) holds (almost) all the mass.
+          </dd>
+
+          <dt>Assignment polytope &nbsp;\(\mathrm{AssignP}(L)\)</dt>
+          <dd>
+            The convex hull of every legal assignment — a coarse outer
+            envelope, the Cartesian product of one simplex per total.
+          </dd>
+
+          <dt>Dominance regime</dt>
+          <dd>
+            An assignment that is actually realizable by some
+            \( x \in \mathbb{R}^{n}_{>0} \). Some assignments are spurious; only
+            the realizable ones are real regimes.
+          </dd>
+
+          <dt>Dominance polytope &nbsp;\(\mathrm{DomP}(L)\)</dt>
+          <dd>
+            The convex hull of the dominance regimes. This is the tight
+            polyhedral envelope of the dominance modes
+            \( A(x) = \Lambda_{Lx}^{-1} L\, \Lambda_{x} \). Every vertex is an
+            achievable regime.
+          </dd>
+
+          <dt>Vertices · faces · edges</dt>
+          <dd>
+            Vertices = complete asymptotic regimes (one winner per total).
+            Faces = partial regimes with ties between several species.
+            Edges = one-step transitions where a tie resolves. Walking around
+            the polytope is walking through the regimes a real circuit visits
+            as parameters change.
+          </dd>
+
+          <dt>Supports</dt>
+          <dd>
+            The set of monomial terms that survive in a given regime. Supports
+            change from vertex to vertex.
+          </dd>
+
+          <dt>Input/output projection</dt>
+          <dd>
+            Choosing a scanned input \(u\) and an output \(y\) projects the
+            polyhedron onto the \((\log u, \log y)\) plane. The image is the
+            SISO regime structure.
+          </dd>
+
+          <dt>SISO path</dt>
+          <dd>
+            The sequence of vertices the system visits as the scanned input is
+            swept from \(0\) to \(\infty\). The reaction-order program
+            \( b = (\rho_{1}, \ldots, \rho_{L}) \) reads off the slopes along
+            that path.
+          </dd>
+
+          <dt>Asymptotic vs. singular regimes</dt>
+          <dd>
+            Inside a vertex \( \rho \) is a finite integer. On certain faces it
+            can be infinite or undefined (vertical jumps in log-log). The app
+            keeps the distinction — singular tokens \(\pm \infty\) and
+            <code>NaN</code> are not collapsed into a finite reaction order.
+          </dd>
+
+          <dt>Capability periodic table</dt>
+          <dd>
+            A two-coordinate index \((d, \mu)\) — the number of base species and
+            the maximum complex size — under which each cell is an entire
+            design space. Cells carry a <em>capability envelope</em>:
+            mechanisms realized, strength extrema, robustness extrema, minimal
+            witness networks, and certificates of un-reachability.
+          </dd>
+
+          <dt>Sign words</dt>
+          <dd>
+            Run-length-compressed three-state programs over
+            \(\{-, 0, +\}\). The zero state is real (saturation / invariance)
+            and is never deleted by compression. Mechanism classes include
+            activation from zero \(0 \to +\), settling to zero \(+ \to 0\),
+            direct reversal \(+ \to -\), and zero-mediated reversal
+            \(+ \to 0 \to -\).
+          </dd>
+        </dl>
+      </section>
+
+      <section id="sec-2-4">
+        <h3><span class="sec-num">2.4</span>What the polyhedron tells you about a circuit</h3>
+        <p>
+          Once the polyhedron is built and a SISO (or MIMO) projection is
+          chosen, several practically useful objects fall out:
+        </p>
+        <ul>
+          <li>
+            <strong>Response orders.</strong> The slopes \(\rho_{\ell}\) along
+            the SISO path are the local Hill-like exponents. A regime with
+            \(\rho \approx 0\) is saturated; \(\rho \approx 1\) is linear;
+            \(\rho > \mu\) is <em>ultrasensitive</em> relative to the maximum
+            complex size.
+          </li>
+          <li>
+            <strong>Sensitive vs. saturated regions.</strong> The polyhedron
+            shows exactly where in log-parameter space each lives, before any
+            numerical sweep.
+          </li>
+          <li>
+            <strong>Switching loci / turning points.</strong> Faces of the
+            polyhedron — projected to the input axis — give the inputs at which
+            qualitative behavior changes. A boundary has the affine log-space
+            form
+            \[
+              a_{u}\,\log u + a_{q}^{\top}\!\log q + a_{K}^{\top}\!\log K + c = 0,
+            \]
+            so a turning point sits at
+            \[
+              \log u^{\ast} \;=\;
+              -\,\frac{a_{q}^{\top}\!\log q + a_{K}^{\top}\!\log K + c}{a_{u}}.
+            \]
+            Whether a switch is controlled by binding constants, by conserved
+            totals, or mixed, is a built-in mechanistic classification.
+          </li>
+          <li>
+            <strong>Upper-bound reachability.</strong> Conservation gives
+            \( x_{a} \le U_{a}(q) = \min_{\,i:\,a_{i}>0}\, q_{i}/a_{i} \).
+            Whether the output's vertex sits at this bound tells you whether
+            the circuit can be driven to its stoichiometric ceiling.
+          </li>
+          <li>
+            <strong>Robust regions.</strong> A program may be strong but
+            fragile, weak but robust, or both. The polyhedron is the geometric
+            object on which the volume-fraction robustness score (the R-index)
+            is computed.
+          </li>
+          <li>
+            <strong>Achievable behavior families.</strong> Different mechanisms
+            can produce the same regime graph and sign word; the periodic
+            table groups them into classes (activation, repression, settling
+            to zero, zero-mediated reversal, multi-turn programs, MIMO rank
+            expansion). The atlas workflow searches this family space.
+          </li>
+        </ul>
+      </section>
+
+      <section id="sec-2-5">
+        <h3><span class="sec-num">2.5</span>A worked example: \(A + B \rightleftharpoons AB\)</h3>
+        <p>
+          Take the simplest non-trivial binding network, with equilibrium
+          constant
+        </p>
+        \[
+          K \;=\; \frac{[AB]}{[A]\,[B]},
+          \qquad
+          q_{A} = [A] + [AB], \qquad
+          q_{B} = [B] + [AB].
+        \]
+        <p>
+          Scan \(q_{A}\) as the input \(u\), hold \(q_{B}\) fixed, take
+          \(y = [AB]\) as the output. The conservation matrix is
+        </p>
+        \[
+          L \;=\;
+          \begin{bmatrix} 1 & 0 & 1 \\ 0 & 1 & 1 \end{bmatrix},
+        \]
+        <p>
+          so each row of the dominance-mode matrix \(A(x)\) is a one-simplex:
+          for the \(q_{A}\) row, mass sits somewhere between \(A\) and \(AB\);
+          for the \(q_{B}\) row, between \(B\) and \(AB\). The four assignments
+          are the four corners of the resulting square — and for this network
+          all four are achievable, so the dominance polytope <em>is</em> the
+          square. The vertices read:
+        </p>
+        <ul>
+          <li>
+            \((A, B)\): both species mostly free.
+            \([AB] \approx K\,q_{A}\,q_{B}\), so \(\rho = 1\).
+          </li>
+          <li>
+            \((AB, B)\): \(A\) is mostly bound, \(B\) mostly free.
+            \([AB] \approx q_{A}\), so \(\rho = 1\) but the output is now hitting
+            the \(A\) ceiling.
+          </li>
+          <li>
+            \((A, AB)\): \(B\) mostly bound, \(A\) mostly free.
+            \([AB] \approx q_{B}\), constant in \(u\), so \(\rho = 0\) —
+            saturation.
+          </li>
+          <li>
+            \((AB, AB)\): both totals collapse on the same complex; the
+            limiting species switches between \(A\) and \(B\).
+          </li>
+        </ul>
+        <p>
+          As \(u = q_{A}\) is increased, a SISO scan typically walks
+          \( (A,B) \to (AB,B) \to (A,AB) \), reading off the reaction-order
+          program
+        </p>
+        \[
+          \rho \,:\, 1 \to 1 \to 0,
+        \]
+        <p>
+          or, after run-length sign compression, a clean settling-to-zero
+          response
+          \( S(b) \,:\, + \to 0 \).
+          Each vertex of the square is a regime; each edge is a turning point;
+          the whole square is the dominance polytope for this circuit.
+          Increasing \(\mu\) or \(d\) inflates the square into higher-dimensional
+          polyhedra with richer vertex structure — which is exactly the design
+          space the periodic table is built to chart.
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §3 ============ -->
+    <section id="sec-3">
+      <h2><span class="sec-num">3</span>The canvas, in one minute</h2>
+
+      <section id="sec-3-1">
+        <h3><span class="sec-num">3.1</span>Nodes, ports, wires</h3>
+        <p>
+          The web app
+          <a href="/index-node.html">opens to a blank canvas</a>.
+          You build an analysis by placing <em>nodes</em> and wiring their
+          <em>ports</em>:
+        </p>
+        <ul>
+          <li>
+            <strong>Add a node.</strong> Click <em>Add Node</em> in the toolbar
+            and choose from the categorized menu (Utilities, Input, Parameters,
+            Process, Results).
+          </li>
+          <li>
+            <strong>Connect ports.</strong> Each node has typed input sockets
+            on the left and output sockets on the right. Click an output,
+            drag to a matching input.
+          </li>
+          <li>
+            <strong>Run.</strong> Most nodes have a <em>Run</em> button. The
+            toolbar's <em>Run Connected</em> executes the whole connected
+            subgraph in dependency order; <em>Cloud Compute</em> sends heavy
+            work to a remote backend.
+          </li>
+          <li>
+            <strong>Save.</strong> <em>Save Workspace</em> exports the whole
+            canvas — nodes, parameters, wires — as portable JSON.
+          </li>
+        </ul>
+      </section>
+
+      <section id="sec-3-2">
+        <h3><span class="sec-num">3.2</span>Node families</h3>
+        <p>
+          The same five families recur:
+        </p>
+        <dl>
+          <dt>Input</dt>
+          <dd>
+            <code>reaction-network</code> for hand-entered reactions;
+            <code>network-id-definition</code> to load a compressed network ID.
+          </dd>
+          <dt>Process</dt>
+          <dd>
+            <code>model-builder</code> turns reactions into a symbolic model
+            (\(N\), \(L\), session ID). <code>atlas-builder</code> assembles a
+            library of networks from an atlas spec.
+          </dd>
+          <dt>Parameters</dt>
+          <dd>
+            <code>siso-params</code>, <code>scan-1d-params</code>,
+            <code>scan-2d-params</code>, <code>rop-cloud-params</code>,
+            <code>rop-poly-params</code>, <code>fret-params</code>,
+            <code>atlas-spec</code>, <code>atlas-query-config</code>.
+          </dd>
+          <dt>Results</dt>
+          <dd>
+            <code>model-summary</code>, <code>vertices-table</code>,
+            <code>regime-graph</code>, <code>siso-result</code>,
+            <code>qk-poly-result</code>, <code>scan-1d-result</code>,
+            <code>scan-2d-result</code>, <code>rop-cloud-result</code>,
+            <code>rop-poly-result</code>, <code>fret-result</code>,
+            <code>atlas-query-result</code>, <code>atlas-inverse-result</code>.
+          </dd>
+          <dt>Utilities</dt>
+          <dd>
+            <code>markdown-note</code> for free-form notes you keep next to a
+            workspace.
+          </dd>
+        </dl>
+      </section>
+    </section>
+
+    <!-- ============ §4 ============ -->
+    <section id="sec-4">
+      <h2><span class="sec-num">4</span>Recipes — what to do, step by step</h2>
+      <p>
+        Each recipe below is a self-contained workflow. The flow line at the
+        top of each one is the wire diagram you should build on the canvas.
+      </p>
+
+      <section id="sec-4-1">
+        <h3><span class="sec-num">4.1</span>Build a model and inspect its regimes</h3>
+        <p>
+          Start here. This is the prerequisite for every other recipe.
+        </p>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">model-summary</span>
+          <span class="arrow">+</span>
+          <span class="node">vertices-table</span>
+          <span class="arrow">+</span>
+          <span class="node">regime-graph</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>Enter your reactions</h4>
+            <p>
+              Add a <code>reaction-network</code> node. For each reaction, type
+              a line like <code>E + S &lt;-&gt; C_ES</code> and a dissociation
+              constant <code>Kd</code>. Add as many lines as you need.
+            </p>
+          </li>
+          <li>
+            <h4>Build the model</h4>
+            <p>
+              Wire <code>reaction-network</code> &rarr; <code>model-builder</code>.
+              Press <em>Run</em>. The builder fixes the symbolic order of
+              species, complexes, totals and constants and returns a session
+              ID downstream nodes will reuse.
+            </p>
+          </li>
+          <li>
+            <h4>Inspect the model</h4>
+            <p>
+              Wire <code>model-builder</code> &rarr; <code>model-summary</code>
+              to see \(n\), \(d\), \(r\), the species list, the totals,
+              the binding-constant symbols, and the matrices \(N\) and \(L\).
+            </p>
+          </li>
+          <li>
+            <h4>List the vertices</h4>
+            <p>
+              Add <code>vertices-table</code> off the same model. Each row is a
+              vertex of the polyhedron: its permutation of species, type
+              (asymptotic vs. non-asymptotic), singular / invertible status,
+              and nullity.
+            </p>
+          </li>
+          <li>
+            <h4>See the regime graph</h4>
+            <p>
+              Add <code>regime-graph</code>. The dropdown lets you switch between
+              <em>qK-neighbor</em> (regimes joined by single parameter
+              transitions) and <em>SISO</em> mode.
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-note">
+          <p class="callout-head">Reading the output</p>
+          <p>
+            The vertices table is the discrete index of the polyhedron. The
+            regime graph is its 1-skeleton. Together they tell you how rich the
+            qualitative behavior of your network can be — before you have
+            chosen a single number.
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-4-2">
+        <h3><span class="sec-num">4.2</span>Trace a SISO behavior path</h3>
+        <p>
+          Use this when you want to know how the circuit responds to changing
+          one specific input.
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">siso-params</span>
+          <span class="arrow">→</span>
+          <span class="node">siso-result</span>
+          <span class="arrow">→</span>
+          <span class="node">qk-poly-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>Choose input, output and bounds</h4>
+            <p>
+              In <code>siso-params</code> pick the \(qK\) change variable (the
+              swept input), the target species \(x\) (the output), the path
+              scope (<em>feasible</em>, <em>robust</em>, or <em>all</em>),
+              the minimum volume fraction, and the log\(_{10}\) bounds for the
+              scan.
+            </p>
+          </li>
+          <li>
+            <h4>Enumerate behavior families</h4>
+            <p>
+              Run <code>siso-result</code>. The node returns a ranked list of
+              SISO paths — each path is a reaction-order program
+              \( b = (\rho_{1}, \ldots, \rho_{L}) \) with a feasibility volume.
+            </p>
+          </li>
+          <li>
+            <h4>Visualise the chosen path</h4>
+            <p>
+              Click a path in the list. Wire to <code>qk-poly-result</code> to
+              see the projected polyhedron in \(qK\)-space for that path.
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-tip">
+          <p class="callout-head">Reading the slopes</p>
+          <p>
+            The sequence of integers in a SISO path is exactly the local
+            log-log slope at each step. If you see <code>0 → 1 → 0</code> you
+            have a clean activation that saturates; <code>1 → 0 → −1</code> is
+            a non-monotone response with a peak. The signs alone, run-length
+            compressed, are the &ldquo;sign word&rdquo; the periodic table
+            indexes.
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-4-3">
+        <h3><span class="sec-num">4.3</span>Run a parameter scan</h3>
+        <p>
+          When you want a numerical response curve, not just the symbolic path.
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">scan-1d-params</span>
+          <span class="arrow">→</span>
+          <span class="node">scan-1d-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>Pick a parameter and a range</h4>
+            <p>
+              In <code>scan-1d-params</code> choose a \(qK\) variable, the log
+              range and number of points, and type an output expression — for
+              example <code>2*C_ES + E</code>.
+            </p>
+          </li>
+          <li>
+            <h4>Run and read</h4>
+            <p>
+              <code>scan-1d-result</code> draws the output expression versus
+              the scanned variable. Crosshairs and value readouts feed
+              downstream nodes.
+            </p>
+          </li>
+          <li>
+            <h4>Go 2D when needed</h4>
+            <p>
+              Swap to <code>scan-2d-params</code> /
+              <code>scan-2d-result</code> for a heatmap across two parameters
+              simultaneously.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="sec-4-4">
+        <h3><span class="sec-num">4.4</span>Visualize the ROP polyhedron and the point cloud</h3>
+        <p>
+          The polyhedron itself is one node; the point cloud sampled across
+          parameter space is another. Together they let you spot robust
+          regions.
+        </p>
+        <div class="flow-line">
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-poly-params</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-poly-result</span>
+        </div>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-cloud-params</span>
+          <span class="arrow">→</span>
+          <span class="node">rop-cloud-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>Configure the polyhedron view</h4>
+            <p>
+              In <code>rop-poly-params</code> choose 2D or 3D, and pair each
+              axis with a species \(x\) and a \(qK\) parameter. The inner
+              sample count controls how the interior is filled in.
+            </p>
+          </li>
+          <li>
+            <h4>Sample the cloud</h4>
+            <p>
+              <code>rop-cloud-params</code> picks the sampling mode
+              (<em>x-space</em> or <em>qK-based</em>), the number of samples,
+              the target species and the log-bounds. The result node plots
+              the cloud overlaid on the polyhedron.
+            </p>
+          </li>
+          <li>
+            <h4>Look for the dense regions</h4>
+            <p>
+              Vertices with a dense surrounding cloud are robust regimes —
+              the circuit lands there for a large fraction of plausible
+              parameter combinations. Sparse vertices are fragile.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="sec-4-5">
+        <h3><span class="sec-num">4.5</span>Atlas search and inverse design</h3>
+        <p>
+          The atlas workflow goes the other direction: given a behavior you
+          want, find networks that achieve it.
+        </p>
+        <div class="flow-line">
+          <span class="node">atlas-spec</span>
+          <span class="arrow">→</span>
+          <span class="node">atlas-builder</span>
+          <span class="arrow">+</span>
+          <span class="node">atlas-query-config</span>
+          <span class="arrow">→</span>
+          <span class="node">atlas-query-result</span>
+          <span class="arrow">/</span>
+          <span class="node">atlas-inverse-result</span>
+        </div>
+        <ol class="step-list">
+          <li>
+            <h4>Specify the search space</h4>
+            <p>
+              <code>atlas-spec</code> has four tabs: <em>Basic</em> (source
+              label, SQLite path, profile), <em>Behavior</em> (path scope, min
+              volume), <em>Enumeration</em> (pairwise binding, reaction counts)
+              and <em>Explicit</em> (JSON list of networks).
+            </p>
+          </li>
+          <li>
+            <h4>Preview the library</h4>
+            <p>
+              Wire to <code>atlas-builder</code> and click <em>Build Preview</em>
+              — this generates a slice of the atlas so you can verify the spec
+              before committing to a full build.
+            </p>
+          </li>
+          <li>
+            <h4>Define the design goal</h4>
+            <p>
+              <code>atlas-query-config</code> lets you state the goal: an I/O
+              pair (e.g. <code>tA -&gt; AB</code>), a motif label, an exact
+              behavior, a witness path, or forbidden regimes. Pick a ranking
+              mode — <em>minimal_first</em> or <em>robustness_first</em>.
+            </p>
+          </li>
+          <li>
+            <h4>Run forward or inverse</h4>
+            <p>
+              <code>atlas-query-result</code> returns the ranked match list.
+              <code>atlas-inverse-result</code> additionally runs the build +
+              query loop with negative-example refinement and returns
+              candidates with evidence.
+            </p>
+          </li>
+        </ol>
+        <div class="callout callout-warning">
+          <p class="callout-head">Heads up</p>
+          <p>
+            The canvas builder is intended for previews and small
+            scratch atlases. For full-scale library construction use the CLI
+            scripts in <code>webapp/build_atlas.jl</code> and friends, then
+            point the query nodes at the resulting SQLite file.
+          </p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ §5 ============ -->
+    <section id="sec-5">
+      <h2><span class="sec-num">5</span>What it&rsquo;s for — design applications</h2>
+      <p>
+        ROP analysis pays off in three broad situations:
+      </p>
+      <ol>
+        <li>
+          <strong>Reading off Hill-like exponents without curve-fitting.</strong>
+          The integer slopes on the SISO path are the local response orders
+          before you choose any constants. You can spot whether an
+          ultrasensitive response is achievable at all by checking whether any
+          regime has \( \rho &gt; \mu \).
+        </li>
+        <li>
+          <strong>Finding robust operating regimes.</strong> The point-cloud
+          density at each vertex is a robustness score: a vertex visited by a
+          large fraction of parameter samples is a regime the circuit will land
+          in across many cellular contexts.
+        </li>
+        <li>
+          <strong>Inverse design.</strong> Given a target signal-processing
+          behavior (a sign word, a target peak height, a robust
+          settle-to-zero), the atlas tools enumerate the binding networks that
+          realize it, ranked by minimality or robustness.
+        </li>
+      </ol>
+      <p>
+        Less obvious, but equally useful: ROP analysis gives a clean way to
+        reason about <em>why</em> a circuit fails. If your target response is
+        not in the polyhedron of any network in the periodic-table cell
+        \((d, \mu)\) you searched, the failure is structural, not numerical —
+        no choice of binding constants will fix it. The app reports such
+        certificates explicitly.
+      </p>
+
+      <figure class="wiki-figure">
+        <img src="media/results-showcase-poster.png" alt="A workspace showing SISO results, polyhedron and parameter scan side by side.">
+        <figcaption>
+          <span class="fig-label">Figure 2.</span>
+          A typical workbench session: regime graph, SISO path enumeration and
+          a parameter scan, all wired to the same model.
+        </figcaption>
+      </figure>
+    </section>
+
+    <!-- ============ §6 ============ -->
+    <section id="sec-6">
+      <h2><span class="sec-num">6</span>How to read the outputs</h2>
+      <p>
+        A good ROP session is not just a stack of plots. The app is exposing
+        several layers of evidence: a symbolic model, a finite list of regimes,
+        an adjacency structure, asymptotic response orders, and numerical
+        checks. This section gives a practical reading order.
+      </p>
+
+      <section id="sec-6-1">
+        <h3><span class="sec-num">6.1</span>Regime table checklist</h3>
+        <p>
+          Start with <code>model-summary</code> and <code>vertices-table</code>.
+          They tell you whether the network you sketched became the network you
+          intended to analyze.
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>Output field</th>
+                <th>What it means</th>
+                <th>What to check</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>species</code>, <code>x_sym</code></td>
+                <td>The species order used by the backend.</td>
+                <td>Make sure complexes such as <code>AAB</code> or <code>C_ES</code> are named consistently.</td>
+              </tr>
+              <tr>
+                <td><code>q_sym</code>, <code>K_sym</code></td>
+                <td>The conserved totals and binding constants that form the \(qK\) coordinate system.</td>
+                <td>These are the only variables a SISO scan can sweep directly.</td>
+              </tr>
+              <tr>
+                <td><code>N</code></td>
+                <td>The stoichiometry matrix for reaction constraints.</td>
+                <td>Unexpected rank or row count usually points to a malformed reaction list.</td>
+              </tr>
+              <tr>
+                <td><code>L</code></td>
+                <td>The conservation-law matrix.</td>
+                <td>Each row should match a conserved pool you can explain chemically.</td>
+              </tr>
+              <tr>
+                <td>Vertex type</td>
+                <td>Whether a regime is asymptotic, singular, invertible, or degenerate.</td>
+                <td>Finite response orders come from regular asymptotic vertices; singular entries need separate interpretation.</td>
+              </tr>
+              <tr>
+                <td>Nullity</td>
+                <td>The local degree of freedom left after the active constraints are imposed.</td>
+                <td>High nullity means the regime is underdetermined or lives on a larger face, not an isolated corner.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          If the model summary already looks wrong, do not proceed to SISO. Fix
+          the reaction list first. A beautiful polyhedron for the wrong
+          conserved pools is still the wrong answer.
+        </p>
+      </section>
+
+      <section id="sec-6-2">
+        <h3><span class="sec-num">6.2</span>SISO interpretation checklist</h3>
+        <p>
+          A SISO result should be read at three levels: the exact slope
+          program, the sign-compressed behavior, and the geometry that supports
+          it.
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>Pattern</th>
+                <th>Interpretation</th>
+                <th>Design question</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>0 → +</code></td>
+                <td>Activation from a flat baseline.</td>
+                <td>Can the output turn on only after the input crosses a boundary?</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0</code></td>
+                <td>Response that saturates.</td>
+                <td>Is the output ceiling set by a conserved total or by a binding constant?</td>
+              </tr>
+              <tr>
+                <td><code>+ → -</code></td>
+                <td>Direct reversal: increasing the input eventually represses the output.</td>
+                <td>Which complex steals the limiting species at the reversal?</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0 → -</code></td>
+                <td>Zero-mediated reversal with a plateau.</td>
+                <td>Is the plateau robust enough to be a useful operating window?</td>
+              </tr>
+              <tr>
+                <td><code>+ → 0 → +</code></td>
+                <td>Two-stage activation separated by saturation.</td>
+                <td>Are there two independent binding thresholds?</td>
+              </tr>
+              <tr>
+                <td><code>NaN</code> or <code>±∞</code></td>
+                <td>Singular or vertical response in the projected coordinates.</td>
+                <td>Is this a meaningful jump, or did the chosen output vanish in that regime?</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          The sign word is a summary, not the whole story. Two paths can share
+          a sign word but differ in strength, vertex sequence, transition
+          control, and robustness. Use the full slope list and the projected
+          polyhedron before treating two behaviors as equivalent.
+        </p>
+      </section>
+
+      <section id="sec-6-3">
+        <h3><span class="sec-num">6.3</span>Numerical scans versus asymptotics</h3>
+        <p>
+          The ROP polyhedron is an asymptotic object: it predicts which
+          monomial dominates in wide log-parameter regions. Parameter scans are
+          finite numerical evaluations. They should agree in the large-scale
+          shape, but they answer different questions.
+        </p>
+        <ul>
+          <li>
+            Use <strong>SISO paths</strong> to learn which qualitative
+            behaviors are structurally possible.
+          </li>
+          <li>
+            Use <strong>parameter scans</strong> to check the finite constants
+            you actually plan to use.
+          </li>
+          <li>
+            Use <strong>ROP cloud</strong> to estimate which regimes occupy
+            substantial parameter volume.
+          </li>
+          <li>
+            Use <strong>atlas search</strong> when the current network cannot
+            realize the behavior and you need candidate alternatives.
+          </li>
+        </ul>
+        <div class="callout callout-note">
+          <p class="callout-head">A useful rhythm</p>
+          <p>
+            Build the model, read the vertices, choose an input and output,
+            enumerate SISO paths, inspect the projected polyhedron, then run a
+            numerical scan through the same coordinates. When these disagree,
+            the disagreement is information: it usually points to a finite-size
+            effect, a narrow transition, or an output expression that is not
+            aligned with the asymptotic coordinate.
+          </p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ §7 ============ -->
+    <section id="sec-7">
+      <h2><span class="sec-num">7</span>Node reference</h2>
+      <p>
+        The canvas is a dataflow system. A node is useful when you know what it
+        consumes, what it produces, and which backend endpoint it normally
+        calls.
+      </p>
+
+      <div class="reference-grid">
+        <div class="reference-card">
+          <h4>Model construction</h4>
+          <p>
+            <code>reaction-network</code> stores reactions and dissociation
+            constants. <code>model-builder</code> calls
+            <code>/api/build_model</code> and emits the session used by most
+            downstream analysis nodes.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Regime structure</h4>
+          <p>
+            <code>model-summary</code>, <code>vertices-table</code>, and
+            <code>regime-graph</code> expose the symbolic model, vertices, and
+            adjacency graph via <code>/api/find_vertices</code> and
+            <code>/api/build_graph</code>.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>SISO analysis</h4>
+          <p>
+            <code>siso-params</code> defines the \(qK\) coordinate and output.
+            <code>siso-result</code> calls <code>/api/siso_paths</code> and
+            related endpoints; <code>qk-poly-result</code> renders selected
+            path geometry.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Scans and surfaces</h4>
+          <p>
+            <code>scan-1d-result</code>, <code>scan-2d-result</code>,
+            <code>fret-result</code>, <code>rop-cloud-result</code>, and
+            <code>rop-poly-result</code> turn a session into numerical curves,
+            heatmaps, sampled clouds, and polyhedron projections.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Atlas workflows</h4>
+          <p>
+            <code>atlas-spec</code>, <code>atlas-builder</code>,
+            <code>atlas-query-config</code>, <code>atlas-query-result</code>,
+            and <code>atlas-inverse-result</code> cover build, query, and
+            inverse-design workflows.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Workspace notes</h4>
+          <p>
+            <code>markdown-note</code> has no backend dependency. It is there
+            so a saved workspace can carry assumptions, candidate mechanisms,
+            or why a particular path was accepted or rejected.
+          </p>
+        </div>
+      </div>
+
+      <h3><span class="sec-num">7.1</span>Common wiring patterns</h3>
+      <div class="wiki-table-wrap">
+        <table class="wiki-table">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Minimum node chain</th>
+              <th>Typical next step</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Did my reaction list parse correctly?</td>
+              <td><code>reaction-network → model-builder → model-summary</code></td>
+              <td>Add <code>vertices-table</code> after the summary looks right.</td>
+            </tr>
+            <tr>
+              <td>What regimes exist?</td>
+              <td><code>model-builder → vertices-table</code></td>
+              <td>Add <code>regime-graph</code> to inspect transitions.</td>
+            </tr>
+            <tr>
+              <td>How does one input affect one output?</td>
+              <td><code>model-builder → siso-params → siso-result</code></td>
+              <td>Select a path and view it with <code>qk-poly-result</code>.</td>
+            </tr>
+            <tr>
+              <td>What curve will I see for one finite parameter set?</td>
+              <td><code>model-builder → scan-1d-params → scan-1d-result</code></td>
+              <td>Compare the curve to the SISO slope program.</td>
+            </tr>
+            <tr>
+              <td>Which network can realize my target behavior?</td>
+              <td><code>atlas-spec → atlas-query-config → atlas-query-result</code></td>
+              <td>Run <code>atlas-inverse-result</code> for build + query refinement.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ §8 ============ -->
+    <section id="sec-8">
+      <h2><span class="sec-num">8</span>Atlas and inverse design</h2>
+      <p>
+        The atlas layer turns many individual ROP analyses into a searchable
+        design library. This is where the project stops being a single-model
+        workbench and becomes a map of capability space.
+      </p>
+
+      <h3><span class="sec-num">8.1</span>The four atlas objects</h3>
+      <dl>
+        <dt>Atlas spec</dt>
+        <dd>
+          The recipe for what to analyze: explicit networks, enumerated search
+          spaces, behavior configuration, source labels, and optional SQLite
+          persistence.
+        </dd>
+        <dt>Atlas</dt>
+        <dd>
+          A single build result. It usually contains network entries, behavior
+          slices, and family buckets.
+        </dd>
+        <dt>Atlas library</dt>
+        <dd>
+          A stable aggregate assembled from one or more atlas builds. Use this
+          when you want a versionable knowledge base.
+        </dd>
+        <dt>Atlas SQLite</dt>
+        <dd>
+          A persisted form for large or incremental libraries. Query nodes and
+          CLI scripts can read from this directly.
+        </dd>
+      </dl>
+
+      <h3><span class="sec-num">8.2</span>How to formulate a query</h3>
+      <p>
+        Good atlas queries are specific about both behavior and evidence. Start
+        with an input/output pair, then add only the constraints that matter.
+      </p>
+      <ul>
+        <li>
+          <strong>Motif queries</strong> ask for broad classes such as
+          activation, repression, reversal, or settling.
+        </li>
+        <li>
+          <strong>Exact behavior queries</strong> ask for a specific slope list
+          or sign word.
+        </li>
+        <li>
+          <strong>Witness queries</strong> require a concrete path through
+          vertices, not only a matching summary label.
+        </li>
+        <li>
+          <strong>Forbidden-regime queries</strong> exclude circuits that visit
+          undesirable intermediates.
+        </li>
+        <li>
+          <strong>Robustness queries</strong> rank or filter by volume fraction
+          rather than by existence alone.
+        </li>
+      </ul>
+
+      <h3><span class="sec-num">8.3</span>What inverse design returns</h3>
+      <p>
+        Inverse design is not just &ldquo;search harder.&rdquo; It combines build,
+        query, negative knowledge, and candidate refinement. A useful result
+        should tell you:
+      </p>
+      <ul>
+        <li>which networks matched;</li>
+        <li>which target kind was used (motif, exact behavior, witness, or support);</li>
+        <li>whether a new atlas build or merge was performed;</li>
+        <li>which candidates were rejected and why;</li>
+        <li>whether the match is structurally exact or only a soft support match.</li>
+      </ul>
+      <p>
+        A failed inverse-design run can still be useful. If a whole
+        \((d,\mu)\) cell fails an exact support screen, that is evidence that
+        the desired behavior needs either more base species, larger complexes,
+        or a different modeling assumption.
+      </p>
+
+      <h3><span class="sec-num">8.4</span>Canvas versus CLI</h3>
+      <p>
+        Use the canvas while shaping the question. Use the CLI once the
+        question is stable and the run becomes large.
+      </p>
+      <pre><code>julia --project=webapp webapp/build_atlas.jl spec.json atlas.json
+julia --project=webapp webapp/query_atlas.jl atlas.json query.json result.json
+julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.json</code></pre>
+      <p>
+        The SQLite route is the right choice when you expect to reuse the
+        library across many sessions or merge incremental builds over time.
+      </p>
+    </section>
+
+    <!-- ============ §9 ============ -->
+    <section id="sec-9">
+      <h2><span class="sec-num">9</span>AI Import — turn a paper into a model</h2>
+      <p>
+        Reading a paper, transcribing every reaction by hand and looking up
+        every Kd is the slow path. The <code>ai-import</code> node (in the red
+        Input family) does it for you: it reads source material you supply,
+        asks a language model to extract every distinct equilibrium binding
+        network the source describes, and drops one populated analysis chain
+        on the canvas per network found.
+      </p>
+
+      <div class="callout callout-tip">
+        <p class="callout-head">Privacy posture</p>
+        <p>
+          The API key never leaves your browser. The host app does not proxy
+          or store keys server-side — requests go directly from the page to
+          the chosen provider. Tick &ldquo;Remember for browser session&rdquo;
+          only if you trust the machine you are sitting at.
+        </p>
+      </div>
+
+      <section id="sec-9-1">
+        <h3><span class="sec-num">9.1</span>What the node does</h3>
+        <p>
+          The agent has a closed contract. It is allowed to:
+        </p>
+        <ul>
+          <li>
+            Read pasted text, a PDF attachment, or a Jupyter
+            <code>.ipynb</code> (only source cells; outputs are stripped
+            locally before the file is sent).
+          </li>
+          <li>
+            Emit one or more <em>networks</em>, each carrying a list of
+            reversible binding reactions, a Kd in molar, and a confidence
+            label.
+          </li>
+          <li>
+            Pick recommended downstream analyses from a fixed allow-list.
+            Anything else is silently ignored.
+          </li>
+          <li>
+            Add a <em>warnings</em> list for every approximation, unit
+            conversion, or discarded model.
+          </li>
+        </ul>
+        <p>
+          When you click <em>Insert chain</em> on a network card, the node
+          drops a <code>reaction-network</code> with the extracted reactions,
+          wires it into a <code>model-builder</code>, and adds one result
+          node per recommended analysis. Each spawned node is a normal canvas
+          node — edit reactions, change Kd values, rerun, save.
+        </p>
+      </section>
+
+      <section id="sec-9-2">
+        <h3><span class="sec-num">9.2</span>Choosing a provider and supplying a key</h3>
+        <p>
+          Two providers are supported, both speaking the Anthropic Messages
+          API shape:
+        </p>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Models</th>
+                <th>Endpoint</th>
+                <th>Document attachments</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Anthropic</td>
+                <td>Claude Opus 4.7, Sonnet 4.6, Haiku 4.5</td>
+                <td><code>api.anthropic.com/v1/messages</code></td>
+                <td>Yes (PDF)</td>
+              </tr>
+              <tr>
+                <td>DeepSeek</td>
+                <td>V4 Pro, V4 Flash (Anthropic-compatible)</td>
+                <td><code>api.deepseek.com/anthropic/v1/messages</code></td>
+                <td>Text and notebook only</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Pick a model from the dropdown or type a custom model ID. The
+          provider is detected from the model name (anything starting with
+          <code>claude</code> goes to Anthropic, anything starting with
+          <code>deepseek</code> goes to DeepSeek). The API key field is a
+          password input; if you leave &ldquo;Remember for browser
+          session&rdquo; unchecked, the key is forgotten as soon as you
+          close the tab.
+        </p>
+      </section>
+
+      <section id="sec-9-3">
+        <h3><span class="sec-num">9.3</span>Inputs: text, PDF, notebook</h3>
+        <p>
+          Three input tabs, mutually exclusive in spirit but combinable:
+        </p>
+        <dl>
+          <dt>Text</dt>
+          <dd>
+            Paste a section, supplementary methods, abstract, anything
+            relevant. Useful when you only want a few specific reactions out
+            of a long paper.
+          </dd>
+          <dt>PDF</dt>
+          <dd>
+            Upload a paper. The whole PDF is sent as one
+            <code>document</code> content block. Expect higher token usage
+            than the text path. Only available on Anthropic models.
+          </dd>
+          <dt>Notebook</dt>
+          <dd>
+            Upload a <code>.ipynb</code>. The browser parses it locally and
+            sends only source cells (markdown + code). Output cells, base64
+            images and large data blobs never leave your machine.
+          </dd>
+        </dl>
+      </section>
+
+      <section id="sec-9-4">
+        <h3><span class="sec-num">9.4</span>Reading the results and the auto-spawned chains</h3>
+        <p>
+          A finished run renders three things in the node body: a short
+          paper summary, one card per extracted network, and a warnings
+          list. Each network card carries an <em>Insert chain</em> button
+          that materialises this on the canvas:
+        </p>
+        <div class="flow-line">
+          <span class="node">reaction-network</span>
+          <span class="arrow">→</span>
+          <span class="node">model-builder</span>
+          <span class="arrow">→</span>
+          <span class="node">[recommended results]</span>
+        </div>
+        <p>
+          The recommended-results slot expands per network: a
+          <code>model-summary</code> always appears, plus zero or more of
+          <code>vertices-table</code>, <code>regime-graph</code>,
+          <code>siso-result</code>, <code>scan-1d-result</code>,
+          <code>scan-2d-result</code>, <code>rop-cloud-result</code>,
+          <code>rop-poly-result</code>, <code>fret-result</code>. The agent
+          is constrained to this allow-list; anything else it tries to
+          recommend is dropped.
+        </p>
+      </section>
+
+      <section id="sec-9-5">
+        <h3><span class="sec-num">9.5</span>Honesty rules — and what gets discarded</h3>
+        <p>
+          The system prompt explicitly tells the model not to fabricate.
+          Common honest-extraction patterns:
+        </p>
+        <ul>
+          <li>
+            <strong>Kd not stated.</strong> A placeholder
+            <code>1e-3 M</code> is emitted, confidence is marked
+            <em>low</em>, and the warning names the reaction. Topology
+            survives; you must edit the value.
+          </li>
+          <li>
+            <strong>Only Ka given.</strong> Agent emits
+            \( K_{d} = 1 / K_{a} \) and notes the inversion in warnings.
+          </li>
+          <li>
+            <strong>Only k<sub>on</sub> / k<sub>off</sub>.</strong> Agent
+            emits \( K_{d} = k_{\mathrm{off}} / k_{\mathrm{on}} \) and notes
+            it.
+          </li>
+          <li>
+            <strong>Hill functions, phenomenological dose-responses,
+            catalytic turnover.</strong> Discarded with a warning. The agent
+            will not invent a binding scheme.
+          </li>
+          <li>
+            <strong>Unit conversion.</strong> nM / µM / mM are converted to
+            M with a warning.
+          </li>
+        </ul>
+        <p>
+          A run that returns <em>zero</em> networks plus a summary
+          explaining why is the correct outcome when the source does not
+          contain extractable equilibrium binding chemistry. Returning zero
+          is treated as honest, not as a failure.
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §10 ============ -->
+    <section id="sec-10">
+      <h2><span class="sec-num">10</span>Accounts and sign-in</h2>
+      <p>
+        On a public deployment the cloud backend requires a signed-in user.
+        On a local or on-prem deployment the sign-in button stays hidden and
+        every analysis runs against the in-process Julia backend with no
+        account at all.
+      </p>
+
+      <section id="sec-10-1">
+        <h3><span class="sec-num">10.1</span>When you need to sign in</h3>
+        <p>
+          You need an account only for cloud-backed work:
+        </p>
+        <ul>
+          <li>
+            Submitting <a href="#sec-11">Cloud Compute</a> jobs (atlas
+            build, inverse design).
+          </li>
+          <li>
+            Hitting per-user quotas — the daily submission counter is keyed
+            by your Cognito user.
+          </li>
+          <li>
+            Persisting result artifacts in the cloud backend's S3 prefix.
+          </li>
+        </ul>
+        <p>
+          Local SISO analyses, regime graphs, point clouds, parameter
+          scans, model summaries — everything in §4 — work without an
+          account. The toolbar's <em>Sign in</em> button only appears when
+          the backend reports auth is enabled.
+        </p>
+      </section>
+
+      <section id="sec-10-2">
+        <h3><span class="sec-num">10.2</span>The sign-in flow</h3>
+        <p>
+          Authentication uses AWS Cognito Hosted UI with the OAuth
+          Authorization Code + PKCE flow:
+        </p>
+        <ol class="step-list">
+          <li>
+            <h4>Click <em>Sign in</em> in the toolbar</h4>
+            <p>
+              The button is hidden if Cognito is not configured. When it is,
+              the SPA fetches <code>/api/auth/config</code> to learn the
+              Cognito domain and public app-client ID.
+            </p>
+          </li>
+          <li>
+            <h4>Go through Cognito Hosted UI</h4>
+            <p>
+              The browser is redirected to
+              <code>…amazoncognito.com/oauth2/authorize</code>. Sign up or
+              sign in there with email + password. Email verification and
+              optional MFA are handled by Cognito.
+            </p>
+          </li>
+          <li>
+            <h4>Bounce through <code>/auth-callback.html</code></h4>
+            <p>
+              Cognito redirects back to <code>/auth-callback.html</code>
+              with an authorization code. The SPA exchanges the code for
+              ID / access / refresh tokens using the PKCE verifier it
+              stashed before redirect.
+            </p>
+          </li>
+          <li>
+            <h4>Return to the app</h4>
+            <p>
+              Tokens are written to <code>localStorage</code> and the SPA
+              navigates back to the page that initiated sign-in. From this
+              point every cloud job submission attaches
+              <code>Authorization: Bearer &lt;id_token&gt;</code>.
+            </p>
+          </li>
+        </ol>
+        <p>
+          ID tokens auto-refresh five minutes before expiry using the
+          refresh token. Signing out clears local tokens and visits
+          Cognito's <code>/logout</code> endpoint so the next sign-in lands
+          on the Hosted UI fresh.
+        </p>
+      </section>
+
+      <section id="sec-10-3">
+        <h3><span class="sec-num">10.3</span>Same flow on macOS</h3>
+        <p>
+          The Swift macOS app runs the same <code>auth.js</code> inside a
+          <code>WKWebView</code>. Tokens live in the WebView's own
+          <code>localStorage</code>. There is no native Keychain integration
+          today — a future Swift-side change could switch to
+          <code>ASWebAuthenticationSession</code> + Keychain without
+          touching the web codebase.
+        </p>
+        <p>
+          The Cognito app client must register the macOS WebView's loopback
+          callback (default <code>http://127.0.0.1:18088/auth-callback.html</code>)
+          alongside the web origin. See <code>deploy/AWS_BATCH.md</code>
+          §2.2 for the full callback-URL list.
+        </p>
+      </section>
+
+      <section id="sec-10-4">
+        <h3><span class="sec-num">10.4</span>Per-user quotas</h3>
+        <p>
+          When the deployment opts in with <code>--with-quota-table</code>,
+          a DynamoDB counter is keyed by your Cognito <code>sub</code>.
+          Every cloud job submission writes to it; the counter resets via
+          a TTL field once per day.
+        </p>
+        <p>
+          The default daily limit is <strong>50 jobs per user</strong>; the
+          operator can raise or lower it with
+          <code>BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT</code>. Exceeding the
+          limit returns HTTP&nbsp;429 from the cloud backend and no Batch
+          job is queued. Local analyses are not counted.
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §11 ============ -->
+    <section id="sec-11">
+      <h2><span class="sec-num">11</span>Cloud Compute — running heavy jobs remotely</h2>
+      <p>
+        Two analyses can take minutes or hours: building a full atlas, and
+        running inverse design over a large search cell. The
+        <em>Cloud Compute</em> toggle redirects those jobs to a remote AWS
+        Batch queue while keeping every other analysis on the in-process
+        Julia backend.
+      </p>
+
+      <section id="sec-11-1">
+        <h3><span class="sec-num">11.1</span>Toggling Cloud Compute</h3>
+        <p>
+          The toolbar has a <em>Cloud Compute</em> button that flips a
+          session-wide flag, persisted in <code>localStorage</code>:
+        </p>
+        <ul>
+          <li>
+            <strong>ON.</strong> Atlas builds and inverse-design runs are
+            submitted as jobs to the cloud backend. The result node shows
+            the job ID, a live status badge, and the link to the artifact
+            when it finishes.
+          </li>
+          <li>
+            <strong>OFF.</strong> The same nodes run their work locally and
+            block the canvas while doing so. Fine for small previews.
+          </li>
+        </ul>
+        <p>
+          Toggling Cloud Compute has no effect on lightweight analyses
+          (SISO paths, scans, polyhedron viewers). Those always run
+          locally regardless of the flag.
+        </p>
+      </section>
+
+      <section id="sec-11-2">
+        <h3><span class="sec-num">11.2</span>Which jobs run remotely</h3>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Route when Cloud Compute is ON</th>
+                <th>Route when OFF</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>build_atlas</code></td>
+                <td>AWS Batch job</td>
+                <td>Local Julia worker</td>
+              </tr>
+              <tr>
+                <td><code>run_inverse_design</code></td>
+                <td>AWS Batch job</td>
+                <td>Local Julia worker</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>build_model</code>, <code>find_vertices</code>,
+                  <code>siso_paths</code>, <code>parameter_scan_*</code>,
+                  <code>rop_*</code>, <code>fret_*</code>
+                </td>
+                <td colspan="2">Always local — the toggle is ignored.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="sec-11-3">
+        <h3><span class="sec-num">11.3</span>The deployment stack</h3>
+        <p>
+          On the operator side the cloud route uses four AWS surfaces.
+          You do not need to know the details to use the app, but they
+          matter when reading job logs or planning a deployment:
+        </p>
+        <dl>
+          <dt>ECR</dt>
+          <dd>
+            Stores the worker Docker image. It is the same image as the
+            local backend, with a Batch entrypoint that reads
+            <code>input.json</code> from S3 and writes
+            <code>status.json</code> / <code>result.json</code> back.
+          </dd>
+          <dt>S3</dt>
+          <dd>
+            One prefix per job, holding <code>input.json</code>,
+            <code>status.json</code>, and <code>result.json</code>. The
+            frontend polls <code>status.json</code> and downloads
+            <code>result.json</code> when the status becomes
+            <em>succeeded</em>.
+          </dd>
+          <dt>AWS Batch</dt>
+          <dd>
+            Runs the worker image as a container in a managed compute
+            environment. Default <code>minvCpus=0</code> so the cluster
+            scales to zero between jobs. The job definition is registered
+            with an execution role so ECR image pulls and CloudWatch log
+            delivery work on both EC2-launch and Fargate-launch
+            environments.
+          </dd>
+          <dt>DynamoDB (optional)</dt>
+          <dd>
+            Per-user daily submission counter keyed by Cognito
+            <code>sub</code>. Enabled with <code>--with-quota-table</code>
+            in <code>setup_aws_batch.sh</code>. See §10.4 for the
+            user-facing behaviour.
+          </dd>
+        </dl>
+        <p>
+          A signed Cognito ID token must accompany every
+          <code>POST /api/jobs</code> request when Cognito is configured.
+          The cloud backend rejects unsigned calls with
+          HTTP&nbsp;400&nbsp;&ldquo;Missing Authorization Bearer token&rdquo;.
+        </p>
+        <div class="callout callout-note">
+          <p class="callout-head">For operators</p>
+          <p>
+            The full setup script, IAM policy and callback-URL list live in
+            <code>deploy/AWS_BATCH.md</code>. It also covers the Cognito
+            integration and the DynamoDB quota table.
+          </p>
+        </div>
+      </section>
+
+      <section id="sec-11-4">
+        <h3><span class="sec-num">11.4</span>Watching a remote job</h3>
+        <p>
+          The result node renders the job lifecycle inline:
+        </p>
+        <ul>
+          <li>
+            <strong>Job ID</strong> returned by Batch as soon as
+            submission succeeds.
+          </li>
+          <li>
+            <strong>Status badge</strong> stepping through
+            <code>pending → submitted → running → succeeded / failed /
+            cancelled</code>.
+          </li>
+          <li>
+            <strong>Result artifact</strong> linked when the run succeeds.
+            For atlas builds, the artifact is a SQLite file you can re-feed
+            into an <code>atlas-spec</code> node on any future canvas
+            session.
+          </li>
+          <li>
+            <strong>Error message</strong> from the worker when the run
+            fails. Deeper logs live in CloudWatch under the Batch job's log
+            group.
+          </li>
+        </ul>
+        <p>
+          A job's full lifecycle — submission, queue, container start,
+          run, result upload — is opaque from the canvas: you only see the
+          status badge. If you need detail, the Batch console and the
+          per-job S3 prefix are the right places to look.
+        </p>
+      </section>
+    </section>
+
+    <!-- ============ §12 ============ -->
+    <section id="sec-12">
+      <h2><span class="sec-num">12</span>Troubleshooting and limits</h2>
+      <p>
+        Most confusing results come from one of three places: a reaction list
+        that does not encode the intended chemistry, a stale model session, or
+        an output expression that is not aligned with the chosen coordinate.
+      </p>
+
+      <div class="wiki-table-wrap">
+        <table class="wiki-table">
+          <thead>
+            <tr>
+              <th>Symptom</th>
+              <th>Likely cause</th>
+              <th>What to do</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Invalid session_id</code></td>
+              <td>The backend restarted, the page was refreshed with stale nodes, or the session expired.</td>
+              <td>Run <code>model-builder</code> again, then rerun downstream nodes.</td>
+            </tr>
+            <tr>
+              <td>Unexpected species or missing complex</td>
+              <td>Reaction naming mismatch or malformed reaction syntax.</td>
+              <td>Check <code>model-summary</code> before running any result node.</td>
+            </tr>
+            <tr>
+              <td>No SISO paths returned</td>
+              <td>The selected \(qK\) coordinate/output pair has no feasible path under the current filters.</td>
+              <td>Relax path scope or volume thresholds; then try a different output species.</td>
+            </tr>
+            <tr>
+              <td>Scan curve disagrees with expected sign word</td>
+              <td>Finite constants are not deep enough in the asymptotic region, or the output expression mixes species.</td>
+              <td>Widen the log range and compare with the projected polyhedron.</td>
+            </tr>
+            <tr>
+              <td>Atlas query finds too many networks</td>
+              <td>The query describes only a broad motif.</td>
+              <td>Add an exact behavior, witness, forbidden-regime, or robustness constraint.</td>
+            </tr>
+            <tr>
+              <td>Atlas query finds nothing</td>
+              <td>The search cell, enumeration profile, or support condition is too restrictive.</td>
+              <td>Try a larger \((d,\mu)\) cell or inspect the negative evidence.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="sec-num">12.1</span>Modeling limits</h3>
+      <p>
+        The current workbench is built for equilibrium binding networks and
+        conserved totals. It is not a general-purpose simulator for
+        time-dependent kinetics, irreversible production/degradation, spatial
+        transport, stochastic copy-number noise, or arbitrary ODE models. You
+        can sometimes approximate those questions by choosing a steady-state
+        binding subproblem, but that approximation should be stated explicitly.
+      </p>
+      <p>
+        The strongest answers are structural: possible / impossible behaviors,
+        regime transitions, asymptotic slopes, and robustness in log-parameter
+        space. Numerical scans are provided to connect that structure to finite
+        parameter values, not to replace a full kinetic simulation when the
+        biology demands one.
+      </p>
+    </section>
+
+    <!-- ============ §13 ============ -->
+    <section id="sec-13">
+      <h2><span class="sec-num">13</span>Reference and further reading</h2>
+      <p>
+        For the formal development, see the papers in the repository:
+      </p>
+      <ul>
+        <li>
+          <em>Dominance polytope of binding networks</em> — the long paper that
+          proves the polytope theorem (location:
+          <code>doc/ROP_paper/</code>).
+        </li>
+        <li>
+          <em>Capability periodic table for binding circuits</em> — the short
+          paper that sets up the \((d, \mu)\) index, sign words, R-index
+          robustness, and minimal-witness machinery (location:
+          <code>docs/rop_capability_periodic_table_paper_en.pdf</code>).
+        </li>
+        <li>
+          <em>Periodic complete definition</em> — implementation profile and
+          terminology bridge (location:
+          <code>docs/periodic_complete_definition.md</code>).
+        </li>
+      </ul>
+      <p>
+        For practical tours and operational details, see also the in-tree
+        markdown wiki in <code>wiki/</code>:
+        <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/quick-start.md" rel="noreferrer">quick start</a>,
+        <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/atlas-workflows.md" rel="noreferrer">atlas workflows</a>,
+        and <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/blob/master/wiki/api-reference.md" rel="noreferrer">API reference</a>.
+      </p>
+
+      <nav class="wiki-pagenav" aria-label="Page navigation">
+        <a href="/">
+          <span class="label">← Back to</span>
+          <span class="title">Product overview</span>
+        </a>
+        <a href="/index-node.html">
+          <span class="label">Try it now →</span>
+          <span class="title">Open the workbench</span>
+        </a>
+      </nav>
+
+      <div class="wiki-footer-strip">
+        <span>Copyright © 2026 Biocircuits Explorer</span>
+        <span>Reaction Order Polyhedra for binding-network design.</span>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ RIGHT MARGIN TOC ============ -->
+  <aside class="wiki-margin" aria-label="On this page">
+    <h4>On this page</h4>
+    <ul>
+      <li class="lvl-2"><a href="#sec-1">What this wiki is</a></li>
+      <li class="lvl-2"><a href="#sec-2">Theory of ROP</a></li>
+      <li class="lvl-3"><a href="#sec-2-1">What is an ROP?</a></li>
+      <li class="lvl-3"><a href="#sec-2-2">Why dominance, log-log?</a></li>
+      <li class="lvl-3"><a href="#sec-2-3">Objects on the polyhedron</a></li>
+      <li class="lvl-3"><a href="#sec-2-4">What it tells you</a></li>
+      <li class="lvl-3"><a href="#sec-2-5">Worked example</a></li>
+      <li class="lvl-2"><a href="#sec-3">The canvas, in one minute</a></li>
+      <li class="lvl-2"><a href="#sec-4">Recipes</a></li>
+      <li class="lvl-3"><a href="#sec-4-1">Build &amp; inspect</a></li>
+      <li class="lvl-3"><a href="#sec-4-2">SISO path</a></li>
+      <li class="lvl-3"><a href="#sec-4-3">Parameter scan</a></li>
+      <li class="lvl-3"><a href="#sec-4-4">Polyhedron &amp; cloud</a></li>
+      <li class="lvl-3"><a href="#sec-4-5">Atlas / inverse</a></li>
+      <li class="lvl-2"><a href="#sec-5">Design applications</a></li>
+      <li class="lvl-2"><a href="#sec-6">Reading outputs</a></li>
+      <li class="lvl-3"><a href="#sec-6-1">Regime checklist</a></li>
+      <li class="lvl-3"><a href="#sec-6-2">SISO checklist</a></li>
+      <li class="lvl-3"><a href="#sec-6-3">Scans vs. asymptotics</a></li>
+      <li class="lvl-2"><a href="#sec-7">Node reference</a></li>
+      <li class="lvl-2"><a href="#sec-8">Atlas / inverse design</a></li>
+      <li class="lvl-2"><a href="#sec-9">AI Import</a></li>
+      <li class="lvl-3"><a href="#sec-9-1">What the node does</a></li>
+      <li class="lvl-3"><a href="#sec-9-2">Provider &amp; key</a></li>
+      <li class="lvl-3"><a href="#sec-9-3">Text / PDF / notebook</a></li>
+      <li class="lvl-3"><a href="#sec-9-4">Auto-spawned chains</a></li>
+      <li class="lvl-3"><a href="#sec-9-5">Honesty rules</a></li>
+      <li class="lvl-2"><a href="#sec-10">Accounts</a></li>
+      <li class="lvl-3"><a href="#sec-10-1">When required</a></li>
+      <li class="lvl-3"><a href="#sec-10-2">Sign-in flow</a></li>
+      <li class="lvl-3"><a href="#sec-10-3">macOS</a></li>
+      <li class="lvl-3"><a href="#sec-10-4">Quotas</a></li>
+      <li class="lvl-2"><a href="#sec-11">Cloud Compute</a></li>
+      <li class="lvl-3"><a href="#sec-11-1">Toggling</a></li>
+      <li class="lvl-3"><a href="#sec-11-2">Which jobs</a></li>
+      <li class="lvl-3"><a href="#sec-11-3">Deployment stack</a></li>
+      <li class="lvl-3"><a href="#sec-11-4">Watching a job</a></li>
+      <li class="lvl-2"><a href="#sec-12">Troubleshooting</a></li>
+      <li class="lvl-2"><a href="#sec-13">Further reading</a></li>
+    </ul>
+  </aside>
+
+</div>
+
+<script>
+  (function () {
+    "use strict";
+
+    const links = document.querySelectorAll(".wiki-margin a[href^='#']");
+    if (!links.length || !("IntersectionObserver" in window)) return;
+
+    const byId = new Map();
+    links.forEach((a) => {
+      const id = a.getAttribute("href").slice(1);
+      const target = document.getElementById(id);
+      if (target) byId.set(target, a);
+    });
+
+    const setActive = (a) => {
+      links.forEach((l) => l.classList.remove("active"));
+      if (a) a.classList.add("active");
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+        if (visible.length) {
+          setActive(byId.get(visible[0].target));
+        }
+      },
+      { rootMargin: "-80px 0px -60% 0px", threshold: 0 }
+    );
+
+    byId.forEach((_, el) => observer.observe(el));
+  })();
+</script>
+
+</body>
+</html>

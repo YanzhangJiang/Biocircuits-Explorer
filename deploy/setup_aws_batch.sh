@@ -18,6 +18,15 @@ JOB_QUEUE="${BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE:-}"
 JOB_DEFINITION="${BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION:-}"
 COMPUTE_ENVIRONMENT="${BIOCIRCUITS_EXPLORER_AWS_BATCH_COMPUTE_ENVIRONMENT:-}"
 OUTPUT_ENV_FILE="${BIOCIRCUITS_EXPLORER_AWS_OUTPUT_ENV_FILE:-$ROOT_DIR/deploy/aws-runtime.env}"
+ATTACH_TO_ROLE="${BIOCIRCUITS_EXPLORER_AWS_ATTACH_SUBMITTER_TO_ROLE:-}"
+WITH_COGNITO=0
+WITH_QUOTA_TABLE=0
+COGNITO_USER_POOL_NAME="${BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_NAME:-}"
+COGNITO_CLIENT_NAME="${BIOCIRCUITS_EXPLORER_COGNITO_CLIENT_NAME:-}"
+COGNITO_DOMAIN_PREFIX="${BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN_PREFIX:-}"
+COGNITO_CALLBACK_URLS="${BIOCIRCUITS_EXPLORER_COGNITO_CALLBACK_URLS:-}"
+COGNITO_LOGOUT_URLS="${BIOCIRCUITS_EXPLORER_COGNITO_LOGOUT_URLS:-}"
+QUOTA_TABLE_NAME="${BIOCIRCUITS_EXPLORER_QUOTA_TABLE_NAME:-}"
 DRY_RUN=0
 SKIP_COMPUTE=0
 WAIT=1
@@ -44,6 +53,24 @@ Options:
   --security-groups <csv>    Security group IDs. Default: default SG in the default VPC.
   --instance-types <csv>     Batch EC2 instance types. Default: optimal.
   --output-env <path>        Write runtime env file. Default: deploy/aws-runtime.env.
+  --attach-to-role <role>    Attach the generated submitter policy to this
+                             IAM role (typically the EC2 instance role of the
+                             website host). Default: do not attach.
+  --with-cognito             Provision a Cognito User Pool, App Client, and
+                             User Pool Domain for end-user sign-up / sign-in.
+  --cognito-domain-prefix <p>
+                             Hosted UI subdomain prefix (must be globally
+                             unique across AWS). Default: <name>-<account>.
+  --cognito-callback-urls <csv>
+                             Comma-separated OAuth callback URLs (https only,
+                             plus biocircuitsexplorer:// for the macOS app).
+                             Required with --with-cognito.
+  --cognito-logout-urls <csv>
+                             Comma-separated OAuth logout URLs.
+  --with-quota-table         Provision a DynamoDB on-demand table for
+                             per-user submission quotas.
+  --quota-table-name <name>  Override the quota table name.
+                             Default: <name>-quotas.
   --skip-compute             Only create S3/IAM/log resources and env file.
   --no-wait                  Do not poll the compute environment to VALID.
   --dry-run                  Print actions without changing AWS resources.
@@ -176,6 +203,34 @@ while [ "$#" -gt 0 ]; do
             OUTPUT_ENV_FILE="$2"
             shift 2
             ;;
+        --attach-to-role)
+            ATTACH_TO_ROLE="$2"
+            shift 2
+            ;;
+        --with-cognito)
+            WITH_COGNITO=1
+            shift
+            ;;
+        --cognito-domain-prefix)
+            COGNITO_DOMAIN_PREFIX="$2"
+            shift 2
+            ;;
+        --cognito-callback-urls)
+            COGNITO_CALLBACK_URLS="$2"
+            shift 2
+            ;;
+        --cognito-logout-urls)
+            COGNITO_LOGOUT_URLS="$2"
+            shift 2
+            ;;
+        --with-quota-table)
+            WITH_QUOTA_TABLE=1
+            shift
+            ;;
+        --quota-table-name)
+            QUOTA_TABLE_NAME="$2"
+            shift 2
+            ;;
         --skip-compute)
             SKIP_COMPUTE=1
             shift
@@ -237,6 +292,12 @@ ECS_INSTANCE_ROLE="${NAME}-ecs-instance-role"
 ECS_INSTANCE_PROFILE="${NAME}-ecs-instance-profile"
 JOB_ROLE="${NAME}-batch-job-role"
 SUBMITTER_POLICY="${NAME}-submitter-policy"
+COGNITO_USER_POOL_NAME="${COGNITO_USER_POOL_NAME:-${NAME}-users}"
+COGNITO_CLIENT_NAME="${COGNITO_CLIENT_NAME:-${NAME}-client}"
+COGNITO_DOMAIN_PREFIX="${COGNITO_DOMAIN_PREFIX:-${NAME}-${ACCOUNT_ID}}"
+QUOTA_TABLE_NAME="${QUOTA_TABLE_NAME:-${NAME}-quotas}"
+COGNITO_USER_POOL_ID=""
+COGNITO_APP_CLIENT_ID=""
 
 echo "AWS region:        $REGION"
 echo "AWS account:       $ACCOUNT_ID"
@@ -357,6 +418,9 @@ ensure_instance_profile() {
 put_job_role_policy() {
     local policy_file
     policy_file="$(mktemp)"
+    # The worker container reads input.json and writes status.json /
+    # result.json under ${ARTIFACT_KEY_PREFIX}/users/<sub>/jobs/<id>/. The
+    # wildcard below already covers that layout.
     cat > "$policy_file" <<EOF
 {
   "Version": "2012-10-17",
@@ -369,7 +433,7 @@ put_job_role_policy() {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload"
       ],
-      "Resource": "arn:aws:s3:::$BUCKET/$ARTIFACT_KEY_PREFIX/*"
+      "Resource": "arn:aws:s3:::$BUCKET/$ARTIFACT_KEY_PREFIX/users/*/jobs/*"
     },
     {
       "Effect": "Allow",
@@ -382,7 +446,8 @@ put_job_role_policy() {
         "StringLike": {
           "s3:prefix": [
             "$ARTIFACT_KEY_PREFIX",
-            "$ARTIFACT_KEY_PREFIX/*"
+            "$ARTIFACT_KEY_PREFIX/*",
+            "$ARTIFACT_KEY_PREFIX/users/*"
           ]
         }
       }
@@ -434,7 +499,7 @@ ensure_submitter_policy() {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload"
       ],
-      "Resource": "arn:aws:s3:::$BUCKET/$ARTIFACT_KEY_PREFIX/*"
+      "Resource": "arn:aws:s3:::$BUCKET/$ARTIFACT_KEY_PREFIX/users/*/jobs/*"
     },
     {
       "Effect": "Allow",
@@ -447,7 +512,8 @@ ensure_submitter_policy() {
         "StringLike": {
           "s3:prefix": [
             "$ARTIFACT_KEY_PREFIX",
-            "$ARTIFACT_KEY_PREFIX/*"
+            "$ARTIFACT_KEY_PREFIX/*",
+            "$ARTIFACT_KEY_PREFIX/users/*"
           ]
         }
       }
@@ -461,7 +527,19 @@ ensure_submitter_policy() {
         "ecr:GetDownloadUrlForLayer"
       ],
       "Resource": "*"
+    }$( [ "$WITH_QUOTA_TABLE" -eq 1 ] && cat <<QUOTA
+,
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:PutItem"
+      ],
+      "Resource": "arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${QUOTA_TABLE_NAME}"
     }
+QUOTA
+)
   ]
 }
 EOF
@@ -472,6 +550,21 @@ EOF
             --policy-document "file://$policy_file"
     elif aws iam get-policy --policy-arn "$policy_arn" >/dev/null 2>&1; then
         echo "IAM policy exists: $policy_arn"
+        # AWS allows at most 5 versions per managed policy. Prune all
+        # non-default versions before creating a new one so repeated runs
+        # of this script never fail with LimitExceeded.
+        local old_versions
+        old_versions="$(aws iam list-policy-versions \
+            --policy-arn "$policy_arn" \
+            --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
+            --output text 2>/dev/null || true)"
+        for old_version in $old_versions; do
+            [ -z "$old_version" ] && continue
+            [ "$old_version" = "None" ] && continue
+            run_cmd aws iam delete-policy-version \
+                --policy-arn "$policy_arn" \
+                --version-id "$old_version"
+        done
         run_cmd aws iam create-policy-version \
             --policy-arn "$policy_arn" \
             --policy-document "file://$policy_file" \
@@ -482,6 +575,30 @@ EOF
             --policy-document "file://$policy_file"
     fi
     rm -f "$policy_file"
+}
+
+attach_submitter_to_role() {
+    local target_role="$1"
+    [ -z "$target_role" ] && return 0
+    local policy_arn="arn:aws:iam::${ACCOUNT_ID}:policy/${SUBMITTER_POLICY}"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        run_cmd aws iam attach-role-policy \
+            --role-name "$target_role" \
+            --policy-arn "$policy_arn"
+        return
+    fi
+    local already
+    already="$(aws_text iam list-attached-role-policies \
+        --role-name "$target_role" \
+        --query "AttachedPolicies[?PolicyArn=='$policy_arn'].PolicyArn" 2>/dev/null || true)"
+    if [ "$already" = "$policy_arn" ]; then
+        echo "Submitter policy already attached to role: $target_role"
+        return
+    fi
+    run_cmd aws iam attach-role-policy \
+        --role-name "$target_role" \
+        --policy-arn "$policy_arn"
+    echo "Attached submitter policy to role: $target_role"
 }
 
 ensure_log_group() {
@@ -694,6 +811,7 @@ register_job_definition() {
 {
   "image": "$(json_escape "$IMAGE")",
   "jobRoleArn": "$job_role_arn",
+  "executionRoleArn": "$job_role_arn",
   "command": $command_json,
   "resourceRequirements": [
     { "type": "VCPU", "value": "$JOB_VCPUS" },
@@ -721,6 +839,136 @@ EOF
     rm -f "$container_file"
 }
 
+ensure_cognito() {
+    [ "$WITH_COGNITO" -eq 1 ] || return 0
+    if [ -z "$COGNITO_CALLBACK_URLS" ]; then
+        echo "--with-cognito requires --cognito-callback-urls <csv>" >&2
+        exit 2
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "Would create Cognito user pool: $COGNITO_USER_POOL_NAME"
+        echo "Would create app client:        $COGNITO_CLIENT_NAME"
+        echo "Would create domain prefix:     $COGNITO_DOMAIN_PREFIX"
+        COGNITO_USER_POOL_ID="us-west-2_DRYRUN"
+        COGNITO_APP_CLIENT_ID="dryrunclientid000000000000"
+        return
+    fi
+
+    # Reuse if a pool with the same name already exists.
+    COGNITO_USER_POOL_ID="$(aws_text cognito-idp list-user-pools \
+        --region "$REGION" \
+        --max-results 60 \
+        --query "UserPools[?Name=='$COGNITO_USER_POOL_NAME'].Id | [0]" 2>/dev/null || true)"
+    if [ -z "$COGNITO_USER_POOL_ID" ] || [ "$COGNITO_USER_POOL_ID" = "None" ]; then
+        echo "Creating Cognito user pool: $COGNITO_USER_POOL_NAME"
+        COGNITO_USER_POOL_ID="$(aws cognito-idp create-user-pool \
+            --region "$REGION" \
+            --pool-name "$COGNITO_USER_POOL_NAME" \
+            --auto-verified-attributes email \
+            --username-attributes email \
+            --policies 'PasswordPolicy={MinimumLength=10,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=false}' \
+            --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=verified_email}]' \
+            --query 'UserPool.Id' --output text)"
+        echo "Created pool: $COGNITO_USER_POOL_ID"
+    else
+        echo "Cognito user pool exists: $COGNITO_USER_POOL_ID"
+    fi
+
+    # App client (public SPA + macOS app: no client secret, PKCE-only).
+    COGNITO_APP_CLIENT_ID="$(aws_text cognito-idp list-user-pool-clients \
+        --region "$REGION" \
+        --user-pool-id "$COGNITO_USER_POOL_ID" \
+        --max-results 60 \
+        --query "UserPoolClients[?ClientName=='$COGNITO_CLIENT_NAME'].ClientId | [0]" 2>/dev/null || true)"
+    local callbacks logouts
+    callbacks="$(csv_to_json_array "$COGNITO_CALLBACK_URLS")"
+    logouts="$(csv_to_json_array "${COGNITO_LOGOUT_URLS:-$COGNITO_CALLBACK_URLS}")"
+    local supported_flows='["code"]'
+    local supported_scopes='["openid","email","profile"]'
+
+    if [ -z "$COGNITO_APP_CLIENT_ID" ] || [ "$COGNITO_APP_CLIENT_ID" = "None" ]; then
+        echo "Creating Cognito app client: $COGNITO_CLIENT_NAME"
+        COGNITO_APP_CLIENT_ID="$(aws cognito-idp create-user-pool-client \
+            --region "$REGION" \
+            --user-pool-id "$COGNITO_USER_POOL_ID" \
+            --client-name "$COGNITO_CLIENT_NAME" \
+            --no-generate-secret \
+            --allowed-o-auth-flows-user-pool-client \
+            --supported-identity-providers '["COGNITO"]' \
+            --callback-urls "$callbacks" \
+            --logout-urls "$logouts" \
+            --allowed-o-auth-flows "$supported_flows" \
+            --allowed-o-auth-scopes "$supported_scopes" \
+            --explicit-auth-flows '["ALLOW_USER_SRP_AUTH","ALLOW_REFRESH_TOKEN_AUTH"]' \
+            --prevent-user-existence-errors ENABLED \
+            --query 'UserPoolClient.ClientId' --output text)"
+    else
+        echo "Cognito app client exists: $COGNITO_APP_CLIENT_ID"
+        run_cmd aws cognito-idp update-user-pool-client \
+            --region "$REGION" \
+            --user-pool-id "$COGNITO_USER_POOL_ID" \
+            --client-id "$COGNITO_APP_CLIENT_ID" \
+            --no-generate-secret \
+            --allowed-o-auth-flows-user-pool-client \
+            --supported-identity-providers '["COGNITO"]' \
+            --callback-urls "$callbacks" \
+            --logout-urls "$logouts" \
+            --allowed-o-auth-flows "$supported_flows" \
+            --allowed-o-auth-scopes "$supported_scopes" \
+            --explicit-auth-flows '["ALLOW_USER_SRP_AUTH","ALLOW_REFRESH_TOKEN_AUTH"]' \
+            --prevent-user-existence-errors ENABLED >/dev/null
+    fi
+
+    # User pool domain (Hosted UI).
+    local existing_domain
+    existing_domain="$(aws_text cognito-idp describe-user-pool-domain \
+        --region "$REGION" \
+        --domain "$COGNITO_DOMAIN_PREFIX" \
+        --query 'DomainDescription.Status' 2>/dev/null || true)"
+    if [ -z "$existing_domain" ] || [ "$existing_domain" = "None" ]; then
+        run_cmd aws cognito-idp create-user-pool-domain \
+            --region "$REGION" \
+            --user-pool-id "$COGNITO_USER_POOL_ID" \
+            --domain "$COGNITO_DOMAIN_PREFIX"
+    else
+        echo "Cognito user pool domain exists: $COGNITO_DOMAIN_PREFIX ($existing_domain)"
+    fi
+}
+
+ensure_quota_table() {
+    [ "$WITH_QUOTA_TABLE" -eq 1 ] || return 0
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "Would create DynamoDB quota table: $QUOTA_TABLE_NAME"
+        return
+    fi
+
+    if aws dynamodb describe-table --region "$REGION" --table-name "$QUOTA_TABLE_NAME" >/dev/null 2>&1; then
+        echo "DynamoDB quota table exists: $QUOTA_TABLE_NAME"
+        return
+    fi
+
+    run_cmd aws dynamodb create-table \
+        --region "$REGION" \
+        --table-name "$QUOTA_TABLE_NAME" \
+        --attribute-definitions \
+            AttributeName=user_sub,AttributeType=S \
+            AttributeName=window,AttributeType=S \
+        --key-schema \
+            AttributeName=user_sub,KeyType=HASH \
+            AttributeName=window,KeyType=RANGE \
+        --billing-mode PAY_PER_REQUEST \
+        --tags Key=App,Value="$NAME"
+
+    echo "Waiting for DynamoDB table to become ACTIVE..."
+    aws dynamodb wait table-exists --region "$REGION" --table-name "$QUOTA_TABLE_NAME"
+
+    run_cmd aws dynamodb update-time-to-live \
+        --region "$REGION" \
+        --table-name "$QUOTA_TABLE_NAME" \
+        --time-to-live-specification "Enabled=true,AttributeName=expires_at"
+}
+
 write_runtime_env() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "Would write runtime env file: $OUTPUT_ENV_FILE"
@@ -737,6 +985,19 @@ BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$JOB_DEFINITION
 BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=$ARTIFACT_PREFIX
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX=biocircuits
 EOF
+    if [ -n "$COGNITO_USER_POOL_ID" ]; then
+        cat >> "$OUTPUT_ENV_FILE" <<EOF
+BIOCIRCUITS_EXPLORER_COGNITO_REGION=$REGION
+BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID=$COGNITO_USER_POOL_ID
+BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID=$COGNITO_APP_CLIENT_ID
+BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN=${COGNITO_DOMAIN_PREFIX}.auth.${REGION}.amazoncognito.com
+EOF
+    fi
+    if [ "$WITH_QUOTA_TABLE" -eq 1 ]; then
+        cat >> "$OUTPUT_ENV_FILE" <<EOF
+BIOCIRCUITS_EXPLORER_QUOTA_TABLE=$QUOTA_TABLE_NAME
+EOF
+    fi
     echo "Wrote runtime env file: $OUTPUT_ENV_FILE"
 }
 
@@ -752,7 +1013,10 @@ run_cmd aws iam attach-role-policy \
     --role-name "$JOB_ROLE" \
     --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 put_job_role_policy
+ensure_cognito
+ensure_quota_table
 ensure_submitter_policy
+attach_submitter_to_role "$ATTACH_TO_ROLE"
 ensure_log_group
 
 if [ "$SKIP_COMPUTE" -eq 0 ]; then
@@ -771,8 +1035,12 @@ AWS Batch setup complete.
 Runtime environment:
   source $OUTPUT_ENV_FILE
 
-Attach this policy to the EC2 instance role that runs the website backend:
+Submitter policy ARN:
   arn:aws:iam::${ACCOUNT_ID}:policy/${SUBMITTER_POLICY}
+$( [ -n "$ATTACH_TO_ROLE" ] \
+    && printf 'Already attached to role: %s' "$ATTACH_TO_ROLE" \
+    || printf 'Attach it to the EC2 instance role running the website backend
+(re-run with --attach-to-role <role> to do this automatically).' )
 
 The website and macOS local backend use these variables:
   BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$JOB_QUEUE

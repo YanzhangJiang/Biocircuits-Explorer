@@ -378,8 +378,10 @@ export function addQuickAddChain(chainType) {
   let createdModelBuilder = false;
 
   if (!rnId) {
-    // No reaction network exists, create one
-    rnId = createNode('reaction-network', 80, 150);
+    // No reaction network exists, create one. Walk Y down to avoid landing
+    // on top of an existing node at the default (80, 150) anchor.
+    const safeY = resolveOverlap(80, 150, 280, 300, null);
+    rnId = createNode('reaction-network', 80, safeY);
   }
 
   // Check for existing model-builder connected to this reaction network
@@ -644,6 +646,11 @@ export function triggerAutoModelBuild(reactionNodeId) {
 export function triggerAllAutoModelBuilds() {
   Object.entries(nodeRegistry).forEach(([nodeId, info]) => {
     if (info.type !== 'model-builder' || !info._autoBuildCheck) return;
+    // Skip nodes whose model is restored from the saved workspace. Their backend
+    // session is gone (built=false, sessionId=null) but the cached model is shown;
+    // forcing a rebuild here would slam /api/build_model for every chain in the
+    // project at load time. User clicks Run (or Run Connected) when ready.
+    if (info.data?.modelContext?.model) return;
     info._autoBuildCheck();
   });
 }

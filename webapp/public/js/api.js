@@ -1,7 +1,8 @@
 // Biocircuits Explorer — API Communication & Utility Functions
 
-import { API, ensureDebugClientId } from './state.js';
+import { API, CLOUD_API, ensureDebugClientId } from './state.js';
 import { isCloudComputeEnabled } from './cloud-compute.js';
+import { fetchAuthConfig, getIdToken, signIn } from './auth.js';
 
 let activeApiRequests = 0;
 let statusRevision = 0;
@@ -75,12 +76,23 @@ export async function api(endpoint, data) {
 }
 
 async function jobApi(path, { method = 'GET', data = null } = {}) {
+  const headers = data == null
+    ? {
+        'X-Biocircuits-Explorer-Debug-Client': ensureDebugClientId(),
+        'X-ROP-Debug-Client': ensureDebugClientId(),
+      }
+    : apiHeaders();
+  // Auth header: when the deployment has Cognito on, the backend requires
+  // Authorization: Bearer <ID token>. The token is silently refreshed if it
+  // is within 5 minutes of expiry.
+  const config = await fetchAuthConfig().catch(() => null);
+  if (config && config.enabled) {
+    const token = await getIdToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+  }
   const resp = await fetch(path, {
     method,
-    headers: data == null ? {
-      'X-Biocircuits-Explorer-Debug-Client': ensureDebugClientId(),
-      'X-ROP-Debug-Client': ensureDebugClientId(),
-    } : apiHeaders(),
+    headers,
     body: data == null ? undefined : JSON.stringify(data),
   });
   const contentType = resp.headers.get('content-type');
@@ -89,6 +101,12 @@ async function jobApi(path, { method = 'GET', data = null } = {}) {
   }
   const json = await resp.json();
   if (!resp.ok || json.error) {
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(json.error || 'Sign in required');
+    }
+    if (resp.status === 429) {
+      throw new Error(json.error || 'Daily quota exceeded — try again tomorrow.');
+    }
     throw new Error(json.error || `Server error (${resp.status})`);
   }
   return json;
@@ -98,29 +116,47 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// All /api/jobs/* endpoints route to CLOUD_API: this is the SaaS path.
+// In the browser CLOUD_API == '' (same-origin) so nothing changes; in the
+// macOS WebView CLOUD_API points at the EC2 broker so cloud submissions
+// hit the production backend instead of the local Julia process.
 export async function submitJob(kind, spec, execution = { mode: 'local_async' }) {
-  return jobApi(`${API}/api/jobs`, {
+  return jobApi(`${CLOUD_API}/api/jobs`, {
     method: 'POST',
     data: { kind, spec, execution },
   });
 }
 
 export async function getJob(jobId) {
-  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
 }
 
 export async function getJobResult(jobId) {
-  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/result`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/result`, { method: 'POST', data: {} });
+}
+
+export async function getJobResultUrl(jobId) {
+  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/result-url`, { method: 'POST', data: {} });
 }
 
 export async function cancelJob(jobId) {
-  return jobApi(`${API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
 }
 
 export async function runCloudJob(kind, spec) {
   activeApiRequests += 1;
   setStatus('working', activeApiRequests > 1 ? `Submitting cloud job... (${activeApiRequests})` : 'Submitting cloud job...');
   try {
+    const config = await fetchAuthConfig().catch(() => null);
+    if (config && config.enabled) {
+      const token = await getIdToken();
+      if (!token) {
+        activeApiRequests = Math.max(0, activeApiRequests - 1);
+        setStatus('done', 'Ready');
+        await signIn();   // redirects; control will not return.
+        return;
+      }
+    }
     let job = await submitJob(kind, spec, { mode: 'aws_batch' });
     const jobId = job.job_id;
     if (!jobId) throw new Error('Backend did not return a job id.');

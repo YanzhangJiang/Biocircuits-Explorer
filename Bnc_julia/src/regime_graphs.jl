@@ -17,7 +17,7 @@ function  _calc_vertices_graph(Bnc::Bnc{T}) where {T} # optimized by GPT-5, not 
     thread_edges = [Vector{Tuple{Int, VertexEdge{T}}}() for _ in 1:Threads.maxthreadid()]
 
     # 按行分桶：key 为去掉该行后的签名（Tuple），值为该签名下的 (顶点索引, 该行取值)
-    @showprogress for i in 1:d
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") for i in 1:d
         buckets = Dict{Tuple{Vararg{T}}, Vector{Tuple{Int,T}}}()
 
         # 构建桶
@@ -116,7 +116,7 @@ function _fulfill_vertices_graph!(vtx_graph::VertexGraph)
         end
     end
 
-    @showprogress Threads.@threads for p1 in eachindex(vtx_graph.neighbors)
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") Threads.@threads for p1 in eachindex(vtx_graph.neighbors)
         edges = vtx_graph.neighbors[p1]
         if Bnc.vertices_nullity[p1] > 1 # jump off those regimes with nullity >1
             continue
@@ -271,7 +271,7 @@ function _enumerate_paths(
     # 逆拓扑：先算子节点，再算父节点
 
     @info "Total vertices to process in topological order: $(length(topo))"
-    @showprogress for v in Iterators.reverse(topo)
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") for v in Iterators.reverse(topo)
         active[v] || continue
 
         if is_sink[v]
@@ -302,7 +302,7 @@ function _enumerate_paths(
     # 汇总 sources 的结果
     @info "Finished enumerating paths. Now collecting paths from sources. Total sources: $(length(sources))"
     out = Vector{Vector{Int}}()
-    @showprogress for s in sources
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") for s in sources
         active[s] || continue
         ps = memo[s]
         ps === nothing && continue
@@ -398,7 +398,7 @@ function _calc_polyhedra_for_path(
     edge_poly = let 
         edge_poly = Vector{Any}(undef, length(edge_dict))
         @info "Start building polyhedra for edges (total: $(length(edge_dict)))"
-        @showprogress Threads.@threads  for i in eachindex(edges)
+        @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") Threads.@threads  for i in eachindex(edges)
             (u, v) = edges[i]
             p = intersect(node_polyhedra[u], node_polyhedra[v])
             if isempty(p)
@@ -432,7 +432,7 @@ function _calc_polyhedra_for_path(
 
     out = Vector{Any}(undef, length(edge_paths))
     @info "Start building polyhedra for paths (total: $(length(edge_paths)))"
-    @showprogress Threads.@threads for i in eachindex(edge_paths)
+    @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") Threads.@threads for i in eachindex(edge_paths)
         path_edge_polys = edge_poly[edge_paths[i]]
         empty_idx = findfirst(isempty, path_edge_polys)
         if !isnothing(empty_idx)

@@ -973,7 +973,10 @@ include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
 include(joinpath(@__DIR__, "inverse_design_v2.jl"))
 include(joinpath(@__DIR__, "version.jl"))
+include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
+
+export verify_cognito_jwt
 
 # ─── API Route Handlers ───
 
@@ -1004,6 +1007,26 @@ end
 
 function handle_version(req)
     return json_response(biocircuits_explorer_build_info())
+end
+
+# Public auth bootstrap. Frontend calls this once on load to discover whether
+# Cognito is configured for this deployment, and (if so) which user pool /
+# client / hosted UI domain to redirect users to. Returns "enabled: false"
+# in dev mode (no Cognito), so the SPA can degrade gracefully to local-only.
+function handle_auth_config(req)
+    pool_id = strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID", ""))
+    if isempty(pool_id)
+        return json_response(Dict{String, Any}("enabled" => false))
+    end
+    return json_response(Dict{String, Any}(
+        "enabled" => true,
+        "cognito_region" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_REGION", get(ENV, "AWS_REGION", ""))),
+        "cognito_user_pool_id" => pool_id,
+        "cognito_app_client_id" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID", "")),
+        "cognito_domain" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN", "")),
+        "scopes" => ["openid", "email", "profile"],
+        "response_type" => "code",
+    ))
 end
 
 function handle_build_model(req)
@@ -1802,6 +1825,55 @@ function _is_subpath(path::AbstractString, root::AbstractString)
 end
 
 
+const LOCAL_IMAGE_MIMES = Dict(
+    ".png"  => "image/png",
+    ".jpg"  => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".gif"  => "image/gif",
+    ".svg"  => "image/svg+xml",
+    ".webp" => "image/webp",
+    ".bmp"  => "image/bmp",
+)
+
+# Local-image serving is enabled in two situations:
+#   1. The backend was launched by the macOS desktop app (parent PID env var set).
+#   2. The operator explicitly opted in via BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES=1.
+# Deployed contexts (AWS Batch, shared servers) leave it OFF — exposing arbitrary
+# user files over an HTTP endpoint that binds 0.0.0.0 would be a data-exfil risk.
+function local_images_enabled()
+    configured_parent_pid() !== nothing && return true
+    return lowercase(first_nonempty_env(["BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES"])) in ("1", "true", "yes")
+end
+
+function handle_local_image(req)
+    if !local_images_enabled()
+        return HTTP.Response(403, "Local image serving is disabled in this deployment")
+    end
+
+    uri = HTTP.URI(req.target)
+    query = HTTP.queryparams(uri)
+    raw_path = get(query, "path", "")
+    isempty(raw_path) && return HTTP.Response(400, "Missing ?path=")
+
+    requested = expanduser(String(raw_path))
+    ext = lowercase(splitext(requested)[2])
+    haskey(LOCAL_IMAGE_MIMES, ext) || return HTTP.Response(415, "Unsupported image extension: $ext")
+
+    isfile(requested) || return HTTP.Response(404, "Not found")
+
+    bytes = try
+        read(requested)
+    catch e
+        @error "Failed to read local image" path=requested exception=(e, catch_backtrace())
+        return HTTP.Response(500, "Failed to read file")
+    end
+
+    return HTTP.Response(200, [
+        "Content-Type"  => LOCAL_IMAGE_MIMES[ext],
+        "Cache-Control" => "private, max-age=60",
+    ], bytes)
+end
+
 function serve_static(req)
     path = HTTP.URI(req.target).path
     relative_path = path == "/" ? "index.html" : lstrip(path, '/')
@@ -1827,7 +1899,14 @@ function serve_static(req)
         ".webm" => "video/webm",
     )
     content_type = get(mime, ext, "application/octet-stream")
-    return HTTP.Response(200, ["Content-Type" => content_type], read(filepath))
+    # Disable caching for static assets. The macOS shell's WKWebView would
+    # otherwise apply heuristic caching to HTML/JS modules (no Cache-Control
+    # → cache for ~10% of Last-Modified age), which masks frontend updates
+    # behind stale module imports even after "Reload Shell".
+    return HTTP.Response(200, [
+        "Content-Type" => content_type,
+        "Cache-Control" => "no-store",
+    ], read(filepath))
 end
 
 # ─── Router ───
@@ -1855,14 +1934,33 @@ const API_ROUTES = Dict{String, Function}(
     "/api/debug_logs" => handle_debug_logs,
 )
 
+const _CORS_HEADERS = [
+    "Access-Control-Allow-Origin" => "*",
+    "Access-Control-Allow-Methods" => "POST, GET, OPTIONS",
+    # Authorization is non-simple so it triggers preflight; we have to list it
+    # explicitly. Without this header the macOS WebView (origin
+    # http://127.0.0.1:18088) cannot reach the EC2 broker
+    # (origin https://…) for /api/jobs/* and /api/auth/config.
+    "Access-Control-Allow-Headers" => "Content-Type, Authorization, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
+    "Access-Control-Max-Age" => "600",
+]
+
+function _with_cors(resp::HTTP.Response)
+    for (name, value) in _CORS_HEADERS
+        # Don't clobber if the handler already chose to set an explicit origin
+        # (none do today, but it's cheap insurance).
+        HTTP.hasheader(resp, name) || push!(resp.headers, name => value)
+    end
+    return resp
+end
+
 function router(req)
-    # CORS preflight
+    return _with_cors(_router_impl(req))
+end
+
+function _router_impl(req)
     if req.method == "OPTIONS"
-        return HTTP.Response(200, [
-            "Access-Control-Allow-Origin" => "*",
-            "Access-Control-Allow-Methods" => "POST, GET, OPTIONS",
-            "Access-Control-Allow-Headers" => "Content-Type, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
-        ])
+        return HTTP.Response(204, _CORS_HEADERS)
     end
 
     path = HTTP.URI(req.target).path
@@ -1876,6 +1974,16 @@ function router(req)
         return handle_version(req)
     end
 
+    if path == "/api/auth/config"
+        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
+        return handle_auth_config(req)
+    end
+
+    if path == "/api/local-image"
+        req.method == "GET" || return error_response("Method not allowed"; status=405)
+        return handle_local_image(req)
+    end
+
     if path == "/api/jobs" || startswith(path, "/api/jobs/")
         client_id = debug_client_id_from_request(req)
         return with_debug_client_scope(client_id) do
@@ -1883,7 +1991,9 @@ function router(req)
                 return handle_jobs_route(req, path)
             catch e
                 @error "API error" path exception=(e, catch_backtrace())
-                if is_request_error(e)
+                if e isa QuotaExceeded
+                    return error_response(sprint(showerror, e); status=429)
+                elseif is_request_error(e)
                     return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
                 else
                     return error_response("Internal server error"; status=500)

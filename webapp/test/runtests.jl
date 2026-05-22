@@ -99,6 +99,192 @@ function Logging.handle_message(::ThrowingLogger, level, message, _module, group
     throw(IOError("write", Base.UV_EPIPE))
 end
 
+function with_isolated_job_store(f::Function)
+    previous_env = haskey(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE") ? ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] : nothing
+    previous_store_dir = BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[]
+
+    mktempdir() do dir
+        try
+            ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = dir
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = nothing
+            lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
+                empty!(BiocircuitsExplorerBackend.JOBS)
+                empty!(BiocircuitsExplorerBackend.JOB_TASKS)
+            end
+            f(dir)
+        finally
+            if previous_env === nothing
+                delete!(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE")
+            else
+                ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = previous_env
+            end
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
+            lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
+                empty!(BiocircuitsExplorerBackend.JOBS)
+                empty!(BiocircuitsExplorerBackend.JOB_TASKS)
+            end
+        end
+    end
+end
+
+function response_json(resp)
+    return BiocircuitsExplorerBackend._materialize(JSON3.read(String(resp.body)))
+end
+
+function wait_for_job_terminal(job_id; attempts=120, interval=0.05)
+    job = get_biocircuits_job(job_id)
+    for _ in 1:attempts
+        String(job["status"]) in ("succeeded", "failed", "cancelled") && return job
+        sleep(interval)
+        job = get_biocircuits_job(job_id)
+    end
+    return job
+end
+
+function write_mock_aws_cli(path::AbstractString)
+    open(path, "w") do io
+        write(io, """
+#!/usr/bin/env bash
+set -euo pipefail
+: "\${AWS_MOCK_LOG:?}"
+: "\${AWS_MOCK_S3_ROOT:?}"
+printf '%s\\n' "\$*" >> "\$AWS_MOCK_LOG"
+
+s3_path() {
+  local uri="\${1#s3://}"
+  printf '%s/%s' "\$AWS_MOCK_S3_ROOT" "\$uri"
+}
+
+if [ "\$1" = "s3" ] && [ "\$2" = "cp" ]; then
+  src="\$3"
+  dst="\$4"
+  if [[ "\$src" == s3://* ]]; then
+    cp "\$(s3_path "\$src")" "\$dst"
+  elif [[ "\$dst" == s3://* ]]; then
+    target="\$(s3_path "\$dst")"
+    mkdir -p "\$(dirname "\$target")"
+    cp "\$src" "\$target"
+  else
+    cp "\$src" "\$dst"
+  fi
+  exit 0
+fi
+
+if [ "\$1" = "s3api" ] && [ "\$2" = "head-object" ]; then
+  bucket=""
+  key=""
+  shift 2
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --bucket) bucket="\$2"; shift 2 ;;
+      --key)    key="\$2";    shift 2 ;;
+      *)        shift ;;
+    esac
+  done
+  target="\$AWS_MOCK_S3_ROOT/\$bucket/\$key"
+  if [ -f "\$target" ]; then
+    printf '{"ContentLength":%s}\\n' "\$(wc -c <"\$target" | tr -d ' ')"
+    exit 0
+  fi
+  printf 'mock head-object: 404 %s\\n' "\$target" >&2
+  exit 254
+fi
+
+if [ "\$1" = "batch" ] && [ "\$2" = "submit-job" ]; then
+  printf '{"jobId":"mock-batch-job-123","jobName":"mock-biocircuits-job"}\\n'
+  exit 0
+fi
+
+if [ "\$1" = "batch" ] && [ "\$2" = "describe-jobs" ]; then
+  status="\${AWS_MOCK_DESCRIBE_STATUS:-SUCCEEDED}"
+  printf '{"jobs":[{"jobId":"mock-batch-job-123","status":"%s","statusReason":"mock status reason","container":{"reason":"mock container reason"}}]}\\n' "\$status"
+  exit 0
+fi
+
+if [ "\$1" = "batch" ] && { [ "\$2" = "cancel-job" ] || [ "\$2" = "terminate-job" ]; }; then
+  exit 0
+fi
+
+if [ "\$1" = "s3" ] && [ "\$2" = "presign" ]; then
+  uri="\$3"
+  expires="3600"
+  shift 3
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --expires-in) expires="\$2"; shift 2 ;;
+      *)            shift ;;
+    esac
+  done
+  printf 'https://mock-presigned.example.com/%s?expires=%s\\n' "\${uri#s3://}" "\$expires"
+  exit 0
+fi
+
+if [ "\$1" = "dynamodb" ] && [ "\$2" = "update-item" ]; then
+  # AWS_MOCK_DDB_REJECT=1 simulates a ConditionalCheckFailedException
+  # so the quota check rejects the request.
+  if [ "\${AWS_MOCK_DDB_REJECT:-0}" = "1" ]; then
+    printf 'mock ddb: ConditionalCheckFailedException\\n' >&2
+    exit 254
+  fi
+  printf '{}\\n'
+  exit 0
+fi
+
+printf 'unexpected aws mock call: %s\\n' "\$*" >&2
+exit 2
+""")
+    end
+    chmod(path, 0o755)
+    return path
+end
+
+function mock_s3_path(root::AbstractString, uri::AbstractString)
+    startswith(String(uri), "s3://") || error("Expected S3 URI, got $(uri)")
+    return joinpath(root, split(String(uri)[6:end], "/")...)
+end
+
+function read_json_file(path::AbstractString)
+    return BiocircuitsExplorerBackend._materialize(JSON3.read(read(path, String)))
+end
+
+_b64url_encode(bytes) = replace(replace(replace(base64encode(bytes), "+" => "-"), "/" => "_"), "=" => "")
+
+function make_test_rsa_keypair(dir::AbstractString)
+    priv_path = joinpath(dir, "priv.pem")
+    pub_path = joinpath(dir, "pub.pem")
+    run(pipeline(`openssl genrsa -out $(priv_path) 2048`; stdout=devnull, stderr=devnull))
+    run(pipeline(`openssl rsa -in $(priv_path) -pubout -out $(pub_path)`; stdout=devnull, stderr=devnull))
+    # Extract modulus / exponent for JWKs entry.
+    n_hex_raw = read(`openssl rsa -in $(priv_path) -modulus -noout`, String)
+    @assert startswith(n_hex_raw, "Modulus=")
+    n_hex = strip(n_hex_raw[length("Modulus=") + 1:end])
+    # Strip leading 00 byte if present (DER unsigned int encoding); base64url
+    # of the raw modulus matches what Cognito publishes.
+    n_bytes = hex2bytes(lpad(n_hex, length(n_hex) + (length(n_hex) % 2), "0"))
+    if !isempty(n_bytes) && n_bytes[1] == 0x00
+        n_bytes = n_bytes[2:end]
+    end
+    n_b64 = _b64url_encode(n_bytes)
+    e_b64 = _b64url_encode(UInt8[0x01, 0x00, 0x01])
+    return (priv_path=priv_path, n_b64=n_b64, e_b64=e_b64,
+            n_int=BiocircuitsExplorerBackend._b64url_decode_bigint(n_b64),
+            e_int=BiocircuitsExplorerBackend._b64url_decode_bigint(e_b64))
+end
+
+function sign_test_jwt(priv_path::AbstractString, header::AbstractDict, payload::AbstractDict)
+    header_b64 = _b64url_encode(Vector{UInt8}(JSON3.write(header)))
+    payload_b64 = _b64url_encode(Vector{UInt8}(JSON3.write(payload)))
+    signing_input = string(header_b64, ".", payload_b64)
+    mktempdir() do dir
+        msg = joinpath(dir, "msg")
+        sig = joinpath(dir, "sig")
+        write(msg, signing_input)
+        run(pipeline(`openssl dgst -sha256 -sign $(priv_path) -out $(sig) $(msg)`; stdout=devnull, stderr=devnull))
+        sig_b64 = _b64url_encode(read(sig))
+        return string(signing_input, ".", sig_b64)
+    end
+end
+
 @testset "Compiled Query Hash" begin
     profile = atlas_search_profile_binding_small_v0()
     q1 = Dict(
@@ -153,6 +339,520 @@ end
     @test sanitized["nan"] == "NaN"
     @test sanitized["nested"][1] == "Inf"
     @test sanitized["nested"][2]["x"] == "-Inf"
+end
+
+@testset "Async Job API Runs Local Query Job" begin
+    with_isolated_job_store() do store_dir
+        spec = Dict(
+            "library" => atlas_library_default(),
+            "query" => Dict("limit" => 1),
+        )
+        request = HTTP.Request(
+            "POST",
+            "/api/jobs",
+            ["Content-Type" => "application/json"],
+            JSON3.write(Dict(
+                "kind" => "query_atlas",
+                "execution" => Dict("mode" => "local_async"),
+                "spec" => spec,
+            )),
+        )
+
+        response = router(request)
+        @test response.status == 202
+        submitted = response_json(response)
+        job_id = String(submitted["job_id"])
+
+        @test submitted["executor"] == "local_async"
+        @test submitted["kind"] == "query_atlas"
+        @test isfile(joinpath(store_dir, job_id, "input.json"))
+
+        finished = wait_for_job_terminal(job_id)
+        @test finished["status"] == "succeeded"
+        @test finished["result_available"] == true
+
+        result_payload = get_biocircuits_job_result(job_id)
+        @test result_payload["job"]["job_id"] == job_id
+        @test result_payload["result"]["result_count"] == 0
+        @test isfile(joinpath(store_dir, job_id, "result.json"))
+    end
+end
+
+@testset "AWS Batch Job Uses S3 Artifacts And Mock CLI" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+            spec = Dict(
+                "networks" => Any[SIMPLE_NETWORK],
+                "behavior_config" => Dict(
+                    "compute_volume" => false,
+                    "include_path_records" => false,
+                    "min_volume_mean" => 0.0,
+                ),
+            )
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX" => "mock-prefix",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+            ) do
+                submitted = submit_biocircuits_job_from_spec(Dict(
+                    "kind" => "build_atlas",
+                    "execution" => Dict("mode" => "aws_batch", "vcpus" => 2, "memory_mib" => 4096),
+                    "spec" => spec,
+                ))
+                job_id = String(submitted["job_id"])
+                record = BiocircuitsExplorerBackend._job_record(job_id)
+
+                @test submitted["executor"] == "aws_batch"
+                @test submitted["status"] == "queued"
+                @test submitted["external_job_id"] == "mock-batch-job-123"
+                @test submitted["user_sub"] == "anonymous"
+                user_prefix = "s3://mock-bucket/jobs/users/anonymous/jobs/$(job_id)/"
+                @test startswith(String(record["input_uri"]), user_prefix)
+                @test startswith(String(record["status_uri"]), user_prefix)
+                @test startswith(String(record["result_uri"]), user_prefix)
+
+                uploaded_input = read_json_file(mock_s3_path(s3_root, String(record["input_uri"])))
+                @test uploaded_input["executor"] == "aws_batch"
+                @test uploaded_input["kind"] == "build_atlas"
+                @test uploaded_input["user_sub"] == "anonymous"
+                @test uploaded_input["artifacts"]["status"] == record["status_uri"]
+                @test uploaded_input["artifacts"]["result"] == record["result_uri"]
+
+                log_text = read(aws_log, String)
+                @test occursin("s3 cp ", log_text)
+                @test occursin("batch submit-job", log_text)
+                @test occursin("mock-queue", log_text)
+                @test occursin("mock-worker", log_text)
+                @test occursin("VCPU", log_text)
+                @test occursin("MEMORY", log_text)
+                @test occursin("--tags User=anonymous,JobKind=build_atlas", log_text)
+                @test occursin("--propagate-tags", log_text)
+
+                result_path = mock_s3_path(s3_root, String(record["result_uri"]))
+                mkpath(dirname(result_path))
+                open(result_path, "w") do io
+                    JSON3.pretty(io, Dict("ok" => true, "job_id" => job_id))
+                    write(io, "\n")
+                end
+
+                ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
+                refreshed = get_biocircuits_job(job_id)
+                @test refreshed["status"] == "succeeded"
+                @test refreshed["result_available"] == true
+
+                result_payload = get_biocircuits_job_result(job_id)
+                @test result_payload["result"]["ok"] == true
+                @test result_payload["result"]["job_id"] == job_id
+            end
+        end
+    end
+end
+
+@testset "AWS Batch Missing Result Downgrades Succeeded To Failed" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+            ) do
+                submitted = submit_biocircuits_job_from_spec(Dict(
+                    "kind" => "build_atlas",
+                    "execution" => Dict("mode" => "aws_batch"),
+                    "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                ))
+                job_id = String(submitted["job_id"])
+                record = BiocircuitsExplorerBackend._job_record(job_id)
+                @test startswith(String(record["result_uri"]), "s3://mock-bucket/jobs/users/anonymous/jobs/$(job_id)/")
+
+                # AWS Batch reports SUCCEEDED but the worker never uploaded
+                # result.json — the backend must downgrade the public status.
+                ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
+                refreshed = get_biocircuits_job(job_id)
+                @test refreshed["status"] == "failed"
+                @test refreshed["result_available"] == false
+                @test occursin("result artifact is missing", String(get(refreshed, "error", "")))
+
+                # Host must not have written the S3 status.json (the worker
+                # owns it for aws_batch jobs).
+                s3_status_path = mock_s3_path(s3_root, String(record["status_uri"]))
+                @test !isfile(s3_status_path)
+            end
+        end
+    end
+end
+
+@testset "Per-User S3 Partition And Cross-User Isolation" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+            ) do
+                alice = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                bob = "11111111-2222-3333-4444-555555555555"
+
+                # Submit one job as Alice via the public Julia API.
+                submitted_alice = submit_biocircuits_job_from_spec(Dict(
+                    "kind" => "build_atlas",
+                    "execution" => Dict("mode" => "aws_batch"),
+                    "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                ); user_sub=alice)
+                alice_job_id = String(submitted_alice["job_id"])
+                alice_record = BiocircuitsExplorerBackend._job_record(alice_job_id)
+
+                @test submitted_alice["user_sub"] == alice
+                @test startswith(String(alice_record["input_uri"]),
+                    "s3://mock-bucket/jobs/users/$(alice)/jobs/$(alice_job_id)/")
+
+                log_text = read(aws_log, String)
+                @test occursin("--tags User=$(alice),JobKind=build_atlas", log_text)
+
+                # Bob must not be able to read, cancel, or fetch the result of
+                # Alice's job — the public API surfaces "Unknown job_id" to
+                # avoid confirming existence.
+                @test_throws ArgumentError get_biocircuits_job(alice_job_id; user_sub=bob)
+                @test_throws ArgumentError cancel_biocircuits_job(alice_job_id; user_sub=bob)
+
+                # Submit via the HTTP router with X-User-Sub header set.
+                request = HTTP.Request(
+                    "POST",
+                    "/api/jobs",
+                    [
+                        "Content-Type" => "application/json",
+                        "X-User-Sub" => bob,
+                    ],
+                    JSON3.write(Dict(
+                        "kind" => "build_atlas",
+                        "execution" => Dict("mode" => "aws_batch"),
+                        "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                    )),
+                )
+                response = router(request)
+                @test response.status == 202
+                submitted_bob = response_json(response)
+                bob_job_id = String(submitted_bob["job_id"])
+                @test submitted_bob["user_sub"] == bob
+
+                # Alice cannot see Bob's job via the HTTP router either.
+                alice_get_bob = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs/$(bob_job_id)",
+                    ["X-User-Sub" => alice],
+                ))
+                @test alice_get_bob.status == 400
+                @test occursin("Unknown job_id", String(alice_get_bob.body))
+
+                # Bob can see Bob's own job.
+                bob_get_bob = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs/$(bob_job_id)",
+                    ["X-User-Sub" => bob],
+                ))
+                @test bob_get_bob.status == 200
+                payload = response_json(bob_get_bob)
+                @test payload["user_sub"] == bob
+            end
+        end
+    end
+end
+
+@testset "Cognito JWT Verifier Round-Trips A Signed Token" begin
+    mktempdir() do dir
+        kp = make_test_rsa_keypair(dir)
+        pool_id = "us-west-2_TestPool"
+        client_id = "abcdefg1234567890"
+        kid = "test-kid-1"
+        BiocircuitsExplorerBackend._reset_jwks_cache!()
+        BiocircuitsExplorerBackend._test_set_jwks!(pool_id, kid, kp.n_int, kp.e_int)
+
+        good_payload = Dict(
+            "sub" => "alice-sub",
+            "iss" => "https://cognito-idp.us-west-2.amazonaws.com/$(pool_id)",
+            "aud" => client_id,
+            "token_use" => "id",
+            "exp" => Int(floor(time())) + 600,
+            "email" => "alice@example.test",
+        )
+        good_header = Dict("alg" => "RS256", "kid" => kid, "typ" => "JWT")
+        good_jwt = sign_test_jwt(kp.priv_path, good_header, good_payload)
+
+        claims = verify_cognito_jwt(good_jwt;
+            user_pool_id=pool_id, region="us-west-2", audience=client_id)
+        @test claims["sub"] == "alice-sub"
+        @test claims["token_use"] == "id"
+        @test claims["email"] == "alice@example.test"
+
+        # Expired token
+        expired = merge(good_payload, Dict("exp" => Int(floor(time())) - 60))
+        expired_jwt = sign_test_jwt(kp.priv_path, good_header, expired)
+        @test_throws ArgumentError verify_cognito_jwt(expired_jwt;
+            user_pool_id=pool_id, region="us-west-2", audience=client_id)
+
+        # Audience mismatch
+        wrong_aud = merge(good_payload, Dict("aud" => "different-client"))
+        wrong_aud_jwt = sign_test_jwt(kp.priv_path, good_header, wrong_aud)
+        @test_throws ArgumentError verify_cognito_jwt(wrong_aud_jwt;
+            user_pool_id=pool_id, region="us-west-2", audience=client_id)
+
+        # Tampered signature
+        tampered = string(good_jwt[1:end-4], "AAAA")
+        @test_throws ArgumentError verify_cognito_jwt(tampered;
+            user_pool_id=pool_id, region="us-west-2", audience=client_id)
+
+        # Unknown kid
+        BiocircuitsExplorerBackend._reset_jwks_cache!()
+        @test_throws Exception verify_cognito_jwt(good_jwt;
+            user_pool_id=pool_id, region="us-west-2", audience=client_id)
+    end
+end
+
+@testset "Router Requires JWT When Cognito Configured" begin
+    with_isolated_job_store() do _
+        mktempdir() do dir
+            kp = make_test_rsa_keypair(dir)
+            pool_id = "us-west-2_RouterPool"
+            client_id = "router-client-id"
+            kid = "router-kid-1"
+            BiocircuitsExplorerBackend._reset_jwks_cache!()
+            BiocircuitsExplorerBackend._test_set_jwks!(pool_id, kid, kp.n_int, kp.e_int)
+
+            payload = Dict(
+                "sub" => "bob-sub",
+                "iss" => "https://cognito-idp.us-west-2.amazonaws.com/$(pool_id)",
+                "aud" => client_id,
+                "token_use" => "id",
+                "exp" => Int(floor(time())) + 600,
+            )
+            jwt = sign_test_jwt(kp.priv_path,
+                Dict("alg" => "RS256", "kid" => kid, "typ" => "JWT"), payload)
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID" => pool_id,
+                "BIOCIRCUITS_EXPLORER_COGNITO_REGION" => "us-west-2",
+                "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID" => client_id,
+            ) do
+                # No Authorization header → 400 from request_error
+                noauth = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs",
+                    ["Content-Type" => "application/json"],
+                    JSON3.write(Dict(
+                        "kind" => "query_atlas",
+                        "execution" => Dict("mode" => "local_async"),
+                        "spec" => Dict(
+                            "library" => atlas_library_default(),
+                            "query" => Dict("limit" => 1),
+                        ),
+                    )),
+                ))
+                @test noauth.status == 400
+                @test occursin("Missing Authorization Bearer token", String(noauth.body))
+
+                # Valid bearer → 202, sub from JWT (not from X-User-Sub).
+                authed = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs",
+                    [
+                        "Content-Type" => "application/json",
+                        "Authorization" => "Bearer $(jwt)",
+                        "X-User-Sub" => "attacker-sub",
+                    ],
+                    JSON3.write(Dict(
+                        "kind" => "query_atlas",
+                        "execution" => Dict("mode" => "local_async"),
+                        "spec" => Dict(
+                            "library" => atlas_library_default(),
+                            "query" => Dict("limit" => 1),
+                        ),
+                    )),
+                ))
+                @test authed.status == 202
+                submitted = response_json(authed)
+                @test submitted["user_sub"] == "bob-sub"
+            end
+        end
+    end
+end
+
+@testset "DynamoDB Quota Over-Limit Returns 429" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "BIOCIRCUITS_EXPLORER_QUOTA_TABLE" => "mock-quotas",
+                "BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT" => "3",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+                "AWS_MOCK_DDB_REJECT" => "1",
+            ) do
+                # The mock DynamoDB rejects the conditional update => quota
+                # rejected => 429 surfaces through the router.
+                response = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs",
+                    [
+                        "Content-Type" => "application/json",
+                        "X-User-Sub" => "quota-victim-sub",
+                    ],
+                    JSON3.write(Dict(
+                        "kind" => "build_atlas",
+                        "execution" => Dict("mode" => "aws_batch"),
+                        "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                    )),
+                ))
+                @test response.status == 429
+                @test occursin("Daily submission quota exceeded", String(response.body))
+
+                # When the mock accepts, submission proceeds.
+                withenv("AWS_MOCK_DDB_REJECT" => "0") do
+                    accepted = router(HTTP.Request(
+                        "POST",
+                        "/api/jobs",
+                        [
+                            "Content-Type" => "application/json",
+                            "X-User-Sub" => "quota-victim-sub",
+                        ],
+                        JSON3.write(Dict(
+                            "kind" => "build_atlas",
+                            "execution" => Dict("mode" => "aws_batch"),
+                            "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                        )),
+                    ))
+                    @test accepted.status == 202
+                end
+            end
+        end
+    end
+end
+
+@testset "Pre-Signed Result URL Endpoint" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+            ) do
+                user_sub = "presign-user"
+                submitted = submit_biocircuits_job_from_spec(Dict(
+                    "kind" => "build_atlas",
+                    "execution" => Dict("mode" => "aws_batch"),
+                    "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                ); user_sub=user_sub)
+                job_id = String(submitted["job_id"])
+                record = BiocircuitsExplorerBackend._job_record(job_id)
+
+                # Pre-stage result.json so the SUCCEEDED transition is clean.
+                result_path = mock_s3_path(s3_root, String(record["result_uri"]))
+                mkpath(dirname(result_path))
+                open(result_path, "w") do io
+                    JSON3.pretty(io, Dict("ok" => true))
+                end
+                ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
+
+                presign_resp = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs/$(job_id)/result-url",
+                    ["X-User-Sub" => user_sub],
+                ))
+                @test presign_resp.status == 200
+                body = response_json(presign_resp)
+                @test occursin("mock-presigned.example.com", String(body["result_url"]))
+                @test occursin("/users/$(user_sub)/jobs/$(job_id)/result.json", String(body["result_url"]))
+                @test body["expires_in"] == 3600
+
+                # Other users can't pre-sign someone else's job.
+                attacker = router(HTTP.Request(
+                    "POST",
+                    "/api/jobs/$(job_id)/result-url",
+                    ["X-User-Sub" => "someone-else"],
+                ))
+                @test attacker.status == 400
+                @test occursin("Unknown job_id", String(attacker.body))
+            end
+        end
+    end
+end
+
+@testset "AWS Batch Queued Job Cancellation Uses CancelJob" begin
+    with_isolated_job_store() do _
+        mktempdir() do mock_dir
+            aws_cli = write_mock_aws_cli(joinpath(mock_dir, "aws"))
+            aws_log = joinpath(mock_dir, "aws.log")
+            s3_root = joinpath(mock_dir, "s3")
+
+            withenv(
+                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "mock-queue",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "mock-worker",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
+                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "AWS_MOCK_LOG" => aws_log,
+                "AWS_MOCK_S3_ROOT" => s3_root,
+                "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
+            ) do
+                submitted = submit_biocircuits_job_from_spec(Dict(
+                    "kind" => "build_atlas",
+                    "execution" => Dict("mode" => "aws_batch"),
+                    "spec" => Dict("networks" => Any[SIMPLE_NETWORK]),
+                ))
+                cancelled = cancel_biocircuits_job(String(submitted["job_id"]))
+                log_text = read(aws_log, String)
+
+                @test cancelled["status"] == "cancelled"
+                @test occursin("batch cancel-job", log_text)
+                @test occursin("mock-batch-job-123", log_text)
+            end
+        end
+    end
 end
 
 @testset "Behavior Program Codec Round Trips" begin
