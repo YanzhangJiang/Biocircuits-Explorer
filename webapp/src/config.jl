@@ -68,4 +68,7 @@ cognito_jwks_url_override() = _env_string("BIOCIRCUITS_EXPLORER_COGNITO_JWKS_URL
 atlas_sqlite_persist_mode_raw() = String(get(ENV, ATLAS_SQLITE_PERSIST_MODE_ENV, ""))
 atlas_sqlite_lightweight_raw() = String(get(ENV, ATLAS_SQLITE_LIGHTWEIGHT_ENV, ""))
 
+# Static assets
+allow_local_images() = _bool_flag(get(ENV, "BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES", ""))
+
 end # module

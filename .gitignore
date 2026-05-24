@@ -108,6 +108,7 @@ known_hosts
 
 # --- Language / tooling caches (future-proofing) ---
 node_modules/
+webapp/public/js/dist/
 .venv/
 venv/
 *.egg-info/

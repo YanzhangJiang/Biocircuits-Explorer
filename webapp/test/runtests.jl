@@ -308,20 +308,21 @@ end
 end
 
 @testset "Buffering Logger Tolerates Broken Console Pipe" begin
-    lock(BiocircuitsExplorerBackend.DEBUG_LOG_LOCK) do
-        empty!(BiocircuitsExplorerBackend.DEBUG_LOGS)
-        BiocircuitsExplorerBackend.DEBUG_LOG_SEQ[] = 0
+    DL = BiocircuitsExplorerBackend.DebugLog
+    lock(DL.DEBUG_LOG_LOCK) do
+        empty!(DL.DEBUG_LOGS)
+        DL.DEBUG_LOG_SEQ[] = 0
     end
 
-    logger = BiocircuitsExplorerBackend.BufferingConsoleLogger(ThrowingLogger(), Logging.Info)
+    logger = DL.BufferingConsoleLogger(ThrowingLogger(), Logging.Info)
 
     @test Logging.catch_exceptions(logger) == true
     @test_nowarn Logging.handle_message(logger, Logging.Info, "test message", @__MODULE__, :tests, :event, "file", 1)
     @test logger.console_forwarding_enabled[] == false
 
-    lock(BiocircuitsExplorerBackend.DEBUG_LOG_LOCK) do
-        @test any(entry -> get(entry, "message", "") == "test message", BiocircuitsExplorerBackend.DEBUG_LOGS)
-        @test any(entry -> occursin("Console log forwarding disabled", get(entry, "message", "")), BiocircuitsExplorerBackend.DEBUG_LOGS)
+    lock(DL.DEBUG_LOG_LOCK) do
+        @test any(entry -> get(entry, "message", "") == "test message", DL.DEBUG_LOGS)
+        @test any(entry -> occursin("Console log forwarding disabled", get(entry, "message", "")), DL.DEBUG_LOGS)
     end
 end
 

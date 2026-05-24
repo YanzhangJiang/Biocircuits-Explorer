@@ -1,48 +1,56 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Biocircuits Explorer 是结合网络设计的 CAD 工作台：勾勒反应、验证响应几何、提交能在参数漂移下存活的设计。">
-<title>Biocircuits Explorer — 结合网络的 CAD 工作台</title>
+<meta name="description" data-i18n-attr-content="meta.description" content="Biocircuits Explorer is the CAD workbench for synthetic-biology binding networks: sketch reactions, verify response geometry, and commit to designs that survive parameter drift.">
+<title data-i18n="meta.title">Biocircuits Explorer — CAD for binding networks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="landing.css">
 </head>
 <body>
+<!--
+  This file is the single source of truth for the landing page. The browser
+  also serves an identical copy at /index.zh.html for backward-compatible
+  Chinese URLs; js/i18n.js detects the locale from the URL and swaps text via
+  data-i18n attributes. Keep the two HTML files byte-identical (CI: npm run
+  check-i18n-sync). Edit only this file; translations live in
+  webapp/public/locales/<lang>.json.
+-->
 <header class="site-header">
-  <a class="brand" href="/" aria-label="Biocircuits Explorer 首页">
+  <a class="brand" href="/" data-i18n-attr-aria-label="header.brand_aria" aria-label="Biocircuits Explorer home">
     <span>Biocircuits Explorer</span>
   </a>
-  <nav class="site-nav" aria-label="产品导航">
-    <a href="#overview">概览</a>
-    <a href="#variants">版本</a>
-    <a href="#features">能力</a>
-    <a href="#workflow">工作流</a>
-    <a href="/wiki.zh.html">Wiki</a>
-    <a href="#download">下载</a>
+  <nav class="site-nav" data-i18n-attr-aria-label="header.nav.aria" aria-label="Product navigation">
+    <a href="#overview" data-i18n="header.nav.overview">Overview</a>
+    <a href="#variants" data-i18n="header.nav.editions">Editions</a>
+    <a href="#features" data-i18n="header.nav.capabilities">Capabilities</a>
+    <a href="#workflow" data-i18n="header.nav.workflow">Workflow</a>
+    <a href="/wiki.html" data-i18n-attr-href="header.nav.wiki_href" data-i18n="header.nav.wiki">Wiki</a>
+    <a href="#download" data-i18n="header.nav.download">Download</a>
   </nav>
-  <span class="lang-switch" role="group" aria-label="语言">
-    <a href="/index.html" lang="en">EN</a>
-    <a href="/index.zh.html" class="active" aria-current="page" lang="zh-CN">中文</a>
+  <span class="lang-switch" role="group" data-i18n-attr-aria-label="header.lang_aria" aria-label="Language">
+    <a href="/index.html" class="active" aria-current="page" lang="en">EN</a>
+    <a href="/index.zh.html" lang="zh-CN">中文</a>
   </span>
-  <a class="nav-cta" href="/index-node.html">打开 Web App</a>
+  <a class="nav-cta" href="/index-node.html" data-i18n="header.cta">Open Web App</a>
 </header>
 
 <main>
   <section class="hero" aria-labelledby="hero-title">
     <div class="hero-inner">
-      <p class="hero-eyebrow">面向合成生物的结合网络 CAD</p>
+      <p class="hero-eyebrow" data-i18n="hero.eyebrow">CAD for synthetic-biology binding networks</p>
       <h1 id="hero-title">Biocircuits Explorer</h1>
-      <p class="hero-lede">
-        给结合网络工程师的设计工作台。勾勒反应、验证回路能到达的响应几何、提交能在参数漂移下依然存活的设计 —— 一切在同一张画布上完成，远在第一支引物下单之前。
+      <p class="hero-lede" data-i18n="hero.lede">
+        The design workbench for binding-network engineers. Sketch reactions, verify the response geometry your circuit can reach, and commit to the design that survives parameter drift — all on one canvas, before a single primer is ordered.
       </p>
-      <div class="hero-links" aria-label="主要操作">
-        <a href="/index-node.html">打开 Web 版 <span aria-hidden="true">→</span></a>
-        <a href="#download">获取 macOS 版 <span aria-hidden="true">→</span></a>
-        <a href="#features">查看能力 <span aria-hidden="true">→</span></a>
-        <a href="/wiki.zh.html">阅读 Wiki <span aria-hidden="true">→</span></a>
+      <div class="hero-links" data-i18n-attr-aria-label="hero.actions_aria" aria-label="Primary actions">
+        <a href="/index-node.html"><span data-i18n="hero.cta.web">Launch web app</span> <span aria-hidden="true">→</span></a>
+        <a href="#download"><span data-i18n="hero.cta.macos">Get macOS app</span> <span aria-hidden="true">→</span></a>
+        <a href="#features"><span data-i18n="hero.cta.features">See capabilities</span> <span aria-hidden="true">→</span></a>
+        <a href="/wiki.html" data-i18n-attr-href="header.nav.wiki_href"><span data-i18n="hero.cta.wiki">Read the wiki</span> <span aria-hidden="true">→</span></a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub <span aria-hidden="true">→</span></a>
       </div>
     </div>
@@ -51,12 +59,12 @@
   <section class="section" id="overview" aria-labelledby="overview-title">
     <div class="section-inner">
       <figure class="product-figure product-figure-lead">
-        <img src="media/main.png" alt="Biocircuits Explorer 工作台总览" loading="eager">
+        <img src="media/main.png" data-i18n-attr-alt="overview.img_alt" alt="Biocircuits Explorer workbench overview" loading="eager">
       </figure>
       <div class="section-heading section-heading-centered">
-        <h2 id="overview-title">输入反应草图，输出可被验证的响应曲面。</h2>
-        <p>
-          硬件 CAD 让芯片设计师摆脱了&ldquo;先流片再看到底能不能跑&rdquo;的循环。Biocircuits Explorer 对结合网络做同样的事：你的回路可以落到的每一个 regime 构成的多面体在事前就被计算出来 —— 于是你提交的，是在参数漂移下依然能跑的设计，而不是&ldquo;上次实验恰好成立&rdquo;的那一个。
+        <h2 id="overview-title" data-i18n="overview.title">Reaction sketch in. Verified response surface out.</h2>
+        <p data-i18n="overview.body">
+          Hardware CAD let chip designers stop fabricating prototypes to find out what their circuit would do. Biocircuits Explorer does the same for binding networks: the polyhedron of every regime your circuit can occupy is computed up front, so you commit to the design that survives parameter drift — not the one that happened to work in the last experiment.
         </p>
       </div>
     </div>
@@ -65,8 +73,8 @@
   <section class="section section-muted" id="variants" aria-labelledby="variants-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="variants-title">同一套工作空间模型，三种运行方式。</h2>
-        <p>部署到浏览器、安装原生 macOS 应用，或者继续在原始表单界面里跑脚本。工作空间与 Atlas 库以可移植的 JSON 在三者之间流转。</p>
+        <h2 id="variants-title" data-i18n="variants.title">Same workspace model. Three ways to run it.</h2>
+        <p data-i18n="variants.body">Deploy to a browser, install the native macOS app, or stay on the original form UI for scripted work. Workspaces and atlas libraries are portable JSON across all three.</p>
       </div>
       <div class="variants-grid">
         <article class="variant-card">
@@ -74,39 +82,39 @@
             <span class="variant-tag">Web</span>
             <h3>Biocircuits Web</h3>
           </div>
-          <p>完整的设计画布，由任意现代浏览器渲染。适合共享后端的团队、课堂部署，以及托管服务器上的远程协作。</p>
+          <p data-i18n="variants.web.body">The full design canvas, served from any modern browser. Best for teams behind a shared backend, classroom deployments, and remote collaborators on a managed server.</p>
           <ul class="variant-list">
-            <li>浏览器内运行完整节点画布，零安装</li>
-            <li>Cloud Compute 支撑长耗时 Atlas 构建</li>
-            <li>基于 Cognito 的账户与按用户配额</li>
+            <li data-i18n="variants.web.li1">Full node canvas with zero install</li>
+            <li data-i18n="variants.web.li2">Cloud Compute for long-running atlas builds</li>
+            <li data-i18n="variants.web.li3">Cognito-backed accounts and per-user quotas</li>
           </ul>
-          <a class="variant-link" href="/index-node.html">打开 Web App <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="/index-node.html"><span data-i18n="variants.web.cta">Open web app</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="variant-card">
           <div class="variant-head">
             <span class="variant-tag">macOS</span>
             <h3>Biocircuits for macOS</h3>
           </div>
-          <p>SwiftUI 外壳，自带本地项目抽屉与应用托管的后端。适合希望工作空间留在磁盘上、Atlas 库从不离机的个人设计者。</p>
+          <p data-i18n="variants.mac.body">SwiftUI shell with an on-device project drawer and an app-managed backend. Best for individual designers who want workspace files on disk and an atlas library that never leaves the machine.</p>
           <ul class="variant-list">
-            <li>本地项目抽屉与文档型工作空间</li>
-            <li>应用托管的 Julia 后端</li>
-            <li>磁盘上的 SQLite Atlas 库</li>
+            <li data-i18n="variants.mac.li1">Local project drawer and document files</li>
+            <li data-i18n="variants.mac.li2">App-managed Julia backend</li>
+            <li data-i18n="variants.mac.li3">SQLite atlas libraries on disk</li>
           </ul>
-          <a class="variant-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release 下载 <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer"><span data-i18n="variants.mac.cta">Release downloads</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="variant-card">
           <div class="variant-head">
             <span class="variant-tag">Classic</span>
-            <h3>经典表单 UI</h3>
+            <h3 data-i18n="variants.classic.title">Classic form UI</h3>
           </div>
-          <p>最早期的表单式界面。保留它，用于可复现的脚本化分析、无头重跑，以及与画布工作流的对照基准。</p>
+          <p data-i18n="variants.classic.body">The original form-based interface, kept around for reproducible scripting, headless reruns, and benchmarking against the canvas workflow.</p>
           <ul class="variant-list">
-            <li>直接的表单参数录入</li>
-            <li>兼容已有 notebook 与脚本</li>
-            <li>适合无头复现</li>
+            <li data-i18n="variants.classic.li1">Direct form-based parameter entry</li>
+            <li data-i18n="variants.classic.li2">Compatible with existing notebooks and scripts</li>
+            <li data-i18n="variants.classic.li3">Useful for headless reproduction</li>
           </ul>
-          <a class="variant-link" href="/classic.html">打开经典 UI <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="/classic.html"><span data-i18n="variants.classic.cta">Open classic UI</span> <span aria-hidden="true">→</span></a>
         </article>
       </div>
     </div>
@@ -115,19 +123,19 @@
   <section class="section" id="features" aria-labelledby="features-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="features-title">五个原语。一个设计曲面。</h2>
-        <p>每个原语都是画布上的一个节点。把它们连起来、跑一次、工作空间就地刷新 —— 这正是硬件设计师对 EDA 期望的迭代回路。</p>
+        <h2 id="features-title" data-i18n="features.title">Five primitives. One design surface.</h2>
+        <p data-i18n="features.body">Each primitive is a live node on the canvas. Wire them up, run, and the workspace updates in place — the same iteration loop a hardware designer expects from EDA.</p>
       </div>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">01 · 响应曲面几何</p>
-          <h3>回路能落到的每一个 regime，组成一个多面体。</h3>
-          <p>精确枚举反应级数多面体（ROP）的顶点、棱、面。旋转几何、检查 support、直接从几何上读出主导级数 —— 就像 EDA 工具展示时序裕度，而不是只给你一个&ldquo;过 / 不过&rdquo;。</p>
+          <p class="feature-kicker" data-i18n="features.f1.kicker">01 · Response-surface geometry</p>
+          <h3 data-i18n="features.f1.title">The polyhedron of every regime your circuit can occupy.</h3>
+          <p data-i18n="features.f1.body">Enumerate the exact vertices, edges, and faces of the Reaction Order Polyhedron. Rotate the geometry, inspect supports, and read dominant orders directly off the surface — the same way an EDA tool exposes timing margin instead of a binary yes/no.</p>
           <ul>
-            <li>顶点与面的精确枚举</li>
-            <li>3D 旋转与交互式检查</li>
-            <li>每个顶点带主导级数标签</li>
+            <li data-i18n="features.f1.li1">Exact vertex and face enumeration</li>
+            <li data-i18n="features.f1.li2">Interactive 3D rotation and inspection</li>
+            <li data-i18n="features.f1.li3">Dominant order labels per vertex</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -135,19 +143,20 @@
             src="media/rop-polyhedron.mp4"
             poster="media/rop-polyhedron-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
-            aria-label="ROP 多面体录屏"></video>
+            data-i18n-attr-aria-label="features.f1.video_aria"
+            aria-label="ROP polyhedron recording"></video>
         </div>
       </article>
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">02 · 输入输出验证</p>
-          <h3>回路在不同 regime 之间到底会怎么走。</h3>
-          <p>跟踪你选定的输入/输出对在参数变化时所走的 SISO 路径，把渐近族与奇异族并排比较。在湿实验跑一轮之前，就先看清回路真正会停在哪些 regime。</p>
+          <p class="feature-kicker" data-i18n="features.f2.kicker">02 · Input-output verification</p>
+          <h3 data-i18n="features.f2.title">What the circuit will actually do between regimes.</h3>
+          <p data-i18n="features.f2.body">Walk the SISO paths your input/output pair traces as parameters change. Compare asymptotic and singular families side by side. Spot the regimes a circuit will live in, before a single wet-lab cycle confirms it.</p>
           <ul>
-            <li>带 regime 叠加的 SISO 路径遍历</li>
-            <li>渐近 vs. 奇异行为族对照</li>
-            <li>钉住输入输出的行为签名</li>
+            <li data-i18n="features.f2.li1">SISO path traversal with regime overlays</li>
+            <li data-i18n="features.f2.li2">Asymptotic vs. singular family comparison</li>
+            <li data-i18n="features.f2.li3">Behavior signatures pinned to inputs and outputs</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -155,19 +164,20 @@
             src="media/siso-behaviors.mp4"
             poster="media/siso-behaviors-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
-            aria-label="SISO 行为录屏"></video>
+            data-i18n-attr-aria-label="features.f2.video_aria"
+            aria-label="SISO behaviors recording"></video>
         </div>
       </article>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">03 · 容差分析</p>
-          <h3>在实验台决定之前，先扫一遍参数。</h3>
-          <p>1D / 2D 参数扫描带实时绘图。钉住十字光标、在网格上拖动，结果节点不离开画布也会就地更新。这是板级设计师常对元器件方差跑的容差回路 —— 只不过这里的方差来自生物本身。</p>
+          <p class="feature-kicker" data-i18n="features.f3.kicker">03 · Tolerance analysis</p>
+          <h3 data-i18n="features.f3.title">Sweep parameters before the bench commits to them.</h3>
+          <p data-i18n="features.f3.body">Run 1D and 2D parameter scans with live plotting. Pin a crosshair, drag across the grid, and the result node updates without leaving the canvas. The same tolerance loop a board designer runs against component variance — except the variance here is biology.</p>
           <ul>
-            <li>1D / 2D 扫描，实时绘图</li>
-            <li>交互十字光标与数值读取</li>
-            <li>结果直接回流到下游节点</li>
+            <li data-i18n="features.f3.li1">1D and 2D scans with live plotting</li>
+            <li data-i18n="features.f3.li2">Interactive crosshair and value readout</li>
+            <li data-i18n="features.f3.li3">Results feed straight back into downstream nodes</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -175,19 +185,20 @@
             src="media/parameter-scan.mp4"
             poster="media/parameter-scan-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
-            aria-label="参数扫描录屏"></video>
+            data-i18n-attr-aria-label="features.f3.video_aria"
+            aria-label="Parameter scan recording"></video>
         </div>
       </article>
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">04 · 噪声下的鲁棒性</p>
-          <h3>哪些 regime 在参数云里活了下来？</h3>
-          <p>对参数空间做随机采样，再把云点叠到多面体上。鲁棒 regime 会以密集簇出现，脆弱的则散落在外围。在细胞间方差下，选那个能落到鲁棒 regime 的设计 —— 而不是仅仅在原理图上&ldquo;看起来干净&rdquo;的那个。</p>
+          <p class="feature-kicker" data-i18n="features.f4.kicker">04 · Robustness under noise</p>
+          <h3 data-i18n="features.f4.title">Which regimes survive in the parameter cloud?</h3>
+          <p data-i18n="features.f4.body">Sample parameter space stochastically and overlay the cloud onto the polyhedron. Robust regimes show up as dense clusters; fragile ones are sparse outliers. Pick the design that lands in a robust regime under cell-to-cell variation — not just the one that looks clean on the schematic.</p>
           <ul>
-            <li>跨参数空间的随机采样</li>
-            <li>云点叠加到多面体几何上</li>
-            <li>按体积分数给每个 regime 打鲁棒性分</li>
+            <li data-i18n="features.f4.li1">Stochastic sampling across parameter space</li>
+            <li data-i18n="features.f4.li2">Point cloud overlaid on polyhedron geometry</li>
+            <li data-i18n="features.f4.li3">Volume-fraction robustness score per regime</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -195,19 +206,20 @@
             src="media/rop-cloud.mp4"
             poster="media/rop-cloud-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
-            aria-label="ROP 点云录屏"></video>
+            data-i18n-attr-aria-label="features.f4.video_aria"
+            aria-label="ROP cloud recording"></video>
         </div>
       </article>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">05 · 逆向设计、AI Import、远程计算</p>
-          <h3>设计库、AI Agent，以及云端集群。</h3>
-          <p>Atlas 逆向设计在网络库里搜出能实现目标行为的候选；AI Import 一键把论文 / Notebook 翻译成已填好参数的分析链；Cloud Compute 把重 Atlas 构建甩到 AWS Batch；工作空间始终保持可版本化的 JSON。</p>
+          <p class="feature-kicker" data-i18n="features.f5.kicker">05 · Inverse design, AI Import, remote compute</p>
+          <h3 data-i18n="features.f5.title">The library, the agent, and the cluster.</h3>
+          <p data-i18n="features.f5.body">Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Cloud Compute offloads heavy atlas builds to AWS Batch. Workspaces stay versionable JSON across all of it.</p>
           <ul>
-            <li>支持 motif、见证、鲁棒性等多种查询的逆向设计</li>
-            <li>AI Import 支持 Claude / DeepSeek（Key 全程留在你的浏览器）</li>
-            <li>Cloud Compute 配套 Cognito 账户与按用户配额</li>
+            <li data-i18n="features.f5.li1">Atlas inverse design with motif, witness, and robustness queries</li>
+            <li data-i18n="features.f5.li2">AI Import via Claude or DeepSeek (key stays in your browser)</li>
+            <li data-i18n="features.f5.li3">Cloud Compute with Cognito accounts and per-user quotas</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -215,7 +227,8 @@
             src="media/other-function.mp4"
             poster="media/other-function-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
-            aria-label="其它功能录屏"></video>
+            data-i18n-attr-aria-label="features.f5.video_aria"
+            aria-label="Additional features recording"></video>
         </div>
       </article>
     </div>
@@ -224,36 +237,36 @@
   <section class="section section-muted" id="workflow" aria-labelledby="workflow-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="workflow-title">从假设到一个可以放上汇报的设计。</h2>
-        <p>四步走同一条路 —— 不论在浏览器、原生 macOS 应用，还是经典表单界面。工作空间与 Atlas 库在三者之间始终可移植。</p>
+        <h2 id="workflow-title" data-i18n="workflow.title">From hypothesis to a design you can defend in review.</h2>
+        <p data-i18n="workflow.body">Four steps that follow the same path in the browser, the native macOS shell, or the classic form UI. Workspaces and atlas libraries stay portable between them.</p>
       </div>
-      <ol class="workflow-list" aria-label="工作流步骤">
+      <ol class="workflow-list" data-i18n-attr-aria-label="workflow.steps_aria" aria-label="Workflow steps">
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">01</span>
           <div>
-            <h3>勾勒结合网络</h3>
-            <p>录入反应、Kd 值、守恒总量与可观测物种 —— 或者让 AI Import 一遍把它们从论文里抽出来。</p>
+            <h3 data-i18n="workflow.s1.title">Sketch the binding network</h3>
+            <p data-i18n="workflow.s1.body">Type the reactions, Kd values, conserved totals, and observable species — or have AI Import extract them from a paper in one pass.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">02</span>
           <div>
-            <h3>编译符号模型</h3>
-            <p>model-builder 把草图编译成矩阵 N 与 L，枚举 regime 顶点，并交还一个会被所有下游节点复用的 session。</p>
+            <h3 data-i18n="workflow.s2.title">Compile the symbolic model</h3>
+            <p data-i18n="workflow.s2.body">The model-builder turns the sketch into the matrices N and L, enumerates the regime vertices, and hands you a session every downstream node reuses.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">03</span>
           <div>
-            <h3>验证响应几何</h3>
-            <p>走 SISO 路径、跑参数扫描、采样参数云、检索 Atlas。在你下决心做实验之前，先把回路能到达的每个 regime 都演练一遍。</p>
+            <h3 data-i18n="workflow.s3.title">Verify response geometry</h3>
+            <p data-i18n="workflow.s3.body">Walk SISO paths, run parameter scans, sample the parameter cloud, and search the atlas. Exercise every regime your circuit can reach before you commit to a build.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">04</span>
           <div>
-            <h3>交付设计</h3>
-            <p>导出可移植 JSON 工作空间、交接 SQLite Atlas 库，在合作者的机器 —— 或 CI worker 上 —— 复现同一份分析。</p>
+            <h3 data-i18n="workflow.s4.title">Ship the design</h3>
+            <p data-i18n="workflow.s4.body">Export the workspace as portable JSON, hand off SQLite atlas libraries, and reproduce the same analysis on a teammate's machine — or on a CI worker.</p>
           </div>
         </li>
       </ol>
@@ -263,23 +276,23 @@
   <section class="section" id="download" aria-labelledby="download-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="download-title">开始设计你的生物回路。</h2>
-        <p>打开 Web 版即开即用；或者安装 macOS 应用，获得设备内项目与应用托管的后端。两者都自带完整画布。</p>
+        <h2 id="download-title" data-i18n="download.title">Start designing biocircuits.</h2>
+        <p data-i18n="download.body">Open the web app for instant access, or install the macOS app for on-device projects and an app-managed backend. Both ship with the full canvas.</p>
       </div>
       <div class="download-grid">
         <article class="download-card">
-          <p class="platform-label">Web 版</p>
-          <h3>在浏览器里打开画布。</h3>
-          <p>零安装。适合共享部署、课堂教学，以及在托管后端上审阅合作者的工作空间。</p>
-          <a class="download-link" href="/index-node.html">打开 Web App <span aria-hidden="true">→</span></a>
+          <p class="platform-label" data-i18n="download.web.label">Web version</p>
+          <h3 data-i18n="download.web.title">Open the canvas in your browser.</h3>
+          <p data-i18n="download.web.body">Zero install. Best for shared deployments, classroom sessions, and reviewing teammates' workspaces against a managed backend.</p>
+          <a class="download-link" href="/index-node.html"><span data-i18n="download.web.cta">Open Web App</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="download-card">
-          <p class="platform-label">macOS 版</p>
-          <h3>在你的 Mac 上跑设计回路。</h3>
-          <p>SwiftUI 外壳，带设备内项目抽屉、文档型工作空间，以及应用托管的 Julia 后端。打包构建通过 GitHub Releases 分发。</p>
+          <p class="platform-label" data-i18n="download.mac.label">macOS version</p>
+          <h3 data-i18n="download.mac.title">Run the design loop on your Mac.</h3>
+          <p data-i18n="download.mac.body">SwiftUI shell with an on-device project drawer, document files, and an app-managed Julia backend. Packaged builds ship through GitHub Releases.</p>
           <div class="download-actions">
-            <a class="download-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release 下载 <span aria-hidden="true">→</span></a>
-            <a class="download-link download-link-muted" href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">从源码构建 <span aria-hidden="true">→</span></a>
+            <a class="download-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer"><span data-i18n="download.mac.cta">Release downloads</span> <span aria-hidden="true">→</span></a>
+            <a class="download-link download-link-muted" href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer"><span data-i18n="download.mac.cta_alt">Build from source</span> <span aria-hidden="true">→</span></a>
           </div>
         </article>
       </div>
@@ -290,58 +303,59 @@
 <footer class="site-footer">
   <div class="section-inner footer-top">
     <div class="footer-brand-col">
-      <a class="footer-brand" href="/" aria-label="Biocircuits Explorer 首页">
+      <a class="footer-brand" href="/" data-i18n-attr-aria-label="footer.brand_aria" aria-label="Biocircuits Explorer home">
         <span>Biocircuits Explorer</span>
       </a>
     </div>
 
     <div class="footer-col">
-      <h4>产品</h4>
+      <h4 data-i18n="footer.product.title">Product</h4>
       <ul>
-        <li><a href="/index-node.html">Web App</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">macOS Releases</a></li>
-        <li><a href="/classic.html">经典 UI</a></li>
-        <li><a href="#features">能力</a></li>
-        <li><a href="#workflow">工作流</a></li>
+        <li><a href="/index-node.html" data-i18n="footer.product.web">Web app</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer" data-i18n="footer.product.mac">macOS releases</a></li>
+        <li><a href="/classic.html" data-i18n="footer.product.classic">Classic UI</a></li>
+        <li><a href="#features" data-i18n="footer.product.capabilities">Capabilities</a></li>
+        <li><a href="#workflow" data-i18n="footer.product.workflow">Workflow</a></li>
       </ul>
     </div>
 
     <div class="footer-col">
-      <h4>资源</h4>
+      <h4 data-i18n="footer.resources.title">Resources</h4>
       <ul>
-        <li><a href="/wiki.zh.html">Wiki — ROP 入门（中文）</a></li>
-        <li><a href="/wiki.html">Wiki — Introduction to ROP (EN)</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub 仓库</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">从源码构建</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release Notes</a></li>
+        <li><a href="/wiki.html" data-i18n="footer.resources.wiki_en">Wiki — Introduction to ROP (EN)</a></li>
+        <li><a href="/wiki.zh.html" data-i18n="footer.resources.wiki_zh">Wiki — ROP 入门 (中文)</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer" data-i18n="footer.resources.repo">GitHub repository</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer" data-i18n="footer.resources.build">Build from source</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer" data-i18n="footer.resources.releases">Release notes</a></li>
       </ul>
     </div>
 
     <div class="footer-col">
-      <h4>社区</h4>
+      <h4 data-i18n="footer.community.title">Community</h4>
       <ul>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/issues" rel="noreferrer">报告问题</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/discussions" rel="noreferrer">讨论区</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/issues" rel="noreferrer" data-i18n="footer.community.issues">Report an issue</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/discussions" rel="noreferrer" data-i18n="footer.community.discussions">Discussions</a></li>
       </ul>
     </div>
 
     <div class="footer-tagline">
-      <p class="footer-tagline-text">先设计，再装配。<br>先验证，再提交。</p>
+      <p class="footer-tagline-text" data-i18n-html="footer.tagline_html">Design before assembly.<br>Verify before commit.</p>
     </div>
   </div>
 
   <div class="footer-bottom">
     <div class="section-inner footer-bottom-inner">
-      <span>Copyright © 2026 Biocircuits Explorer</span>
+      <span data-i18n="footer.copyright">Copyright © 2026 Biocircuits Explorer</span>
       <div class="footer-bottom-links">
-        <a href="#download">下载</a>
+        <a href="#download" data-i18n="footer.download">Download</a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub</a>
-        <span>面向合成生物的结合网络 CAD。</span>
+        <span data-i18n="footer.summary">CAD for synthetic-biology binding networks.</span>
       </div>
     </div>
   </div>
 </footer>
 
+<script type="module" src="js/i18n.js"></script>
 <script src="landing.js" defer></script>
 </body>
 </html>

@@ -3,46 +3,54 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Biocircuits Explorer is the CAD workbench for synthetic-biology binding networks: sketch reactions, verify response geometry, and commit to designs that survive parameter drift.">
-<title>Biocircuits Explorer — CAD for binding networks</title>
+<meta name="description" data-i18n-attr-content="meta.description" content="Biocircuits Explorer is the CAD workbench for synthetic-biology binding networks: sketch reactions, verify response geometry, and commit to designs that survive parameter drift.">
+<title data-i18n="meta.title">Biocircuits Explorer — CAD for binding networks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="landing.css">
 </head>
 <body>
+<!--
+  This file is the single source of truth for the landing page. The browser
+  also serves an identical copy at /index.zh.html for backward-compatible
+  Chinese URLs; js/i18n.js detects the locale from the URL and swaps text via
+  data-i18n attributes. Keep the two HTML files byte-identical (CI: npm run
+  check-i18n-sync). Edit only this file; translations live in
+  webapp/public/locales/<lang>.json.
+-->
 <header class="site-header">
-  <a class="brand" href="/" aria-label="Biocircuits Explorer home">
+  <a class="brand" href="/" data-i18n-attr-aria-label="header.brand_aria" aria-label="Biocircuits Explorer home">
     <span>Biocircuits Explorer</span>
   </a>
-  <nav class="site-nav" aria-label="Product navigation">
-    <a href="#overview">Overview</a>
-    <a href="#variants">Editions</a>
-    <a href="#features">Capabilities</a>
-    <a href="#workflow">Workflow</a>
-    <a href="/wiki.html">Wiki</a>
-    <a href="#download">Download</a>
+  <nav class="site-nav" data-i18n-attr-aria-label="header.nav.aria" aria-label="Product navigation">
+    <a href="#overview" data-i18n="header.nav.overview">Overview</a>
+    <a href="#variants" data-i18n="header.nav.editions">Editions</a>
+    <a href="#features" data-i18n="header.nav.capabilities">Capabilities</a>
+    <a href="#workflow" data-i18n="header.nav.workflow">Workflow</a>
+    <a href="/wiki.html" data-i18n-attr-href="header.nav.wiki_href" data-i18n="header.nav.wiki">Wiki</a>
+    <a href="#download" data-i18n="header.nav.download">Download</a>
   </nav>
-  <span class="lang-switch" role="group" aria-label="Language">
+  <span class="lang-switch" role="group" data-i18n-attr-aria-label="header.lang_aria" aria-label="Language">
     <a href="/index.html" class="active" aria-current="page" lang="en">EN</a>
     <a href="/index.zh.html" lang="zh-CN">中文</a>
   </span>
-  <a class="nav-cta" href="/index-node.html">Open Web App</a>
+  <a class="nav-cta" href="/index-node.html" data-i18n="header.cta">Open Web App</a>
 </header>
 
 <main>
   <section class="hero" aria-labelledby="hero-title">
     <div class="hero-inner">
-      <p class="hero-eyebrow">CAD for synthetic-biology binding networks</p>
+      <p class="hero-eyebrow" data-i18n="hero.eyebrow">CAD for synthetic-biology binding networks</p>
       <h1 id="hero-title">Biocircuits Explorer</h1>
-      <p class="hero-lede">
+      <p class="hero-lede" data-i18n="hero.lede">
         The design workbench for binding-network engineers. Sketch reactions, verify the response geometry your circuit can reach, and commit to the design that survives parameter drift — all on one canvas, before a single primer is ordered.
       </p>
-      <div class="hero-links" aria-label="Primary actions">
-        <a href="/index-node.html">Launch web app <span aria-hidden="true">→</span></a>
-        <a href="#download">Get macOS app <span aria-hidden="true">→</span></a>
-        <a href="#features">See capabilities <span aria-hidden="true">→</span></a>
-        <a href="/wiki.html">Read the wiki <span aria-hidden="true">→</span></a>
+      <div class="hero-links" data-i18n-attr-aria-label="hero.actions_aria" aria-label="Primary actions">
+        <a href="/index-node.html"><span data-i18n="hero.cta.web">Launch web app</span> <span aria-hidden="true">→</span></a>
+        <a href="#download"><span data-i18n="hero.cta.macos">Get macOS app</span> <span aria-hidden="true">→</span></a>
+        <a href="#features"><span data-i18n="hero.cta.features">See capabilities</span> <span aria-hidden="true">→</span></a>
+        <a href="/wiki.html" data-i18n-attr-href="header.nav.wiki_href"><span data-i18n="hero.cta.wiki">Read the wiki</span> <span aria-hidden="true">→</span></a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub <span aria-hidden="true">→</span></a>
       </div>
     </div>
@@ -51,11 +59,11 @@
   <section class="section" id="overview" aria-labelledby="overview-title">
     <div class="section-inner">
       <figure class="product-figure product-figure-lead">
-        <img src="media/main.png" alt="Biocircuits Explorer workbench overview" loading="eager">
+        <img src="media/main.png" data-i18n-attr-alt="overview.img_alt" alt="Biocircuits Explorer workbench overview" loading="eager">
       </figure>
       <div class="section-heading section-heading-centered">
-        <h2 id="overview-title">Reaction sketch in. Verified response surface out.</h2>
-        <p>
+        <h2 id="overview-title" data-i18n="overview.title">Reaction sketch in. Verified response surface out.</h2>
+        <p data-i18n="overview.body">
           Hardware CAD let chip designers stop fabricating prototypes to find out what their circuit would do. Biocircuits Explorer does the same for binding networks: the polyhedron of every regime your circuit can occupy is computed up front, so you commit to the design that survives parameter drift — not the one that happened to work in the last experiment.
         </p>
       </div>
@@ -65,8 +73,8 @@
   <section class="section section-muted" id="variants" aria-labelledby="variants-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="variants-title">Same workspace model. Three ways to run it.</h2>
-        <p>Deploy to a browser, install the native macOS app, or stay on the original form UI for scripted work. Workspaces and atlas libraries are portable JSON across all three.</p>
+        <h2 id="variants-title" data-i18n="variants.title">Same workspace model. Three ways to run it.</h2>
+        <p data-i18n="variants.body">Deploy to a browser, install the native macOS app, or stay on the original form UI for scripted work. Workspaces and atlas libraries are portable JSON across all three.</p>
       </div>
       <div class="variants-grid">
         <article class="variant-card">
@@ -74,39 +82,39 @@
             <span class="variant-tag">Web</span>
             <h3>Biocircuits Web</h3>
           </div>
-          <p>The full design canvas, served from any modern browser. Best for teams behind a shared backend, classroom deployments, and remote collaborators on a managed server.</p>
+          <p data-i18n="variants.web.body">The full design canvas, served from any modern browser. Best for teams behind a shared backend, classroom deployments, and remote collaborators on a managed server.</p>
           <ul class="variant-list">
-            <li>Full node canvas with zero install</li>
-            <li>Cloud Compute for long-running atlas builds</li>
-            <li>Cognito-backed accounts and per-user quotas</li>
+            <li data-i18n="variants.web.li1">Full node canvas with zero install</li>
+            <li data-i18n="variants.web.li2">Cloud Compute for long-running atlas builds</li>
+            <li data-i18n="variants.web.li3">Cognito-backed accounts and per-user quotas</li>
           </ul>
-          <a class="variant-link" href="/index-node.html">Open web app <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="/index-node.html"><span data-i18n="variants.web.cta">Open web app</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="variant-card">
           <div class="variant-head">
             <span class="variant-tag">macOS</span>
             <h3>Biocircuits for macOS</h3>
           </div>
-          <p>SwiftUI shell with an on-device project drawer and an app-managed backend. Best for individual designers who want workspace files on disk and an atlas library that never leaves the machine.</p>
+          <p data-i18n="variants.mac.body">SwiftUI shell with an on-device project drawer and an app-managed backend. Best for individual designers who want workspace files on disk and an atlas library that never leaves the machine.</p>
           <ul class="variant-list">
-            <li>Local project drawer and document files</li>
-            <li>App-managed Julia backend</li>
-            <li>SQLite atlas libraries on disk</li>
+            <li data-i18n="variants.mac.li1">Local project drawer and document files</li>
+            <li data-i18n="variants.mac.li2">App-managed Julia backend</li>
+            <li data-i18n="variants.mac.li3">SQLite atlas libraries on disk</li>
           </ul>
-          <a class="variant-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release downloads <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer"><span data-i18n="variants.mac.cta">Release downloads</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="variant-card">
           <div class="variant-head">
             <span class="variant-tag">Classic</span>
-            <h3>Classic form UI</h3>
+            <h3 data-i18n="variants.classic.title">Classic form UI</h3>
           </div>
-          <p>The original form-based interface, kept around for reproducible scripting, headless reruns, and benchmarking against the canvas workflow.</p>
+          <p data-i18n="variants.classic.body">The original form-based interface, kept around for reproducible scripting, headless reruns, and benchmarking against the canvas workflow.</p>
           <ul class="variant-list">
-            <li>Direct form-based parameter entry</li>
-            <li>Compatible with existing notebooks and scripts</li>
-            <li>Useful for headless reproduction</li>
+            <li data-i18n="variants.classic.li1">Direct form-based parameter entry</li>
+            <li data-i18n="variants.classic.li2">Compatible with existing notebooks and scripts</li>
+            <li data-i18n="variants.classic.li3">Useful for headless reproduction</li>
           </ul>
-          <a class="variant-link" href="/classic.html">Open classic UI <span aria-hidden="true">→</span></a>
+          <a class="variant-link" href="/classic.html"><span data-i18n="variants.classic.cta">Open classic UI</span> <span aria-hidden="true">→</span></a>
         </article>
       </div>
     </div>
@@ -115,19 +123,19 @@
   <section class="section" id="features" aria-labelledby="features-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="features-title">Five primitives. One design surface.</h2>
-        <p>Each primitive is a live node on the canvas. Wire them up, run, and the workspace updates in place — the same iteration loop a hardware designer expects from EDA.</p>
+        <h2 id="features-title" data-i18n="features.title">Five primitives. One design surface.</h2>
+        <p data-i18n="features.body">Each primitive is a live node on the canvas. Wire them up, run, and the workspace updates in place — the same iteration loop a hardware designer expects from EDA.</p>
       </div>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">01 · Response-surface geometry</p>
-          <h3>The polyhedron of every regime your circuit can occupy.</h3>
-          <p>Enumerate the exact vertices, edges, and faces of the Reaction Order Polyhedron. Rotate the geometry, inspect supports, and read dominant orders directly off the surface — the same way an EDA tool exposes timing margin instead of a binary yes/no.</p>
+          <p class="feature-kicker" data-i18n="features.f1.kicker">01 · Response-surface geometry</p>
+          <h3 data-i18n="features.f1.title">The polyhedron of every regime your circuit can occupy.</h3>
+          <p data-i18n="features.f1.body">Enumerate the exact vertices, edges, and faces of the Reaction Order Polyhedron. Rotate the geometry, inspect supports, and read dominant orders directly off the surface — the same way an EDA tool exposes timing margin instead of a binary yes/no.</p>
           <ul>
-            <li>Exact vertex and face enumeration</li>
-            <li>Interactive 3D rotation and inspection</li>
-            <li>Dominant order labels per vertex</li>
+            <li data-i18n="features.f1.li1">Exact vertex and face enumeration</li>
+            <li data-i18n="features.f1.li2">Interactive 3D rotation and inspection</li>
+            <li data-i18n="features.f1.li3">Dominant order labels per vertex</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -135,19 +143,20 @@
             src="media/rop-polyhedron.mp4"
             poster="media/rop-polyhedron-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
+            data-i18n-attr-aria-label="features.f1.video_aria"
             aria-label="ROP polyhedron recording"></video>
         </div>
       </article>
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">02 · Input-output verification</p>
-          <h3>What the circuit will actually do between regimes.</h3>
-          <p>Walk the SISO paths your input/output pair traces as parameters change. Compare asymptotic and singular families side by side. Spot the regimes a circuit will live in, before a single wet-lab cycle confirms it.</p>
+          <p class="feature-kicker" data-i18n="features.f2.kicker">02 · Input-output verification</p>
+          <h3 data-i18n="features.f2.title">What the circuit will actually do between regimes.</h3>
+          <p data-i18n="features.f2.body">Walk the SISO paths your input/output pair traces as parameters change. Compare asymptotic and singular families side by side. Spot the regimes a circuit will live in, before a single wet-lab cycle confirms it.</p>
           <ul>
-            <li>SISO path traversal with regime overlays</li>
-            <li>Asymptotic vs. singular family comparison</li>
-            <li>Behavior signatures pinned to inputs and outputs</li>
+            <li data-i18n="features.f2.li1">SISO path traversal with regime overlays</li>
+            <li data-i18n="features.f2.li2">Asymptotic vs. singular family comparison</li>
+            <li data-i18n="features.f2.li3">Behavior signatures pinned to inputs and outputs</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -155,19 +164,20 @@
             src="media/siso-behaviors.mp4"
             poster="media/siso-behaviors-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
+            data-i18n-attr-aria-label="features.f2.video_aria"
             aria-label="SISO behaviors recording"></video>
         </div>
       </article>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">03 · Tolerance analysis</p>
-          <h3>Sweep parameters before the bench commits to them.</h3>
-          <p>Run 1D and 2D parameter scans with live plotting. Pin a crosshair, drag across the grid, and the result node updates without leaving the canvas. The same tolerance loop a board designer runs against component variance — except the variance here is biology.</p>
+          <p class="feature-kicker" data-i18n="features.f3.kicker">03 · Tolerance analysis</p>
+          <h3 data-i18n="features.f3.title">Sweep parameters before the bench commits to them.</h3>
+          <p data-i18n="features.f3.body">Run 1D and 2D parameter scans with live plotting. Pin a crosshair, drag across the grid, and the result node updates without leaving the canvas. The same tolerance loop a board designer runs against component variance — except the variance here is biology.</p>
           <ul>
-            <li>1D and 2D scans with live plotting</li>
-            <li>Interactive crosshair and value readout</li>
-            <li>Results feed straight back into downstream nodes</li>
+            <li data-i18n="features.f3.li1">1D and 2D scans with live plotting</li>
+            <li data-i18n="features.f3.li2">Interactive crosshair and value readout</li>
+            <li data-i18n="features.f3.li3">Results feed straight back into downstream nodes</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -175,19 +185,20 @@
             src="media/parameter-scan.mp4"
             poster="media/parameter-scan-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
+            data-i18n-attr-aria-label="features.f3.video_aria"
             aria-label="Parameter scan recording"></video>
         </div>
       </article>
 
       <article class="feature-row feature-row-reverse">
         <div class="feature-copy">
-          <p class="feature-kicker">04 · Robustness under noise</p>
-          <h3>Which regimes survive in the parameter cloud?</h3>
-          <p>Sample parameter space stochastically and overlay the cloud onto the polyhedron. Robust regimes show up as dense clusters; fragile ones are sparse outliers. Pick the design that lands in a robust regime under cell-to-cell variation — not just the one that looks clean on the schematic.</p>
+          <p class="feature-kicker" data-i18n="features.f4.kicker">04 · Robustness under noise</p>
+          <h3 data-i18n="features.f4.title">Which regimes survive in the parameter cloud?</h3>
+          <p data-i18n="features.f4.body">Sample parameter space stochastically and overlay the cloud onto the polyhedron. Robust regimes show up as dense clusters; fragile ones are sparse outliers. Pick the design that lands in a robust regime under cell-to-cell variation — not just the one that looks clean on the schematic.</p>
           <ul>
-            <li>Stochastic sampling across parameter space</li>
-            <li>Point cloud overlaid on polyhedron geometry</li>
-            <li>Volume-fraction robustness score per regime</li>
+            <li data-i18n="features.f4.li1">Stochastic sampling across parameter space</li>
+            <li data-i18n="features.f4.li2">Point cloud overlaid on polyhedron geometry</li>
+            <li data-i18n="features.f4.li3">Volume-fraction robustness score per regime</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -195,19 +206,20 @@
             src="media/rop-cloud.mp4"
             poster="media/rop-cloud-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
+            data-i18n-attr-aria-label="features.f4.video_aria"
             aria-label="ROP cloud recording"></video>
         </div>
       </article>
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker">05 · Inverse design, AI Import, remote compute</p>
-          <h3>The library, the agent, and the cluster.</h3>
-          <p>Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Cloud Compute offloads heavy atlas builds to AWS Batch. Workspaces stay versionable JSON across all of it.</p>
+          <p class="feature-kicker" data-i18n="features.f5.kicker">05 · Inverse design, AI Import, remote compute</p>
+          <h3 data-i18n="features.f5.title">The library, the agent, and the cluster.</h3>
+          <p data-i18n="features.f5.body">Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Cloud Compute offloads heavy atlas builds to AWS Batch. Workspaces stay versionable JSON across all of it.</p>
           <ul>
-            <li>Atlas inverse design with motif, witness, and robustness queries</li>
-            <li>AI Import via Claude or DeepSeek (key stays in your browser)</li>
-            <li>Cloud Compute with Cognito accounts and per-user quotas</li>
+            <li data-i18n="features.f5.li1">Atlas inverse design with motif, witness, and robustness queries</li>
+            <li data-i18n="features.f5.li2">AI Import via Claude or DeepSeek (key stays in your browser)</li>
+            <li data-i18n="features.f5.li3">Cloud Compute with Cognito accounts and per-user quotas</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -215,6 +227,7 @@
             src="media/other-function.mp4"
             poster="media/other-function-poster.jpg"
             autoplay muted loop playsinline preload="metadata"
+            data-i18n-attr-aria-label="features.f5.video_aria"
             aria-label="Additional features recording"></video>
         </div>
       </article>
@@ -224,36 +237,36 @@
   <section class="section section-muted" id="workflow" aria-labelledby="workflow-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="workflow-title">From hypothesis to a design you can defend in review.</h2>
-        <p>Four steps that follow the same path in the browser, the native macOS shell, or the classic form UI. Workspaces and atlas libraries stay portable between them.</p>
+        <h2 id="workflow-title" data-i18n="workflow.title">From hypothesis to a design you can defend in review.</h2>
+        <p data-i18n="workflow.body">Four steps that follow the same path in the browser, the native macOS shell, or the classic form UI. Workspaces and atlas libraries stay portable between them.</p>
       </div>
-      <ol class="workflow-list" aria-label="Workflow steps">
+      <ol class="workflow-list" data-i18n-attr-aria-label="workflow.steps_aria" aria-label="Workflow steps">
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">01</span>
           <div>
-            <h3>Sketch the binding network</h3>
-            <p>Type the reactions, Kd values, conserved totals, and observable species — or have AI Import extract them from a paper in one pass.</p>
+            <h3 data-i18n="workflow.s1.title">Sketch the binding network</h3>
+            <p data-i18n="workflow.s1.body">Type the reactions, Kd values, conserved totals, and observable species — or have AI Import extract them from a paper in one pass.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">02</span>
           <div>
-            <h3>Compile the symbolic model</h3>
-            <p>The model-builder turns the sketch into the matrices N and L, enumerates the regime vertices, and hands you a session every downstream node reuses.</p>
+            <h3 data-i18n="workflow.s2.title">Compile the symbolic model</h3>
+            <p data-i18n="workflow.s2.body">The model-builder turns the sketch into the matrices N and L, enumerates the regime vertices, and hands you a session every downstream node reuses.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">03</span>
           <div>
-            <h3>Verify response geometry</h3>
-            <p>Walk SISO paths, run parameter scans, sample the parameter cloud, and search the atlas. Exercise every regime your circuit can reach before you commit to a build.</p>
+            <h3 data-i18n="workflow.s3.title">Verify response geometry</h3>
+            <p data-i18n="workflow.s3.body">Walk SISO paths, run parameter scans, sample the parameter cloud, and search the atlas. Exercise every regime your circuit can reach before you commit to a build.</p>
           </div>
         </li>
         <li class="workflow-step">
           <span class="step-index" aria-hidden="true">04</span>
           <div>
-            <h3>Ship the design</h3>
-            <p>Export the workspace as portable JSON, hand off SQLite atlas libraries, and reproduce the same analysis on a teammate's machine — or on a CI worker.</p>
+            <h3 data-i18n="workflow.s4.title">Ship the design</h3>
+            <p data-i18n="workflow.s4.body">Export the workspace as portable JSON, hand off SQLite atlas libraries, and reproduce the same analysis on a teammate's machine — or on a CI worker.</p>
           </div>
         </li>
       </ol>
@@ -263,23 +276,23 @@
   <section class="section" id="download" aria-labelledby="download-title">
     <div class="section-inner">
       <div class="section-heading">
-        <h2 id="download-title">Start designing biocircuits.</h2>
-        <p>Open the web app for instant access, or install the macOS app for on-device projects and an app-managed backend. Both ship with the full canvas.</p>
+        <h2 id="download-title" data-i18n="download.title">Start designing biocircuits.</h2>
+        <p data-i18n="download.body">Open the web app for instant access, or install the macOS app for on-device projects and an app-managed backend. Both ship with the full canvas.</p>
       </div>
       <div class="download-grid">
         <article class="download-card">
-          <p class="platform-label">Web version</p>
-          <h3>Open the canvas in your browser.</h3>
-          <p>Zero install. Best for shared deployments, classroom sessions, and reviewing teammates' workspaces against a managed backend.</p>
-          <a class="download-link" href="/index-node.html">Open Web App <span aria-hidden="true">→</span></a>
+          <p class="platform-label" data-i18n="download.web.label">Web version</p>
+          <h3 data-i18n="download.web.title">Open the canvas in your browser.</h3>
+          <p data-i18n="download.web.body">Zero install. Best for shared deployments, classroom sessions, and reviewing teammates' workspaces against a managed backend.</p>
+          <a class="download-link" href="/index-node.html"><span data-i18n="download.web.cta">Open Web App</span> <span aria-hidden="true">→</span></a>
         </article>
         <article class="download-card">
-          <p class="platform-label">macOS version</p>
-          <h3>Run the design loop on your Mac.</h3>
-          <p>SwiftUI shell with an on-device project drawer, document files, and an app-managed Julia backend. Packaged builds ship through GitHub Releases.</p>
+          <p class="platform-label" data-i18n="download.mac.label">macOS version</p>
+          <h3 data-i18n="download.mac.title">Run the design loop on your Mac.</h3>
+          <p data-i18n="download.mac.body">SwiftUI shell with an on-device project drawer, document files, and an app-managed Julia backend. Packaged builds ship through GitHub Releases.</p>
           <div class="download-actions">
-            <a class="download-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release downloads <span aria-hidden="true">→</span></a>
-            <a class="download-link download-link-muted" href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">Build from source <span aria-hidden="true">→</span></a>
+            <a class="download-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer"><span data-i18n="download.mac.cta">Release downloads</span> <span aria-hidden="true">→</span></a>
+            <a class="download-link download-link-muted" href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer"><span data-i18n="download.mac.cta_alt">Build from source</span> <span aria-hidden="true">→</span></a>
           </div>
         </article>
       </div>
@@ -290,58 +303,59 @@
 <footer class="site-footer">
   <div class="section-inner footer-top">
     <div class="footer-brand-col">
-      <a class="footer-brand" href="/" aria-label="Biocircuits Explorer home">
+      <a class="footer-brand" href="/" data-i18n-attr-aria-label="footer.brand_aria" aria-label="Biocircuits Explorer home">
         <span>Biocircuits Explorer</span>
       </a>
     </div>
 
     <div class="footer-col">
-      <h4>Product</h4>
+      <h4 data-i18n="footer.product.title">Product</h4>
       <ul>
-        <li><a href="/index-node.html">Web app</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">macOS releases</a></li>
-        <li><a href="/classic.html">Classic UI</a></li>
-        <li><a href="#features">Capabilities</a></li>
-        <li><a href="#workflow">Workflow</a></li>
+        <li><a href="/index-node.html" data-i18n="footer.product.web">Web app</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer" data-i18n="footer.product.mac">macOS releases</a></li>
+        <li><a href="/classic.html" data-i18n="footer.product.classic">Classic UI</a></li>
+        <li><a href="#features" data-i18n="footer.product.capabilities">Capabilities</a></li>
+        <li><a href="#workflow" data-i18n="footer.product.workflow">Workflow</a></li>
       </ul>
     </div>
 
     <div class="footer-col">
-      <h4>Resources</h4>
+      <h4 data-i18n="footer.resources.title">Resources</h4>
       <ul>
-        <li><a href="/wiki.html">Wiki — Introduction to ROP (EN)</a></li>
-        <li><a href="/wiki.zh.html">Wiki — ROP 入门 (中文)</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub repository</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer">Build from source</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer">Release notes</a></li>
+        <li><a href="/wiki.html" data-i18n="footer.resources.wiki_en">Wiki — Introduction to ROP (EN)</a></li>
+        <li><a href="/wiki.zh.html" data-i18n="footer.resources.wiki_zh">Wiki — ROP 入门 (中文)</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer" data-i18n="footer.resources.repo">GitHub repository</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer#macos-swiftui-development" rel="noreferrer" data-i18n="footer.resources.build">Build from source</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer" data-i18n="footer.resources.releases">Release notes</a></li>
       </ul>
     </div>
 
     <div class="footer-col">
-      <h4>Community</h4>
+      <h4 data-i18n="footer.community.title">Community</h4>
       <ul>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/issues" rel="noreferrer">Report an issue</a></li>
-        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/discussions" rel="noreferrer">Discussions</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/issues" rel="noreferrer" data-i18n="footer.community.issues">Report an issue</a></li>
+        <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/discussions" rel="noreferrer" data-i18n="footer.community.discussions">Discussions</a></li>
       </ul>
     </div>
 
     <div class="footer-tagline">
-      <p class="footer-tagline-text">Design before assembly.<br>Verify before commit.</p>
+      <p class="footer-tagline-text" data-i18n-html="footer.tagline_html">Design before assembly.<br>Verify before commit.</p>
     </div>
   </div>
 
   <div class="footer-bottom">
     <div class="section-inner footer-bottom-inner">
-      <span>Copyright © 2026 Biocircuits Explorer</span>
+      <span data-i18n="footer.copyright">Copyright © 2026 Biocircuits Explorer</span>
       <div class="footer-bottom-links">
-        <a href="#download">Download</a>
+        <a href="#download" data-i18n="footer.download">Download</a>
         <a href="https://github.com/YanzhangJiang/Biocircuits-Explorer" rel="noreferrer">GitHub</a>
-        <span>CAD for synthetic-biology binding networks.</span>
+        <span data-i18n="footer.summary">CAD for synthetic-biology binding networks.</span>
       </div>
     </div>
   </div>
 </footer>
 
+<script type="module" src="js/i18n.js"></script>
 <script src="landing.js" defer></script>
 </body>
 </html>

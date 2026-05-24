@@ -548,7 +548,89 @@ function atlas_sqlite_init!(db::SQLite.DB)
         "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
         ("updated_at", _now_iso_timestamp()),
     )
+    apply_atlas_sqlite_migrations!(db)
     return db
+end
+
+# ─── Migration framework ───
+# Adding new schema changes:
+#   1. Append an `AtlasSqliteMigration` entry below with a fresh version tag.
+#      Use a monotonically increasing `MAJOR.MINOR.PATCH` string (must compare
+#      correctly with `cmp` lexicographically — pad numbers if needed).
+#   2. The `apply` function gets a `SQLite.DB` and may issue any DDL/DML; it
+#      runs inside a transaction. Make it idempotent when feasible
+#      (`CREATE TABLE IF NOT EXISTS`, guarded ALTERs) so re-runs are safe.
+#   3. Do not edit `atlas_sqlite_init!` for new schema — that captures the
+#      historical baseline and existing databases will not re-run it.
+
+struct AtlasSqliteMigration
+    version::String
+    description::String
+    apply::Function   # (db::SQLite.DB) -> Any
+end
+
+const ATLAS_SQLITE_MIGRATIONS = AtlasSqliteMigration[
+    AtlasSqliteMigration("0.3.0",
+        "Initial schema captured by atlas_sqlite_init!",
+        _ -> nothing),
+]
+
+function _ensure_schema_migrations_table!(db::SQLite.DB)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL,
+            description TEXT
+        )
+        """)
+    return db
+end
+
+function _applied_migration_versions(db::SQLite.DB)
+    rows = _atlas_sqlite_query(db, "SELECT version FROM schema_migrations")
+    versions = Set{String}()
+    for row in rows
+        push!(versions, String(row.version))
+    end
+    return versions
+end
+
+function _record_migration!(db::SQLite.DB, m::AtlasSqliteMigration)
+    _atlas_sqlite_execute(db,
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)",
+        (m.version, _now_iso_timestamp(), m.description))
+end
+
+function apply_atlas_sqlite_migrations!(db::SQLite.DB;
+                                        migrations::AbstractVector{AtlasSqliteMigration} = ATLAS_SQLITE_MIGRATIONS)
+    _ensure_schema_migrations_table!(db)
+    applied = _applied_migration_versions(db)
+
+    # If this database predates the migrations table, atlas_sqlite_init! has
+    # already created the baseline schema via CREATE IF NOT EXISTS; just stamp
+    # the baseline as applied so future migrations have a stable starting
+    # point. Without this, a 0.4.0 migration shipped later would think the DB
+    # is brand-new and re-attempt baseline DDL it can skip.
+    baseline_present = !isempty(_atlas_sqlite_query(db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_metadata'"))
+    if isempty(applied) && baseline_present && !isempty(migrations)
+        _record_migration!(db, first(migrations))
+        push!(applied, first(migrations).version)
+    end
+
+    applied_now = String[]
+    for m in migrations
+        m.version in applied && continue
+        _atlas_sqlite_transaction(db) do
+            m.apply(db)
+            _record_migration!(db, m)
+        end
+        push!(applied, m.version)
+        push!(applied_now, m.version)
+    end
+    return applied_now
 end
 
 function atlas_sqlite_connect(db_path::AbstractString=atlas_sqlite_default_path(); init::Bool=true)
