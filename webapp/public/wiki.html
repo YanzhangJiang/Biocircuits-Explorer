@@ -102,7 +102,7 @@
           <li><a href="#sec-9-2">9.2 Choosing a provider and key</a></li>
           <li><a href="#sec-9-3">9.3 Inputs: text, PDF, notebook</a></li>
           <li><a href="#sec-9-4">9.4 Results and auto-spawned chains</a></li>
-          <li><a href="#sec-9-5">9.5 Honesty rules</a></li>
+          <li><a href="#sec-9-5">9.5 Validation rules</a></li>
         </ol>
       </li>
       <li>
@@ -139,9 +139,9 @@
       <p class="eyebrow">Wiki · Chapter 1</p>
       <h1>Introduction to Reaction Order Polyhedra and the Biocircuits Explorer workbench</h1>
       <p class="subtitle">
-        A short, textbook-style tour of the theory behind the polyhedron, the
-        objects you see on screen, and the recipes that take you from a sketched
-        binding network to a design conclusion.
+        A practical guide to the mathematical objects behind the polyhedron,
+        the nodes shown on the canvas, and the workflow that turns a binding
+        network into a checkable analysis.
       </p>
     </div>
 
@@ -149,13 +149,12 @@
     <section id="sec-1">
       <h2><span class="sec-num">1</span>What this wiki is</h2>
       <p>
-        Biocircuits Explorer is a workbench for designing and analysing
-        equilibrium binding networks through the lens of <em>Reaction Order
-        Polyhedra</em> (ROP). The product page on the homepage shows the
-        capabilities at a glance; this wiki goes one level deeper. It explains
-        the mathematics the app is computing, the language it uses for the
-        objects it draws on the canvas, and the practical recipes that turn a
-        question about a circuit into an answer.
+        Biocircuits Explorer is a workbench for analysing equilibrium binding
+        networks through the lens of <em>Reaction Order Polyhedra</em> (ROP).
+        The homepage shows the entry points; this wiki goes one level deeper.
+        It explains the mathematics the app is computing, the names of the
+        geometric objects on the canvas, and the practical recipes that turn a
+        circuit question into a reproducible analysis step.
       </p>
       <p>
         Read it linearly the first time. Once you have built a few networks,
@@ -172,6 +171,17 @@
           equilibrium thermodynamics (mass action, conserved totals) is.
         </p>
       </div>
+
+      <div class="callout callout-note">
+        <p class="callout-head">Reading scope</p>
+        <p>
+          This is not a promise of a stable external API. Node names, buttons,
+          and cloud-deployment details describe the current repository. The
+          theory sections describe asymptotic structure for equilibrium binding
+          networks; numerical conclusions still need to be checked over the
+          parameter ranges you plan to use.
+        </p>
+      </div>
     </section>
 
     <!-- ============ §2 ============ -->
@@ -182,9 +192,10 @@
         <h3><span class="sec-num">2.1</span>What is a Reaction Order Polyhedron?</h3>
         <p>
           A <strong>Reaction Order Polyhedron</strong> is a geometric object
-          that summarizes everything an equilibrium binding network can do
-          <em>qualitatively</em>, before you commit to specific numerical values
-          for the binding constants or the conserved totals.
+          that organizes the asymptotic regimes an equilibrium binding network
+          can enter at different parameter scales. It does not replace numerical
+          parameter choices; it gives you a structural map before you start
+          scanning them.
         </p>
         <p>
           The input to an ROP analysis is a <strong>binding network</strong>:
@@ -218,13 +229,12 @@
           </li>
         </ul>
         <p>
-          What comes out is not a single equilibrium curve but a
-          <strong>polyhedron</strong> in log-concentration / log-parameter
-          space. Each point of the polyhedron is a <em>dominance mode</em> — a
-          snapshot of which species &ldquo;wins&rdquo; inside each conserved
-          pool. Each <em>vertex</em> corresponds to a complete asymptotic
-          regime; each <em>face</em> or <em>edge</em> is a transition between
-          regimes.
+          What comes out is usually not a single equilibrium curve but a
+          <strong>polyhedral structure</strong> in log-concentration /
+          log-parameter space. A vertex corresponds to a complete asymptotic
+          regime: the dominant species in each conserved pool has been fixed.
+          Faces and edges record ties or switches between dominant terms, which
+          become transitions between regimes.
         </p>
         <p>
           The geometry is polyhedral because the equilibrium equations
@@ -233,21 +243,21 @@
           N \log x \;=\; \log k, \qquad L\,x \;=\; q
         \]
         <p>
-          are non-linear in concentrations but <em>piecewise log-linear</em> in
-          the asymptotic limit. As soon as one term dominates inside each total,
-          every species concentration collapses to a single monomial in the free
-          variables, and the output becomes a linear function of the
-          log-parameters. The polyhedron is the map of <em>which monomial wins
-          where</em>. A curve describes one parameter setting; the polyhedron
-          describes the whole parameter space at once.
+          are non-linear in concentrations but split into <em>log-linear</em>
+          regions in the asymptotic limit. When one term dominates each total,
+          species concentrations are approximated by monomials, and the output
+          becomes a linear function of the log-parameters. The polyhedron maps
+          <em>which monomial wins where</em>; unlike a single numerical curve,
+          it also shows how parameter space is divided into regimes.
         </p>
 
         <figure class="wiki-figure">
           <img src="media/rop-polyhedron-poster.jpg" alt="A 3D Reaction Order Polyhedron with labelled vertices.">
           <figcaption>
             <span class="fig-label">Figure 1.</span>
-            A Reaction Order Polyhedron rendered in the workbench. Each vertex
-            is a complete dominance regime; each face is a regime transition.
+            A Reaction Order Polyhedron rendered in the workbench. Vertices
+            represent dominant regimes; faces and edges represent transitions
+            between them.
           </figcaption>
         </figure>
       </section>
@@ -272,15 +282,14 @@
         \]
         <p>
           The central observation behind ROP is that
-          <strong>at most parameter combinations, one of those monomials is
-          much larger than the others</strong>. Pick any generic point in
-          log-concentration space, and one term wins each sum. When you change
-          parameters, you cross thin boundaries where the winning term flips.
-          Inside one regime, the relationships among concentrations are pure
-          power laws.
+          <strong>away from switching boundaries, these sums usually have one
+          dominant monomial</strong>. Moving in log-concentration space crosses
+          boundaries where that dominant term changes. Inside one regime, the
+          dominant approximation gives power-law relationships among
+          concentrations.
         </p>
         <p>
-          In log-log coordinates the picture becomes clean. If the output \(y\)
+          In log-log coordinates this relationship is easier to read. If the output \(y\)
           and input \(u\) satisfy \( y \asymp C\,u^{\rho} \) in some regime,
           then \( \log y = \rho \log u + \mathrm{const.} \) The slope is exactly
           the <strong>reaction order</strong>:
@@ -305,8 +314,8 @@
           </li>
         </ol>
         <p>
-          The whole qualitative behavior of a circuit is therefore captured by
-          a finite symbolic program of reaction orders:
+          A chosen one-dimensional input scan can therefore be summarized by a
+          finite program of reaction orders:
         </p>
         \[
           b \;=\; (\rho_{1}, \rho_{2}, \ldots, \rho_{L}),
@@ -323,9 +332,9 @@
       <section id="sec-2-3">
         <h3><span class="sec-num">2.3</span>The objects on the polyhedron</h3>
         <p>
-          Biocircuits Explorer uses the vocabulary established in the ROP
-          papers. Each object below is something the app can compute or draw
-          on the canvas.
+          Biocircuits Explorer mostly follows the vocabulary used in the ROP
+          papers. Some of these objects appear directly on the canvas; others
+          are the computation behind result tables and plots.
         </p>
         <dl>
           <dt>Reaction-order matrix</dt>
@@ -403,8 +412,8 @@
           <dt>Capability periodic table</dt>
           <dd>
             A two-coordinate index \((d, \mu)\) — the number of base species and
-            the maximum complex size — under which each cell is an entire
-            design space. Cells carry a <em>capability envelope</em>:
+            the maximum complex size — where each cell corresponds to a finite
+            search space. Cells carry a <em>capability envelope</em>:
             mechanisms realized, strength extrema, robustness extrema, minimal
             witness networks, and certificates of un-reachability.
           </dd>
@@ -413,7 +422,7 @@
           <dd>
             Run-length-compressed three-state programs over
             \(\{-, 0, +\}\). The zero state is real (saturation / invariance)
-            and is never deleted by compression. Mechanism classes include
+            and is preserved during sign compression. Mechanism classes include
             activation from zero \(0 \to +\), settling to zero \(+ \to 0\),
             direct reversal \(+ \to -\), and zero-mediated reversal
             \(+ \to 0 \to -\).
@@ -437,8 +446,8 @@
           </li>
           <li>
             <strong>Sensitive vs. saturated regions.</strong> The polyhedron
-            shows exactly where in log-parameter space each lives, before any
-            numerical sweep.
+            helps locate these regions in log-parameter space, often before
+            doing a dense numerical sweep.
           </li>
           <li>
             <strong>Switching loci / turning points.</strong> Faces of the
@@ -464,9 +473,10 @@
           </li>
           <li>
             <strong>Robust regions.</strong> A program may be strong but
-            fragile, weak but robust, or both. The polyhedron is the geometric
-            object on which the volume-fraction robustness score (the R-index)
-            is computed.
+            fragile, weak but robust, or both. The polyhedron provides the
+            geometry used to compute volume-fraction robustness scores
+            (R-index); the value still depends on the chosen parameter domain
+            and filters.
           </li>
           <li>
             <strong>Achievable behavior families.</strong> Different mechanisms
@@ -535,14 +545,14 @@
           \rho \,:\, 1 \to 1 \to 0,
         \]
         <p>
-          or, after run-length sign compression, a clean settling-to-zero
+          or, after run-length sign compression, a typical settling-to-zero
           response
           \( S(b) \,:\, + \to 0 \).
           Each vertex of the square is a regime; each edge is a turning point;
           the whole square is the dominance polytope for this circuit.
           Increasing \(\mu\) or \(d\) inflates the square into higher-dimensional
-          polyhedra with richer vertex structure — which is exactly the design
-          space the periodic table is built to chart.
+          polyhedra with richer vertex structure — the kind of design space the
+          periodic table is built to chart.
         </p>
       </section>
     </section>
@@ -629,8 +639,8 @@
     <section id="sec-4">
       <h2><span class="sec-num">4</span>Recipes — what to do, step by step</h2>
       <p>
-        Each recipe below is a self-contained workflow. The flow line at the
-        top of each one is the wire diagram you should build on the canvas.
+        Each recipe below can be followed on its own. The flow line at the top
+        of each one is the minimal node chain to build on the canvas.
       </p>
 
       <section id="sec-4-1">
@@ -749,9 +759,9 @@
         <div class="callout callout-tip">
           <p class="callout-head">Reading the slopes</p>
           <p>
-            The sequence of integers in a SISO path is exactly the local
-            log-log slope at each step. If you see <code>0 → 1 → 0</code> you
-            have a clean activation that saturates; <code>1 → 0 → −1</code> is
+            The sequence of integers in a SISO path is the local log-log slope
+            at each step. If you see <code>0 → 1 → 0</code>, it usually means
+            activation followed by saturation; <code>1 → 0 → −1</code> is
             a non-monotone response with a peak. The signs alone, run-length
             compressed, are the &ldquo;sign word&rdquo; the periodic table
             indexes.
@@ -803,8 +813,8 @@
         <h3><span class="sec-num">4.4</span>Visualize the ROP polyhedron and the point cloud</h3>
         <p>
           The polyhedron itself is one node; the point cloud sampled across
-          parameter space is another. Together they let you spot robust
-          regions.
+          parameter space is another. Together they help you spot candidate
+          robust regions.
         </p>
         <div class="flow-line">
           <span class="node">model-builder</span>
@@ -841,9 +851,10 @@
           <li>
             <h4>Look for the dense regions</h4>
             <p>
-              Vertices with a dense surrounding cloud are robust regimes —
-              the circuit lands there for a large fraction of plausible
-              parameter combinations. Sparse vertices are fragile.
+              Vertices with a dense surrounding cloud are often more robust
+              within the chosen sampling range and sampling mode. Sparse
+              vertices are not automatically useless, but they do suggest a
+              narrow parameter window.
             </p>
           </li>
         </ol>
@@ -853,7 +864,7 @@
         <h3><span class="sec-num">4.5</span>Atlas search and inverse design</h3>
         <p>
           The atlas workflow goes the other direction: given a behavior you
-          want, find networks that achieve it.
+          want, find networks that may achieve it.
         </p>
         <div class="flow-line">
           <span class="node">atlas-spec</span>
@@ -924,31 +935,31 @@
       <ol>
         <li>
           <strong>Reading off Hill-like exponents without curve-fitting.</strong>
-          The integer slopes on the SISO path are the local response orders
-          before you choose any constants. You can spot whether an
-          ultrasensitive response is achievable at all by checking whether any
-          regime has \( \rho &gt; \mu \).
+          The integer slopes on the SISO path are asymptotic predictions for
+          local response orders. Checking whether any regime has
+          \( \rho &gt; \mu \) is a first structural test for possible
+          ultrasensitivity.
         </li>
         <li>
-          <strong>Finding robust operating regimes.</strong> The point-cloud
-          density at each vertex is a robustness score: a vertex visited by a
-          large fraction of parameter samples is a regime the circuit will land
-          in across many cellular contexts.
+          <strong>Finding robust operating regimes.</strong> Point-cloud
+          density is a sampling estimate of robustness: a vertex visited by
+          many parameter samples is usually worth checking before a vertex that
+          appears only in a narrow window.
         </li>
         <li>
           <strong>Inverse design.</strong> Given a target signal-processing
           behavior (a sign word, a target peak height, a robust
-          settle-to-zero), the atlas tools enumerate the binding networks that
+          settle-to-zero), the atlas tools enumerate binding networks that may
           realize it, ranked by minimality or robustness.
         </li>
       </ol>
       <p>
-        Less obvious, but equally useful: ROP analysis gives a clean way to
-        reason about <em>why</em> a circuit fails. If your target response is
-        not in the polyhedron of any network in the periodic-table cell
-        \((d, \mu)\) you searched, the failure is structural, not numerical —
-        no choice of binding constants will fix it. The app reports such
-        certificates explicitly.
+        ROP analysis can also help explain <em>why</em> a circuit fails. If
+        your target response is not in the polyhedron of any network in the
+        periodic-table cell \((d, \mu)\) you searched, and that search space
+        fully covers your modeling assumptions, the failure is more likely
+        structural than numerical. The app reports this kind of negative
+        evidence when it is available.
       </p>
 
       <figure class="wiki-figure">
@@ -1332,20 +1343,20 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
     <section id="sec-9">
       <h2><span class="sec-num">9</span>AI Import — turn a paper into a model</h2>
       <p>
-        Reading a paper, transcribing every reaction by hand and looking up
-        every Kd is the slow path. The <code>ai-import</code> node (in the red
-        Input family) does it for you: it reads source material you supply,
-        asks a language model to extract every distinct equilibrium binding
-        network the source describes, and drops one populated analysis chain
-        on the canvas per network found.
+        The <code>ai-import</code> node turns clearly stated binding chemistry
+        from papers, supplementary material, or notebooks into a first draft.
+        It calls the language model you choose, tries to extract reversible
+        binding reactions, Kd values, and recommended downstream analyses, then
+        places editable nodes on the canvas. It reduces transcription work; it
+        is not a final modeling or literature-review authority.
       </p>
 
       <div class="callout callout-tip">
         <p class="callout-head">Privacy posture</p>
         <p>
-          The API key never leaves your browser. The host app does not proxy
-          or store keys server-side — requests go directly from the page to
-          the chosen provider. Tick &ldquo;Remember for browser session&rdquo;
+          The project backend does not receive or store your API key. The
+          browser sends it directly to the chosen provider. Tick
+          &ldquo;Remember for browser session&rdquo;
           only if you trust the machine you are sitting at.
         </p>
       </div>
@@ -1353,7 +1364,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <section id="sec-9-1">
         <h3><span class="sec-num">9.1</span>What the node does</h3>
         <p>
-          The agent has a closed contract. It is allowed to:
+          The node output is checked against a fixed schema and allow-list. It
+          is allowed to:
         </p>
         <ul>
           <li>
@@ -1368,11 +1380,11 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
           <li>
             Pick recommended downstream analyses from a fixed allow-list.
-            Anything else is silently ignored.
+            Anything else is dropped during post-processing.
           </li>
           <li>
-            Add a <em>warnings</em> list for every approximation, unit
-            conversion, or discarded model.
+            Add a <em>warnings</em> list for approximations, unit conversions,
+            skipped files, or discarded models.
           </li>
         </ul>
         <p>
@@ -1387,8 +1399,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <section id="sec-9-2">
         <h3><span class="sec-num">9.2</span>Choosing a provider and supplying a key</h3>
         <p>
-          Two providers are supported, both speaking the Anthropic Messages
-          API shape:
+          The UI currently includes two provider choices, both called through
+          the Anthropic Messages API shape:
         </p>
         <div class="wiki-table-wrap">
           <table class="wiki-table">
@@ -1420,17 +1432,19 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           Pick a model from the dropdown or type a custom model ID. The
           provider is detected from the model name (anything starting with
           <code>claude</code> goes to Anthropic, anything starting with
-          <code>deepseek</code> goes to DeepSeek). The API key field is a
-          password input; if you leave &ldquo;Remember for browser
-          session&rdquo; unchecked, the key is forgotten as soon as you
-          close the tab.
+          <code>deepseek</code> goes to DeepSeek). Actual model availability is
+          determined by the provider API; if a provider rejects PDF or document
+          blocks, use the text or notebook route. The API key field is a
+          password input; when &ldquo;Remember for browser session&rdquo; is unchecked,
+          the page does not write the key to sessionStorage.
         </p>
       </section>
 
       <section id="sec-9-3">
         <h3><span class="sec-num">9.3</span>Inputs: text, PDF, notebook</h3>
         <p>
-          Three input tabs, mutually exclusive in spirit but combinable:
+          The three input types can be used alone or combined; combined inputs
+          are sent as one source packet:
         </p>
         <dl>
           <dt>Text</dt>
@@ -1471,21 +1485,21 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         </div>
         <p>
           The recommended-results slot expands per network: a
-          <code>model-summary</code> always appears, plus zero or more of
+          <code>model-summary</code> is retained, plus zero or more of
           <code>vertices-table</code>, <code>regime-graph</code>,
           <code>siso-result</code>, <code>scan-1d-result</code>,
           <code>scan-2d-result</code>, <code>rop-cloud-result</code>,
-          <code>rop-poly-result</code>, <code>fret-result</code>. The agent
-          is constrained to this allow-list; anything else it tries to
-          recommend is dropped.
+          <code>rop-poly-result</code>, <code>fret-result</code>. Entries
+          outside this allow-list are dropped during post-processing and
+          reported as warnings.
         </p>
       </section>
 
       <section id="sec-9-5">
-        <h3><span class="sec-num">9.5</span>Honesty rules — and what gets discarded</h3>
+        <h3><span class="sec-num">9.5</span>Validation rules — and what gets discarded</h3>
         <p>
-          The system prompt explicitly tells the model not to fabricate.
-          Common honest-extraction patterns:
+          The prompt and post-processing constrain model output, but they do
+          not guarantee correctness. Common handling rules:
         </p>
         <ul>
           <li>
@@ -1495,18 +1509,18 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
             survives; you must edit the value.
           </li>
           <li>
-            <strong>Only Ka given.</strong> Agent emits
+            <strong>Only Ka given.</strong> The node emits
             \( K_{d} = 1 / K_{a} \) and notes the inversion in warnings.
           </li>
           <li>
-            <strong>Only k<sub>on</sub> / k<sub>off</sub>.</strong> Agent
+            <strong>Only k<sub>on</sub> / k<sub>off</sub>.</strong> The node
             emits \( K_{d} = k_{\mathrm{off}} / k_{\mathrm{on}} \) and notes
             it.
           </li>
           <li>
             <strong>Hill functions, phenomenological dose-responses,
-            catalytic turnover.</strong> Discarded with a warning. The agent
-            will not invent a binding scheme.
+            catalytic turnover.</strong> Discarded with a warning. The node
+            will not rewrite them as a binding scheme that was not stated.
           </li>
           <li>
             <strong>Unit conversion.</strong> nM / µM / mM are converted to
@@ -1514,10 +1528,11 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
         </ul>
         <p>
-          A run that returns <em>zero</em> networks plus a summary
-          explaining why is the correct outcome when the source does not
-          contain extractable equilibrium binding chemistry. Returning zero
-          is treated as honest, not as a failure.
+          A run that returns <em>zero</em> networks plus a summary usually means
+          the source does not contain extractable equilibrium binding chemistry,
+          or that the provided material is insufficient for a structured
+          reaction list. Add the relevant methods section, supplement, or
+          reaction table rather than accepting a placeholder model.
         </p>
       </section>
     </section>
@@ -1528,8 +1543,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <p>
         On a public deployment the cloud backend requires a signed-in user.
         On a local or on-prem deployment the sign-in button stays hidden and
-        every analysis runs against the in-process Julia backend with no
-        account at all.
+        analysis requests run against the current in-process Julia backend
+        without a project account.
       </p>
 
       <section id="sec-10-1">
@@ -1552,8 +1567,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         </ul>
         <p>
           Local SISO analyses, regime graphs, point clouds, parameter
-          scans, model summaries — everything in §4 — work without an
-          account. The toolbar's <em>Sign in</em> button only appears when
+          scans, and model summaries work without an account. The toolbar's
+          <em>Sign in</em> button only appears when
           the backend reports auth is enabled.
         </p>
       </section>
@@ -1649,7 +1664,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
     <section id="sec-11">
       <h2><span class="sec-num">11</span>Cloud Compute — running heavy jobs remotely</h2>
       <p>
-        Two analyses can take minutes or hours: building a full atlas, and
+        Two analyses can take minutes or hours: building a large atlas, and
         running inverse design over a large search cell. The
         <em>Cloud Compute</em> toggle redirects those jobs to a remote AWS
         Batch queue while keeping every other analysis on the in-process
@@ -1675,9 +1690,9 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
         </ul>
         <p>
-          Toggling Cloud Compute has no effect on lightweight analyses
-          (SISO paths, scans, polyhedron viewers). Those always run
-          locally regardless of the flag.
+          Toggling Cloud Compute does not change the execution path for
+          lightweight analyses in the current implementation (SISO paths,
+          scans, polyhedron viewers). They still run on the local backend.
         </p>
       </section>
 
@@ -1757,8 +1772,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </dd>
         </dl>
         <p>
-          A signed Cognito ID token must accompany every
-          <code>POST /api/jobs</code> request when Cognito is configured.
+          A signed Cognito ID token must accompany
+          <code>POST /api/jobs</code> requests when Cognito is configured.
           The cloud backend rejects unsigned calls with
           HTTP&nbsp;400&nbsp;&ldquo;Missing Authorization Bearer token&rdquo;.
         </p>
@@ -1959,7 +1974,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <li class="lvl-3"><a href="#sec-9-2">Provider &amp; key</a></li>
       <li class="lvl-3"><a href="#sec-9-3">Text / PDF / notebook</a></li>
       <li class="lvl-3"><a href="#sec-9-4">Auto-spawned chains</a></li>
-      <li class="lvl-3"><a href="#sec-9-5">Honesty rules</a></li>
+      <li class="lvl-3"><a href="#sec-9-5">Validation rules</a></li>
       <li class="lvl-2"><a href="#sec-10">Accounts</a></li>
       <li class="lvl-3"><a href="#sec-10-1">When required</a></li>
       <li class="lvl-3"><a href="#sec-10-2">Sign-in flow</a></li>

@@ -19,7 +19,8 @@ Biocircuits-Explorer/
 
 ## Project Wiki
 
-A repo-local wiki is available under [`wiki/`](wiki/README.md), including quick start, architecture, API notes, atlas workflows, packaging, deployment, and development guidance.
+The browser-facing ROP and canvas guide lives in [`webapp/public/wiki.html`](webapp/public/wiki.html) and [`webapp/public/wiki.zh.html`](webapp/public/wiki.zh.html).
+A repo-local developer wiki is available under [`wiki/`](wiki/README.md), including quick start, architecture, API notes, atlas workflows, packaging, deployment, and development guidance.
 
 ## Requirements
 

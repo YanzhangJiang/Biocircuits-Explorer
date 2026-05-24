@@ -4,9 +4,10 @@ Native macOS shell for Biocircuits Explorer.
 
 This Xcode project is the supported native macOS shell. It reuses the repo root backend and web frontend instead of copying them into a separate app workspace.
 
-The native shell talks to the embedded web UI through the explicit
-`window.BiocircuitsExplorerWorkspaceShell` contract exposed by
-[`webapp/public/app-node.js`](../webapp/public/app-node.js). Save/load actions
+The native shell loads `webapp/public/index-node.html` and talks to the
+embedded web UI through the explicit `window.BiocircuitsExplorerWorkspaceShell`
+contract installed by [`webapp/public/js/main.js`](../webapp/public/js/main.js)
+(see also `js/workspace.js` for the contract implementation). Save/load actions
 and workspace change notifications flow through that contract instead of
 depending on the Swift layer to patch internal frontend functions.
 

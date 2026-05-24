@@ -7,12 +7,6 @@ Pkg.activate(@__DIR__; io=devnull)
 using JSON3
 using BiocircuitsExplorerBackend
 
-function looks_like_atlas_corpus(raw)
-    return (haskey(raw, :network_entries) || haskey(raw, "network_entries")) &&
-           (haskey(raw, :behavior_slices) || haskey(raw, "behavior_slices")) &&
-           (haskey(raw, :family_buckets) || haskey(raw, "family_buckets"))
-end
-
 function main()::Cint
     if isempty(ARGS) || length(ARGS) > 2
         println(stderr, "Usage: julia --project=webapp webapp/build_atlas_sqlite.jl INPUT.json [ATLAS.sqlite]")

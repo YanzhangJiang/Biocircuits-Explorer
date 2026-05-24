@@ -3513,6 +3513,19 @@ function _resolve_atlas_corpus_from_spec(spec)
     end
 end
 
+"""
+    looks_like_atlas_corpus(raw)
+
+Duck-type heuristic: true if `raw` carries the top-level keys of a fully built
+atlas (network/behavior/family records). Used by CLI wrappers to decide whether
+the input JSON is an atlas itself or a build spec.
+"""
+function looks_like_atlas_corpus(raw)
+    return (_raw_haskey(raw, :network_entries)) &&
+           (_raw_haskey(raw, :behavior_slices)) &&
+           (_raw_haskey(raw, :family_buckets))
+end
+
 function build_atlas_library_from_spec(spec)
     atlas = _resolve_atlas_corpus_from_spec(spec)
     source_label = _raw_haskey(spec, :source_label) ? String(_raw_get(spec, :source_label, "")) : nothing

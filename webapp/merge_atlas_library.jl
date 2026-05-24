@@ -13,12 +13,6 @@ function default_output_path(library_path::AbstractString, input_path::AbstractS
     return library_base * "_" * input_base * "_merged.json"
 end
 
-function looks_like_atlas_corpus(raw)
-    return (haskey(raw, :network_entries) || haskey(raw, "network_entries")) &&
-           (haskey(raw, :behavior_slices) || haskey(raw, "behavior_slices")) &&
-           (haskey(raw, :family_buckets) || haskey(raw, "family_buckets"))
-end
-
 function main()::Cint
     if length(ARGS) < 2 || length(ARGS) > 3
         println(stderr, "Usage: julia --project=webapp webapp/merge_atlas_library.jl LIBRARY.json INPUT.json [OUTPUT.json]")
