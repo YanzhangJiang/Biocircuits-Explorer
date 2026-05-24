@@ -67,7 +67,7 @@ jobs:
           version: ${{ matrix.julia }}
           arch: x64
 
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
         with:
           cache-name: julia-${{ matrix.julia }}-webapp
 
