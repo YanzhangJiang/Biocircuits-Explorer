@@ -9,17 +9,24 @@ import { initAuthUiEvents } from './auth-ui.js';
 import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { applyThemeMode, installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
-import { initSocketEvents, updateConnections } from './connections.js';
+import {
+  initSocketEvents, updateConnections,
+  addConnection, removeConnection, replaceConnections,
+} from './connections.js';
 import { toggleDebugConsole, initDebugConsoleEvents } from './debug-console.js';
 import { NODE_TYPES, switchNoteTab } from './node-types/index.js';
 import {
   addNodeFromMenu, addQuickAddChain, removeNode, runConnectedWorkspace,
   initNodeMenuEvents, setupPlotResize, setupPlotInteractionGuard,
+  createNode, moveNode, deleteNodeWithHistory, setNodeAttr, initAttrHistory,
 } from './nodes.js';
+import { registerPerformers, initUndoKeyboard } from './commands.js';
+import { initEditorUI } from './editor-ui.js';
 import { buildModel, addReactionRow, triggerDownstreamNodes, getReactionsFromNode } from './model.js';
 import {
   initWorkspaceShell, installWorkspaceShellObservers,
   saveState, loadState, commitWorkspaceSnapshot,
+  snapshotNode, restoreNode,
 } from './workspace.js';
 import {
   computeSISOResult, recomputeSISO, recomputeROPCloud, recomputeHeatmap,
@@ -36,6 +43,7 @@ import {
   refreshROPPolyhedronPlot, executeROPPolyResult, runROPPolyhedron,
 } from './scan.js';
 import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
+import { importSbml, exportSbml, loadSbmlFile } from './sbml-io.js';
 
 // ===== Event Delegation Dispatcher =====
 const ACTION_HANDLERS = {
@@ -81,8 +89,12 @@ const ACTION_HANDLERS = {
   executeAtlasQueryResult: (el) => executeAtlasQueryResult(el.dataset.node),
   executeAtlasInverseDesignResult: (el) => executeAtlasInverseDesignResult(el.dataset.node),
   addAtlasBuilderRow: (el) => addAtlasBuilderRow(el.dataset.node, el.dataset.container, el.dataset.kind),
-  // Node management
-  removeNode: (el) => removeNode(el.dataset.node),
+  // SBML import/export
+  importSbml: (el) => importSbml(el.dataset.node),
+  exportSbml: (el) => exportSbml(el.dataset.node),
+  loadSbmlFile: (el) => loadSbmlFile(el),
+  // Node management (× button) — routed through history so it's undoable.
+  removeNode: (el) => deleteNodeWithHistory(el.dataset.node),
   // Toolbar (index-node.html)
   saveState: () => saveState(),
   loadState: () => loadState(),
@@ -117,6 +129,24 @@ window.loadState = loadState;
 
 async function boot() {
   initWorkspaceShell();
+  // Inject the concrete node mutators into the command layer, then enable
+  // Ctrl/Cmd+Z (undo) and Ctrl/Cmd+Shift+Z / Ctrl+Y (redo). Done early so
+  // history is live before any user interaction.
+  registerPerformers({
+    createNode,
+    removeNode,
+    moveNode,
+    snapshotNode,
+    restoreNode,
+    addConnection,
+    removeConnection,
+    replaceConnections,
+    setAttr: setNodeAttr,
+    afterChange: () => commitWorkspaceSnapshot('command'),
+  });
+  initUndoKeyboard();
+  initAttrHistory();
+  initEditorUI();   // alignment toolbar + selection shortcuts + cheatsheet
   await installThemeChangeObserver();
   initCloudComputeToggleEvents();
   initAuthUiEvents();

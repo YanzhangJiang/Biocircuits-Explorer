@@ -1,6 +1,24 @@
 // Biocircuits Explorer — Canvas Panning, Zooming & Node Interaction Events
 import { canvasState, dragState, resizeState, wiringState, scale, setScale, MIN_SCALE, MAX_SCALE, ZOOM_SENSITIVITY } from './state.js';
 import { updateConnections, scheduleUpdateConnections, getSocketCenter, bezierPath } from './connections.js';
+import { record, MoveNodeCommand } from './commands.js';
+import {
+  normalizeRect, nodeIdsInRect, collectNodeWorldBounds,
+  clearSelection, setSelection, addToSelection, selectOnly, toggleSelection,
+  isSelected, captureSelectionPositions, recordGroupMove,
+} from './selection.js';
+
+// Marquee (rubber-band) selection state. Lives here because it is pure view
+// interaction, like the connection-redraw RAF throttle above.
+const marqueeState = {
+  active: false, additive: false, startX: 0, startY: 0, el: null,
+};
+
+// Whether the spacebar is held: while it is, a left-drag pans the canvas
+// (Figma/Photoshop convention) instead of starting a marquee or dragging a
+// node. This keeps plain left-drag free for selection while still giving an
+// easy, discoverable pan gesture.
+let spaceHeld = false;
 
 // Module-level DOM refs, set by initCanvasEvents()
 let editor = null;
@@ -208,17 +226,31 @@ export function initCanvasEvents() {
 
   applyViewportTransform();
 
-  // Canvas panning (middle/right mouse button, or left-click on blank area)
+  // Pan with: middle/right mouse anywhere, or Space + left-drag anywhere.
+  // Plain left-drag on empty canvas starts a marquee selection instead.
   editor.addEventListener('mousedown', (e) => {
-    if (e.button === 1 || e.button === 2) {
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && spaceHeld)) {
       canvasState.isPanning = true;
       canvasState.startPanX = e.clientX - canvasState.panX;
       canvasState.startPanY = e.clientY - canvasState.panY;
+      if (editor) editor.style.cursor = 'grabbing';
       e.preventDefault();
     } else if (e.button === 0 && (e.target === editor || e.target === canvas || e.target === svgLayer)) {
-      canvasState.isPanning = true;
-      canvasState.startPanX = e.clientX - canvasState.panX;
-      canvasState.startPanY = e.clientY - canvasState.panY;
+      // Left-drag on empty canvas = marquee selection (CAD convention).
+      // Panning is still available via Space+drag, trackpad/wheel, middle/right-drag.
+      const w = clientToWorld(e.clientX, e.clientY);
+      marqueeState.active = true;
+      marqueeState.additive = e.shiftKey;
+      marqueeState.startX = w.x;
+      marqueeState.startY = w.y;
+      if (!marqueeState.additive) clearSelection();
+      marqueeState.el = document.createElement('div');
+      marqueeState.el.className = 'marquee';
+      marqueeState.el.style.left = `${w.x}px`;
+      marqueeState.el.style.top = `${w.y}px`;
+      marqueeState.el.style.width = '0px';
+      marqueeState.el.style.height = '0px';
+      canvas.appendChild(marqueeState.el);
       e.preventDefault();
     }
   });
@@ -267,10 +299,33 @@ export function initCanvasEvents() {
       applyViewportTransform();
       scheduleUpdateConnections();
     }
+    if (marqueeState.active && marqueeState.el) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      const rect = normalizeRect(marqueeState.startX, marqueeState.startY, w.x, w.y);
+      marqueeState.el.style.left = `${rect.x}px`;
+      marqueeState.el.style.top = `${rect.y}px`;
+      marqueeState.el.style.width = `${rect.w}px`;
+      marqueeState.el.style.height = `${rect.h}px`;
+    }
     if (dragState.isDraggingNode && dragState.draggedNode) {
       const worldPoint = clientToWorld(e.clientX, e.clientY);
-      dragState.draggedNode.style.left = `${worldPoint.x - dragState.nodeOffsetX}px`;
-      dragState.draggedNode.style.top = `${worldPoint.y - dragState.nodeOffsetY}px`;
+      const newLeft = worldPoint.x - dragState.nodeOffsetX;
+      const newTop = worldPoint.y - dragState.nodeOffsetY;
+      const starts = dragState.groupStarts;
+      if (starts && starts.size > 0) {
+        // Move the whole selection by the same delta as the dragged node.
+        const dx = newLeft - dragState.dragStartLeft;
+        const dy = newTop - dragState.dragStartTop;
+        for (const [id, start] of starts) {
+          const el = document.getElementById(id);
+          if (!el) continue;
+          el.style.left = `${start.x + dx}px`;
+          el.style.top = `${start.y + dy}px`;
+        }
+      } else {
+        dragState.draggedNode.style.left = `${newLeft}px`;
+        dragState.draggedNode.style.top = `${newTop}px`;
+      }
       scheduleUpdateConnections();
     }
     if (resizeState.isResizing && resizeState.resizeNode) {
@@ -294,8 +349,52 @@ export function initCanvasEvents() {
   });
 
   window.addEventListener('mouseup', (e) => {
-    if (canvasState.isPanning) canvasState.isPanning = false;
-    if (dragState.isDraggingNode) { dragState.isDraggingNode = false; dragState.draggedNode = null; }
+    if (canvasState.isPanning) {
+      canvasState.isPanning = false;
+      if (editor) editor.style.cursor = spaceHeld ? 'grab' : '';
+    }
+    if (marqueeState.active) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      const rect = normalizeRect(marqueeState.startX, marqueeState.startY, w.x, w.y);
+      if (marqueeState.el) { marqueeState.el.remove(); marqueeState.el = null; }
+      // Only act if the marquee has real area; a click with no drag just
+      // clears the selection (already done on mousedown unless additive).
+      if (rect.w > 3 || rect.h > 3) {
+        const hits = nodeIdsInRect(rect, collectNodeWorldBounds());
+        if (marqueeState.additive) hits.forEach(addToSelection);
+        else setSelection(hits);
+      }
+      marqueeState.active = false;
+    }
+    if (dragState.isDraggingNode) {
+      // Nodes were moved live during mousemove, so the DOM holds the final
+      // positions. Record the whole gesture as one undo step (group move if
+      // a multi-selection was dragged, else a single move).
+      const starts = dragState.groupStarts;
+      if (starts && starts.size > 0) {
+        recordGroupMove(starts);
+      } else {
+        const node = dragState.draggedNode;
+        if (node) {
+          const endLeft = parseFloat(node.style.left) || 0;
+          const endTop = parseFloat(node.style.top) || 0;
+          const moved = Math.abs(endLeft - dragState.dragStartLeft) > 0.5 ||
+                        Math.abs(endTop - dragState.dragStartTop) > 0.5;
+          if (moved) {
+            record(new MoveNodeCommand({
+              nodeId: node.id,
+              fromX: dragState.dragStartLeft,
+              fromY: dragState.dragStartTop,
+              toX: endLeft,
+              toY: endTop,
+            }));
+          }
+        }
+      }
+      dragState.isDraggingNode = false;
+      dragState.draggedNode = null;
+      dragState.groupStarts = null;
+    }
     if (resizeState.isResizing) { resizeState.isResizing = false; resizeState.resizeNode = null; }
     if (wiringState.isWiring) {
       if (wiringState.tempWire) { wiringState.tempWire.remove(); wiringState.tempWire = null; }
@@ -308,13 +407,31 @@ export function initCanvasEvents() {
 
   // ===== Node Dragging (via headers) =====
   document.addEventListener('mousedown', (e) => {
+    // While Space is held the gesture is a canvas pan, not a node drag.
+    if (spaceHeld) return;
     const header = e.target.closest('.node-header');
     if (!header || e.button !== 0) return;
     const node = header.closest('.node');
+
+    // Selection rules: Shift toggles this node; a plain click on an
+    // unselected node selects it alone; clicking an already-selected node
+    // keeps the group so the whole selection can be dragged together.
+    if (e.shiftKey) {
+      toggleSelection(node.id);
+      if (!isSelected(node.id)) { e.preventDefault(); return; } // deselected → no drag
+    } else if (!isSelected(node.id)) {
+      selectOnly(node.id);
+    }
+
     dragState.isDraggingNode = true;
     dragState.draggedNode = node;
     const nodeLeft = parseFloat(node.style.left || 0);
     const nodeTop = parseFloat(node.style.top || 0);
+    // Capture the gesture's origin so mouseup can record one undoable move.
+    dragState.dragStartLeft = nodeLeft;
+    dragState.dragStartTop = nodeTop;
+    // Snapshot all selected nodes' positions for a group move.
+    dragState.groupStarts = captureSelectionPositions();
     const worldPoint = clientToWorld(e.clientX, e.clientY);
     dragState.nodeOffsetX = worldPoint.x - nodeLeft;
     dragState.nodeOffsetY = worldPoint.y - nodeTop;
@@ -336,5 +453,28 @@ export function initCanvasEvents() {
     resizeState.resizeStartH = node.offsetHeight;
     e.preventDefault();
     e.stopPropagation();
+  });
+
+  // ===== Space-to-pan =====
+  // Hold Space to switch left-drag from marquee/node-drag to canvas pan.
+  // Ignored while typing in a field or focused on a control so Space keeps
+  // its normal meaning there.
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    const t = e.target;
+    if (t && (t.isContentEditable ||
+              (t.tagName && /^(INPUT|TEXTAREA|SELECT|BUTTON|OPTION)$/.test(t.tagName)))) {
+      return;
+    }
+    if (!spaceHeld) {
+      spaceHeld = true;
+      if (editor && !canvasState.isPanning) editor.style.cursor = 'grab';
+    }
+    e.preventDefault();   // stop Space from scrolling the page
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    spaceHeld = false;
+    if (editor && !canvasState.isPanning) editor.style.cursor = '';
   });
 }

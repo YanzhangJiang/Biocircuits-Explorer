@@ -5,8 +5,11 @@ import {
   workspaceShellSyncTimer, setWorkspaceShellSyncTimer,
   lastWorkspaceShellSnapshot, setLastWorkspaceShellSnapshot,
   WORKSPACE_DOCUMENT_VERSION, WORKSPACE_SHELL_CONTRACT_VERSION, themeState,
-  ensureNodeData,
+  ensureNodeData, nextNodeId,
 } from './state.js';
+import { dispatch, RestoreNodesCommand } from './commands.js';
+import { getSelection, setSelection } from './selection.js';
+import { remapSnapshots } from './clipboard-util.js';
 import { showToast, cloneSerializable, escapeHtml, syncSelectOptions } from './api.js';
 import { applyThemeMode } from './theme.js';
 import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
@@ -198,6 +201,7 @@ export function getNodeSerialData(nodeId, type) {
   }
   // Custom serialization for types that need special logic
   switch (type) {
+    case 'sbml-import':       // same reactions-list structure as reaction-network
     case 'reaction-network': {
       const { reactions, kds } = getReactionsFromNode(nodeId);
       return { reactions: reactions.map((rule, i) => ({ rule, kd: kds[i] })) };
@@ -237,6 +241,85 @@ export function serializeState() {
     nodes,
     connections: connections.map(c => ({ ...c })),
   };
+}
+
+// ===== Single-node snapshot / restore (undo of delete, copy/paste) =====
+
+// Capture everything needed to recreate one node exactly: its type,
+// geometry, serialized data, and the wires touching it. Used by
+// RemoveNodeCommand (so delete is undoable) and by clipboard copy.
+export function snapshotNode(nodeId) {
+  const info = nodeRegistry[nodeId];
+  const el = document.getElementById(nodeId);
+  if (!info || !el) return null;
+  return {
+    id: nodeId,
+    type: info.type,
+    x: parseFloat(el.style.left) || 0,
+    y: parseFloat(el.style.top) || 0,
+    width: el.offsetWidth,
+    height: el.offsetHeight,
+    data: getNodeSerialData(nodeId, info.type),
+    connections: connections
+      .filter(c => c.fromNode === nodeId || c.toNode === nodeId)
+      .map(c => ({ ...c })),
+  };
+}
+
+// Recreate a node from a snapshot, reusing its original id so other undo
+// entries and wires stay valid. Incident connections are re-added (skipping
+// any duplicate). Connections whose other endpoint is missing are harmless:
+// updateConnections() only draws wires whose both sockets exist.
+export function restoreNode(snapshot) {
+  if (!snapshot) return null;
+  const newId = createNode(snapshot.type, snapshot.x, snapshot.y, { id: snapshot.id });
+  if (!newId) return null;
+  const el = document.getElementById(newId);
+  if (el && snapshot.width) el.style.width = `${snapshot.width}px`;
+  if (el && snapshot.height) el.style.height = `${snapshot.height}px`;
+  restoreNodeData(newId, snapshot.type, snapshot.data || {});
+  for (const conn of (snapshot.connections || [])) {
+    const dup = connections.some(c =>
+      c.fromNode === conn.fromNode && c.fromPort === conn.fromPort &&
+      c.toNode === conn.toNode && c.toPort === conn.toPort);
+    if (!dup) connections.push({ ...conn });
+  }
+  updateConnections();
+  return newId;
+}
+
+// ===== Clipboard (copy / paste / duplicate) =====
+
+const PASTE_OFFSET = 40;
+let _clipboard = null;   // { snapshots: [...] }
+
+// Recreate `sourceSnapshots` with fresh ids, offset position, and remapped
+// internal wires, as one undoable step; the pasted nodes become the
+// selection. The pure remap lives in clipboard-util.js.
+function pasteSnapshots(sourceSnapshots, offset) {
+  if (!sourceSnapshots || sourceSnapshots.length === 0) return;
+  const idMap = {};
+  for (const s of sourceSnapshots) idMap[s.id] = `node-${nextNodeId()}`;
+  const newSnaps = remapSnapshots(sourceSnapshots, idMap, offset);
+  dispatch(new RestoreNodesCommand({ snapshots: newSnaps, label: `Paste ${newSnaps.length} node(s)` }));
+  setSelection(newSnaps.map((s) => s.id));
+}
+
+export function copySelection() {
+  const ids = getSelection().filter((id) => document.getElementById(id));
+  if (ids.length === 0) return 0;
+  _clipboard = { snapshots: ids.map(snapshotNode).filter(Boolean) };
+  return _clipboard.snapshots.length;
+}
+
+export function pasteClipboard(offset = PASTE_OFFSET) {
+  if (_clipboard) pasteSnapshots(_clipboard.snapshots, offset);
+}
+
+export function duplicateSelection(offset = PASTE_OFFSET) {
+  const ids = getSelection().filter((id) => document.getElementById(id));
+  if (ids.length === 0) return;
+  pasteSnapshots(ids.map(snapshotNode).filter(Boolean), offset);
 }
 
 export function defaultSaveState() {
@@ -369,6 +452,7 @@ export function restoreNodeData(nodeId, type, data) {
   }
   // Custom restore for types that need special logic
   switch (type) {
+    case 'sbml-import':       // restored exactly like reaction-network
     case 'reaction-network': {
       const list = document.getElementById(`${nodeId}-reactions-list`);
       if (list) list.innerHTML = '';

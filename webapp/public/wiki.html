@@ -66,6 +66,7 @@
         <ol>
           <li><a href="#sec-3-1">3.1 Nodes, ports, wires</a></li>
           <li><a href="#sec-3-2">3.2 Node families</a></li>
+          <li><a href="#sec-3-3">3.3 Navigating &amp; shortcuts</a></li>
         </ol>
       </li>
       <li>
@@ -602,13 +603,15 @@
           <dt>Input</dt>
           <dd>
             <code>reaction-network</code> for hand-entered reactions;
-            <code>network-id-definition</code> to load a compressed network ID.
+            <code>network-id-definition</code> to load a compressed network ID;
+            <code>sbml-import</code> to bring in a model from an SBML file.
           </dd>
           <dt>Process</dt>
           <dd>
             <code>model-builder</code> turns reactions into a symbolic model
             (\(N\), \(L\), session ID). <code>atlas-builder</code> assembles a
-            library of networks from an atlas spec.
+            library of networks from an atlas spec. <code>sbml-export</code>
+            writes a connected reaction source back out as SBML.
           </dd>
           <dt>Parameters</dt>
           <dd>
@@ -632,6 +635,40 @@
             workspace.
           </dd>
         </dl>
+      </section>
+
+      <section id="sec-3-3">
+        <h3><span class="sec-num">3.3</span>Navigating &amp; shortcuts</h3>
+        <ul>
+          <li>
+            <strong>Pan.</strong> Hold <kbd>Space</kbd> and drag, or drag with
+            the middle / right mouse button, or scroll / two-finger swipe.
+          </li>
+          <li>
+            <strong>Zoom.</strong> <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll (or
+            pinch on a trackpad).
+          </li>
+          <li>
+            <strong>Select.</strong> Drag on empty canvas to rubber-band
+            select; <kbd>Shift</kbd>+click a node to add/remove it. Drag any
+            selected node to move the whole selection together.
+          </li>
+          <li>
+            <strong>Align.</strong> With two or more nodes selected, an
+            alignment toolbar appears (align edges/centers, distribute).
+          </li>
+          <li>
+            <strong>Edit.</strong> <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Z</kbd>
+            undo, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>
+            redo, <kbd>Delete</kbd> remove selection,
+            <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>A</kbd>/<kbd>C</kbd>/<kbd>V</kbd>/<kbd>D</kbd>
+            select-all / copy / paste / duplicate.
+          </li>
+          <li>
+            <strong>Cheatsheet.</strong> Press <kbd>?</kbd> any time for the
+            full shortcut list; <kbd>Esc</kbd> clears the selection.
+          </li>
+        </ul>
       </section>
     </section>
 
@@ -1190,6 +1227,16 @@
             <code>atlas-query-config</code>, <code>atlas-query-result</code>,
             and <code>atlas-inverse-result</code> cover build, query, and
             inverse-design workflows.
+          </p>
+        </div>
+        <div class="reference-card">
+          <h4>Interoperability</h4>
+          <p>
+            <code>sbml-import</code> parses an SBML file into editable
+            reactions via <code>/api/v1/import/sbml</code> (binding-network
+            subset; anything not representable is reported as warnings).
+            <code>sbml-export</code> writes a connected reaction source back
+            out via <code>/api/v1/export/sbml</code>.
           </p>
         </div>
         <div class="reference-card">

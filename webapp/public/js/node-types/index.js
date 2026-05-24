@@ -7,6 +7,7 @@ import { ROP_CLOUD_TYPES } from './rop-cloud.js';
 import { ROP_POLY_TYPES } from './rop-poly.js';
 import { ATLAS_TYPES } from './atlas.js';
 import { RESULT_TYPES } from './result.js';
+import { SBML_TYPES } from './sbml.js';
 
 export const NODE_TYPES = {
   ...NOTE_TYPES,
@@ -18,6 +19,7 @@ export const NODE_TYPES = {
   ...ROP_POLY_TYPES,
   ...ATLAS_TYPES,
   ...RESULT_TYPES,
+  ...SBML_TYPES,
 };
 
 // Required predecessor chain for each node type
@@ -50,6 +52,8 @@ export const PREREQ_CHAIN = {
   'atlas-query-config': [],
   'atlas-query-result': ['atlas-builder', 'atlas-query-config'],
   'atlas-inverse-result': ['atlas-spec', 'atlas-query-config'],
+  'sbml-import': [],
+  'sbml-export': [],
 };
 
 export { switchNoteTab };

@@ -9,6 +9,12 @@ export atlas_sqlite_default_path, atlas_sqlite_connect, atlas_sqlite_init!, atla
 export atlas_sqlite_load_library, atlas_sqlite_save_library!, atlas_sqlite_summary
 export atlas_sqlite_existing_ok_slice_ids, atlas_sqlite_merge_atlas!, atlas_sqlite_record_skip_only_event!, atlas_sqlite_append_atlas!
 export canonical_program_profile, encode_program_blob, decode_program_blob, behavior_program_hash, program_exact_label, program_motif_label, program_features
+export NetworkIR, DesignSpec, SpeciesDecl, ReactionDecl, ObservableDecl, ParameterDistribution, Provenance, IRValidationError
+export NETWORK_IR_SCHEMA_VERSION, DESIGN_SPEC_SCHEMA_VERSION
+export parse_network_ir, parse_design_spec, network_ir_to_dict, design_spec_to_dict
+export network_ir_from_legacy, network_ir_to_legacy_inputs, design_spec_to_legacy_request
+export network_ir_hash, design_spec_hash, is_network_ir, is_legacy_network_payload
+export network_ir_to_sbml, sbml_to_network_ir
 export enumerate_network_specs
 export build_behavior_atlas, build_behavior_atlas_from_spec, looks_like_atlas_corpus
 export build_atlas_library, build_atlas_library_from_spec
@@ -40,16 +46,21 @@ using Base64
 using SHA
 using DBInterface
 using SQLite
+import EzXML
 
 include(joinpath(@__DIR__, "config.jl"))
 include(joinpath(@__DIR__, "session_store.jl"))
 include(joinpath(@__DIR__, "debug_log.jl"))
+include(joinpath(@__DIR__, "observability.jl"))
 include(joinpath(@__DIR__, "serialization.jl"))
 include(joinpath(@__DIR__, "reaction_parser.jl"))
 include(joinpath(@__DIR__, "static_assets.jl"))
 using .SessionStore: get_session, set_session
 using .DebugLog: append_debug_log, with_debug_client_scope,
                   debug_client_id_from_request, install_debug_logger!
+using .Observability: counter_inc!, gauge_set!, hist_observe!,
+                       render_prometheus, log_request_json,
+                       json_logs_enabled, iso_timestamp
 using .Serialization: mat2vv, json_safe_value, json_safe_real, json_safe_profile,
                        json_response, error_response, read_json, is_request_error
 using .ReactionParser: parse_term, parse_side, parse_reactions, parse_network_structure,
@@ -59,6 +70,16 @@ using .StaticAssets: static_dir, serve_static
 # ─── Global state ───
 const SESSION_TTL = SessionStore.DEFAULT_TTL_SECONDS
 const SESSION_CLEANUP_INTERVAL = 300  # 5 minutes
+
+# Process startup timestamp, captured monotonically so /health uptime values
+# stay sane across NTP adjustments. Initialized in `__init__`; zero before
+# that, which `handle_health` interprets as "module not yet initialized" and
+# `handle_ready` uses as a readiness gate.
+const _STARTUP_TIME_NS = Ref{UInt64}(0)
+
+function __init__()
+    _STARTUP_TIME_NS[] = time_ns()
+end
 
 function parse_optional_int(raw::AbstractString)
     text = strip(String(raw))
@@ -575,6 +596,8 @@ include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
 include(joinpath(@__DIR__, "inverse_design.jl"))
+include(joinpath(@__DIR__, "ir.jl"))
+include(joinpath(@__DIR__, "sbml.jl"))
 include(joinpath(@__DIR__, "version.jl"))
 include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
@@ -608,8 +631,86 @@ function handle_run_inverse_design(req)
     return json_response(run_inverse_design_from_spec(body))
 end
 
+# Label schemas for /metrics. Lives here (not in Observability) so that
+# adding a new metric to handle_metrics doesn't require touching the
+# storage layer. Tuple order must match the tuples passed to counter_inc!
+# / hist_observe! / gauge_set! at the call sites.
+const _METRIC_LABEL_SCHEMAS = Dict{String, Tuple}(
+    "bcx_http_requests_total"         => (:method, :path, :status),
+    "bcx_http_request_duration_seconds" => (:method, :path),
+    "bcx_uptime_seconds"              => (),
+    "bcx_sessions_active"             => (),
+    "bcx_build_info"                  => (:version, :revision),
+)
+
+# GET /metrics — Prometheus scrape endpoint. Returns text exposition v0.0.4.
+# Caution: in production this should be exposed only on an internal network
+# (or behind auth) because path labels could leak API shape. The nginx
+# config defaults to proxying it through, so deployments that don't want
+# /metrics public must block it at the edge.
+function handle_metrics(req)
+    # Refresh dynamic gauges on each scrape. These are cheap (an integer
+    # session count, a subtraction for uptime, a string lookup for build
+    # info) so running them inline is fine.
+    Observability.gauge_set!("bcx_uptime_seconds", (),
+        (time_ns() - _STARTUP_TIME_NS[]) / 1e9)
+    Observability.gauge_set!("bcx_sessions_active", (),
+        SessionStore.session_count())
+    Observability.gauge_set!("bcx_build_info",
+        (biocircuits_explorer_version(),
+         strip(get(ENV, "BIOCIRCUITS_EXPLORER_REVISION", "unknown"))),
+        1.0)
+
+    text = Observability.render_prometheus(_METRIC_LABEL_SCHEMAS)
+    return HTTP.Response(200,
+        ["Content-Type" => "text/plain; version=0.0.4; charset=utf-8"],
+        text)
+end
+
+# GET /health — liveness probe. Returns 200 as long as the Julia process is
+# answering. Cheap, no I/O. Used by container orchestrators (Docker
+# HEALTHCHECK, Kubernetes livenessProbe, AWS ALB target groups) to decide
+# whether to restart the instance.
+function handle_health(req)
+    initialized = _STARTUP_TIME_NS[] != 0
+    uptime_s = initialized ? (time_ns() - _STARTUP_TIME_NS[]) / 1e9 : 0.0
+    return json_response(Dict{String, Any}(
+        "status"          => "ok",
+        "version"         => biocircuits_explorer_version(),
+        "revision"        => strip(get(ENV, "BIOCIRCUITS_EXPLORER_REVISION", "unknown")),
+        "uptime_seconds"  => round(uptime_s; digits=3),
+    ))
+end
+
+# GET /ready — readiness probe. Reports whether the app can serve real
+# traffic. Fails closed (503) if any check is missing so a load balancer can
+# route around the instance until it recovers. Distinct from /health: a
+# crash-looping container is unhealthy; a still-warming container is
+# unready but should not be restarted.
+function handle_ready(req)
+    initialized = _STARTUP_TIME_NS[] != 0
+    static_ok = isdir(static_dir())
+    checks = Dict{String, Any}(
+        "module_initialized" => initialized,
+        "static_assets"      => static_ok,
+    )
+    ready = initialized && static_ok
+    return json_response(Dict{String, Any}(
+        "status" => ready ? "ready" : "not_ready",
+        "checks" => checks,
+    ); status = ready ? 200 : 503)
+end
+
 function handle_version(req)
-    return json_response(biocircuits_explorer_build_info())
+    info = Dict{String, Any}(biocircuits_explorer_build_info())
+    # API protocol identity, separate from the application build metadata above.
+    # `api_version` is the canonical current surface; `api_supported` lets a
+    # client decide whether to fall back; `api_legacy_sunset` is the ISO date
+    # after which we stop serving the bare /api/<endpoint> alias.
+    info["api_version"] = API_CURRENT_VERSION
+    info["api_supported"] = [API_CURRENT_VERSION]
+    info["api_legacy_sunset"] = API_LEGACY_SUNSET
+    return json_response(info)
 end
 
 # Public auth bootstrap. Frontend calls this once on load to discover whether
@@ -632,18 +733,63 @@ function handle_auth_config(req)
     ))
 end
 
+# POST /api/v1/export/sbml — accepts a NetworkIR (top-level or under
+# `network`) or the legacy {reactions, kd} shape, returns an SBML L3 string.
+function handle_export_sbml(req)
+    body = read_json(req)
+    network_payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : body
+    network = try
+        parse_network_ir(network_payload)
+    catch err
+        err isa IRValidationError &&
+            return error_response(sprint(showerror, err); status = 400)
+        rethrow(err)
+    end
+    return json_response(Dict(
+        "sbml" => network_ir_to_sbml(network),
+        "label" => network.label,
+    ))
+end
+
+# POST /api/v1/import/sbml — accepts {sbml: "<xml string>"}, returns the
+# parsed NetworkIR plus a list of warnings about anything not representable.
+function handle_import_sbml(req)
+    body = read_json(req)
+    xml = _raw_get(body, :sbml, nothing)
+    (xml isa AbstractString && !isempty(strip(xml))) ||
+        return error_response("Missing required field `sbml` (the SBML document as a string)"; status = 400)
+    network, warnings = sbml_to_network_ir(String(xml))
+    return json_response(Dict(
+        "network_ir" => network_ir_to_dict(network),
+        "warnings" => warnings,
+    ))
+end
+
 function handle_build_model(req)
     body = read_json(req)
-    rules = String.(body[:reactions])
-    kd = Float64.(body[:kd])
     sid = get(body, :session_id, string(rand(UInt32), base=16))
 
-    # Validate Kd values
+    # Accept either a NetworkIR (top-level or under `network`) or the legacy
+    # `{reactions, kd}` shape — parse_network_ir bridges both.
+    network_payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : body
+    network = try
+        parse_network_ir(network_payload)
+    catch err
+        err isa IRValidationError &&
+            return error_response(sprint(showerror, err); status = 400)
+        rethrow(err)
+    end
+
+    bridge = network_ir_to_legacy_inputs(network)
+    rules = collect(bridge.rules)
+    kd = collect(bridge.kd)
+
     if any(x -> x <= 0, kd)
         return error_response("All Kd values must be positive (> 0)"; status=400)
     end
 
     model, species, free_syms, prod_syms = build_model(rules, kd)
+    network_dict = network_ir_to_dict(network)
     set_session(sid, Dict(
         "model" => model,
         "species" => species,
@@ -651,6 +797,7 @@ function handle_build_model(req)
         "prod_syms" => prod_syms,
         "kd" => kd,
         "rules" => rules,
+        "network_ir" => network_dict,
     ))
 
     return json_response(Dict(
@@ -665,7 +812,78 @@ function handle_build_model(req)
         "kd" => collect(kd),
         "N" => mat2vv(Matrix(model.N)),
         "L" => mat2vv(Matrix(model.L)),
+        "network_ir" => network_dict,
+        "network_ir_hash" => network_ir_hash(network),
     ))
+end
+
+function handle_ir_network_validate(req)
+    body = read_json(req)
+    payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : body
+    try
+        net = parse_network_ir(payload)
+        return json_response(Dict{String, Any}(
+            "valid" => true,
+            "ir_schema_version" => net.ir_schema_version,
+            "network" => network_ir_to_dict(net),
+            "hash" => network_ir_hash(net),
+        ))
+    catch err
+        err isa IRValidationError ||
+            return error_response("Invalid network payload: $(sprint(showerror, err))"; status=400)
+        return json_response(Dict{String, Any}(
+            "valid" => false,
+            "section" => "network",
+            "error" => err.msg,
+            "path" => err.path,
+        ); status=400)
+    end
+end
+
+function handle_ir_design_validate(req)
+    body = read_json(req)
+    design_payload = _raw_haskey(body, :design) ? _raw_get(body, :design, nothing) : body
+    network_payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : nothing
+
+    network = nothing
+    if network_payload !== nothing
+        try
+            network = parse_network_ir(network_payload)
+        catch err
+            err isa IRValidationError ||
+                return error_response("Invalid network payload: $(sprint(showerror, err))"; status=400)
+            return json_response(Dict{String, Any}(
+                "valid" => false,
+                "section" => "network",
+                "error" => err.msg,
+                "path" => err.path,
+            ); status=400)
+        end
+    end
+
+    try
+        ds = parse_design_spec(design_payload)
+        out = Dict{String, Any}(
+            "valid" => true,
+            "ir_schema_version" => ds.ir_schema_version,
+            "design" => design_spec_to_dict(ds),
+            "hash" => design_spec_hash(ds),
+        )
+        if network !== nothing
+            out["legacy_request"] = design_spec_to_legacy_request(ds; network=network)
+            out["network_hash"] = network_ir_hash(network)
+        end
+        return json_response(out)
+    catch err
+        err isa IRValidationError ||
+            return error_response("Invalid design payload: $(sprint(showerror, err))"; status=400)
+        return json_response(Dict{String, Any}(
+            "valid" => false,
+            "section" => "design",
+            "error" => err.msg,
+            "path" => err.path,
+        ); status=400)
+    end
 end
 
 function handle_find_vertices(req)

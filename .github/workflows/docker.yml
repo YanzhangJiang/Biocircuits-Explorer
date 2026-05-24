@@ -1,0 +1,72 @@
+name: Docker
+
+on:
+  # `paths` cannot be combined with `tags` in a single push trigger without
+  # AND-ing them (release tags without path changes would be skipped), so the
+  # push trigger has no `paths` filter and relies on GHA layer cache for noise.
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "deploy/Dockerfile"
+      - "deploy/build_image.sh"
+      - "webapp/Project.toml"
+      - "webapp/Manifest.toml"
+      - "Bnc_julia/Project.toml"
+      - "Bnc_julia/Manifest.toml"
+      - "VERSION"
+      - ".github/workflows/docker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Build image (validation only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: false
+          tags: |
+            biocircuits-explorer:ci-${{ steps.meta.outputs.sha }}
+            biocircuits-explorer:ci-${{ steps.meta.outputs.version }}
+          build-args: |
+            BIOCIRCUITS_EXPLORER_VERSION=${{ steps.meta.outputs.version }}
+            BIOCIRCUITS_EXPLORER_REVISION=${{ steps.meta.outputs.sha }}
+            BIOCIRCUITS_EXPLORER_CREATED=${{ steps.meta.outputs.created }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pushing to a registry is intentionally deferred until publish credentials
+      # (ECR / GHCR) are wired in via repository secrets. When ready, add a
+      # second build-push-action step gated on
+      #   github.event_name == 'push' && github.ref == 'refs/heads/master'
+      # or on tag refs, using docker/login-action to authenticate first.

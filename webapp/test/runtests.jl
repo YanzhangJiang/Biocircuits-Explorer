@@ -1000,6 +1000,368 @@ end
     @test occursin("Method not allowed", String(wrong_method.body))
 end
 
+@testset "Request ID and Structured Logging" begin
+    # Every response gets an X-Request-Id, generated if the client didn't
+    # provide one. Format is UUID-shaped (8-4-4-4-12 hex segments).
+    r = router(HTTP.Request("GET", "/health"))
+    rid = HTTP.header(r, "X-Request-Id", "")
+    @test !isempty(rid)
+    @test occursin(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", rid)
+
+    # Client-supplied IDs are echoed back when well-formed.
+    client_rid = "test-rid-12345"
+    r2 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => client_rid]))
+    @test HTTP.header(r2, "X-Request-Id") == client_rid
+
+    # Malicious IDs (too long, control chars) are replaced with a generated one.
+    bad = "x" ^ 200
+    r3 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => bad]))
+    @test HTTP.header(r3, "X-Request-Id") != bad
+    @test length(HTTP.header(r3, "X-Request-Id")) < 64
+
+    weird = "has spaces and <tags>"
+    r4 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => weird]))
+    @test HTTP.header(r4, "X-Request-Id") != weird
+
+    # JSON logs are off by default — flipping the env var should make
+    # log_request_json write a parseable line to the given IO. The router
+    # uses stderr; we exercise the helper directly to avoid stderr capture
+    # complexity.
+    buf = IOBuffer()
+    BiocircuitsExplorerBackend.Observability.log_request_json(buf, Dict(
+        "event" => "http_request",
+        "status" => 200,
+        "path" => "/health",
+    ))
+    seekstart(buf)
+    line = readline(buf)
+    parsed = JSON3.read(line)
+    @test parsed["event"] == "http_request"
+    @test parsed["status"] == 200
+
+    @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == false
+    withenv("BIOCIRCUITS_EXPLORER_JSON_LOGS" => "1") do
+        @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == true
+    end
+    withenv("BIOCIRCUITS_EXPLORER_JSON_LOGS" => "0") do
+        @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == false
+    end
+end
+
+@testset "Prometheus Metrics" begin
+    Obs = BiocircuitsExplorerBackend.Observability
+
+    # Isolate this testset from earlier traffic so we can assert exact
+    # counter values without depending on test ordering.
+    Obs.reset_metrics!()
+
+    # Drive a few requests with known shapes; the metric snapshot should
+    # reflect them after the request returns.
+    router(HTTP.Request("GET", "/health"))
+    router(HTTP.Request("GET", "/health"))
+    router(HTTP.Request("GET", "/api/v1/version"))
+    router(HTTP.Request("POST", "/api/build_model",
+        ["Content-Type" => "application/json"], "{"))   # 400 path
+
+    metrics = router(HTTP.Request("GET", "/metrics"))
+    @test metrics.status == 200
+    @test occursin("text/plain", HTTP.header(metrics, "Content-Type"))
+    body = String(metrics.body)
+
+    # Required series are present with their TYPE annotations.
+    @test occursin("# TYPE bcx_http_requests_total counter", body)
+    @test occursin("# TYPE bcx_http_request_duration_seconds histogram", body)
+    @test occursin("# TYPE bcx_uptime_seconds gauge", body)
+    @test occursin("# TYPE bcx_sessions_active gauge", body)
+    @test occursin("# TYPE bcx_build_info gauge", body)
+
+    # Two /health GETs landed in the counter (the /metrics scrape itself is
+    # also counted because it runs through `router`, so we look for the
+    # specific {method, path, status} line, not a total).
+    @test occursin(
+        r"bcx_http_requests_total\{method=\"GET\",path=\"/health\",status=\"200\"\}\s+2",
+        body)
+
+    # The 400 build_model attempt shows up as its own series.
+    @test occursin(
+        r"bcx_http_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
+        body)
+
+    # Histogram has both cumulative buckets and _sum/_count.
+    @test occursin("bcx_http_request_duration_seconds_bucket", body)
+    @test occursin("bcx_http_request_duration_seconds_sum", body)
+    @test occursin("bcx_http_request_duration_seconds_count", body)
+    @test occursin("le=\"+Inf\"", body)
+
+    # Prometheus requires histogram bucket counts to be non-decreasing in
+    # bucket order, and the +Inf bucket to equal _count. Verifying this
+    # catches a class of bug (double-accumulation, off-by-one buckets)
+    # that wouldn't show up as a missing string.
+    health_buckets = Int[]
+    for line in split(body, "\n")
+        ok = match(r"bcx_http_request_duration_seconds_bucket\{method=\"GET\",path=\"/health\",le=\"[^\"]+\"\}\s+(\d+)", line)
+        ok === nothing && continue
+        push!(health_buckets, parse(Int, ok.captures[1]))
+    end
+    @test !isempty(health_buckets)
+    @test issorted(health_buckets)
+    health_count = match(r"bcx_http_request_duration_seconds_count\{method=\"GET\",path=\"/health\"\}\s+(\d+)", body)
+    @test health_count !== nothing
+    @test health_buckets[end] == parse(Int, health_count.captures[1])
+
+    # Uptime is > 0 by the time we run this.
+    m = match(r"bcx_uptime_seconds\s+([0-9.eE+-]+)", body)
+    @test m !== nothing
+    @test parse(Float64, m.captures[1]) > 0
+
+    # build_info exposes version + revision labels.
+    @test occursin("bcx_build_info{", body)
+    @test occursin("version=", body)
+    @test occursin("revision=", body)
+
+    # A scrape can't observe itself: the request counter is incremented in
+    # router() *after* handle_metrics has already rendered the body, so the
+    # first /metrics body never lists path="/metrics". A second scrape sees
+    # the first one.
+    @test !occursin("path=\"/metrics\"", body)
+    router(HTTP.Request("GET", "/metrics"))
+    body2 = String(router(HTTP.Request("GET", "/metrics")).body)
+    @test occursin("path=\"/metrics\"", body2)
+
+    # POST to /metrics should be 405, not a metric-mutating side effect.
+    @test router(HTTP.Request("POST", "/metrics")).status == 405
+end
+
+@testset "Health and Readiness Probes" begin
+    # /health: liveness, must be cheap and always 200 once the module is
+    # initialized. We don't assert the exact version string because it
+    # changes between releases, but we do assert the shape so a future
+    # refactor that drops the field gets caught.
+    health = router(HTTP.Request("GET", "/health"))
+    @test health.status == 200
+    health_body = JSON3.read(health.body)
+    @test health_body["status"] == "ok"
+    @test haskey(health_body, "version")
+    @test haskey(health_body, "uptime_seconds")
+    @test health_body["uptime_seconds"] isa Real
+    @test health_body["uptime_seconds"] >= 0
+    # HEAD is required by some health-check tools.
+    @test router(HTTP.Request("HEAD", "/health")).status == 200
+    # Wrong method must be a clean 405, not a 500.
+    @test router(HTTP.Request("POST", "/health")).status == 405
+
+    # /ready: when the module is initialized and static_dir exists, returns
+    # 200. We don't depend on the static directory in CI because the
+    # webapp/public tree is always present in the repo checkout.
+    ready = router(HTTP.Request("GET", "/ready"))
+    @test ready.status in (200, 503)   # accept either, but assert structure
+    ready_body = JSON3.read(ready.body)
+    @test ready_body["status"] in ("ready", "not_ready")
+    @test haskey(ready_body, "checks")
+    @test haskey(ready_body["checks"], "module_initialized")
+    @test haskey(ready_body["checks"], "static_assets")
+    @test ready_body["checks"]["module_initialized"] == true
+
+    # These paths must not collide with the API surface — verify the
+    # canonicalizer leaves them alone (no spurious deprecation header etc.).
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/health") == ("/health", false)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/ready")  == ("/ready", false)
+    @test !HTTP.hasheader(health, "X-API-Deprecation")
+    @test !HTTP.hasheader(ready,  "X-API-Deprecation")
+end
+
+@testset "API Versioning" begin
+    # Legacy /api/version still works and carries the deprecation header so
+    # clients on the bare /api/ surface can detect they need to migrate.
+    legacy_version = router(HTTP.Request("GET", "/api/version"))
+    @test legacy_version.status == 200
+    @test HTTP.hasheader(legacy_version, "X-API-Deprecation")
+    @test occursin("v1", HTTP.header(legacy_version, "X-API-Deprecation"))
+    @test occursin(BiocircuitsExplorerBackend.API_LEGACY_SUNSET,
+                   HTTP.header(legacy_version, "X-API-Deprecation"))
+    legacy_body = JSON3.read(legacy_version.body)
+    @test legacy_body["api_version"] == BiocircuitsExplorerBackend.API_CURRENT_VERSION
+    @test legacy_body["api_legacy_sunset"] == BiocircuitsExplorerBackend.API_LEGACY_SUNSET
+    @test haskey(legacy_body, "version")              # app version retained
+    @test legacy_body["api_supported"][1] == "v1"
+
+    # /api/v1/version is the canonical form — same payload, no deprecation.
+    v1_version = router(HTTP.Request("GET", "/api/v1/version"))
+    @test v1_version.status == 200
+    @test !HTTP.hasheader(v1_version, "X-API-Deprecation")
+    v1_body = JSON3.read(v1_version.body)
+    @test v1_body["api_version"] == "v1"
+    @test v1_body["version"] == legacy_body["version"]
+
+    # /api/v1 (with or without trailing slash) is a discovery probe.
+    @test router(HTTP.Request("GET", "/api/v1")).status == 200
+    @test router(HTTP.Request("GET", "/api/v1/")).status == 200
+
+    # A real POST endpoint: malformed body should produce the same 400 on both
+    # surfaces, but only the legacy form gets the deprecation header.
+    bad_legacy = router(HTTP.Request("POST", "/api/build_model",
+        ["Content-Type" => "application/json"], "{"))
+    bad_v1 = router(HTTP.Request("POST", "/api/v1/build_model",
+        ["Content-Type" => "application/json"], "{"))
+    @test bad_legacy.status == 400
+    @test bad_v1.status == 400
+    @test HTTP.hasheader(bad_legacy, "X-API-Deprecation")
+    @test !HTTP.hasheader(bad_v1, "X-API-Deprecation")
+    @test String(bad_legacy.body) == String(bad_v1.body)   # identical payload
+
+    # Unknown endpoints under v1 fall through to the static handler (404).
+    @test router(HTTP.Request("GET", "/api/v1/this-does-not-exist")).status == 404
+
+    # Canonicalization unit checks — kept here rather than in a separate
+    # testset so the failure context shows both unit and integration behavior.
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/build_model") ==
+          ("/api/build_model", false)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/build_model") ==
+          ("/api/build_model", true)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1") ==
+          ("/api/v1", false)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/") ==
+          ("/api/v1", false)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/static/foo.css") ==
+          ("/static/foo.css", false)
+end
+
+@testset "SBML Export/Import Round-Trip" begin
+    # Export from the legacy shape, re-import, and check the binding network
+    # survives intact with no warnings.
+    exp = router(HTTP.Request("POST", "/api/v1/export/sbml",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict("label" => "monomer_dimer",
+                         "reactions" => ["A + B <-> AB", "AB + C <-> ABC"],
+                         "kd" => [1.5, 0.4]))))
+    @test exp.status == 200
+    sbml = JSON3.read(exp.body)["sbml"]
+    @test occursin("<sbml", sbml)
+    @test occursin("level=\"3\"", sbml)
+    @test occursin("<listOfReactions>", sbml)
+    @test occursin("Kd_r1", sbml)
+
+    imp = router(HTTP.Request("POST", "/api/v1/import/sbml",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("sbml" => sbml))))
+    @test imp.status == 200
+    ib = JSON3.read(imp.body)
+    @test ib["network_ir"]["label"] == "monomer_dimer"
+    rxs = ib["network_ir"]["reactions"]
+    @test length(rxs) == 2
+    @test rxs[1]["formula"] == "A + B <-> AB"
+    @test rxs[1]["kd"] == 1.5
+    @test rxs[2]["formula"] == "AB + C <-> ABC"
+    @test rxs[2]["kd"] == 0.4
+    @test Set(s["name"] for s in ib["network_ir"]["species"]) == Set(["A", "B", "C", "AB", "ABC"])
+    @test isempty(ib["warnings"])
+
+    # Export also accepts a full NetworkIR payload (not just legacy).
+    exp2 = router(HTTP.Request("POST", "/api/v1/export/sbml",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict("ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+                         "label" => "ir_form",
+                         "reactions" => [Dict("formula" => "A + B <-> AB", "kd" => 2.0)]))))
+    @test exp2.status == 200
+    @test occursin("ir_form", JSON3.read(exp2.body)["sbml"])
+
+    # Legacy alias carries the deprecation header; v1 does not.
+    @test HTTP.hasheader(router(HTTP.Request("POST", "/api/export/sbml",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict("reactions" => ["A + B <-> AB"], "kd" => [1.0])))),
+        "X-API-Deprecation")
+end
+
+@testset "SBML Import Warnings And Lossy Constructs" begin
+    # A hand-written SBML that exercises the warning paths: two compartments,
+    # a modifier, and a reaction with no recoverable Kd.
+    xml = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+      <model id="lossy" name="lossy">
+        <listOfCompartments>
+          <compartment id="c1" constant="true"/>
+          <compartment id="c2" constant="true"/>
+        </listOfCompartments>
+        <listOfSpecies>
+          <species id="A" compartment="c1" initialConcentration="2.0" constant="false"/>
+          <species id="B" compartment="c1" constant="false"/>
+          <species id="AB" compartment="c1" constant="false"/>
+          <species id="E" compartment="c1" constant="false"/>
+        </listOfSpecies>
+        <listOfReactions>
+          <reaction id="bind" reversible="true">
+            <listOfReactants>
+              <speciesReference species="A" stoichiometry="1" constant="true"/>
+              <speciesReference species="B" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+              <speciesReference species="AB" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+            <listOfModifiers>
+              <modifierSpeciesReference species="E"/>
+            </listOfModifiers>
+          </reaction>
+        </listOfReactions>
+      </model>
+    </sbml>
+    """
+    network, warnings = sbml_to_network_ir(xml)
+    @test network.label == "lossy"
+    @test length(network.reactions) == 1
+    @test network.reactions[1].formula == "A + B <-> AB"
+    @test network.reactions[1].kd == 1.0   # defaulted
+    # initialConcentration carried through.
+    a = first(filter(s -> s.name == "A", network.species))
+    @test a.initial_total == 2.0
+    # Three distinct warnings: extra compartment, modifier, defaulted Kd.
+    @test any(w -> occursin("compartment", w), warnings)
+    @test any(w -> occursin("modifier", w), warnings)
+    @test any(w -> occursin("Kd", w), warnings)
+
+    # A named dissociation constant in a kineticLaw is recovered.
+    xml2 = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+      <model id="kd_named">
+        <listOfParameters>
+          <parameter id="Kd_bind" value="0.25" constant="true"/>
+        </listOfParameters>
+        <listOfSpecies>
+          <species id="A" constant="false"/>
+          <species id="B" constant="false"/>
+          <species id="AB" constant="false"/>
+        </listOfSpecies>
+        <listOfReactions>
+          <reaction id="bind" reversible="true">
+            <listOfReactants>
+              <speciesReference species="A" stoichiometry="1" constant="true"/>
+              <speciesReference species="B" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+              <speciesReference species="AB" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+            <kineticLaw>
+              <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>Kd_bind</ci></math>
+            </kineticLaw>
+          </reaction>
+        </listOfReactions>
+      </model>
+    </sbml>
+    """
+    n2, w2 = sbml_to_network_ir(xml2)
+    @test n2.reactions[1].kd == 0.25
+    @test !any(w -> occursin("Kd", w), w2)   # found it, no Kd warning
+
+    # Malformed XML is a 400 at the route, not a 500.
+    bad = router(HTTP.Request("POST", "/api/v1/import/sbml",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("sbml" => "<nope"))))
+    @test bad.status == 400
+    # Missing the sbml field is also a clean 400.
+    missing_field = router(HTTP.Request("POST", "/api/v1/import/sbml",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("foo" => "bar"))))
+    @test missing_field.status == 400
+end
+
 @testset "Unsupported Query Scope" begin
     profile = atlas_search_profile_binding_small_v0()
     @test_throws ArgumentError compile_query(Dict("unknown_key" => 1), profile)
@@ -2056,4 +2418,293 @@ end
         "limit" => 5,
     ))
     @test result["result_count"] == 0
+end
+
+@testset "NetworkIR Legacy Bridge" begin
+    raw = Dict(
+        "reactions" => Any["A + B <-> AB"],
+        "kd" => Any[2.5],
+        "input_symbols" => Any["tA"],
+        "output_symbols" => Any["AB"],
+        "label" => "monomer_dimer",
+    )
+    net = parse_network_ir(raw)
+    @test net.ir_schema_version == NETWORK_IR_SCHEMA_VERSION
+    @test net.label == "monomer_dimer"
+    @test net.provenance.source == "legacy_reactions_kd"
+    @test length(net.species) == 3
+    @test [sp.name for sp in net.species] == ["A", "B", "AB"]
+    @test [sp.role for sp in net.species] == [:free, :free, :bound]
+    @test length(net.reactions) == 1
+    @test net.reactions[1].formula == "A + B <-> AB"
+    @test net.reactions[1].kd == 2.5
+    @test length(net.observables) == 1
+    @test net.observables[1].expression == "AB"
+    @test length(net.parameter_distributions) == 1
+    @test net.parameter_distributions[1].symbol == "tA"
+    @test net.parameter_distributions[1].kind == :loguniform
+
+    bridge = network_ir_to_legacy_inputs(net)
+    @test bridge.rules == ["A + B <-> AB"]
+    @test bridge.kd == [2.5]
+    @test bridge.input_symbols == ["tA"]
+    @test bridge.output_symbols == ["AB"]
+end
+
+@testset "NetworkIR Structured Round-Trip" begin
+    structured = Dict(
+        "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+        "label" => "structured_demo",
+        "species" => Any[
+            Dict("name" => "A", "role" => "free", "initial_total" => 1.0, "unit" => "uM"),
+            Dict("name" => "B", "role" => "free", "unit" => "uM"),
+            Dict("name" => "AB", "role" => "bound"),
+        ],
+        "reactions" => Any[
+            Dict("formula" => "A + B <-> AB", "kd" => 0.5, "kind" => "binding"),
+        ],
+        "observables" => Any[
+            Dict("name" => "complex", "expression" => "AB"),
+        ],
+        "parameter_distributions" => Any[
+            Dict("symbol" => "tA", "kind" => "loguniform", "log_min" => -3.0, "log_max" => 3.0),
+            Dict("symbol" => "tB", "kind" => "point", "value" => 1.0),
+        ],
+        "provenance" => Dict("created_by" => "tester", "source" => "unit_test"),
+    )
+
+    net = parse_network_ir(structured)
+    @test net.label == "structured_demo"
+    @test length(net.species) == 3
+    @test net.species[1].initial_total == 1.0
+    @test net.species[1].unit == "uM"
+    @test net.reactions[1].kd == 0.5
+    @test net.parameter_distributions[2].value == 1.0
+    @test net.provenance.created_by == "tester"
+
+    dict_form = network_ir_to_dict(net)
+    @test dict_form["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
+    @test length(dict_form["species"]) == 3
+    @test dict_form["reactions"][1]["formula"] == "A + B <-> AB"
+
+    round_trip = parse_network_ir(dict_form)
+    @test network_ir_hash(round_trip) == network_ir_hash(net)
+end
+
+@testset "NetworkIR Validation Errors" begin
+    @test_throws IRValidationError parse_network_ir(Dict(
+        "ir_schema_version" => "sbml/v3",
+        "species" => Any[],
+        "reactions" => Any[],
+    ))
+
+    err = try
+        parse_network_ir(Dict(
+            "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+            "species" => Any[Dict("role" => "free")],
+            "reactions" => Any[Dict("formula" => "A + B <-> AB", "kd" => 1.0)],
+        ))
+        nothing
+    catch e
+        e
+    end
+    @test err isa IRValidationError
+    @test occursin("name", err.msg)
+    @test occursin("species", err.path)
+
+    err = try
+        parse_network_ir(Dict(
+            "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+            "species" => Any[
+                Dict("name" => "A", "role" => "free"),
+                Dict("name" => "B", "role" => "free"),
+                Dict("name" => "AB", "role" => "bound"),
+            ],
+            "reactions" => Any[Dict("formula" => "A plus B", "kd" => 1.0)],
+        ))
+        nothing
+    catch e
+        e
+    end
+    @test err isa IRValidationError
+    @test occursin("formula", err.path)
+
+    err = try
+        parse_network_ir(Dict(
+            "reactions" => Any["A + B <-> AB"],
+            "kd" => Any[-1.0],
+        ))
+        nothing
+    catch e
+        e
+    end
+    @test err isa IRValidationError
+    @test occursin("kd", err.msg)
+
+    err = try
+        parse_network_ir(Dict(
+            "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+            "species" => Any[
+                Dict("name" => "A", "role" => "free"),
+                Dict("name" => "C", "role" => "bound"),
+            ],
+            "reactions" => Any[Dict("formula" => "A + B <-> AB", "kd" => 1.0)],
+        ))
+        nothing
+    catch e
+        e
+    end
+    @test err isa IRValidationError
+    @test occursin("not declared", err.msg)
+end
+
+@testset "DesignSpec Parsing And Legacy Bridge" begin
+    payload = Dict(
+        "ir_schema_version" => DESIGN_SPEC_SCHEMA_VERSION,
+        "label" => "bandpass_AB",
+        "goal" => Dict(
+            "motif_labels" => Any["+ -> -"],
+            "input_symbols" => Any["tA"],
+            "output_symbols" => Any["AB"],
+        ),
+        "constraints" => Dict("max_base_species" => 3),
+        "objectives" => Dict("ranking_mode" => "robustness_first"),
+        "policies" => Dict(
+            "refinement" => Dict("enabled" => true, "top_k" => 3),
+            "search_profile" => Dict("name" => "binding_small_v0"),
+        ),
+        "provenance" => Dict("created_by" => "designer"),
+    )
+    ds = parse_design_spec(payload)
+    @test ds.ir_schema_version == DESIGN_SPEC_SCHEMA_VERSION
+    @test ds.label == "bandpass_AB"
+    @test ds.goal["motif_labels"] == Any["+ -> -"]
+    @test ds.constraints["max_base_species"] == 3
+    @test ds.objectives["ranking_mode"] == "robustness_first"
+
+    net = parse_network_ir(Dict(
+        "reactions" => Any["A + B <-> AB"],
+        "kd" => Any[1.0],
+        "input_symbols" => Any["tA"],
+        "output_symbols" => Any["AB"],
+    ))
+
+    legacy = design_spec_to_legacy_request(ds; network=net)
+    @test haskey(legacy, "query")
+    @test legacy["query"]["motif_labels"] == Any["+ -> -"]
+    @test legacy["query"]["max_base_species"] == 3
+    @test legacy["query"]["ranking_mode"] == "robustness_first"
+    @test haskey(legacy, "refinement")
+    @test legacy["refinement"]["top_k"] == 3
+    @test haskey(legacy, "search_profile")
+    @test legacy["search_profile"]["name"] == "binding_small_v0"
+    @test legacy["source_label"] == "bandpass_AB"
+    @test length(legacy["networks"]) == 1
+    @test legacy["networks"][1]["reactions"] == ["A + B <-> AB"]
+    @test legacy["networks"][1]["kd"] == [1.0]
+
+    @test_throws IRValidationError parse_design_spec(Dict(
+        "ir_schema_version" => DESIGN_SPEC_SCHEMA_VERSION,
+    ))
+
+    @test_throws IRValidationError parse_design_spec(Dict(
+        "ir_schema_version" => "sbol/v3.0",
+        "goal" => Dict("motif_labels" => Any["x"]),
+    ))
+end
+
+@testset "NetworkIR Hash Is Deterministic" begin
+    raw = Dict(
+        "reactions" => Any["A + B <-> AB"],
+        "kd" => Any[1.0],
+    )
+    h1 = network_ir_hash(parse_network_ir(raw))
+    h2 = network_ir_hash(parse_network_ir(raw))
+    @test h1 == h2
+    @test length(h1) == 64
+end
+
+@testset "handle_build_model Accepts Both Legacy And NetworkIR" begin
+    legacy_req = HTTP.Request("POST", "/api/build_model",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "reactions" => ["A + B <-> AB"],
+            "kd" => [1.5],
+            "session_id" => "test-legacy",
+        )))
+    legacy_resp = BiocircuitsExplorerBackend.handle_build_model(legacy_req)
+    @test legacy_resp.status == 200
+    legacy_body = response_json(legacy_resp)
+    @test legacy_body["kd"] == [1.5]
+    @test haskey(legacy_body, "network_ir")
+    @test legacy_body["network_ir"]["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
+    @test haskey(legacy_body, "network_ir_hash")
+
+    ir_req = HTTP.Request("POST", "/api/build_model",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "network" => Dict(
+                "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+                "species" => [
+                    Dict("name" => "A", "role" => "free"),
+                    Dict("name" => "B", "role" => "free"),
+                    Dict("name" => "AB", "role" => "bound"),
+                ],
+                "reactions" => [Dict("formula" => "A + B <-> AB", "kd" => 0.5)],
+            ),
+            "session_id" => "test-ir",
+        )))
+    ir_resp = BiocircuitsExplorerBackend.handle_build_model(ir_req)
+    @test ir_resp.status == 200
+    ir_body = response_json(ir_resp)
+    @test ir_body["kd"] == [0.5]
+    @test ir_body["network_ir"]["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
+end
+
+@testset "IR Validation Endpoints Return Structured Errors" begin
+    good_req = HTTP.Request("POST", "/api/ir/network/validate",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "reactions" => ["A + B <-> AB"],
+            "kd" => [1.0],
+        )))
+    good_resp = BiocircuitsExplorerBackend.handle_ir_network_validate(good_req)
+    @test good_resp.status == 200
+    good_body = response_json(good_resp)
+    @test good_body["valid"] == true
+    @test good_body["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
+    @test haskey(good_body, "hash")
+
+    bad_req = HTTP.Request("POST", "/api/ir/network/validate",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
+            "species" => [Dict("role" => "free")],
+            "reactions" => [Dict("formula" => "A + B <-> AB", "kd" => 1.0)],
+        )))
+    bad_resp = BiocircuitsExplorerBackend.handle_ir_network_validate(bad_req)
+    @test bad_resp.status == 400
+    bad_body = response_json(bad_resp)
+    @test bad_body["valid"] == false
+    @test bad_body["section"] == "network"
+    @test occursin("species", String(bad_body["path"]))
+
+    design_req = HTTP.Request("POST", "/api/ir/design/validate",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "design" => Dict(
+                "ir_schema_version" => DESIGN_SPEC_SCHEMA_VERSION,
+                "goal" => Dict("motif_labels" => ["+"]),
+            ),
+            "network" => Dict(
+                "reactions" => ["A + B <-> AB"],
+                "kd" => [1.0],
+            ),
+        )))
+    design_resp = BiocircuitsExplorerBackend.handle_ir_design_validate(design_req)
+    @test design_resp.status == 200
+    design_body = response_json(design_resp)
+    @test design_body["valid"] == true
+    @test haskey(design_body, "legacy_request")
+    @test design_body["legacy_request"]["query"]["motif_labels"] == ["+"]
 end

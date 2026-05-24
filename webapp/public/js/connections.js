@@ -4,6 +4,42 @@ import { showToast } from './api.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { hasModelContextForNode } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
+import { record, SetConnectionsCommand } from './commands.js';
+
+// ===== Connection mutators (command performers) =====
+
+// Add one wire, honoring the one-input-one-wire rule: any existing wire on
+// the same input socket is evicted and returned so a command can restore it
+// on undo. Returns the replaced connection or null.
+export function addConnection(conn) {
+  let replaced = null;
+  const existing = connections.find(c => c.toNode === conn.toNode && c.toPort === conn.toPort);
+  if (existing) {
+    replaced = { ...existing };
+    setConnections(connections.filter(c => c !== existing));
+  }
+  connections.push({ ...conn });
+  updateConnections();
+  return replaced;
+}
+
+export function removeConnection(conn) {
+  setConnections(connections.filter(c => !(
+    c.fromNode === conn.fromNode && c.fromPort === conn.fromPort &&
+    c.toNode === conn.toNode && c.toPort === conn.toPort)));
+  updateConnections();
+}
+
+// Replace the whole connection set (backs SetConnectionsCommand).
+export function replaceConnections(arr) {
+  setConnections((arr || []).map(c => ({ ...c })));
+  updateConnections();
+}
+
+function connectionsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // Module-level DOM refs, set by initSocketEvents()
 let svgLayer = null;
@@ -88,6 +124,10 @@ export function initSocketEvents() {
     const socket = e.target.closest('.socket');
     if (!socket || e.button !== 0) return;
 
+    // Snapshot the connection set before the gesture begins. mouseup records
+    // the net change (connect / detach / rewire) as a single undo step.
+    wiringState.connSnapshotBefore = connections.map(c => ({ ...c }));
+
     if (socket.classList.contains('output')) {
       // Start wiring from output
       wiringState.isWiring = true;
@@ -142,6 +182,7 @@ export function initSocketEvents() {
 
   document.addEventListener('mouseup', (e) => {
     if (!wiringState.isWiring || !wiringState.wireStartSocket) return;
+    const before = wiringState.connSnapshotBefore;
     const socket = e.target.closest('.socket');
     if (socket && socket !== wiringState.wireStartSocket) {
       let fromSocket, toSocket;
@@ -193,5 +234,14 @@ export function initSocketEvents() {
         }
       }
     }
+
+    // Record the net change for undo. Covers every gesture outcome — a new
+    // wire, a detach that dropped on empty space, or a rewire — because we
+    // diff the whole set against the pre-gesture snapshot. Runs before
+    // canvas.js clears wiringState (document listeners fire before window).
+    if (before && !connectionsEqual(before, connections)) {
+      record(new SetConnectionsCommand({ before, after: connections }));
+    }
+    wiringState.connSnapshotBefore = null;
   });
 }
