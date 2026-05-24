@@ -10,7 +10,7 @@ export atlas_sqlite_load_library, atlas_sqlite_save_library!, atlas_sqlite_summa
 export atlas_sqlite_existing_ok_slice_ids, atlas_sqlite_merge_atlas!, atlas_sqlite_record_skip_only_event!, atlas_sqlite_append_atlas!
 export canonical_program_profile, encode_program_blob, decode_program_blob, behavior_program_hash, program_exact_label, program_motif_label, program_features
 export enumerate_network_specs
-export build_behavior_atlas, build_behavior_atlas_from_spec
+export build_behavior_atlas, build_behavior_atlas_from_spec, looks_like_atlas_corpus
 export build_atlas_library, build_atlas_library_from_spec
 export merge_atlas_library, merge_atlas_library_from_spec
 export query_behavior_atlas, query_behavior_atlas_from_spec
@@ -41,12 +41,13 @@ using SHA
 using DBInterface
 using SQLite
 
+include(joinpath(@__DIR__, "config.jl"))
+include(joinpath(@__DIR__, "session_store.jl"))
+using .SessionStore: get_session, set_session
+
 # ─── Global state ───
-const MODELS = Dict{String, Any}()  # session_id => Dict with model + computed data
-const MODELS_LOCK = ReentrantLock()  # protects concurrent access to MODELS
-const MAX_SESSIONS = 200  # prevent unbounded memory growth
 const STATIC_DIR = Ref{Union{Nothing, String}}(nothing)
-const SESSION_TTL = 3600  # 1 hour in seconds
+const SESSION_TTL = SessionStore.DEFAULT_TTL_SECONDS
 const SESSION_CLEANUP_INTERVAL = 300  # 5 minutes
 const DEBUG_LOGS = Vector{Dict{String, Any}}()
 const DEBUG_LOG_LOCK = ReentrantLock()
@@ -122,14 +123,6 @@ end
 
 with_debug_client_scope(client_id, f::Function) = with_debug_client_scope(f, client_id)
 
-function first_nonempty_env(keys::Vector{String})
-    for key in keys
-        value = strip(get(ENV, key, ""))
-        !isempty(value) && return value
-    end
-    return ""
-end
-
 function parse_optional_int(raw::AbstractString)
     text = strip(String(raw))
     isempty(text) && return nothing
@@ -140,7 +133,7 @@ function parse_optional_int(raw::AbstractString)
     end
 end
 
-configured_parent_pid() = parse_optional_int(first_nonempty_env(["BIOCIRCUITS_EXPLORER_PARENT_PID", "ROP_PARENT_PID"]))
+configured_parent_pid() = parse_optional_int(Config.parent_pid_raw())
 
 current_parent_pid() = Int(ccall(:getppid, Cint, ()))
 
@@ -270,7 +263,7 @@ end
 function resolve_static_dir()
     candidates = String[]
 
-    env_static_dir = first_nonempty_env(["BIOCIRCUITS_EXPLORER_PUBLIC_DIR", "ROP_PUBLIC_DIR"])
+    env_static_dir = Config.public_dir_override()
     if !isempty(env_static_dir)
         push!(candidates, abspath(expanduser(env_static_dir)))
     end
@@ -306,51 +299,23 @@ function static_dir()
     return STATIC_DIR[]::String
 end
 
-resolve_port() = parse(Int, isempty(first_nonempty_env(["BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"])) ? "8088" : first_nonempty_env(["BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"]))
+resolve_port() = Config.port()
 
-# Thread-safe session helpers
-function get_session(sid::AbstractString)
-    lock(MODELS_LOCK) do
-        sess = get(MODELS, sid, nothing)
-        if sess !== nothing
-            sess["last_access"] = time()
-        end
-        return sess
-    end
-end
-
-function set_session(sid::AbstractString, sess)
-    lock(MODELS_LOCK) do
-        if !haskey(MODELS, sid) && length(MODELS) >= MAX_SESSIONS
-            error("Too many active sessions (limit: $MAX_SESSIONS). Please try again later.")
-        end
-        sess["last_access"] = time()
-        MODELS[sid] = sess
-    end
-end
-
-# Session cleanup task
+# Session cleanup task — delegates expiry to SessionStore, then prunes the
+# debug-log buffers attached to long-idle clients.
 function cleanup_old_sessions()
     while true
         sleep(SESSION_CLEANUP_INTERVAL)
         current_time = time()
-        expired_clients = String[]
 
-        lock(MODELS_LOCK) do
-            to_delete = String[]
-            for (sid, sess) in MODELS
-                last_access = get(sess, "last_access", 0.0)
-                if current_time - last_access > SESSION_TTL
-                    push!(to_delete, sid)
-                end
-            end
-            for sid in to_delete
-                delete!(MODELS, sid)
-                @info "Cleaned up expired session: $sid"
-            end
-        end
+        SessionStore.cleanup_expired_sessions!(
+            ttl = SESSION_TTL,
+            now_epoch = current_time,
+            on_evict = sid -> (@info "Cleaned up expired session: $sid"),
+        )
 
         lock(DEBUG_LOG_LOCK) do
+            expired_clients = String[]
             for (client_id, last_access) in DEBUG_CLIENT_LAST_ACCESS
                 if current_time - last_access > SESSION_TTL
                     push!(expired_clients, client_id)
@@ -998,7 +963,7 @@ end
 include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
-include(joinpath(@__DIR__, "inverse_design_v2.jl"))
+include(joinpath(@__DIR__, "inverse_design.jl"))
 include(joinpath(@__DIR__, "version.jl"))
 include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
@@ -1041,16 +1006,16 @@ end
 # client / hosted UI domain to redirect users to. Returns "enabled: false"
 # in dev mode (no Cognito), so the SPA can degrade gracefully to local-only.
 function handle_auth_config(req)
-    pool_id = strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID", ""))
+    pool_id = Config.cognito_user_pool_id()
     if isempty(pool_id)
         return json_response(Dict{String, Any}("enabled" => false))
     end
     return json_response(Dict{String, Any}(
         "enabled" => true,
-        "cognito_region" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_REGION", get(ENV, "AWS_REGION", ""))),
+        "cognito_region" => Config.cognito_region(),
         "cognito_user_pool_id" => pool_id,
-        "cognito_app_client_id" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID", "")),
-        "cognito_domain" => strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN", "")),
+        "cognito_app_client_id" => Config.cognito_app_client_id(),
+        "cognito_domain" => Config.cognito_domain(),
         "scopes" => ["openid", "email", "profile"],
         "response_type" => "code",
     ))

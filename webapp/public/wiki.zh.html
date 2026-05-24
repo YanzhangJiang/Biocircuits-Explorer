@@ -102,7 +102,7 @@
           <li><a href="#sec-9-2">9.2 选择 Provider 与 API Key</a></li>
           <li><a href="#sec-9-3">9.3 输入：文本、PDF、Notebook</a></li>
           <li><a href="#sec-9-4">9.4 读结果与自动生成的节点链</a></li>
-          <li><a href="#sec-9-5">9.5 诚实约束与丢弃规则</a></li>
+          <li><a href="#sec-9-5">9.5 校验规则与丢弃内容</a></li>
         </ol>
       </li>
       <li>
@@ -139,8 +139,8 @@
       <p class="eyebrow">Wiki · 第一章</p>
       <h1>反应级数多面体与 Biocircuits Explorer 工作台入门</h1>
       <p class="subtitle">
-        一篇教科书式的短文，介绍多面体背后的数学、画布上各个对象的含义，
-        以及从&ldquo;勾勒一个结合网络&rdquo;到&ldquo;得出设计结论&rdquo;的实用操作流程。
+        面向实际使用的说明：先交代多面体背后的数学对象，再说明画布上各个节点
+        代表什么，以及怎样把一个结合网络变成可检查的分析结论。
       </p>
     </div>
 
@@ -148,11 +148,10 @@
     <section id="sec-1">
       <h2><span class="sec-num">1</span>本 Wiki 是什么</h2>
       <p>
-        Biocircuits Explorer 是一个通过 <em>反应级数多面体</em>（Reaction Order
-        Polyhedra，ROP）来设计与分析平衡结合网络的工作台。首页用一组截图与短视频
-        介绍了它的功能，本 Wiki 则深入一层：解释应用实际在计算什么、画布上各种几何
-        对象叫什么名字，以及一系列把&ldquo;关于回路的问题&rdquo;变成
-        &ldquo;关于回路的答案&rdquo;的操作流程。
+        Biocircuits Explorer 是一个用 <em>反应级数多面体</em>（Reaction Order
+        Polyhedra，ROP）分析平衡结合网络的工作台。首页用截图与短视频展示入口，
+        本 Wiki 则回答更具体的问题：应用实际在计算什么，画布上的几何对象如何命名，
+        以及怎样把&ldquo;关于回路的问题&rdquo;整理成可复核的分析步骤。
       </p>
       <p>
         第一次阅读请按章节顺序通读。当你已经搭过几个网络之后，每一节都可以独立作为
@@ -168,6 +167,15 @@
           守恒量）。
         </p>
       </div>
+
+      <div class="callout callout-note">
+        <p class="callout-head">阅读口径</p>
+        <p>
+          这不是一份承诺接口稳定的产品手册。文中的节点名、按钮名和云端部署说明对应
+          当前仓库实现；数学部分描述的是平衡结合网络的渐近结构，数值结论仍需要用你
+          实际采用的参数范围检查。
+        </p>
+      </div>
     </section>
 
     <!-- ============ §2 ============ -->
@@ -177,9 +185,9 @@
       <section id="sec-2-1">
         <h3><span class="sec-num">2.1</span>什么是反应级数多面体？</h3>
         <p>
-          <strong>反应级数多面体</strong>（ROP）是一个几何对象，它在你尚未对结合常数
-          或守恒总量赋具体数值之前，就把一个平衡结合网络可能呈现的全部
-          <em>定性行为</em> 一次性总结出来。
+          <strong>反应级数多面体</strong>（ROP）是一个几何对象，用来组织平衡结合网络
+          在不同参数尺度下可能出现的渐近 regime。它不替代具体数值参数，而是在你开始
+          扫描参数之前，先给出一张结构性的地图。
         </p>
         <p>
           ROP 分析的输入是一个 <strong>结合网络</strong>：
@@ -209,11 +217,10 @@
           </li>
         </ul>
         <p>
-          输出 <em>不是</em> 一条平衡曲线，而是一个生活在
-          log-浓度 / log-参数空间中的 <strong>多面体</strong>。多面体上的每个点
-          对应一种 <em>主导模式</em>（dominance mode）—— 一张快照，记录每个守恒池里
-          哪一种物种&ldquo;占主导&rdquo;。每个 <em>顶点</em> 对应一个完整的渐近 regime；
-          每个 <em>面</em> 或 <em>棱</em> 则是 regime 之间的过渡。
+          输出通常 <em>不是</em> 一条平衡曲线，而是 log-浓度 / log-参数空间中的
+          <strong>多面体结构</strong>。一个顶点对应一种完整的渐近 regime：在每个守恒池里，
+          哪一种物种占主导已经确定。面和棱记录的是主导项打平或切换的位置，也就是
+          regime 之间的过渡。
         </p>
         <p>
           为什么是多面体而不是曲线？因为平衡方程
@@ -222,19 +229,18 @@
           N \log x \;=\; \log k, \qquad L\,x \;=\; q
         \]
         <p>
-          虽然对浓度是非线性的，但在渐近极限下是 <em>分片 log-线性</em> 的。
-          只要每个总量都被某一项主导，每个物种浓度就坍缩为基本物种自由浓度的单项式，
-          输出便成为 log-参数的线性函数。多面体就是描绘
-          &ldquo;哪一项在哪里取胜&rdquo; 的地图。曲线只描述一组参数；多面体一次性
-          描述整个参数空间，并将其划分为 regime。
+          虽然对浓度是非线性的，但在渐近极限下可以分成若干 <em>log-线性</em> 区域。
+          当每个总量都由某一项主导时，物种浓度可用单项式近似，输出也变成 log-参数的
+          线性函数。多面体就是记录&ldquo;哪一项在哪里取胜&rdquo;的地图；它比单条数值曲线
+          多给出一层信息：参数空间如何被不同 regime 划分。
         </p>
 
         <figure class="wiki-figure">
           <img src="media/rop-polyhedron-poster.jpg" alt="一张带顶点标注的 3D 反应级数多面体。">
           <figcaption>
             <span class="fig-label">图 1.</span>
-            工作台中渲染的反应级数多面体。每个顶点是一个完整的主导 regime；每个面
-            是一次 regime 过渡。
+            工作台中渲染的反应级数多面体。顶点表示主导 regime；面和棱表示 regime
+            之间的过渡关系。
           </figcaption>
         </figure>
       </section>
@@ -257,13 +263,12 @@
           q_{A} \;=\; [A] + [AB] \;=\; [A] + K\,[A]\,[B].
         \]
         <p>
-          ROP 的核心观察是：<strong>在大多数参数组合下，这些单项式中只有一个会
-          远大于其它项</strong>。在 log-浓度空间任取一个一般位置，每一个和式中都
-          只有一项胜出；当你改动参数，会越过若干薄薄的边界，&ldquo;胜出项&rdquo;
-          会切换。在每一个 regime 内部，浓度之间的关系都是纯粹的幂律。
+          ROP 的核心观察是：<strong>远离切换边界时，这些单项式通常会有一个主导项</strong>。
+          在 log-浓度空间中，改变参数会让系统跨过若干边界，主导项也随之切换。在一个
+          regime 内部，浓度之间的主导近似是幂律关系。
         </p>
         <p>
-          换到 log-log 坐标后，图像变得很干净。若输出 \(y\) 与输入 \(u\) 在某个
+          换到 log-log 坐标后，这种关系更容易读取。若输出 \(y\) 与输入 \(u\) 在某个
           regime 下满足 \( y \asymp C\,u^{\rho} \)，则
           \( \log y = \rho \log u + \mathrm{const.} \)。这里的斜率就是
           <strong>反应级数</strong>：
@@ -285,7 +290,7 @@
           </li>
         </ol>
         <p>
-          于是回路的整个定性行为就被一个有限的反应级数符号程序所捕获：
+          因此，一条给定输入扫描的定性响应可以用有限的反应级数程序来概括：
         </p>
         \[
           b \;=\; (\rho_{1}, \rho_{2}, \ldots, \rho_{L}),
@@ -301,8 +306,8 @@
       <section id="sec-2-3">
         <h3><span class="sec-num">2.3</span>多面体上的几何对象</h3>
         <p>
-          Biocircuits Explorer 使用 ROP 论文中确立的术语体系。下面每一个对象都是
-          应用可以计算或在画布上绘制的东西。
+          Biocircuits Explorer 尽量沿用 ROP 论文中的术语。下面列出的对象，有些会在
+          画布上直接出现，有些是结果表和图形背后的计算对象。
         </p>
         <dl>
           <dt>反应级数矩阵 (reaction-order matrix)</dt>
@@ -371,7 +376,7 @@
           <dt>能力周期表 (capability periodic table)</dt>
           <dd>
             一个由 \((d, \mu)\)（基本物种数与最大复合物大小）构成的二维索引，每个
-            格子是一整个设计空间。格子并不是简单的&ldquo;能 / 不能&rdquo;，而是带一个
+            格子对应一类有限的搜索空间。格子并不是简单的&ldquo;能 / 不能&rdquo;，而是带一个
             <em>能力包络</em>：可实现的机制类、强度极值、鲁棒性极值、最小见证网络
             以及不可达证明。
           </dd>
@@ -379,7 +384,7 @@
           <dt>符号字 (sign word)</dt>
           <dd>
             对 \(\{-, 0, +\}\) 三态做行程长度压缩得到的程序。零态是真实状态
-            （饱和、不变），永远不会被压缩消除。机制类别包括：从零激活
+            （饱和、不变），不会被当作无信息的重复符号删掉。机制类别包括：从零激活
             \(0 \to +\)、回到零 \(+ \to 0\)、直接反转 \(+ \to -\)、零中介反转
             \(+ \to 0 \to -\) 等。
           </dd>
@@ -399,8 +404,8 @@
             \(\rho > \mu\) 则相对最大复合物尺寸而言是 <em>超敏感</em>。
           </li>
           <li>
-            <strong>敏感区 vs. 饱和区。</strong> 多面体直接告诉你它们在
-            log-参数空间中的位置，无需任何数值扫描。
+            <strong>敏感区 vs. 饱和区。</strong> 多面体帮助定位它们在
+            log-参数空间中的位置，通常可以先少做一些盲目的密集扫描。
           </li>
           <li>
             <strong>切换轨迹 / 转折点。</strong> 多面体的面投影到输入轴上，给出
@@ -424,8 +429,8 @@
           </li>
           <li>
             <strong>鲁棒区域。</strong> 一个程序可以&ldquo;强但脆弱&rdquo;、
-            &ldquo;弱但鲁棒&rdquo;，也可以&ldquo;强且鲁棒&rdquo;。多面体正是用来
-            计算体积分数鲁棒性指标（R-index）的几何对象。
+            &ldquo;弱但鲁棒&rdquo;，也可以&ldquo;强且鲁棒&rdquo;。多面体提供计算体积分数鲁棒性
+            指标（R-index）的几何基础；具体分数仍取决于你选择的参数域和筛选条件。
           </li>
           <li>
             <strong>可达行为族。</strong> 不同机制可能产生同一个 regime 图与符号字；
@@ -486,11 +491,11 @@
           \rho \,:\, 1 \to 1 \to 0,
         \]
         <p>
-          经行程长度符号压缩后得到一个干净的&ldquo;回归到零&rdquo;响应
+          经行程长度符号压缩后得到一个典型的&ldquo;回归到零&rdquo;响应
           \( S(b) \,:\, + \to 0 \)。正方形的每个顶点都是一个 regime，每条棱都是
           一个转折点，整个正方形就是这个回路的主导多胞形。增大 \(\mu\) 或 \(d\)
           （转到二聚体或三物种网络），这个正方形会膨胀为顶点结构更丰富的高维多面体
-          —— 这正是能力周期表所要刻画的设计空间。
+          —— 这也是能力周期表要刻画的设计空间。
         </p>
       </section>
     </section>
@@ -571,8 +576,8 @@
     <section id="sec-4">
       <h2><span class="sec-num">4</span>操作流程 — 一步一步怎么做</h2>
       <p>
-        下面每条流程都是自包含的工作流。开头那条 &ldquo;flow line&rdquo;
-        就是你需要在画布上搭建的连线示意。
+        下面每条流程都可以单独照着做。每节开头的连线示意，表示画布上最小可用的
+        节点链。
       </p>
 
       <section id="sec-4-1">
@@ -684,7 +689,7 @@
           <p class="callout-head">读懂斜率</p>
           <p>
             SISO 路径上的整数序列就是每一步的局部 log-log 斜率。看到
-            <code>0 → 1 → 0</code> 就是&ldquo;干净的激活并饱和&rdquo;；
+            <code>0 → 1 → 0</code> 通常表示&ldquo;先激活、后饱和&rdquo;；
             <code>1 → 0 → −1</code> 是&ldquo;有峰的非单调响应&rdquo;。仅取符号
             并做行程长度压缩，就得到周期表所索引的&ldquo;符号字&rdquo;。
           </p>
@@ -767,8 +772,9 @@
           <li>
             <h4>寻找致密区域</h4>
             <p>
-              周围点云稠密的顶点对应鲁棒 regime —— 在很大一部分合理参数组合下，
-              回路都会落到这里。点云稀疏的顶点则是脆弱 regime。
+              周围点云稠密的顶点通常对应较鲁棒的 regime：在当前采样范围和采样方式下，
+              许多参数样本都会落到这里。点云稀疏并不自动说明机制不可用，但提示你需要
+              检查参数窗口是否很窄。
             </p>
           </li>
         </ol>
@@ -844,25 +850,26 @@
       </p>
       <ol>
         <li>
-          <strong>不靠曲线拟合直接读出 Hill 型指数。</strong> SISO 路径上的
-          整数斜率就是局部响应级数，在你选定任何常数之前就已确定。只需检查是否存在
-          某个 regime 满足 \( \rho &gt; \mu \)，就能判断超敏感响应是否可能实现。
+          <strong>不靠曲线拟合先读出 Hill 型指数。</strong> SISO 路径上的
+          整数斜率给出局部响应级数的渐近预测。检查是否存在
+          某个 regime 满足 \( \rho &gt; \mu \)，可以先判断超敏感响应在结构上是否有希望。
         </li>
         <li>
-          <strong>寻找鲁棒工作区。</strong> 每个顶点上的点云密度就是它的鲁棒性
-          打分：被大量参数样本访问的顶点，在各种细胞环境下都会被回路落入。
+          <strong>寻找鲁棒工作区。</strong> 点云密度可以作为鲁棒性的采样估计：
+          被大量参数样本访问的顶点，通常比只在很小参数窗口内出现的顶点更值得优先检查。
         </li>
         <li>
           <strong>逆向设计。</strong> 给定一个目标信号处理行为（一段符号字、
           一定的峰高、一个鲁棒的&ldquo;回到零&rdquo;响应），atlas 工具会枚举出
-          能实现它的结合网络，并按最简性或鲁棒性排序。
+          可能实现它的结合网络，并按最简性或鲁棒性排序。
         </li>
       </ol>
       <p>
-        还有一个不那么显然但同样实用的角度：ROP 分析能干净地解释 <em>为什么</em>
+        还有一个实用角度：ROP 分析能帮助解释 <em>为什么</em>
         某个回路做不到某件事。如果你的目标响应不在你所检索的周期表格子
-        \((d, \mu)\) 中任何一个网络的多面体里，那么这种失败是<em>结构性</em>的，
-        不是数值问题 —— 没有任何结合常数取值能挽救它。应用会显式给出这类证书。
+        \((d, \mu)\) 中任何一个网络的多面体里，并且搜索空间已经完整覆盖你的建模假设，
+        那么这种失败更像是<em>结构性</em>的，而不是某组常数没调好。应用会尽量给出这类
+        negative evidence，帮助你决定是否扩大物种数、复合物大小或改变假设。
       </p>
 
       <figure class="wiki-figure">
@@ -1212,17 +1219,17 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
     <section id="sec-9">
       <h2><span class="sec-num">9</span>AI Import — 把论文变成模型</h2>
       <p>
-        逐行抄写论文里的反应、再去查表找每一个 Kd，是慢的那条路。红色 Input 家族里的
-        <code>ai-import</code> 节点替你跑这一步：它读你提供的素材，让大语言模型把素材
-        里描述的<em>每一个</em>不同的平衡结合网络抽取出来，并在画布上为每个网络落下一条
-        已经填好参数的分析链。
+        <code>ai-import</code> 节点用于把论文、补充材料或 notebook 中明确写出的
+        平衡结合步骤整理成初稿。它会调用你选择的大语言模型，尝试抽取可逆结合反应、
+        Kd 数值和推荐的下游分析，并把结果作为可编辑节点放到画布上。它适合减少录入工作，
+        但不应当被当作自动建模或文献审查的最终结论。
       </p>
 
       <div class="callout callout-tip">
         <p class="callout-head">隐私模型</p>
         <p>
-          API Key 不会离开你的浏览器。前端不会把 Key 转交给服务器，请求直接从浏览器
-          发往你选择的 provider。只有在你信任当前这台机器时，才需要勾选
+          项目后端不会接收或保存你的 API Key；浏览器会把 Key 直接发送给你选择的
+          provider。只有在你信任当前这台机器时，才建议勾选
           &ldquo;Remember for browser session&rdquo;。
         </p>
       </div>
@@ -1230,7 +1237,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <section id="sec-9-1">
         <h3><span class="sec-num">9.1</span>节点做什么</h3>
         <p>
-          这个 Agent 的契约是封闭的，它<em>可以</em>做这些事：
+          这个节点的输出会经过固定 schema 和白名单检查。它可以做这些事：
         </p>
         <ul>
           <li>
@@ -1242,10 +1249,10 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
             Kd 数值，以及置信度标签。
           </li>
           <li>
-            从一份固定的白名单里挑选推荐的下游分析；超出白名单的请求会被静默丢弃。
+            从一份固定的白名单里挑选推荐的下游分析；超出白名单的请求会被后处理丢弃。
           </li>
           <li>
-            返回一份 <em>warnings</em> 列表，记录每一次近似、单位换算和被丢弃的项。
+            返回一份 <em>warnings</em> 列表，记录近似、单位换算、跳过的文件和被丢弃的项。
           </li>
         </ul>
         <p>
@@ -1259,7 +1266,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <section id="sec-9-2">
         <h3><span class="sec-num">9.2</span>选择 Provider 与 API Key</h3>
         <p>
-          目前支持两个 provider，二者都使用 Anthropic Messages API 形态：
+          UI 目前内置两个 provider 选项，二者都按 Anthropic Messages API 形态调用：
         </p>
         <div class="wiki-table-wrap">
           <table class="wiki-table">
@@ -1290,15 +1297,17 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         <p>
           在下拉框里选一个模型，或者填一个自定义 model ID。Provider 由模型名前缀自动
           识别（<code>claude</code> 开头走 Anthropic，<code>deepseek</code> 开头走
-          DeepSeek）。API Key 输入框是 password 类型；如果你不勾选
-          &ldquo;Remember for browser session&rdquo;，Key 会在标签页关闭时立刻被遗忘。
+          DeepSeek）。模型可用性以对应 provider 的实际 API 为准；如果某个 provider
+          拒绝 PDF 或 document 内容块，请改用文本或 notebook 输入。API Key 输入框是
+          password 类型；不勾选 &ldquo;Remember for browser session&rdquo; 时，页面不会把
+          Key 写入 sessionStorage。
         </p>
       </section>
 
       <section id="sec-9-3">
         <h3><span class="sec-num">9.3</span>输入：文本、PDF、Notebook</h3>
         <p>
-          三个输入 tab，原则上互斥，必要时可组合：
+          三类输入可以单独使用，也可以组合；组合时会作为同一个材料包发送：
         </p>
         <dl>
           <dt>文本</dt>
@@ -1334,36 +1343,36 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           <span class="node">[推荐结果节点]</span>
         </div>
         <p>
-          推荐结果会按 network 展开：<code>model-summary</code> 总是会有，再加上若干
+          推荐结果会按 network 展开：<code>model-summary</code> 会被保留，再加上若干
           来自固定白名单的节点 —— <code>vertices-table</code>、
           <code>regime-graph</code>、<code>siso-result</code>、
           <code>scan-1d-result</code>、<code>scan-2d-result</code>、
           <code>rop-cloud-result</code>、<code>rop-poly-result</code>、
-          <code>fret-result</code>。Agent 不能要求白名单以外的节点类型。
+          <code>fret-result</code>。白名单以外的节点类型会被后处理丢弃并写入 warning。
         </p>
       </section>
 
       <section id="sec-9-5">
-        <h3><span class="sec-num">9.5</span>诚实约束 —— 以及被丢弃的内容</h3>
+        <h3><span class="sec-num">9.5</span>校验规则 —— 以及被丢弃的内容</h3>
         <p>
-          系统提示词明确禁止模型胡编。常见的&ldquo;诚实抽取&rdquo;模式：
+          提示词和后处理都在限制模型输出，但不能保证抽取一定正确。常见的处理规则如下：
         </p>
         <ul>
           <li>
-            <strong>论文没给 Kd。</strong>用占位值 <code>1e-3 M</code>，置信度标记
+            <strong>论文没给 Kd。</strong>使用占位值 <code>1e-3 M</code>，置信度标记
             <em>low</em>，warning 中点名是哪条反应。拓扑会保留下来，数值需要你手动修。
           </li>
           <li>
-            <strong>只给 Ka。</strong>Agent 输出 \( K_{d} = 1 / K_{a} \) 并在 warnings
+            <strong>只给 Ka。</strong>节点输出 \( K_{d} = 1 / K_{a} \) 并在 warnings
             中记录这次取倒数。
           </li>
           <li>
-            <strong>只给 k<sub>on</sub> / k<sub>off</sub>。</strong>Agent 输出
+            <strong>只给 k<sub>on</sub> / k<sub>off</sub>。</strong>节点输出
             \( K_{d} = k_{\mathrm{off}} / k_{\mathrm{on}} \) 并在 warnings 中记录。
           </li>
           <li>
             <strong>Hill 函数、唯象 dose-response、催化周转。</strong>直接丢弃并记入
-            warnings；Agent 不会替你编一套结合机制。
+            warnings；节点不会把这些内容改写成不存在的结合机制。
           </li>
           <li>
             <strong>单位换算。</strong>nM / µM / mM 都会被换算到 M，并在 warnings
@@ -1371,8 +1380,9 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
         </ul>
         <p>
-          如果一次运行返回 <em>零</em> network 加上一段说明，那不是失败，而是材料里
-          没有可抽取的平衡结合化学时<em>应有的</em>结果。返回零比胡编要好。
+          如果一次运行返回 <em>零</em> network 加上一段说明，通常表示材料里没有可抽取的
+          平衡结合化学，或者输入不足以支持结构化反应列表。此时应补充方法段、补充材料或
+          反应表，而不是接受占位模型。
         </p>
       </section>
     </section>
@@ -1382,7 +1392,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <h2><span class="sec-num">10</span>账户与登录</h2>
       <p>
         在面向公网的部署中，云端后端要求登录用户。在本地或 on-prem 部署里，登录按钮
-        会隐藏起来，所有分析直接走进程内的 Julia 后端，完全不需要账户。
+        会隐藏起来，分析请求直接走当前进程内的 Julia 后端，不需要项目账户。
       </p>
 
       <section id="sec-10-1">
@@ -1402,8 +1412,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
         </ul>
         <p>
-          本地的 SISO 分析、regime 图、点云、参数扫描、模型摘要 —— 也就是第 4 节里
-          的所有内容 —— 都不需要账户。工具栏上的 <em>Sign in</em> 按钮只在后端报告
+          本地的 SISO 分析、regime 图、点云、参数扫描、模型摘要等交互式分析
+          不需要账户。工具栏上的 <em>Sign in</em> 按钮只在后端报告
           已启用鉴权时才显示。
         </p>
       </section>
@@ -1486,7 +1496,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
     <section id="sec-11">
       <h2><span class="sec-num">11</span>云计算 — 把重任务远程跑</h2>
       <p>
-        有两类分析可能跑几分钟到几小时：构建一个完整的 atlas、以及在大搜索格子上跑
+        有两类分析可能跑几分钟到几小时：构建较大的 atlas、以及在大搜索格子上跑
         逆向设计。<em>Cloud Compute</em> 开关把这些任务转给远程的 AWS Batch 队列，
         其他分析仍然走进程内的 Julia 后端。
       </p>
@@ -1507,8 +1517,8 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </li>
         </ul>
         <p>
-          对轻量分析（SISO 路径、扫描、多面体查看器）来说，Cloud Compute 开关无效，
-          它们永远本地跑。
+          对轻量分析（SISO 路径、扫描、多面体查看器）来说，Cloud Compute 开关不会改变
+          当前实现的执行位置，它们仍在本地后端运行。
         </p>
       </section>
 
@@ -1582,7 +1592,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           </dd>
         </dl>
         <p>
-          当 Cognito 已配置时，所有 <code>POST /api/jobs</code> 请求必须带上签名的
+          当 Cognito 已配置时，<code>POST /api/jobs</code> 请求必须带上签名的
           Cognito ID token；否则云端后端会以 HTTP&nbsp;400&nbsp;&ldquo;Missing
           Authorization Bearer token&rdquo; 拒绝。
         </p>
@@ -1770,7 +1780,7 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <li class="lvl-3"><a href="#sec-9-2">Provider 与 Key</a></li>
       <li class="lvl-3"><a href="#sec-9-3">文本 / PDF / Notebook</a></li>
       <li class="lvl-3"><a href="#sec-9-4">自动生成节点链</a></li>
-      <li class="lvl-3"><a href="#sec-9-5">诚实约束</a></li>
+      <li class="lvl-3"><a href="#sec-9-5">校验规则</a></li>
       <li class="lvl-2"><a href="#sec-10">账户</a></li>
       <li class="lvl-3"><a href="#sec-10-1">何时需要</a></li>
       <li class="lvl-3"><a href="#sec-10-2">登录流程</a></li>

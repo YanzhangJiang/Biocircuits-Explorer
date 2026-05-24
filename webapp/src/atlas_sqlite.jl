@@ -2,8 +2,8 @@ const ATLAS_SQLITE_SCHEMA_VERSION = "0.3.0"
 const ATLAS_SQLITE_SELECT_BATCH_SIZE = 400
 const ATLAS_SQLITE_BUSY_TIMEOUT_MS = 120000
 const ATLAS_SQLITE_LOCK_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0)
-const ATLAS_SQLITE_LIGHTWEIGHT_ENV = "ATLAS_SQLITE_LIGHTWEIGHT_PERSIST"
-const ATLAS_SQLITE_PERSIST_MODE_ENV = "ATLAS_SQLITE_PERSIST_MODE"
+const ATLAS_SQLITE_LIGHTWEIGHT_ENV = Config.ATLAS_SQLITE_LIGHTWEIGHT_ENV
+const ATLAS_SQLITE_PERSIST_MODE_ENV = Config.ATLAS_SQLITE_PERSIST_MODE_ENV
 
 atlas_sqlite_default_path() = normpath(joinpath(@__DIR__, "..", "atlas_store", "atlas.sqlite"))
 
@@ -810,10 +810,10 @@ function _atlas_sqlite_persist_mode(db::SQLite.DB; override=nothing)
     override_mode = _atlas_sqlite_parse_persist_mode(override)
     override_mode === nothing || return override_mode
 
-    env_mode = _atlas_sqlite_parse_persist_mode(get(ENV, ATLAS_SQLITE_PERSIST_MODE_ENV, ""))
+    env_mode = _atlas_sqlite_parse_persist_mode(Config.atlas_sqlite_persist_mode_raw())
     env_mode === nothing || return env_mode
 
-    env_value = get(ENV, ATLAS_SQLITE_LIGHTWEIGHT_ENV, "")
+    env_value = Config.atlas_sqlite_lightweight_raw()
     !isempty(strip(env_value)) && return _atlas_sqlite_truthy(env_value) ? :lightweight : :full
 
     metadata_mode = _atlas_sqlite_parse_persist_mode(_atlas_sqlite_metadata_text(db, "persist_mode"))

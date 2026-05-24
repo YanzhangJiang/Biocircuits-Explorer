@@ -49,7 +49,7 @@ function _rsa_pkcs1_v15_verify_sha256(n::BigInt, e::BigInt, message::Vector{UInt
 end
 
 function _cognito_jwks_url(user_pool_id::AbstractString, region::AbstractString)
-    override = strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_JWKS_URL_OVERRIDE", ""))
+    override = Config.cognito_jwks_url_override()
     isempty(override) || return override
     return "https://cognito-idp.$(region).amazonaws.com/$(user_pool_id)/.well-known/jwks.json"
 end
@@ -115,9 +115,9 @@ end
 
 # Returns the verified claims dict, or throws ArgumentError on any failure.
 function verify_cognito_jwt(token::AbstractString;
-                            user_pool_id::AbstractString=String(strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID", ""))),
-                            region::AbstractString=String(strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_REGION", get(ENV, "AWS_REGION", "")))),
-                            audience::AbstractString=String(strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID", ""))),
+                            user_pool_id::AbstractString=Config.cognito_user_pool_id(),
+                            region::AbstractString=Config.cognito_region(),
+                            audience::AbstractString=Config.cognito_app_client_id(),
                             now_epoch::Real=time())
     isempty(user_pool_id) && throw(ArgumentError("Cognito not configured (BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID)"))
     isempty(region) && throw(ArgumentError("Cognito region not configured"))

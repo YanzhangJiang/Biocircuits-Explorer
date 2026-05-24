@@ -5,7 +5,7 @@ const JOB_DESCRIBE_LAST_AT = Dict{String, Float64}()
 const LOCAL_JOB_STORE_DIR = Ref{Union{Nothing, String}}(nothing)
 
 function _aws_batch_describe_min_interval()
-    raw = strip(get(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL", ""))
+    raw = Config.aws_batch_describe_min_interval_raw()
     isempty(raw) && return 3.0
     parsed = tryparse(Float64, raw)
     return parsed === nothing ? 3.0 : max(parsed, 0.0)
@@ -57,11 +57,11 @@ _sanitize_tag_value(raw) = replace(String(raw), r"[^A-Za-z0-9_.:/=+\-@]" => "_")
 # submit we conditionally bump a counter for (sub, today). If the counter
 # would exceed BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT (default 50) we reject.
 function _quota_table_name()
-    return strip(get(ENV, "BIOCIRCUITS_EXPLORER_QUOTA_TABLE", ""))
+    return Config.quota_table()
 end
 
 function _quota_daily_limit()
-    raw = strip(get(ENV, "BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT", ""))
+    raw = Config.quota_daily_limit_raw()
     isempty(raw) && return 50
     parsed = tryparse(Int, raw)
     return parsed === nothing ? 50 : max(parsed, 0)
@@ -116,7 +116,7 @@ end
 
 function local_job_store_dir()
     if LOCAL_JOB_STORE_DIR[] === nothing
-        configured = strip(get(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE", ""))
+        configured = Config.job_store_override()
         LOCAL_JOB_STORE_DIR[] = isempty(configured) ?
             normpath(joinpath(@__DIR__, "..", "job_store")) :
             abspath(configured)
@@ -147,7 +147,7 @@ end
 _is_s3_uri(uri::AbstractString) = startswith(lowercase(String(uri)), "s3://")
 _is_file_uri(uri::AbstractString) = startswith(lowercase(String(uri)), "file://")
 _uri_local_path(uri::AbstractString) = _is_file_uri(uri) ? String(uri)[8:end] : String(uri)
-_aws_cli() = strip(get(ENV, "BIOCIRCUITS_EXPLORER_AWS_CLI", "aws"))
+_aws_cli() = Config.aws_cli_binary()
 
 function _write_job_json(path::AbstractString, payload)
     mkpath(dirname(path))
@@ -566,15 +566,14 @@ function _required_config(value, name::AbstractString)
 end
 
 function _allow_aws_batch_request_config()
-    value = lowercase(strip(get(ENV, "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG", "")))
-    return value in ("1", "true", "yes", "on")
+    return Config.allow_aws_batch_request_config()
 end
 
 function _aws_batch_config_value(execution, key::Symbol, env_name::AbstractString)
     if _allow_aws_batch_request_config() && _raw_haskey(execution, key)
         return _raw_get(execution, key, nothing)
     end
-    return get(ENV, env_name, "")
+    return Config.aws_batch_env_value(env_name)
 end
 
 function _aws_batch_artifact_uri(prefix::AbstractString, user_sub::AbstractString, job_id::AbstractString, filename::AbstractString)
@@ -675,7 +674,7 @@ function _aws_batch_submit!(record::AbstractDict, execution)
     _persist_job_record_unlocked(record)
     _persist_job_status_unlocked(record)
 
-    job_name_prefix = strip(String(_raw_get(execution, :job_name_prefix, get(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX", "biocircuits"))))
+    job_name_prefix = strip(String(_raw_get(execution, :job_name_prefix, Config.aws_batch_job_name_prefix())))
     short_job_id = job_id[1:min(lastindex(job_id), 24)]
     job_name = "$(isempty(job_name_prefix) ? "biocircuits" : job_name_prefix)-$(short_job_id)"
     container_overrides = _aws_batch_container_overrides(input_uri, status_uri, result_uri, execution)
@@ -935,7 +934,7 @@ function _bearer_token_from_request(req)
 end
 
 function _cognito_user_pool_id()
-    return strip(get(ENV, "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID", ""))
+    return Config.cognito_user_pool_id()
 end
 
 function _request_user_sub(req)
