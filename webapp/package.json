@@ -1,0 +1,19 @@
+{
+  "name": "biocircuits-explorer-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend assets for the Biocircuits Explorer web app. The browser loads ES modules from public/js/ directly during development; npm scripts provide an optional optimized bundle for production.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild public/js/main.js --bundle --format=esm --sourcemap --target=es2022 --outfile=public/js/dist/main.js",
+    "watch": "npm run build -- --watch",
+    "lint": "eslint --config eslint.config.mjs public/js",
+    "sync-i18n": "cp public/index.html public/index.zh.html",
+    "check-i18n-sync": "diff -q public/index.html public/index.zh.html"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "eslint": "^9.15.0",
+    "globals": "^15.12.0"
+  }
+}

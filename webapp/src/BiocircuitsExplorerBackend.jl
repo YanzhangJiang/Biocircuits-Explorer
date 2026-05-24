@@ -43,85 +43,22 @@ using SQLite
 
 include(joinpath(@__DIR__, "config.jl"))
 include(joinpath(@__DIR__, "session_store.jl"))
+include(joinpath(@__DIR__, "debug_log.jl"))
+include(joinpath(@__DIR__, "serialization.jl"))
+include(joinpath(@__DIR__, "reaction_parser.jl"))
+include(joinpath(@__DIR__, "static_assets.jl"))
 using .SessionStore: get_session, set_session
+using .DebugLog: append_debug_log, with_debug_client_scope,
+                  debug_client_id_from_request, install_debug_logger!
+using .Serialization: mat2vv, json_safe_value, json_safe_real, json_safe_profile,
+                       json_response, error_response, read_json, is_request_error
+using .ReactionParser: parse_term, parse_side, parse_reactions, parse_network_structure,
+                       build_model, default_log_qK, fixed_qK_or_default
+using .StaticAssets: static_dir, serve_static
 
 # ─── Global state ───
-const STATIC_DIR = Ref{Union{Nothing, String}}(nothing)
 const SESSION_TTL = SessionStore.DEFAULT_TTL_SECONDS
 const SESSION_CLEANUP_INTERVAL = 300  # 5 minutes
-const DEBUG_LOGS = Vector{Dict{String, Any}}()
-const DEBUG_LOG_LOCK = ReentrantLock()
-const DEBUG_LOG_SEQ = Ref(0)
-const DEBUG_LOG_LIMIT = 1500
-const DEBUG_LOGGER_INSTALLED = Ref(false)
-const DEBUG_LOGS_BY_CLIENT = Dict{String, Vector{Dict{String, Any}}}()
-const DEBUG_CLIENT_LAST_ACCESS = Dict{String, Float64}()
-const DEBUG_TASK_CLIENTS = IdDict{Task, String}()
-
-function _stringify_log_value(value)
-    if value isa AbstractString
-        return value
-    elseif value isa Symbol
-        return String(value)
-    else
-        return sprint(show, value)
-    end
-end
-
-function request_header(req, name::AbstractString)
-    target = lowercase(name)
-    for (key, value) in req.headers
-        lowercase(String(key)) == target && return String(value)
-    end
-    return nothing
-end
-
-function normalize_debug_client_id(value)
-    value === nothing && return nothing
-    text = strip(String(value))
-    isempty(text) && return nothing
-    return text
-end
-
-function debug_client_id_from_request(req)
-    return normalize_debug_client_id(
-        request_header(req, "X-Biocircuits-Explorer-Debug-Client")
-        |> value -> value === nothing ? request_header(req, "X-ROP-Debug-Client") : value
-    )
-end
-
-function with_debug_client_scope(f::Function, client_id)
-    task = current_task()
-    previous = nothing
-    had_previous = false
-
-    lock(DEBUG_LOG_LOCK) do
-        had_previous = haskey(DEBUG_TASK_CLIENTS, task)
-        if had_previous
-            previous = DEBUG_TASK_CLIENTS[task]
-        end
-        if client_id === nothing
-            delete!(DEBUG_TASK_CLIENTS, task)
-        else
-            DEBUG_TASK_CLIENTS[task] = client_id
-            DEBUG_CLIENT_LAST_ACCESS[client_id] = time()
-        end
-    end
-
-    try
-        return f()
-    finally
-        lock(DEBUG_LOG_LOCK) do
-            if had_previous
-                DEBUG_TASK_CLIENTS[task] = previous
-            else
-                delete!(DEBUG_TASK_CLIENTS, task)
-            end
-        end
-    end
-end
-
-with_debug_client_scope(client_id, f::Function) = with_debug_client_scope(f, client_id)
 
 function parse_optional_int(raw::AbstractString)
     text = strip(String(raw))
@@ -164,141 +101,6 @@ function parent_watchdog_loop(expected_parent_pid::Int; interval_seconds::Real=2
     end
 end
 
-function select_debug_log_buffer(client_id)
-    if client_id === nothing
-        return DEBUG_LOGS
-    end
-    return get(DEBUG_LOGS_BY_CLIENT, client_id, Dict{String, Any}[])
-end
-
-function append_debug_log(level, message; module_name=nothing, group=nothing, file=nothing, line=nothing, details=nothing)
-    record = Dict{String, Any}(
-        "timestamp" => Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS.s"),
-        "level" => uppercase(string(level)),
-        "message" => _stringify_log_value(message),
-    )
-    module_name === nothing || (record["module"] = _stringify_log_value(module_name))
-    group === nothing || (record["group"] = _stringify_log_value(group))
-    file === nothing || (record["file"] = _stringify_log_value(file))
-    line === nothing || (record["line"] = line)
-    details === nothing || isempty(String(details)) || (record["details"] = String(details))
-
-    lock(DEBUG_LOG_LOCK) do
-        DEBUG_LOG_SEQ[] += 1
-        record["seq"] = DEBUG_LOG_SEQ[]
-        push!(DEBUG_LOGS, record)
-        if length(DEBUG_LOGS) > DEBUG_LOG_LIMIT
-            deleteat!(DEBUG_LOGS, 1:(length(DEBUG_LOGS) - DEBUG_LOG_LIMIT))
-        end
-
-        client_id = get(DEBUG_TASK_CLIENTS, current_task(), nothing)
-        if client_id !== nothing
-            entries = get!(DEBUG_LOGS_BY_CLIENT, client_id) do
-                Dict{String, Any}[]
-            end
-            push!(entries, copy(record))
-            if length(entries) > DEBUG_LOG_LIMIT
-                deleteat!(entries, 1:(length(entries) - DEBUG_LOG_LIMIT))
-            end
-            DEBUG_CLIENT_LAST_ACCESS[client_id] = time()
-        end
-    end
-    return nothing
-end
-
-struct BufferingConsoleLogger <: AbstractLogger
-    console::AbstractLogger
-    min_level::LogLevel
-    console_forwarding_enabled::Base.RefValue{Bool}
-end
-
-BufferingConsoleLogger(console::AbstractLogger, min_level::LogLevel) =
-    BufferingConsoleLogger(console, min_level, Ref(true))
-
-Logging.min_enabled_level(logger::BufferingConsoleLogger) = logger.min_level
-Logging.shouldlog(logger::BufferingConsoleLogger, level, _module, group, id) = level >= logger.min_level
-Logging.catch_exceptions(::BufferingConsoleLogger) = true
-
-function Logging.handle_message(logger::BufferingConsoleLogger, level, message, _module, group, id, file, line; kwargs...)
-    details = String[]
-    for (key, value) in kwargs
-        if key === :exception
-            if value isa Tuple && length(value) >= 2
-                push!(details, sprint(showerror, value[1], value[2]))
-            else
-                push!(details, _stringify_log_value(value))
-            end
-        else
-            push!(details, string(key) * " = " * _stringify_log_value(value))
-        end
-    end
-    append_debug_log(level, message;
-        module_name=_module,
-        group=group,
-        file=file,
-        line=line,
-        details=isempty(details) ? nothing : join(details, "\n"),
-    )
-
-    if logger.console_forwarding_enabled[]
-        try
-            Logging.handle_message(logger.console, level, message, _module, group, id, file, line; kwargs...)
-        catch err
-            logger.console_forwarding_enabled[] = false
-            append_debug_log("WARN", "Console log forwarding disabled after logger write failure";
-                module_name=:BiocircuitsExplorerBackend,
-                details=sprint(showerror, err, catch_backtrace()),
-            )
-        end
-    end
-end
-
-function install_debug_logger!()
-    DEBUG_LOGGER_INSTALLED[] && return
-    DEBUG_LOGGER_INSTALLED[] = true
-    global_logger(BufferingConsoleLogger(current_logger(), Logging.Info))
-    append_debug_log("INFO", "Debug log capture initialized"; module_name=:BiocircuitsExplorerBackend)
-end
-
-function resolve_static_dir()
-    candidates = String[]
-
-    env_static_dir = Config.public_dir_override()
-    if !isempty(env_static_dir)
-        push!(candidates, abspath(expanduser(env_static_dir)))
-    end
-
-    program_file = try
-        Base.PROGRAM_FILE
-    catch
-        ""
-    end
-
-    if !isempty(program_file)
-        exe_dir = dirname(abspath(program_file))
-        append!(candidates, [
-            normpath(joinpath(exe_dir, "..", "share", "biocircuits-explorer", "public")),
-            normpath(joinpath(exe_dir, "..", "Resources", "public")),
-            normpath(joinpath(exe_dir, "..", "resources", "public")),
-        ])
-    end
-
-    push!(candidates, normpath(joinpath(@__DIR__, "..", "public")))
-
-    for candidate in unique(candidates)
-        isdir(candidate) && return candidate
-    end
-
-    error("Could not locate web assets. Checked: $(join(unique(candidates), ", "))")
-end
-
-function static_dir()
-    if STATIC_DIR[] === nothing
-        STATIC_DIR[] = resolve_static_dir()
-    end
-    return STATIC_DIR[]::String
-end
-
 resolve_port() = Config.port()
 
 # Session cleanup task — delegates expiry to SessionStore, then prunes the
@@ -314,215 +116,35 @@ function cleanup_old_sessions()
             on_evict = sid -> (@info "Cleaned up expired session: $sid"),
         )
 
-        lock(DEBUG_LOG_LOCK) do
-            expired_clients = String[]
-            for (client_id, last_access) in DEBUG_CLIENT_LAST_ACCESS
-                if current_time - last_access > SESSION_TTL
-                    push!(expired_clients, client_id)
-                end
-            end
-            for client_id in expired_clients
-                delete!(DEBUG_CLIENT_LAST_ACCESS, client_id)
-                delete!(DEBUG_LOGS_BY_CLIENT, client_id)
-            end
-        end
+        DebugLog.cleanup_expired_clients!(ttl = SESSION_TTL, now_epoch = current_time)
     end
 end
 
-# ─── Reaction parser (same logic as notebooks) ───
-const ARROW_RE = r"<->|<=>|↔"
-
-function parse_term(term::AbstractString)
-    t = strip(term)
-    isempty(t) && error("Empty term")
-    m = match(r"^([0-9]+)?\s*([A-Za-z][A-Za-z0-9_]*)$", t)
-    m === nothing && error("Bad term: $term")
-    coeff = m.captures[1] === nothing ? 1 : parse(Int, m.captures[1])
-    sym = Symbol(m.captures[2])
-    return sym, coeff
-end
-
-function parse_side(side::AbstractString)
-    parts = split(side, "+")
-    dict = Dict{Symbol,Int}()
-    for p in parts
-        sym, coeff = parse_term(p)
-        dict[sym] = get(dict, sym, 0) + coeff
-    end
-    return dict
-end
-
-function parse_reactions(rules::Vector{String})
-    reactants = Vector{Dict{Symbol,Int}}()
-    products  = Vector{Dict{Symbol,Int}}()
-    for rule in rules
-        m = match(ARROW_RE, rule)
-        m === nothing && error("Reaction must contain '<->' or '<=>' or '↔': $rule")
-        left, right = split(rule, m.match)
-        push!(reactants, parse_side(left))
-        push!(products, parse_side(right))
-    end
-    return reactants, products
-end
-
-function parse_network_structure(rules::Vector{String})
-    reactants, products = parse_reactions(rules)
-    r = length(rules)
-
-    all_species = Set{Symbol}()
-    for rd in reactants
-        union!(all_species, keys(rd))
-    end
-    for pd in products
-        union!(all_species, keys(pd))
-    end
-
-    # Species that appear on product side are treated as bound species.
-    prod_species_set = Set{Symbol}()
-    for pd in products
-        union!(prod_species_set, keys(pd))
-    end
-    free_syms = sort([s for s in all_species if s ∉ prod_species_set])
-    prod_syms = sort([s for s in prod_species_set])
-
-    # free species first, then bound species
-    species = vcat(free_syms, prod_syms)
-    n = length(species)
-    idx = Dict(s => i for (i, s) in enumerate(species))
-
-    # N matrix (r × n), each row follows reactants-products log-space sign convention
-    N = zeros(Int, r, n)
-    for i in 1:r
-        for (s, coeff) in reactants[i]
-            N[i, idx[s]] += coeff
-        end
-        for (s, coeff) in products[i]
-            N[i, idx[s]] -= coeff
-        end
-    end
-
-    return N, species, free_syms, prod_syms
-end
-
-function build_model(rules::Vector{String}, kd::Vector{Float64})
-    r = length(rules)
-    length(kd) == r || error("Length(kd) must match number of reactions")
-
-    N, species, free_syms, prod_syms = parse_network_structure(rules)
-
-    x_sym = Symbol.(species)
-    q_sym = Symbol.("t" .* String.(free_syms))
-    K_sym = Symbol.("Kd" .* string.(1:r))
-
-    # 让 Bnc 构造函数验证合法性（n == d + r, N 线性无关等）
-    model = Bnc(N=N, x_sym=x_sym, q_sym=q_sym, K_sym=K_sym)
-    return model, species, free_syms, prod_syms
-end
-
-function _default_log_qK(model, kd::AbstractVector{<:Real}; default_logq::Real=0.0)
-    kd_vec = Float64.(collect(kd))
-    length(kd_vec) == model.r || error("Length of Kd values ($(length(kd_vec))) must match model reaction dimension ($(model.r)).")
-    any(x -> x <= 0, kd_vec) && error("All Kd values must be positive (> 0).")
-    return vcat(fill(Float64(default_logq), model.d), log10.(kd_vec))
-end
-
-function _fixed_qK_or_default(body, model, kd::AbstractVector{<:Real})
-    fixed_qK = if haskey(body, :fixed_qK)
-        Float64.(body[:fixed_qK])
-    else
-        _default_log_qK(model, kd)
-    end
-    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
-    return fixed_qK
-end
-
+# Internal helper: like `fixed_qK_or_default`, but uses the raw-JSON accessors
+# defined in atlas.jl so it can read JSON3 objects without a `haskey` method.
 function _fixed_qK_or_default_raw(body, model, kd::AbstractVector{<:Real})
     fixed_qK = if _raw_haskey(body, :fixed_qK)
         Float64.(collect(_raw_get(body, :fixed_qK, Float64[])))
     else
-        _default_log_qK(model, kd)
+        default_log_qK(model, kd)
     end
-    length(fixed_qK) == model.n || error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
+    length(fixed_qK) == model.n ||
+        error("Length of `fixed_qK` must equal the full q/K dimension ($(model.n)).")
     return fixed_qK
 end
 
-# ─── JSON helpers ───
-# Convert Matrix to Vector of Vectors for proper JSON serialization
-mat2vv(M::AbstractMatrix) = [collect(M[i,:]) for i in 1:size(M,1)]
-
-json_safe_value(x::Real) = json_safe_real(x)
-json_safe_value(x::AbstractString) = x
-json_safe_value(x::Symbol) = String(x)
-json_safe_value(x::Nothing) = nothing
-json_safe_value(x::Bool) = x
-json_safe_value(x) = x
-
-function json_safe_value(data::AbstractDict)
-    sanitized = Dict{Any, Any}()
-    for (key, value) in data
-        safe_key = key isa Symbol ? String(key) : key
-        sanitized[safe_key] = json_safe_value(value)
-    end
-    return sanitized
-end
-
-json_safe_value(data::Tuple) = [json_safe_value(item) for item in data]
-json_safe_value(data::NamedTuple) = json_safe_value(Dict(pairs(data)))
-json_safe_value(data::AbstractVector) = [json_safe_value(item) for item in data]
-json_safe_value(data::AbstractSet) = [json_safe_value(item) for item in collect(data)]
-
-json_response(data; status=200) = HTTP.Response(status,
-    ["Content-Type" => "application/json"],
-    JSON3.write(json_safe_value(data)))
-
-error_response(msg; status=400) = json_response(Dict("error" => msg); status)
-
-function read_json(req)
-    try
-        return JSON3.read(String(req.body))
-    catch e
-        throw(ArgumentError("Invalid JSON: $(sprint(showerror, e))"))
-    end
-end
-
-is_request_error(err) = err isa ArgumentError ||
-                        err isa DomainError ||
-                        err isa BoundsError ||
-                        err isa KeyError
-
 function handle_debug_logs(req)
     body = read_json(req)
-    after_seq = max(0, Int(get(body, :after_seq, 0)))
-    limit = clamp(Int(get(body, :limit, 300)), 1, DEBUG_LOG_LIMIT)
-    client_id = debug_client_id_from_request(req)
-
-    entries = Dict{String, Any}[]
-    next_seq = 0
-    total = 0
-    lock(DEBUG_LOG_LOCK) do
-        logs = select_debug_log_buffer(client_id)
-        client_id === nothing || (DEBUG_CLIENT_LAST_ACCESS[client_id] = time())
-        total = length(logs)
-        if after_seq > 0
-            entries = [copy(entry) for entry in logs if Int(get(entry, "seq", 0)) > after_seq]
-        else
-            start_idx = max(1, total - limit + 1)
-            entries = [copy(entry) for entry in @view logs[start_idx:end]]
-        end
-        if !isempty(logs)
-            next_seq = Int(get(logs[end], "seq", 0))
-        end
-    end
-
-    if after_seq > 0 && length(entries) > limit
-        entries = entries[end-limit+1:end]
-    end
-
+    result = DebugLog.read_logs(
+        after_seq = Int(get(body, :after_seq, 0)),
+        limit     = Int(get(body, :limit, 300)),
+        client_id = debug_client_id_from_request(req),
+    )
     return json_response(Dict(
-        "entries" => entries,
-        "next_seq" => next_seq,
-        "total" => total,
-        "limit" => limit,
+        "entries"  => result.entries,
+        "next_seq" => result.next_seq,
+        "total"    => result.total,
+        "limit"    => result.limit,
     ))
 end
 
@@ -847,17 +469,6 @@ function compute_siso_trajectory(model, siso, path_idx; npoints=500, start_val=-
         "parameters" => params,
     )
 end
-
-json_safe_real(x::Real) = if isnan(x)
-    "NaN"
-elseif isinf(x)
-    signbit(x) ? "-Inf" : "Inf"
-else
-    Float64(x)
-end
-
-json_safe_profile(profile::AbstractVector{<:Real}) = [json_safe_real(x) for x in profile]
-json_safe_profile(profile::AbstractVector{<:AbstractVector{<:Real}}) = [json_safe_profile(coords) for coords in profile]
 
 volume_to_dict(vol) = isnothing(vol) ? nothing : Dict(
     "mean" => vol.mean,
@@ -1412,7 +1023,7 @@ function handle_parameter_scan_1d(req)
 
     # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
     fixed_qK = try
-        _fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+        fixed_qK_or_default(body, model, Float64.(sess["kd"]))
     catch e
         return error_response(sprint(showerror, e); status=400)
     end
@@ -1471,7 +1082,7 @@ function handle_parameter_scan_2d(req)
 
     # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
     fixed_qK = try
-        _fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+        fixed_qK_or_default(body, model, Float64.(sess["kd"]))
     catch e
         return error_response(sprint(showerror, e); status=400)
     end
@@ -1806,240 +1417,9 @@ function handle_rop_polyhedron(req)
     ))
 end
 
-function _is_subpath(path::AbstractString, root::AbstractString)
-    norm_path = normpath(path)
-    norm_root = normpath(root)
-    norm_path == norm_root && return true
-    return startswith(norm_path, norm_root * Base.Filesystem.path_separator)
-end
+handle_local_image(req) =
+    StaticAssets.handle_local_image(req; has_parent_pid = configured_parent_pid() !== nothing)
 
-
-const LOCAL_IMAGE_MIMES = Dict(
-    ".png"  => "image/png",
-    ".jpg"  => "image/jpeg",
-    ".jpeg" => "image/jpeg",
-    ".gif"  => "image/gif",
-    ".svg"  => "image/svg+xml",
-    ".webp" => "image/webp",
-    ".bmp"  => "image/bmp",
-)
-
-# Local-image serving is enabled in two situations:
-#   1. The backend was launched by the macOS desktop app (parent PID env var set).
-#   2. The operator explicitly opted in via BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES=1.
-# Deployed contexts (AWS Batch, shared servers) leave it OFF — exposing arbitrary
-# user files over an HTTP endpoint that binds 0.0.0.0 would be a data-exfil risk.
-function local_images_enabled()
-    configured_parent_pid() !== nothing && return true
-    return lowercase(first_nonempty_env(["BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES"])) in ("1", "true", "yes")
-end
-
-function handle_local_image(req)
-    if !local_images_enabled()
-        return HTTP.Response(403, "Local image serving is disabled in this deployment")
-    end
-
-    uri = HTTP.URI(req.target)
-    query = HTTP.queryparams(uri)
-    raw_path = get(query, "path", "")
-    isempty(raw_path) && return HTTP.Response(400, "Missing ?path=")
-
-    requested = expanduser(String(raw_path))
-    ext = lowercase(splitext(requested)[2])
-    haskey(LOCAL_IMAGE_MIMES, ext) || return HTTP.Response(415, "Unsupported image extension: $ext")
-
-    isfile(requested) || return HTTP.Response(404, "Not found")
-
-    bytes = try
-        read(requested)
-    catch e
-        @error "Failed to read local image" path=requested exception=(e, catch_backtrace())
-        return HTTP.Response(500, "Failed to read file")
-    end
-
-    return HTTP.Response(200, [
-        "Content-Type"  => LOCAL_IMAGE_MIMES[ext],
-        "Cache-Control" => "private, max-age=60",
-    ], bytes)
-end
-
-function serve_static(req)
-    path = HTTP.URI(req.target).path
-    relative_path = path == "/" ? "index.html" : lstrip(path, '/')
-    root = static_dir()
-    filepath = normpath(joinpath(root, relative_path))
-
-    if !_is_subpath(filepath, root) || !isfile(filepath)
-        return HTTP.Response(404, "Not found")
-    end
-
-    ext = splitext(filepath)[2]
-    mime = Dict(
-        ".html" => "text/html",
-        ".js" => "application/javascript",
-        ".css" => "text/css",
-        ".json" => "application/json",
-        ".png" => "image/png",
-        ".svg" => "image/svg+xml",
-        ".jpg" => "image/jpeg",
-        ".jpeg" => "image/jpeg",
-        ".gif" => "image/gif",
-        ".mp4" => "video/mp4",
-        ".webm" => "video/webm",
-    )
-    content_type = get(mime, ext, "application/octet-stream")
-    # Disable caching for static assets. The macOS shell's WKWebView would
-    # otherwise apply heuristic caching to HTML/JS modules (no Cache-Control
-    # → cache for ~10% of Last-Modified age), which masks frontend updates
-    # behind stale module imports even after "Reload Shell".
-    return HTTP.Response(200, [
-        "Content-Type" => content_type,
-        "Cache-Control" => "no-store",
-    ], read(filepath))
-end
-
-# ─── Router ───
-const API_ROUTES = Dict{String, Function}(
-    "/api/build_atlas" => handle_build_atlas,
-    "/api/query_atlas" => handle_query_atlas,
-    "/api/build_atlas_library" => handle_build_atlas_library,
-    "/api/merge_atlas_library" => handle_merge_atlas_library,
-    "/api/run_inverse_design" => handle_run_inverse_design,
-    "/api/build_model" => handle_build_model,
-    "/api/find_vertices" => handle_find_vertices,
-    "/api/build_graph" => handle_build_graph,
-    "/api/siso_paths" => handle_siso_paths,
-    "/api/siso_polyhedra" => handle_siso_polyhedra,
-    "/api/siso_path_condition" => handle_siso_path_condition,
-    "/api/siso_trajectory" => handle_siso_trajectory,
-    "/api/behavior_families" => handle_behavior_families,
-    "/api/rop_cloud" => handle_rop_cloud,
-    "/api/vertex_detail" => handle_vertex_detail,
-    "/api/fret_heatmap" => handle_fret_heatmap,
-    "/api/parameter_scan_1d" => handle_parameter_scan_1d,
-    "/api/parameter_scan_2d" => handle_parameter_scan_2d,
-    "/api/atlas_landscape_2d" => handle_atlas_landscape_2d,
-    "/api/rop_polyhedron" => handle_rop_polyhedron,
-    "/api/debug_logs" => handle_debug_logs,
-)
-
-const _CORS_HEADERS = [
-    "Access-Control-Allow-Origin" => "*",
-    "Access-Control-Allow-Methods" => "POST, GET, OPTIONS",
-    # Authorization is non-simple so it triggers preflight; we have to list it
-    # explicitly. Without this header the macOS WebView (origin
-    # http://127.0.0.1:18088) cannot reach the EC2 broker
-    # (origin https://…) for /api/jobs/* and /api/auth/config.
-    "Access-Control-Allow-Headers" => "Content-Type, Authorization, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
-    "Access-Control-Max-Age" => "600",
-]
-
-function _with_cors(resp::HTTP.Response)
-    for (name, value) in _CORS_HEADERS
-        # Don't clobber if the handler already chose to set an explicit origin
-        # (none do today, but it's cheap insurance).
-        HTTP.hasheader(resp, name) || push!(resp.headers, name => value)
-    end
-    return resp
-end
-
-function router(req)
-    return _with_cors(_router_impl(req))
-end
-
-function _router_impl(req)
-    if req.method == "OPTIONS"
-        return HTTP.Response(204, _CORS_HEADERS)
-    end
-
-    path = HTTP.URI(req.target).path
-
-    if haskey(API_ROUTES, path) && req.method != "POST"
-        return error_response("Method not allowed"; status=405)
-    end
-
-    if path == "/api/version"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return handle_version(req)
-    end
-
-    if path == "/api/auth/config"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return handle_auth_config(req)
-    end
-
-    if path == "/api/local-image"
-        req.method == "GET" || return error_response("Method not allowed"; status=405)
-        return handle_local_image(req)
-    end
-
-    if path == "/api/jobs" || startswith(path, "/api/jobs/")
-        client_id = debug_client_id_from_request(req)
-        return with_debug_client_scope(client_id) do
-            try
-                return handle_jobs_route(req, path)
-            catch e
-                @error "API error" path exception=(e, catch_backtrace())
-                if e isa QuotaExceeded
-                    return error_response(sprint(showerror, e); status=429)
-                elseif is_request_error(e)
-                    return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
-                else
-                    return error_response("Internal server error"; status=500)
-                end
-            end
-        end
-    end
-
-    if haskey(API_ROUTES, path)
-        client_id = debug_client_id_from_request(req)
-        return with_debug_client_scope(client_id) do
-            try
-                return API_ROUTES[path](req)
-            catch e
-                @error "API error" path exception=(e, catch_backtrace())
-                # Distinguish between user errors (400) and server errors (500)
-                if is_request_error(e)
-                    return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
-                else
-                    return error_response("Internal server error"; status=500)
-                end
-            end
-        end
-    end
-
-    # Static files
-    return serve_static(req)
-end
-
-# ─── Start server ───
-function main()
-    install_debug_logger!()
-    port = resolve_port()
-    expected_parent_pid = configured_parent_pid()
-    @info "ROP Web Server starting on http://localhost:$port"
-    @info "Static files from: $(static_dir())"
-    @info "Session TTL: $(SESSION_TTL)s, cleanup interval: $(SESSION_CLEANUP_INTERVAL)s"
-
-    # Start session cleanup task in background
-    @async cleanup_old_sessions()
-    if expected_parent_pid !== nothing
-        @async parent_watchdog_loop(expected_parent_pid)
-    end
-
-    HTTP.serve(router, "0.0.0.0", port)
-end
-
-function julia_main()::Cint
-    try
-        main()
-        return 0
-    catch err
-        append_debug_log("ERROR", "Backend crashed during startup"; module_name=:BiocircuitsExplorerBackend, details=sprint(showerror, err, catch_backtrace()))
-        showerror(stderr, err, catch_backtrace())
-        println(stderr)
-        return 1
-    end
-end
+include(joinpath(@__DIR__, "routing.jl"))
 
 end # module
