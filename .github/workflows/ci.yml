@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-js:
+    name: Lint JS / i18n sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "webapp/package-lock.json"
+
+      - name: Install JS dev dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: ESLint (errors fail; warnings allowed)
+        working-directory: webapp
+        run: npm run lint
+
+      - name: Frontend unit tests (command model / undo)
+        working-directory: webapp
+        run: npm run test:js
+
+      - name: index.html / index.zh.html structural sync
+        working-directory: webapp
+        run: npm run check-i18n-sync
+
+  test-julia:
+    name: Julia ${{ matrix.julia }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Manifest.toml is pinned to 1.12.5; the production Dockerfile also uses
+        # julia:1.12. Widen the matrix to ['1.10', '1.12'] once Project.toml
+        # compat is actually validated against 1.10 with a regenerated manifest.
+        julia: ["1.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (libcdd for CDDLib)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcdd-dev
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia }}
+          arch: x64
+
+      - uses: julia-actions/cache@v2
+        with:
+          cache-name: julia-${{ matrix.julia }}-webapp
+
+      - name: Instantiate webapp project (with local Bnc_julia)
+        env:
+          JULIA_NUM_THREADS: auto
+        run: |
+          julia --project=webapp --color=yes -e '
+            using Pkg
+            Pkg.develop(path="Bnc_julia")
+            Pkg.instantiate()
+          '
+
+      - name: Run webapp test suite
+        env:
+          JULIA_NUM_THREADS: auto
+        run: julia --project=webapp --color=yes webapp/test/runtests.jl

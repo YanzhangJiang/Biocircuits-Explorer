@@ -8,6 +8,7 @@ import { updateConnections } from './connections.js';
 import { buildModel, triggerDownstreamNodes, getReactionsFromNode } from './model.js';
 import { commitWorkspaceSnapshot, queueWorkspaceShellSync, getNodeSerialData } from './workspace.js';
 import { refreshAtlasQueryDesigner } from './atlas.js';
+import { dispatch, record, CreateNodeCommand, RemoveNodeCommand, ChangeAttrCommand } from './commands.js';
 
 // ===== Node Discovery =====
 
@@ -81,12 +82,21 @@ function invalidateModelBuilder(modelBuilderNodeId) {
 
 // ===== Node CRUD =====
 
-export function createNode(nodeType, x, y) {
+export function createNode(nodeType, x, y, opts = {}) {
   const typeDef = NODE_TYPES[nodeType];
   if (!typeDef) { console.error('Unknown node type:', nodeType); return null; }
 
-  const id = nextNodeId();
-  const nodeId = `node-${id}`;
+  let nodeId;
+  if (opts.id) {
+    // Forced id — used when restoring a deleted node so the undo stack and
+    // any other commands keep referring to the same id. Keep the global
+    // counter ahead of restored ids to avoid future collisions.
+    nodeId = opts.id;
+    const n = parseInt(String(opts.id).replace(/^node-/, ''), 10);
+    if (Number.isFinite(n) && n > nodeIdCounter) setNodeIdCounter(n);
+  } else {
+    nodeId = `node-${nextNodeId()}`;
+  }
 
   const canvas = document.getElementById('canvas');
 
@@ -171,6 +181,65 @@ export function removeNode(nodeId) {
   updateConnections();
 }
 
+// Undoable delete: snapshots the node (+ its wires) then removes it, so
+// Ctrl+Z restores everything. This is what the node's × button and the
+// Delete key route through; the raw removeNode() above stays available for
+// non-history paths (workspace load/clear, command internals).
+export function deleteNodeWithHistory(nodeId) {
+  if (!document.getElementById(nodeId)) return;
+  dispatch(new RemoveNodeCommand({ nodeId }));
+}
+
+// Generic field setter used by ChangeAttrCommand on undo/redo. `key` is the
+// field element's DOM id. Fires a change event so any recompute listeners
+// react as if the user edited it — but note this does NOT re-enter the
+// focusout-based capture below, so no history loop.
+export function setNodeAttr(_nodeId, key, value) {
+  const el = document.getElementById(key);
+  if (!el) return;
+  if (el.type === 'checkbox') {
+    el.checked = !!value;
+  } else {
+    el.value = value;
+  }
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// Capture config-field edits as ChangeAttrCommands. We listen on focusin
+// (remember the value) / focusout (compare + record) rather than `change`,
+// so we never collide with the existing change-delegation in main.js and
+// never re-enter when setNodeAttr fires a synthetic change. Only plain
+// fields inside a node body without a data-action are tracked.
+export function initAttrHistory(target = document) {
+  const lastValue = new WeakMap();
+
+  const isTracked = (el) =>
+    el &&
+    el.closest('.node-body') &&
+    !el.dataset.action &&
+    !el.closest('.plot-container') &&
+    /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) &&
+    el.id;
+
+  const readVal = (el) => (el.type === 'checkbox' ? el.checked : el.value);
+
+  target.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (isTracked(el)) lastValue.set(el, readVal(el));
+  });
+
+  target.addEventListener('focusout', (e) => {
+    const el = e.target;
+    if (!isTracked(el)) return;
+    const before = lastValue.get(el);
+    const after = readVal(el);
+    if (before === after || before === undefined) return;
+    const nodeId = el.closest('.node')?.id || null;
+    record(new ChangeAttrCommand({ nodeId, key: el.id, before, after }));
+    lastValue.set(el, after);
+  });
+}
+
 // ===== Node Loading State =====
 export function setNodeLoading(nodeId, loading) {
   const el = document.getElementById(nodeId);
@@ -227,6 +296,18 @@ export function getNodePosition(nodeId) {
   const el = document.getElementById(nodeId);
   if (!el) return { x: 100, y: 150 };
   return { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0 };
+}
+
+// Set a node's canvas position and redraw its wires. Used both by the
+// MoveNodeCommand (undo/redo) and as the single mutation point a future
+// alignment toolbar can call. Kept side-effect-light: no history is
+// recorded here — callers that want undo wrap this in a command.
+export function moveNode(nodeId, x, y) {
+  const el = document.getElementById(nodeId);
+  if (!el) return;
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  updateConnections();
 }
 
 export function getNodeSize(nodeId) {
@@ -292,7 +373,8 @@ export function addNodeFromMenu(nodeType) {
   const width = typeDef.defaultWidth || 280;
   y = resolveOverlap(x, y, width, 300, null);
 
-  createNode(nodeType, x, y);
+  // Routed through the command layer so "Add node" is undoable (Ctrl+Z).
+  dispatch(new CreateNodeCommand({ nodeType, x, y }));
 }
 
 export function addResultNode(nodeType) {

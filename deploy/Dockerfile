@@ -52,6 +52,6 @@ RUN julia --project=webapp -e ' \
 EXPOSE 8088
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=600s \
-    CMD curl -f http://localhost:8088/ || exit 1
+    CMD curl -fsS http://localhost:8088/health || exit 1
 
 CMD ["julia", "-t", "auto", "--project=webapp", "webapp/server.jl"]
