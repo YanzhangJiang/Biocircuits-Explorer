@@ -2,7 +2,7 @@
 
 Biocircuits Explorer is an interactive tool for **Reaction Order Polyhedra (ROP)** analysis of equilibrium binding networks. It provides a browser UI for constructing binding networks, enumerating structural regimes, visualizing regime graphs, and exploring SISO paths and polyhedral geometry.
 
-![Demo](webapp/demo2.gif)
+![Demo](main.png)
 
 ## Repository Layout
 
