@@ -22,38 +22,8 @@ export const NODE_TYPES = {
   ...SBML_TYPES,
 };
 
-// Required predecessor chain for each node type
-export const PREREQ_CHAIN = {
-  'model-builder': ['reaction-network'],
-  'model-summary': ['reaction-network', 'model-builder'],
-  'vertices-table': ['reaction-network', 'model-builder'],
-  'regime-graph': ['reaction-network', 'model-builder'],
-  'siso-analysis': ['reaction-network', 'model-builder'],
-  'siso-params': ['reaction-network', 'model-builder'],
-  'siso-result': ['siso-params'],
-  'qk-poly-result': ['siso-result'],
-  'rop-cloud': ['reaction-network'],
-  'fret-heatmap': ['reaction-network', 'model-builder'],
-  'parameter-scan-1d': ['reaction-network', 'model-builder'],
-  'parameter-scan-2d': ['reaction-network', 'model-builder'],
-  'rop-polyhedron': ['model-builder'],
-  'scan-1d-params': ['reaction-network', 'model-builder'],
-  'scan-1d-result': ['scan-1d-params'],
-  'rop-cloud-params': ['reaction-network'],
-  'rop-cloud-result': ['rop-cloud-params'],
-  'fret-params': ['reaction-network', 'model-builder'],
-  'fret-result': ['fret-params'],
-  'scan-2d-params': ['reaction-network', 'model-builder'],
-  'scan-2d-result': ['scan-2d-params'],
-  'rop-poly-params': ['model-builder'],
-  'rop-poly-result': ['rop-poly-params'],
-  'atlas-spec': [],
-  'atlas-builder': ['atlas-spec'],
-  'atlas-query-config': [],
-  'atlas-query-result': ['atlas-builder', 'atlas-query-config'],
-  'atlas-inverse-result': ['atlas-spec', 'atlas-query-config'],
-  'sbml-import': [],
-  'sbml-export': [],
-};
+// Prerequisite/connection validity is derived from the typed port graph
+// (see port-types.js); the former hand-maintained PREREQ_CHAIN table that
+// shadowed it by node type was dead code and has been removed.
 
 export { switchNoteTab };

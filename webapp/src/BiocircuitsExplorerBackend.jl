@@ -30,6 +30,7 @@ export record_negative, check_negative
 export submit_biocircuits_job_from_spec, get_biocircuits_job, get_biocircuits_job_result, cancel_biocircuits_job
 export run_biocircuits_job_payload, run_biocircuits_job_from_uri
 export biocircuits_explorer_version, biocircuits_explorer_build_info
+export RESULT_ARTIFACT_SCHEMA_VERSION, artifact_metadata, attach_artifact!, wrap_artifact
 
 using HTTP
 using JSON3
@@ -50,6 +51,7 @@ import EzXML
 
 include(joinpath(@__DIR__, "config.jl"))
 include(joinpath(@__DIR__, "session_store.jl"))
+include(joinpath(@__DIR__, "model_cache.jl"))
 include(joinpath(@__DIR__, "debug_log.jl"))
 include(joinpath(@__DIR__, "observability.jl"))
 include(joinpath(@__DIR__, "serialization.jl"))
@@ -135,6 +137,14 @@ function cleanup_old_sessions()
             ttl = SESSION_TTL,
             now_epoch = current_time,
             on_evict = sid -> (@info "Cleaned up expired session: $sid"),
+        )
+
+        # Compiled model bundles are a pure derived cache of the NetworkIR; expire
+        # them on the same TTL. The IR side-table is left intact so an expired
+        # model can be rebuilt on demand from its hash.
+        ModelCache.cleanup_expired_models!(
+            ttl = SESSION_TTL,
+            now_epoch = current_time,
         )
 
         DebugLog.cleanup_expired_clients!(ttl = SESSION_TTL, now_epoch = current_time)
@@ -599,6 +609,7 @@ include(joinpath(@__DIR__, "inverse_design.jl"))
 include(joinpath(@__DIR__, "ir.jl"))
 include(joinpath(@__DIR__, "sbml.jl"))
 include(joinpath(@__DIR__, "version.jl"))
+include(joinpath(@__DIR__, "result_artifact.jl"))
 include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
 
@@ -765,6 +776,105 @@ function handle_import_sbml(req)
     ))
 end
 
+# ─── Model bundle resolution (content-addressed; session as a legacy alias) ────
+#
+# Downstream endpoints used to hard-require a live `session_id` and 404 on miss.
+# They now resolve a compiled model *bundle* from any of three inputs, in
+# priority order, rebuilding transparently when only the IR/hash is known:
+#   1. `network`         — a NetworkIR (or legacy {reactions,kd}); fully
+#                          stateless. Served from the content-addressed cache,
+#                          or built and cached.
+#   2. `network_ir_hash` — cache key. Served from cache, or rebuilt from the IR
+#                          side-table when the compiled model was evicted.
+#   3. `session_id`      — legacy handle; served while the session is alive.
+# On an unrecoverable miss, `ModelResolutionError(need_network=true)` tells the
+# client to resend `network` and retry.
+struct ModelResolutionError <: Exception
+    msg::String
+    status::Int
+    need_network::Bool
+end
+ModelResolutionError(msg::AbstractString; status::Integer = 409, need_network::Bool = true) =
+    ModelResolutionError(String(msg), Int(status), need_network)
+Base.showerror(io::IO, err::ModelResolutionError) = print(io, err.msg)
+
+# Build (or fetch from cache) the bundle for a parsed NetworkIR, registering it
+# in the content-addressed cache and the IR side-table. Throws ArgumentError on
+# invalid kd. The returned bundle is the mutable Dict downstream handlers read
+# from (and attach SISO path caches to).
+function build_model_bundle(network::NetworkIR)
+    h = network_ir_hash(network)
+    cached = ModelCache.get_model(h)
+    cached !== nothing && return cached
+
+    bridge = network_ir_to_legacy_inputs(network)
+    rules = collect(bridge.rules)
+    kd = collect(bridge.kd)
+    any(x -> x <= 0, kd) && throw(ArgumentError("All Kd values must be positive (> 0)"))
+
+    model, species, free_syms, prod_syms = build_model(rules, kd)
+    network_dict = network_ir_to_dict(network)
+    bundle = Dict{String, Any}(
+        "model" => model,
+        "species" => species,
+        "free_syms" => free_syms,
+        "prod_syms" => prod_syms,
+        "kd" => kd,
+        "rules" => rules,
+        "network_ir" => network_dict,
+        "network_ir_hash" => h,
+    )
+    ModelCache.put_model(h, bundle)
+    ModelCache.put_ir(h, network_dict)
+    return bundle
+end
+
+# Resolve the compiled model bundle for a request body (resolution order above).
+# Throws ModelResolutionError / IRValidationError / ArgumentError, which
+# `_resolve_bundle_or_response` maps to HTTP responses.
+function resolve_model_bundle(body)
+    if _raw_haskey(body, :network)
+        return build_model_bundle(parse_network_ir(_raw_get(body, :network, nothing)))
+    end
+
+    if _raw_haskey(body, :network_ir_hash)
+        h = String(_raw_get(body, :network_ir_hash, ""))
+        if !isempty(h)
+            cached = ModelCache.get_model(h)
+            cached !== nothing && return cached
+            ir = ModelCache.get_ir(h)
+            ir !== nothing && return build_model_bundle(parse_network_ir(ir))
+        end
+    end
+
+    if _raw_haskey(body, :session_id)
+        sess = get_session(String(_raw_get(body, :session_id, "")))
+        sess !== nothing && return sess
+    end
+
+    throw(ModelResolutionError(
+        "No live model for this request. Resend `network` (the NetworkIR) to rebuild."))
+end
+
+# Resolve a bundle, returning `(bundle, nothing)` or `(nothing, http_response)`
+# so handlers can early-return the error: `bundle, err = ...; err === nothing || return err`.
+function _resolve_bundle_or_response(body)
+    try
+        return (resolve_model_bundle(body), nothing)
+    catch err
+        if err isa ModelResolutionError
+            payload = Dict{String, Any}("error" => err.msg)
+            err.need_network && (payload["need_network"] = true)
+            return (nothing, json_response(payload; status = err.status))
+        elseif err isa IRValidationError
+            return (nothing, error_response(sprint(showerror, err); status = 400))
+        elseif err isa ArgumentError
+            return (nothing, error_response(sprint(showerror, err); status = 400))
+        end
+        rethrow(err)
+    end
+end
+
 function handle_build_model(req)
     body = read_json(req)
     sid = get(body, :session_id, string(rand(UInt32), base=16))
@@ -780,40 +890,36 @@ function handle_build_model(req)
         rethrow(err)
     end
 
-    bridge = network_ir_to_legacy_inputs(network)
-    rules = collect(bridge.rules)
-    kd = collect(bridge.kd)
-
-    if any(x -> x <= 0, kd)
-        return error_response("All Kd values must be positive (> 0)"; status=400)
+    # The compiled model is a pure derived cache of the NetworkIR, keyed by hash;
+    # identical IRs share a bundle. The session is just a convenience handle
+    # pointing at the same bundle object.
+    bundle = try
+        build_model_bundle(network)
+    catch err
+        err isa ArgumentError && return error_response(sprint(showerror, err); status = 400)
+        rethrow(err)
     end
+    set_session(String(sid), bundle)
 
-    model, species, free_syms, prod_syms = build_model(rules, kd)
-    network_dict = network_ir_to_dict(network)
-    set_session(sid, Dict(
-        "model" => model,
-        "species" => species,
-        "free_syms" => free_syms,
-        "prod_syms" => prod_syms,
-        "kd" => kd,
-        "rules" => rules,
-        "network_ir" => network_dict,
-    ))
-
+    model = bundle["model"]
     return json_response(Dict(
         "session_id" => sid,
         "n" => model.n, "d" => model.d, "r" => model.r,
-        "species" => string.(species),
-        "free_species" => string.(free_syms),
-        "product_species" => string.(prod_syms),
+        "species" => string.(bundle["species"]),
+        "free_species" => string.(bundle["free_syms"]),
+        "product_species" => string.(bundle["prod_syms"]),
         "x_sym" => string.(model.x_sym),
         "q_sym" => string.(model.q_sym),
         "K_sym" => string.(model.K_sym),
-        "kd" => collect(kd),
+        "kd" => collect(bundle["kd"]),
         "N" => mat2vv(Matrix(model.N)),
         "L" => mat2vv(Matrix(model.L)),
-        "network_ir" => network_dict,
-        "network_ir_hash" => network_ir_hash(network),
+        "network_ir" => bundle["network_ir"],
+        "network_ir_hash" => bundle["network_ir_hash"],
+        # Self-describing provenance (non-breaking sibling): which IR this model
+        # was compiled from, by which algorithm/version.
+        "artifact" => artifact_metadata("build_model";
+            input_hashes = Dict("network_ir_hash" => bundle["network_ir_hash"])),
     ))
 end
 
@@ -888,11 +994,10 @@ end
 
 function handle_find_vertices(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
 
     find_all_vertices!(model)
 
@@ -918,11 +1023,10 @@ end
 
 function handle_build_graph(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     graph_mode = Symbol(String(get(body, :graph_mode, "qk")))
     change_qK = haskey(body, :change_qK) ? Symbol(String(body[:change_qK])) : nothing
 
@@ -932,15 +1036,14 @@ end
 
 function handle_siso_paths(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     change_qK = Symbol(body[:change_qK])
 
     siso = SISOPaths(model, change_qK)
-    sess["siso_$(body[:change_qK])"] = siso
+    bundle["siso_$(body[:change_qK])"] = siso
 
     data = siso_to_dict(model, siso)
     return json_response(data)
@@ -948,13 +1051,12 @@ end
 
 function handle_siso_polyhedra(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     change_key = "siso_$(body[:change_qK])"
-    siso = get(sess, change_key, nothing)
+    siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
     path_indices = haskey(body, :path_indices) ? Int.(body[:path_indices]) : collect(1:length(siso.rgm_paths))
@@ -980,13 +1082,12 @@ end
 
 function handle_siso_path_condition(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     change_key = "siso_$(body[:change_qK])"
-    siso = get(sess, change_key, nothing)
+    siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
     path_idx = Int(body[:path_idx])
@@ -1007,13 +1108,12 @@ end
 
 function handle_siso_trajectory(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     change_key = "siso_$(body[:change_qK])"
-    siso = get(sess, change_key, nothing)
+    siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
     path_idx = Int(body[:path_idx])
@@ -1034,11 +1134,10 @@ end
 
 function handle_behavior_families(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     change_qK = Symbol(body[:change_qK])
     observe_x = haskey(body, :observe_x) ? Symbol(body[:observe_x]) : error("observe_x is required")
     path_scope = Symbol(get(body, :path_scope, "feasible"))
@@ -1049,10 +1148,10 @@ function handle_behavior_families(req)
     compute_volume = Bool(get(body, :compute_volume, true))
 
     change_key = "siso_$(body[:change_qK])"
-    siso = get(sess, change_key, nothing)
+    siso = get(bundle, change_key, nothing)
     if siso === nothing
         siso = SISOPaths(model, change_qK)
-        sess[change_key] = siso
+        bundle[change_key] = siso
     end
 
     result = get_behavior_families(
@@ -1079,11 +1178,9 @@ function handle_rop_cloud(req)
         rules = if haskey(body, :reactions)
             String.(body[:reactions])
         else
-            haskey(body, :session_id) || return error_response("x-space mode requires reactions or session_id"; status=400)
-            sid = String(body[:session_id])
-            sess = get_session(sid)
-            sess === nothing && return error_response("Invalid session_id"; status=404)
-            String.(sess["rules"])
+            bundle, err = _resolve_bundle_or_response(body)
+            err === nothing || return err
+            String.(bundle["rules"])
         end
 
         isempty(rules) && return error_response("At least one reaction is required"; status=400)
@@ -1114,14 +1211,12 @@ function handle_rop_cloud(req)
             "target_species" => string(target_sym),
         ))
     elseif mode == "qk"
-        haskey(body, :session_id) || return error_response("qK mode requires session_id"; status=400)
-        sid = String(body[:session_id])
-        sess = get_session(sid)
-        sess === nothing && return error_response("Invalid session_id"; status=404)
+        bundle, err = _resolve_bundle_or_response(body)
+        err === nothing || return err
 
-        model = sess["model"]
-        kd = sess["kd"]
-        prod_syms = Symbol.(sess["prod_syms"])
+        model = bundle["model"]
+        kd = bundle["kd"]
+        prod_syms = Symbol.(bundle["prod_syms"])
 
         span = clamp(Int(get(body, :span, 6)), 1, 20)
         ro, fret = compute_rop_cloud(model, kd, prod_syms, n_samples, span)
@@ -1140,11 +1235,10 @@ end
 
 function handle_vertex_detail(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
     idx = Int(body[:vertex_idx])
 
     if idx < 1 || idx > n_vertices(model)
@@ -1158,13 +1252,12 @@ end
 # ─── FRET heatmap computation (2D only) ───
 function handle_fret_heatmap(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
-    kd = sess["kd"]
-    prod_syms = Symbol.(sess["prod_syms"])
+    model = bundle["model"]
+    kd = bundle["kd"]
+    prod_syms = Symbol.(bundle["prod_syms"])
 
     n_grid = clamp(get(body, :n_grid, 80), 20, 300)
     logq_min = get(body, :logq_min, -6)
@@ -1204,11 +1297,10 @@ end
 # ─── New API handlers for parameter scanning ───
 function handle_parameter_scan_1d(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
 
     # Parse parameters
     param_symbol = Symbol(body[:param_symbol])
@@ -1241,7 +1333,7 @@ function handle_parameter_scan_1d(req)
 
     # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
     fixed_qK = try
-        fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+        fixed_qK_or_default(body, model, Float64.(bundle["kd"]))
     catch e
         return error_response(sprint(showerror, e); status=400)
     end
@@ -1269,11 +1361,10 @@ end
 
 function handle_parameter_scan_2d(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
 
     # Parse parameters
     param1_symbol = Symbol(body[:param1_symbol])
@@ -1300,7 +1391,7 @@ function handle_parameter_scan_2d(req)
 
     # Fixed parameters (full log qK). If omitted, keep imported/session Kd values.
     fixed_qK = try
-        fixed_qK_or_default(body, model, Float64.(sess["kd"]))
+        fixed_qK_or_default(body, model, Float64.(bundle["kd"]))
     catch e
         return error_response(sprint(showerror, e); status=400)
     end
@@ -1335,18 +1426,18 @@ function handle_parameter_scan_2d(req)
 end
 
 function _atlas_landscape_model_from_spec(body)
-    if _raw_haskey(body, :session_id)
-        sid = String(_raw_get(body, :session_id, ""))
-        sess = get_session(sid)
-        sess === nothing && error("Invalid session_id")
+    # Prefer a resolvable model bundle (network / hash / session); fall back to a
+    # raw {reactions, kd} build for fully stateless landscape calls.
+    if _raw_haskey(body, :network) || _raw_haskey(body, :network_ir_hash) || _raw_haskey(body, :session_id)
+        bundle = resolve_model_bundle(body)
         return (
-            model=sess["model"],
-            rules=String.(sess["rules"]),
-            kd=Float64.(sess["kd"]),
+            model = bundle["model"],
+            rules = String.(bundle["rules"]),
+            kd = Float64.(bundle["kd"]),
         )
     end
 
-    _raw_haskey(body, :reactions) || error("Landscape scan requires `session_id` or `reactions`.")
+    _raw_haskey(body, :reactions) || error("Landscape scan requires `network`, `session_id`, or `reactions`.")
     rules = String.(collect(_raw_get(body, :reactions, String[])))
     isempty(rules) && error("At least one reaction is required for a landscape scan.")
     kd = if _raw_haskey(body, :kd)
@@ -1499,11 +1590,10 @@ end
 
 function handle_rop_polyhedron(req)
     body = read_json(req)
-    sid = String(body[:session_id])
-    sess = get_session(sid)
-    sess === nothing && return error_response("Invalid session_id"; status=404)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
 
-    model = sess["model"]
+    model = bundle["model"]
 
     if haskey(body, :pairs)
         pairs_in = body[:pairs]

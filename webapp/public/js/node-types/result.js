@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { setNodeLoading, getModelForNode, getSessionIdForNode, setupAutoUpdate, hasModelContextForNode } from '../nodes.js';
+import { setNodeLoading, getModelForNode, setupAutoUpdate, hasModelContextForNode, ensureModelSession } from '../nodes.js';
 import { executeRegimeGraph, updateRegimeGraphMode } from '../regime-graph.js';
 
 export const RESULT_TYPES = {
@@ -48,8 +48,7 @@ export const RESULT_TYPES = {
       const contentEl = document.getElementById(`${nodeId}-content`);
       setNodeLoading(nodeId, true);
       try {
-        const sessionId = getSessionIdForNode(nodeId);
-        if (!sessionId) throw new Error('Build the connected model first');
+        const sessionId = await ensureModelSession(nodeId);
         const data = await api('find_vertices', { session_id: sessionId });
         let html = '<table><thead><tr><th>#</th><th>Perm</th><th>Species</th><th>Type</th><th>Nullity</th></tr></thead><tbody>';
         data.vertices.forEach(v => {

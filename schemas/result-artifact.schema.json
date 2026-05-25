@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://biocircuits-explorer.com/schemas/result-artifact.schema.json",
+  "title": "Biocircuits Explorer Result Artifact",
+  "description": "Self-describing envelope (bne-result/v1) for a computed result. Generated/maintained alongside webapp/src/result_artifact.jl; attached additively as a sibling `artifact` field on responses, or as the top-level shape when a result is fully wrapped.",
+  "type": "object",
+  "required": ["artifact_schema_version", "kind", "input_hashes", "algorithm", "created_at"],
+  "properties": {
+    "artifact_schema_version": {
+      "const": "bne-result/v1.0.0",
+      "description": "Family/version of this envelope; the family prefix forks on incompatible changes."
+    },
+    "kind": {
+      "type": "string",
+      "description": "What produced this result, e.g. build_model, build_atlas, query_atlas, run_inverse_design."
+    },
+    "input_hashes": {
+      "type": "object",
+      "description": "Content hashes of the inputs this result was derived from (links a result to the exact IR/spec).",
+      "properties": {
+        "network_ir_hash": { "type": "string", "description": "SHA-256 of the source NetworkIR (single-network results)." },
+        "network_ir_hashes": { "type": "array", "items": { "type": "string" }, "description": "SHA-256 of each source NetworkIR (multi-network specs)." },
+        "design_spec_hash": { "type": "string", "description": "SHA-256 of the source DesignSpec, when applicable." }
+      },
+      "additionalProperties": true
+    },
+    "algorithm": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "description": "Algorithm identifier (defaults to kind)." },
+        "version": { "type": "string", "description": "App/algorithm version; bump when output semantics change." },
+        "config_hash": {
+          "type": ["string", "null"],
+          "description": "SHA-256 over the canonicalized config/spec; null when no config was supplied. Two runs with the same config_hash and input_hashes are reproducible."
+        }
+      },
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-fatal issues surfaced while producing the result."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO-8601 timestamp when the artifact was produced."
+    },
+    "result": {
+      "description": "The payload, present only when the envelope fully wraps it (wrap_artifact); absent when the envelope is attached as a sibling `artifact` field on an otherwise-flat response."
+    }
+  },
+  "additionalProperties": true
+}
