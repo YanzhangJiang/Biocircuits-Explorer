@@ -318,7 +318,7 @@ body.debug-console-open #editor {
   border: 1px solid var(--node-border, #444);
   border-radius: 5px;
   background: transparent;
-  color: var(--node-header-color, #eee);
+  color: var(--text-color, #eee);
   font-size: 13px; font-weight: 600;
   cursor: pointer;
 }
@@ -342,7 +342,7 @@ body.debug-console-open #editor {
   border: 1px solid var(--node-border, #444);
   border-radius: 10px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
-  color: var(--node-header-color, #eee);
+  color: var(--text-color, #eee);
 }
 .cheatsheet-panel h3 { margin: 0 0 12px; font-size: 15px; }
 .cheatsheet-panel table { width: 100%; border-collapse: collapse; font-size: 13px; }
