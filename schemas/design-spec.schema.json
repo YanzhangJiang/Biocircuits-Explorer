@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "Provenance": {
+      "additionalProperties": true,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "parent_ir_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://biocircuits-explorer.com/schemas/design-spec.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "Generated from the DesignSpec Julia struct by webapp/scripts/gen_schemas.jl — edit the struct/parser, not this file.",
+  "properties": {
+    "constraints": {
+      "additionalProperties": true,
+      "description": "Hard limits. Known keys are typed; unknown keys are preserved (free-form escape hatch).",
+      "properties": {
+        "forbid_regimes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "forbid_transitions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_base_species": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_reactions": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "goal": {
+      "type": "object"
+    },
+    "ir_schema_version": {
+      "const": "bne-design/v1.0.0"
+    },
+    "label": {
+      "type": "string"
+    },
+    "objectives": {
+      "type": "object"
+    },
+    "policies": {
+      "type": "object"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    }
+  },
+  "title": "Biocircuits Explorer DesignSpec",
+  "type": "object"
+}

@@ -1,6 +1,6 @@
 import { connections, nodeRegistry, ensureNodeData } from '../state.js';
 import { api } from '../api.js';
-import { setNodeLoading, getModelForNode, getSessionIdForNode, setupAutoUpdate } from '../nodes.js';
+import { setNodeLoading, getModelForNode, setupAutoUpdate, ensureModelSession } from '../nodes.js';
 import { getReactionsFromNode } from '../model.js';
 import { executeROPCloudResult, updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, executeFRETResult } from '../rop-cloud.js';
 import { recomputeROPCloud, recomputeHeatmap } from '../siso.js';
@@ -144,10 +144,9 @@ export const ROP_CLOUD_TYPES = {
       try {
         let data;
         if (mode === 'qk') {
-          const sessionId = getSessionIdForNode(nodeId);
-          if (!sessionId) throw new Error('Build the connected model first, or switch to x-space mode');
           const modelConn = connections.find(c => c.toNode === nodeId && c.toPort === 'model');
           if (!modelConn) throw new Error('qK mode requires Model input connection');
+          const sessionId = await ensureModelSession(nodeId);
           const span = parseInt(document.getElementById(`${nodeId}-span`)?.value || '6');
           data = await api('rop_cloud', {
             sampling_mode: 'qk',
@@ -261,8 +260,7 @@ export const ROP_CLOUD_TYPES = {
       const contentEl = document.getElementById(`${nodeId}-content`);
       setNodeLoading(nodeId, true);
       try {
-        const sessionId = getSessionIdForNode(nodeId);
-        if (!sessionId) throw new Error('Build the connected model first');
+        const sessionId = await ensureModelSession(nodeId);
         const data = await api('fret_heatmap', {
           session_id: sessionId,
           n_grid: nGrid,

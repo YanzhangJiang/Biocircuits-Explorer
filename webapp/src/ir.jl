@@ -770,8 +770,13 @@ end
 # ─── Stable hash for provenance / cache keys ───────────────────────────────────
 
 function network_ir_hash(net::NetworkIR)
-    canonical = _stable_canonical_value(network_ir_to_dict(net))
-    return bytes2hex(SHA.sha256(JSON3.write(canonical)))
+    # Content identity excludes provenance: `created_at`/`created_by`/`notes` are
+    # metadata about *when/who*, not *what* the network is. Excluding them makes
+    # the same network always hash the same way, which is what lets the hash be
+    # used as a stable cache key and parent-lineage reference.
+    d = network_ir_to_dict(net)
+    delete!(d, "provenance")
+    return bytes2hex(SHA.sha256(JSON3.write(_stable_canonical_value(d))))
 end
 
 # ─── DesignSpec parsing ────────────────────────────────────────────────────────
@@ -785,13 +790,36 @@ function _ir_optional_object(raw, key::Symbol, path::AbstractString)
     return Dict{String, Any}(_materialize(value))
 end
 
+# Light typing for the *stabilized* constraint keys. Validates only the keys we
+# have committed to a shape for; every other key is left untouched so the
+# constraints bag stays a free-form escape hatch and the legacy bridge keeps
+# working. Returns the (unmodified) dict.
+function _validate_design_constraints(constraints::AbstractDict, path::AbstractString)
+    cpath = _ir_path_join(path, "constraints")
+    for key in ("max_base_species", "max_reactions")
+        haskey(constraints, key) || continue
+        v = constraints[key]
+        (v isa Real && isfinite(v) && v > 0 && isinteger(v)) || throw(IRValidationError(
+            "expected a positive integer", _ir_path_join(cpath, key)))
+    end
+    for key in ("forbid_regimes", "forbid_transitions")
+        haskey(constraints, key) || continue
+        v = constraints[key]
+        (v isa AbstractVector && all(x -> x isa AbstractString, v)) || throw(IRValidationError(
+            "expected an array of strings", _ir_path_join(cpath, key)))
+    end
+    return constraints
+end
+
 """
     parse_design_spec(raw) -> DesignSpec
 
 Parse a `bne-design/v1` payload with four sections (`goal`, `constraints`,
 `objectives`, `policies`); requires at least one of the first three to be
 non-empty. Sections are kept as raw dicts and bridged to the existing pipeline
-shape via [`design_spec_to_legacy_request`](@ref).
+shape via [`design_spec_to_legacy_request`](@ref). Stabilized `constraints` keys
+(`max_base_species`, `max_reactions`, `forbid_regimes`, `forbid_transitions`)
+are shape-checked; all other keys pass through untouched.
 """
 function parse_design_spec(raw)
     raw === nothing && throw(IRValidationError("expected a JSON object", ""))
@@ -802,7 +830,7 @@ function parse_design_spec(raw)
     label = _ir_optional_string(raw, :label, "", path)
 
     goal = _ir_optional_object(raw, :goal, path)
-    constraints = _ir_optional_object(raw, :constraints, path)
+    constraints = _validate_design_constraints(_ir_optional_object(raw, :constraints, path), path)
     objectives = _ir_optional_object(raw, :objectives, path)
     policies = _ir_optional_object(raw, :policies, path)
 
@@ -843,8 +871,10 @@ function design_spec_to_dict(ds::DesignSpec)
 end
 
 function design_spec_hash(ds::DesignSpec)
-    canonical = _stable_canonical_value(design_spec_to_dict(ds))
-    return bytes2hex(SHA.sha256(JSON3.write(canonical)))
+    # As with network_ir_hash, provenance is metadata, not content identity.
+    d = design_spec_to_dict(ds)
+    delete!(d, "provenance")
+    return bytes2hex(SHA.sha256(JSON3.write(_stable_canonical_value(d))))
 end
 
 # ─── DesignSpec → legacy request dict consumed by run_inverse_design_from_spec ─

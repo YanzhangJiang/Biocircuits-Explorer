@@ -359,6 +359,17 @@ function _now_iso_timestamp_after(seconds::Integer)
 end
 
 function _execute_local_job(kind::AbstractString, spec)
+    # Wrap every local-job result in the bne-result envelope (as a sibling
+    # `artifact` field) so the persisted result and its `result_ref` are
+    # self-describing: algorithm + version, input network hashes, and a config
+    # hash of the spec for reproducibility.
+    result = _dispatch_local_job(kind, spec)
+    return attach_artifact!(result, kind;
+        input_hashes = Dict{String, Any}("network_ir_hashes" => artifact_network_hashes(spec)),
+        config = spec)
+end
+
+function _dispatch_local_job(kind::AbstractString, spec)
     if kind == "build_atlas"
         return build_behavior_atlas_from_spec(spec)
     elseif kind == "build_atlas_library"

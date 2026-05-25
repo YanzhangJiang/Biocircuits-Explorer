@@ -2,7 +2,7 @@ import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.
 import { api, showToast, handleNodeError, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themedColorbar } from './theme.js';
 import { quantileSorted, plotHeatmap } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, getModelForNode, getModelContextForNode, findUpstreamNodeByType } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getModelContextForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
 import { normalizeSISOConfig, getConnectedSISOConfig } from './siso.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
@@ -338,10 +338,9 @@ export async function executeROPCloudResult(nodeId) {
   try {
     let data;
     if (config.mode === 'qk') {
-      const sessionId = getSessionIdForNode(nodeId);
-      if (!sessionId) throw new Error('Build the connected model first, or switch to x-space mode');
       const modelConn = connections.find(c => c.toNode === conn.fromNode && c.toPort === 'model');
       if (!modelConn) throw new Error('qK mode requires Model input connection');
+      const sessionId = await ensureModelSession(nodeId);
       data = await api('rop_cloud', {
         sampling_mode: 'qk',
         session_id: sessionId,
@@ -398,8 +397,7 @@ export async function executeFRETResult(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('fret_heatmap', {
       session_id: sessionId,
       n_grid: config.grid,

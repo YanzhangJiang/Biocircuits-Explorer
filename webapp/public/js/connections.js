@@ -5,6 +5,7 @@ import { NODE_TYPES } from './node-types/index.js';
 import { hasModelContextForNode } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
 import { record, SetConnectionsCommand } from './commands.js';
+import { portsCompatible, portTypeOf, PORT_TYPES } from './port-types.js';
 
 // ===== Connection mutators (command performers) =====
 
@@ -196,8 +197,8 @@ export function initSocketEvents() {
       if (fromSocket && toSocket) {
         const fromPort = fromSocket.dataset.port;
         const toPort = toSocket.dataset.port;
-        // Validate port type compatibility
-        if (fromPort === toPort) {
+        // Validate by port *type* (the wire's artifact contract), not raw id.
+        if (portsCompatible(fromPort, toPort)) {
           const fromNode = fromSocket.dataset.node;
           const toNode = toSocket.dataset.node;
           // No self-connections
@@ -214,10 +215,11 @@ export function initSocketEvents() {
               if (typeDef && typeDef.execute) {
                 // Execute the node to populate dropdowns/options
                 // Check if we have the necessary data before executing
+                const toType = portTypeOf(toPort);
                 const shouldExecute =
-                  (toPort === 'model' && hasModelContextForNode(toNode)) || // Has model data
-                  (toPort === 'reactions' && getReactionsFromNode(fromNode).reactions.length > 0) || // Has reactions data
-                  (toPort === 'params'); // Params connection
+                  (toType === PORT_TYPES.ModelArtifact && hasModelContextForNode(toNode)) || // Has model data
+                  (toType === PORT_TYPES.NetworkIR && getReactionsFromNode(fromNode).reactions.length > 0) || // Has reactions data
+                  (toType === PORT_TYPES.ParamsConfig); // Config connection
 
                 if (shouldExecute) {
                   setTimeout(() => {
@@ -230,7 +232,7 @@ export function initSocketEvents() {
             }
           }
         } else {
-          showToast(`Port mismatch: ${fromPort} ≠ ${toPort}`);
+          showToast(`Port mismatch: ${portTypeOf(fromPort)} ≠ ${portTypeOf(toPort)}`);
         }
       }
     }

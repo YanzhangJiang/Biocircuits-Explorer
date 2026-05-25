@@ -120,6 +120,14 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
     const modelContext = {
       sessionId: data.session_id,
+      // The NetworkIR hash is the content-addressed identity of this model; the
+      // session id is just a cache handle over it. Kept for provenance and so a
+      // rebuild can be requested by hash.
+      networkIrHash: data.network_ir_hash || null,
+      networkIr: data.network_ir || null,
+      // bne-result envelope: provenance (algorithm/version, input hashes) for
+      // this model build. Surfaced for display and as a client-side cache key.
+      artifact: data.artifact || null,
       model: data,
       qK_syms: [...data.q_sym, ...data.K_sym],
     };

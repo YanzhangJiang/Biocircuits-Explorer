@@ -1,7 +1,7 @@
 import { nodeRegistry, ensureNodeData } from './state.js';
 import { api, showToast, handleNodeError, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themeAxisTitle } from './theme.js';
-import { setNodeLoading, setupPlotResize, getSessionIdForNode, getQKSymbolsForNode, getModelContextForNode } from './nodes.js';
+import { setNodeLoading, setupPlotResize, getQKSymbolsForNode, getModelContextForNode, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
 
 export function updateRegimeGraphMode(nodeId) {
@@ -34,11 +34,11 @@ export async function executeRegimeGraph(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    if (!modelContext?.sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     if (graphMode === 'siso' && !changeQK) throw new Error('Select a qK coordinate for SISO graph');
 
     const payload = {
-      session_id: modelContext.sessionId,
+      session_id: sessionId,
       graph_mode: graphMode,
     };
     if (graphMode === 'siso') payload.change_qK = changeQK;

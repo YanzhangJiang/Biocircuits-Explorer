@@ -85,3 +85,11 @@ jobs:
         env:
           JULIA_NUM_THREADS: auto
         run: julia --project=webapp --color=yes webapp/test/runtests.jl
+
+      - name: IR schemas in sync with Julia structs
+        env:
+          JULIA_NUM_THREADS: auto
+        run: |
+          julia --project=webapp --color=yes webapp/scripts/gen_schemas.jl
+          git diff --exit-code schemas/ \
+            || (echo "schemas/ is stale — regenerate with: julia --project=webapp webapp/scripts/gen_schemas.jl" && exit 1)

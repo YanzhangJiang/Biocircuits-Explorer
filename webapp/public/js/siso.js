@@ -2,7 +2,7 @@ import { nodeRegistry, connections, SISO_FAMILY_COLORS, ensureNodeData, getNodeD
 import { api, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalFloat, cloneSerializable } from './api.js';
 import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, themedColorbar } from './theme.js';
 import { plotTrajectory, convexHull2D, formatPolyNumber, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { NODE_TYPES } from './node-types/index.js';
@@ -566,8 +566,7 @@ export async function computeSISOResult(nodeId) {
   const plotMode = getSISOPlotMode(nodeId);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     if (nodeRegistry[nodeId]) {
       const nd = ensureNodeData(nodeId);
       nd.sisoTrajectoryRequestId = (nd.sisoTrajectoryRequestId || 0) + 1;
@@ -691,8 +690,7 @@ export async function toggleSISOPathCondition(el) {
 
   panel.innerHTML = '<span class="text-dim">Loading path condition...</span>';
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('siso_path_condition', {
       session_id: sessionId,
       change_qK: changeQK,
@@ -865,8 +863,7 @@ export async function executeQKPolyResult(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const payload = await api('siso_polyhedra', {
       session_id: sessionId,
       change_qK: selection.change_qK,

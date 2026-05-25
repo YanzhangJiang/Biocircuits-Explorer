@@ -2708,3 +2708,126 @@ end
     @test haskey(design_body, "legacy_request")
     @test design_body["legacy_request"]["query"]["motif_labels"] == ["+"]
 end
+
+@testset "Content-Addressed Model Cache (Phase 1)" begin
+    MC = BiocircuitsExplorerBackend.ModelCache
+    NET = Dict("reactions" => ["A + B <-> AB"], "kd" => [1.0])
+    ALT = Dict("reactions" => ["A + C <-> AC"], "kd" => [1.0])
+
+    post(path, body) = router(HTTP.Request("POST", path,
+        ["Content-Type" => "application/json"], JSON3.write(body)))
+
+    # Isolate from cache state left by earlier testsets.
+    MC._clear_all!()
+
+    # 1. Build registers exactly one bundle, keyed by the NetworkIR hash.
+    build = post("/api/build_model", NET)
+    @test build.status == 200
+    bbody = response_json(build)
+    sid = bbody["session_id"]
+    h = bbody["network_ir_hash"]
+    @test !isempty(h)
+    @test MC.model_count() == 1
+
+    # 2. Rebuilding the same IR is a cache hit; a different IR adds one bundle.
+    @test response_json(post("/api/build_model", NET))["network_ir_hash"] == h
+    @test MC.model_count() == 1
+    post("/api/build_model", ALT)
+    @test MC.model_count() == 2
+
+    # 3. Downstream endpoints are stateless: a NetworkIR alone resolves a model.
+    sl = post("/api/find_vertices", Dict("network" => NET))
+    @test sl.status == 200
+    @test haskey(response_json(sl), "n_vertices")
+
+    # 4. After the compiled model is evicted (restart / LRU), a hash rebuilds it
+    #    from the retained IR side-table — no session, no resent IR needed.
+    MC._clear_models!()
+    @test MC.model_count() == 0
+    reb = post("/api/find_vertices", Dict("network_ir_hash" => h))
+    @test reb.status == 200
+    @test haskey(response_json(reb), "n_vertices")
+    @test MC.model_count() == 1
+
+    # 5. Legacy session_id still resolves the same bundle.
+    @test post("/api/find_vertices", Dict("session_id" => sid)).status == 200
+
+    # 6. Cold miss (no model, unknown hash, no IR to rebuild from) tells the
+    #    client to resend the NetworkIR rather than failing opaquely.
+    MC._clear_all!()
+    cold = post("/api/find_vertices", Dict("network_ir_hash" => "deadbeefcafe"))
+    @test cold.status == 409
+    @test response_json(cold)["need_network"] == true
+end
+
+@testset "Result Artifact Envelope (Phase 3)" begin
+    # Envelope shape.
+    m = artifact_metadata("demo";
+        input_hashes = Dict("network_ir_hash" => "abc"),
+        config = Dict("a" => 1, "b" => 2))
+    @test m["artifact_schema_version"] == RESULT_ARTIFACT_SCHEMA_VERSION
+    @test m["kind"] == "demo"
+    @test m["input_hashes"]["network_ir_hash"] == "abc"
+    @test m["algorithm"]["version"] == biocircuits_explorer_version()
+    @test m["algorithm"]["config_hash"] !== nothing
+
+    # config_hash is canonical: key order is irrelevant; different config differs.
+    h1 = artifact_metadata("demo"; config = Dict("a" => 1, "b" => 2))["algorithm"]["config_hash"]
+    h2 = artifact_metadata("demo"; config = Dict("b" => 2, "a" => 1))["algorithm"]["config_hash"]
+    h3 = artifact_metadata("demo"; config = Dict("a" => 1, "b" => 3))["algorithm"]["config_hash"]
+    @test h1 == h2
+    @test h1 != h3
+    @test artifact_metadata("demo")["algorithm"]["config_hash"] === nothing
+
+    # attach_artifact! adds a sibling without disturbing existing fields; passes
+    # non-dicts through unchanged.
+    r = Dict{String, Any}("foo" => 1)
+    attach_artifact!(r, "demo")
+    @test r["foo"] == 1
+    @test r["artifact"]["kind"] == "demo"
+    @test attach_artifact!(42, "demo") == 42
+
+    # End-to-end: build_model carries a build_model artifact tied to the IR hash.
+    resp = router(HTTP.Request("POST", "/api/build_model",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict("reactions" => ["A + B <-> AB"], "kd" => [1.0]))))
+    @test resp.status == 200
+    body = response_json(resp)
+    art = body["artifact"]
+    @test art["artifact_schema_version"] == RESULT_ARTIFACT_SCHEMA_VERSION
+    @test art["kind"] == "build_model"
+    @test art["input_hashes"]["network_ir_hash"] == body["network_ir_hash"]
+end
+
+@testset "DesignSpec Constraint Typing (Phase 4)" begin
+    ok = parse_design_spec(Dict(
+        "constraints" => Dict("max_base_species" => 3, "max_reactions" => 2,
+                              "forbid_regimes" => ["singular"])))
+    @test ok.constraints["max_base_species"] == 3
+    @test ok.constraints["forbid_regimes"] == ["singular"]
+
+    # Unknown keys pass through untouched — the free-form escape hatch is intact.
+    passthrough = parse_design_spec(Dict(
+        "constraints" => Dict("max_base_species" => 2, "some_future_knob" => Dict("x" => 1))))
+    @test haskey(passthrough.constraints, "some_future_knob")
+
+    # Stabilized keys are shape-checked.
+    @test_throws IRValidationError parse_design_spec(Dict("constraints" => Dict("max_base_species" => 0)))
+    @test_throws IRValidationError parse_design_spec(Dict("constraints" => Dict("max_reactions" => 2.5)))
+    @test_throws IRValidationError parse_design_spec(Dict("constraints" => Dict("forbid_regimes" => [1, 2])))
+end
+
+@testset "Generated IR Schemas Are Present And Versioned" begin
+    schema_dir = normpath(joinpath(@__DIR__, "..", "..", "schemas"))
+    for (file, version) in [
+        ("network-ir.schema.json", NETWORK_IR_SCHEMA_VERSION),
+        ("design-spec.schema.json", DESIGN_SPEC_SCHEMA_VERSION),
+        ("result-artifact.schema.json", RESULT_ARTIFACT_SCHEMA_VERSION),
+    ]
+        path = joinpath(schema_dir, file)
+        @test isfile(path)
+        schema = JSON3.read(read(path, String))
+        key = file == "result-artifact.schema.json" ? "artifact_schema_version" : "ir_schema_version"
+        @test schema["properties"][key]["const"] == version
+    end
+end

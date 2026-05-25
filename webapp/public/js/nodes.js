@@ -3,7 +3,7 @@
 import { nodeRegistry, connections, setConnections, nodeIdCounter, nextNodeId, setNodeIdCounter, canvasState, scale, plotResizeObservers, nodeResizeObservers, plotInteractionGuards, getPortColor } from './state.js';
 import { showToast } from './api.js';
 import { applyThemeMode } from './theme.js';
-import { NODE_TYPES, PREREQ_CHAIN } from './node-types/index.js';
+import { NODE_TYPES } from './node-types/index.js';
 import { updateConnections } from './connections.js';
 import { buildModel, triggerDownstreamNodes, getReactionsFromNode } from './model.js';
 import { commitWorkspaceSnapshot, queueWorkspaceShellSync, getNodeSerialData } from './workspace.js';
@@ -65,6 +65,34 @@ export function getQKSymbolsForNode(nodeId) {
 
 export function hasModelContextForNode(nodeId) {
   return !!getModelContextForNode(nodeId);
+}
+
+// Dedupe concurrent rebuilds: when a workspace loads, several downstream viewers
+// may call ensureModelSession at once for the same builder.
+const _rebuildInFlight = new Map();
+
+// Return a live backend session id for `nodeId`'s model, rebuilding it from the
+// connected reaction network if no session is live (fresh workspace load, server
+// restart, or cache eviction). The NetworkIR is the real input; the session is
+// just a cache, so this rehydrates transparently instead of forcing the user to
+// click "Run" on the Model Builder again.
+export async function ensureModelSession(nodeId) {
+  const live = getSessionIdForNode(nodeId);
+  if (live) return live;
+
+  const builderId = findUpstreamNodeByType(nodeId, 'model-builder');
+  if (!builderId) throw new Error('Build the connected model first');
+
+  if (!_rebuildInFlight.has(builderId)) {
+    _rebuildInFlight.set(builderId, (async () => {
+      await buildModel(builderId, { triggerDownstream: false, throwOnFailure: true });
+    })().finally(() => _rebuildInFlight.delete(builderId)));
+  }
+  await _rebuildInFlight.get(builderId);
+
+  const fresh = getSessionIdForNode(nodeId);
+  if (!fresh) throw new Error('Build the connected model first');
+  return fresh;
 }
 
 function invalidateModelBuilder(modelBuilderNodeId) {

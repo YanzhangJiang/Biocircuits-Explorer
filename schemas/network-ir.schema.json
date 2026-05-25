@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "ObservableDecl": {
+      "additionalProperties": true,
+      "properties": {
+        "expression": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "expression"
+      ],
+      "type": "object"
+    },
+    "ParameterDistribution": {
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": [
+            "lognormal",
+            "loguniform",
+            "normal",
+            "point",
+            "uniform"
+          ],
+          "type": "string"
+        },
+        "log_max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "log_min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "mu": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sigma": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": true,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "parent_ir_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ReactionDecl": {
+      "additionalProperties": true,
+      "properties": {
+        "formula": {
+          "type": "string"
+        },
+        "kd": {
+          "type": "number"
+        },
+        "kd_distribution": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "binding",
+            "catalysis",
+            "conformation",
+            "other"
+          ],
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "reversible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "formula",
+        "kd"
+      ],
+      "type": "object"
+    },
+    "SpeciesDecl": {
+      "additionalProperties": true,
+      "properties": {
+        "initial_total": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "auto",
+            "bound",
+            "catalyst",
+            "complex",
+            "free",
+            "other"
+          ],
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://biocircuits-explorer.com/schemas/network-ir.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "Generated from the NetworkIR Julia structs by webapp/scripts/gen_schemas.jl — edit the structs, not this file.",
+  "properties": {
+    "compartments": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "ir_schema_version": {
+      "const": "bne-ir/v1.0.0"
+    },
+    "label": {
+      "type": "string"
+    },
+    "observables": {
+      "items": {
+        "$ref": "#/$defs/ObservableDecl"
+      },
+      "type": "array"
+    },
+    "parameter_distributions": {
+      "items": {
+        "$ref": "#/$defs/ParameterDistribution"
+      },
+      "type": "array"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "reactions": {
+      "items": {
+        "$ref": "#/$defs/ReactionDecl"
+      },
+      "type": "array"
+    },
+    "species": {
+      "items": {
+        "$ref": "#/$defs/SpeciesDecl"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Biocircuits Explorer NetworkIR",
+  "type": "object"
+}

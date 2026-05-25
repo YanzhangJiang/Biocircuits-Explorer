@@ -4,7 +4,7 @@ import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.
 import { api, showToast, handleNodeError, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, hexToRgba, themedColorbar, prefersLightTheme } from './theme.js';
 import { convexHull2D } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, getModelForNode, getQKSymbolsForNode, getModelContextForNode, findUpstreamNodeByType, triggerConfigUpdate } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getQKSymbolsForNode, getModelContextForNode, findUpstreamNodeByType, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { getConnectedSISOConfig, getConnectedSISOSelection, normalizeSISOConfig } from './siso.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 
@@ -68,8 +68,7 @@ export async function runParameterScan1D(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('parameter_scan_1d', {
       session_id: sessionId,
       param_symbol: paramSymbol,
@@ -133,8 +132,7 @@ export async function executeScan1DResult(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('parameter_scan_1d', {
       session_id: sessionId,
       param_symbol: config.param_symbol,
@@ -272,8 +270,7 @@ export async function executeScan2DResult(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('parameter_scan_2d', {
       session_id: sessionId,
       ...config
@@ -315,8 +312,7 @@ export async function runParameterScan2D(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('parameter_scan_2d', {
       session_id: sessionId,
       param1_symbol: param1,
@@ -446,8 +442,7 @@ export async function executeROPPolyResult(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('rop_polyhedron', {
       session_id: sessionId,
       ...config
@@ -484,8 +479,7 @@ export async function runROPPolyhedron(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   try {
-    const sessionId = getSessionIdForNode(nodeId);
-    if (!sessionId) throw new Error('Build the connected model first');
+    const sessionId = await ensureModelSession(nodeId);
     const data = await api('rop_polyhedron', {
       session_id: sessionId,
       ...config,

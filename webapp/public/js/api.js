@@ -60,7 +60,14 @@ export async function api(endpoint, data) {
     }
 
     const json = await resp.json();
-    if (json.error) throw new Error(json.error);
+    if (json.error) {
+      // The backend asks for the NetworkIR to be resent when it can no longer
+      // resolve a model from session_id/hash alone (e.g. after a restart).
+      const apiError = new Error(json.error);
+      if (json.need_network) apiError.needNetwork = true;
+      apiError.status = resp.status;
+      throw apiError;
+    }
     activeApiRequests = Math.max(0, activeApiRequests - 1);
     if (activeApiRequests > 0) {
       setStatus('working', `Computing... (${activeApiRequests})`);
