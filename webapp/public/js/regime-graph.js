@@ -60,6 +60,15 @@ export async function executeRegimeGraph(nodeId) {
   setNodeLoading(nodeId, false);
 }
 
+// Node color encodes each regime's local Jacobian classification. Ordered
+// best→worst so the legend reads top-down. Kept as the single source of truth
+// for both the marker colors and the on-plot legend below.
+export const REGIME_GRAPH_LEGEND = [
+  { color: '#51cf66', label: 'Asymptotic · invertible' },
+  { color: '#ffd43b', label: 'Non-asymptotic' },
+  { color: '#ff6b6b', label: 'Singular' },
+];
+
 export function getRegimeGraphNodeColor(node) {
   if (node.singular) return '#ff6b6b';
   if (!node.asymptotic) return '#ffd43b';
@@ -533,10 +542,40 @@ export function plotRegimeGraph(data, plotId, options = {}) {
     });
   }
 
+  // Legend: one dummy trace per color category. They carry no real points
+  // (x/y/z are null) so nothing is drawn on the graph, but each shows up as a
+  // labeled swatch explaining what the red/yellow/green node colors mean.
+  REGIME_GRAPH_LEGEND.forEach(({ color, label }) => {
+    const legendTrace = {
+      x: [null],
+      y: [null],
+      mode: 'markers',
+      type: is3D ? 'scatter3d' : 'scatter',
+      marker: { size: 10, color, line: { width: 1.2, color: plotTheme.nodeOutlineColor } },
+      name: label,
+      hoverinfo: 'skip',
+      showlegend: true,
+    };
+    if (is3D) legendTrace.z = [null];
+    traces.push(legendTrace);
+  });
+
   const titleText = `${graph_label || 'Regime Graph'}${change_qK ? ` (${change_qK})` : ''}<br><span style="font-size:11px;color:${plotTheme.subtleTextColor};">${viewMode.toUpperCase()} view · ${nodes.length} vertices, ${edges.length} edges</span>`;
   const layout = {
     autosize: true,
-    showlegend: false,
+    showlegend: true,
+    legend: {
+      x: 0,
+      y: 1,
+      xanchor: 'left',
+      yanchor: 'top',
+      font: { size: 10 },
+      itemsizing: 'constant',
+      borderwidth: 0,
+      // Purely informational — clicking shouldn't toggle the (empty) traces.
+      itemclick: false,
+      itemdoubleclick: false,
+    },
     margin: { t: 40, b: 20, l: 20, r: 20 },
     dragmode: is3D ? 'orbit' : 'pan',
     title: {

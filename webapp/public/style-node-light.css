@@ -105,7 +105,7 @@
   --btn-bg: #e4ebf3;
   --btn-color: #243240;
   --btn-hover-bg: #d8e2ee;
-  --btn-primary-color: #162230;
+  --btn-primary-color: #ffffff;
   --btn-run-bg: linear-gradient(180deg, #4f83d2 0%, #3560A8 100%);
   --btn-run-hover-bg: linear-gradient(180deg, #5c90df 0%, #4570B8 100%);
   --btn-run-color: #ffffff;
@@ -145,11 +145,17 @@
   --tab-btn-hover-color: #223241;
   --tab-btn-active-color: #fff;
 
+  /* --- Note tabs --- */
+  --note-tab-color: #647588;
+  --note-tab-hover-color: #223241;
+  --note-tab-active-color: #C77D11;
+
   /* --- Atlas config --- */
   --atlas-config-bg: #f3f7fb;
   --atlas-section-title-color: #1f2b38;
   --atlas-builder-group-border: #d8e2ec;
   --atlas-builder-head-color: #627180;
+  --atlas-builder-arrow-color: #607081;
   --atlas-builder-row-bg: #ffffff;
   --atlas-builder-row-border: #d8e2ec;
   --atlas-query-preview-border: #d8e2ec;
@@ -226,4 +232,5 @@
   --markdown-em-color: #627180;
   --markdown-code-bg: #eef3f8;
   --markdown-code-color: #2a648d;
+  --markdown-link-color: #2a5db0;
 }
