@@ -19,7 +19,12 @@ fi
 mkdir -p "${APP_RESOURCES_DIR}"
 
 if [ ! -d "${BACKEND_SOURCE}" ]; then
-  echo "warning: frontend-swift backend bundle not found at ${BACKEND_SOURCE}; skipping backend embedding and relying on source fallback at runtime."
+  message="frontend-swift backend bundle not found at ${BACKEND_SOURCE}; skipping backend embedding and relying on source fallback at runtime."
+  if [ "${CONFIGURATION:-}" = "Release" ] || [ "${BIOCIRCUITS_EXPLORER_REQUIRE_BUNDLED_BACKEND:-}" = "1" ]; then
+    echo "error: ${message}"
+    exit 1
+  fi
+  echo "warning: ${message}"
   exit 0
 fi
 

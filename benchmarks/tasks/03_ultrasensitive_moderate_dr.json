@@ -1,0 +1,22 @@
+{
+    "natural_language": "Find an ultrasensitive (thresholded) activation with a moderate dynamic range of about two orders of magnitude.",
+    "task_id": "03_ultrasensitive_moderate_dr",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "thresholded_activation",
+        "dynamic_range_log10": [
+            1.5,
+            3.0
+        ]
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

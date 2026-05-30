@@ -1,0 +1,20 @@
+{
+    "natural_language": "Bandpass with at most two reactions, a very wide plateau, AND a very sharp fall (intentionally over-constrained).",
+    "task_id": "19_infeasible_overconstrained",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "fall_slope_min": 3,
+        "max_reactions": 2,
+        "behavior_class": "bandpass_with_plateau",
+        "plateau_width_log10_input_min": 2
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

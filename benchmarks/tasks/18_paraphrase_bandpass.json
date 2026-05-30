@@ -1,0 +1,27 @@
+{
+    "natural_language": "Bandpass with gentle rise and sharp fall (same spec, multiple phrasings).",
+    "task_id": "18_paraphrase_bandpass",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "bandpass_with_plateau",
+        "rise_slope_max": 0.8,
+        "paraphrases": [
+            "a hump-shaped response that comes up slowly and drops off fast",
+            "band-pass: slow on, sharp off",
+            "peak in the middle, soft left edge, hard right edge",
+            "rise gently then crash after the optimum",
+            "narrow high band with an abrupt high-dose cutoff"
+        ],
+        "fall_slope_min": 1
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

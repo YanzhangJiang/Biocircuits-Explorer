@@ -329,7 +329,7 @@ final class BiocircuitsBackendController: ObservableObject {
             arguments: [],
             currentDirectoryURL: backendRoot,
             environment: spawnEnv,
-            startupTimeout: 90,
+            startupTimeout: 900,
             startupStatus: "Starting compiled backend"
         )
     }

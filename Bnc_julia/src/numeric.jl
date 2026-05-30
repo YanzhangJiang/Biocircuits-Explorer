@@ -290,12 +290,19 @@ Scan a single parameter (q or K) and compute output trajectory.
 """
 function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float64},
                            output_coeffs::Vector{Vector{Float64}}, fixed_params::Vector{Float64};
-                           input_logspace::Bool=true, output_logspace::Bool=true)
+                           input_logspace::Bool=true, output_logspace::Bool=true,
+                           track_validity::Bool=false)
     n_points = length(param_range)
     n_outputs = length(output_coeffs)
 
     output_traj = Matrix{Float64}(undef, n_points, n_outputs)
     regimes = Vector{Int}(undef, n_points)
+    # Per-point solve validity. `qK2x` previously returned a non-converged ODE
+    # state silently; with `track_validity=true` the caller gets a Bool vector so
+    # it can discard unreliable points (the phenotyper treats any invalid point as
+    # a failed draw). The status Ref is allocated once and reused per point.
+    valid = track_validity ? Vector{Bool}(undef, n_points) : Bool[]
+    st = track_validity ? Ref(:success) : nothing
 
     for (i, param_val) in enumerate(param_range)
         # Construct full qK vector
@@ -303,7 +310,10 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
         insert!(qK, param_idx, param_val)
 
         # Compute x
-        x = qK2x(model, qK; input_logspace=input_logspace, output_logspace=output_logspace)
+        track_validity && (st[] = :success)
+        x = qK2x(model, qK; input_logspace=input_logspace, output_logspace=output_logspace,
+                 status=st)
+        track_validity && (valid[i] = (st[] === :success))
 
         # Extract outputs using linear combinations
         for j in 1:n_outputs
@@ -317,15 +327,20 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
             end
         end
 
-        # Assign regime
+        # Assign regime. NOTE: `return_idx=true` is REQUIRED — the default returns a
+        # permutation Vector, which cannot be stored into this Vector{Int} slot, so
+        # the previous unqualified call always threw and the catch silently wrote 0
+        # (every regime index was 0, which dead-ended the phenotyper's
+        # regime-transition auto-bracketing). Now it stores the real vertex index.
         try
-            regimes[i] = assign_vertex_qK(model, qK; input_logspace=input_logspace)
+            regimes[i] = assign_vertex_qK(model, qK; input_logspace=input_logspace, return_idx=true)
         catch
-            regimes[i] = 0  # Unknown regime
+            regimes[i] = 0  # genuinely unassignable point
         end
     end
 
-    return param_range, output_traj, regimes
+    return track_validity ? (param_range, output_traj, regimes, valid) :
+                            (param_range, output_traj, regimes)
 end
 
 
@@ -380,9 +395,10 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
                 output_grid[i, j] = dot(output_coeffs, x)
             end
 
-            # Assign regime
+            # Assign regime (return_idx=true: see scan_parameter_1d — the default
+            # returns a perm Vector that cannot be stored here, silently yielding 0).
             try
-                regime_grid[i, j] = assign_vertex_qK(model, qK; input_logspace=input_logspace)
+                regime_grid[i, j] = assign_vertex_qK(model, qK; input_logspace=input_logspace, return_idx=true)
             catch
                 regime_grid[i, j] = 0
             end

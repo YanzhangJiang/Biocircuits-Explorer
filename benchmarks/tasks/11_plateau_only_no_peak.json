@@ -1,0 +1,19 @@
+{
+    "natural_language": "Find a plateau-like response (rise to a broad high region) without a strong peak.",
+    "task_id": "11_plateau_only_no_peak",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "activation_with_saturation",
+        "plateau_width_log10_input_min": 0.7
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

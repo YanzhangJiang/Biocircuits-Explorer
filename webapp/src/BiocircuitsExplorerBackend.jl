@@ -69,6 +69,12 @@ using .ReactionParser: parse_term, parse_side, parse_reactions, parse_network_st
                        build_model, default_log_qK, fixed_qK_or_default
 using .StaticAssets: static_dir, serve_static
 
+# Shared canonicalization / content-identity primitives (raw-JSON access, the
+# canonical-JSON hasher, and the graph-canonical network code). Included here —
+# before atlas.jl/inverse_design.jl/ir.jl — so the IR/result substrate no longer
+# depends backwards on those big files just to hash an artifact.
+include(joinpath(@__DIR__, "canonicalization.jl"))
+
 # ─── Global state ───
 const SESSION_TTL = SessionStore.DEFAULT_TTL_SECONDS
 const SESSION_CLEANUP_INTERVAL = 300  # 5 minutes

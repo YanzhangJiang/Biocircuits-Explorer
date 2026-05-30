@@ -1,0 +1,18 @@
+{
+    "natural_language": "Find a threshold response; trained on smaller networks, tested at r=4.",
+    "task_id": "16_size_holdout_threshold",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "thresholded_activation"
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

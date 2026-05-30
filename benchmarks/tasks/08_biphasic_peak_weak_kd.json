@@ -1,0 +1,24 @@
+{
+    "natural_language": "Find a biphasic peak using mostly weak dissociation constants.",
+    "task_id": "08_biphasic_peak_weak_kd",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "kd_profile": {
+            "weak_fraction_min": 0.75,
+            "mode": "mostly_weak",
+            "allow_strong_outliers": 1
+        },
+        "max_reactions": 4,
+        "behavior_class": "biphasic_peak",
+        "peak_prominence_min": 0.3
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

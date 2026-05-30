@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer/schemas/behavior-spec.schema.json",
+  "title": "BehaviorSpec",
+  "description": "Typed behavior sublanguage carried inside DesignSpec.goal / DesignSpec.objectives. Compiled from natural language; serializable, editable and testable. NOTE: hand-authored first cut for Phase 1 — to be wired into webapp/scripts/gen_schemas.jl (struct-generated) so the CI drift-guard covers it.",
+  "$comment": "This is the AUTHORED / NL-facing NESTED form. It is intentionally DIFFERENT from the FLAT `behavior_spec` block in the benchmark task JSONs (benchmarks/tasks/*.json), which is a LOWERED verifier query (flat shape-gate keys like rise_slope_max / fall_slope_min / plateau_width_log10_input_min, per the roadmap Task Format) consumed directly by run_benchmark.jl. They share a name but not a schema — this schema does NOT validate the task blocks. Convergence (NL compiler emits THIS nested form, then a lowering step produces the flat gates) is a Phase-5 item; until then they are two layers, not one format.",
+  "type": "object",
+  "required": ["schema_version", "goal"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "bne-behavior/v0.1.0" },
+    "goal": {
+      "type": "object",
+      "required": ["behavior_class", "output"],
+      "additionalProperties": false,
+      "properties": {
+        "behavior_class": {
+          "description": "Vocabulary v0 class. 'bandpass_like' is a user-language alias resolved by the compiler to biphasic_peak or bandpass_with_plateau after checking for a true high-input falloff.",
+          "enum": [
+            "monotone_activation",
+            "activation_with_saturation",
+            "monotone_repression",
+            "repression_with_floor",
+            "thresholded_activation",
+            "biphasic_peak",
+            "bandpass_with_plateau",
+            "biphasic_valley",
+            "window_repression",
+            "bandpass_like"
+          ]
+        },
+        "input_axis": {
+          "description": "Swept axis. 'plateau'/'range' refer to width along this log axis, NOT real-time duration.",
+          "enum": ["log10_total_input", "log10_parameter"],
+          "default": "log10_total_input"
+        },
+        "output": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["species", "observable", "expression"] },
+            "symbol": { "type": "string" },
+            "expression": { "type": "string" }
+          }
+        }
+      }
+    },
+    "shape_preferences": {
+      "type": "object",
+      "description": "Soft preferences / numeric gates on per-curve metrics (names match the phenotyper output fields).",
+      "additionalProperties": false,
+      "properties": {
+        "rise_slope":                 { "$ref": "#/$defs/preference_term" },
+        "fall_slope":                 { "$ref": "#/$defs/preference_term" },
+        "asymmetry":                  { "$ref": "#/$defs/preference_term" },
+        "peak_prominence":            { "$ref": "#/$defs/preference_term" },
+        "plateau_width_log10_input":  { "$ref": "#/$defs/preference_term" },
+        "plateau_flatness":           { "$ref": "#/$defs/preference_term" },
+        "baseline_return":            { "$ref": "#/$defs/preference_term" },
+        "output_fold_change_log10":   { "$ref": "#/$defs/preference_term" },
+        "input_operating_range_log10":{ "$ref": "#/$defs/preference_term" },
+        "dynamic_range_log10":        { "$ref": "#/$defs/preference_term" }
+      }
+    },
+    "network_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_reactions":    { "type": "integer", "minimum": 1 },
+        "max_base_species": { "type": "integer", "minimum": 1 },
+        "kd_profile":       { "$ref": "#/$defs/kd_profile" }
+      }
+    },
+    "verification_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require_rop_evidence": { "type": "boolean" },
+        "require_quick_scan":   { "type": "boolean" },
+        "min_robustness_score": { "type": "number", "minimum": 0, "maximum": 1,
+          "description": "Lower bound on shape_support (the distributional robustness number) under the declared phenotyper_version." },
+        "phenotyper_version":   { "type": "string" }
+      }
+    },
+    "compilation_notes": {
+      "type": "array",
+      "description": "Per-phrase notes recording how ambiguous language was interpreted (e.g. whether 'longer plateau' meant plateau_width_log10_input vs real time).",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "preference_term": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preference": { "enum": ["gentle", "sharp", "wide", "narrow", "high", "low", "none"] },
+        "min":    { "type": "number" },
+        "max":    { "type": "number" },
+        "range":  { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "weight": { "type": "number", "default": 1.0 }
+      }
+    },
+    "kd_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Coarse Kd language compiled to explicit numeric/relative constraints (Kd-semantics section).",
+      "properties": {
+        "mode": { "enum": ["strong", "medium", "weak", "mostly_weak", "relative", "uncertain"] },
+        "log10_kd_min": { "type": "number" },
+        "log10_kd_max": { "type": "number" },
+        "weak_fraction_min": { "type": "number", "minimum": 0, "maximum": 1 },
+        "allow_strong_outliers": { "type": "integer", "minimum": 0 },
+        "scale_ref": { "type": "string",
+          "description": "Concentration/total-input scale a relative bin is defined against." }
+      }
+    }
+  }
+}

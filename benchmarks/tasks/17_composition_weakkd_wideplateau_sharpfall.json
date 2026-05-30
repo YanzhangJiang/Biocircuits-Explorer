@@ -1,0 +1,25 @@
+{
+    "natural_language": "Weak Kd AND wide input-axis plateau AND sharp fall (objective-composition holdout).",
+    "task_id": "17_composition_weakkd_wideplateau_sharpfall",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "fall_slope_min": 1,
+        "kd_profile": {
+            "weak_fraction_min": 0.75,
+            "mode": "mostly_weak",
+            "allow_strong_outliers": 1
+        },
+        "max_reactions": 4,
+        "behavior_class": "bandpass_with_plateau",
+        "plateau_width_log10_input_min": 0.5
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}
