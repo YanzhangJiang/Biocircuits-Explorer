@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer/schemas/latent-atlas-manifest.schema.json",
+  "title": "LatentAtlasManifest",
+  "description": "Reproducibility manifest for an atlas-derived training/benchmark dataset: pins atlas snapshot, oracle + phenotyper versions, scan/sampling policy, splits and seeds so shards can be regenerated bit-for-bit.",
+  "type": "object",
+  "required": ["manifest_schema_version", "dataset_id", "source_atlas", "oracle", "sampling", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_schema_version": { "const": "latent-atlas-manifest/v0.1.0" },
+    "dataset_id": { "type": "string" },
+    "code_commit": { "type": "string", "description": "git commit of the generating code." },
+    "source_atlas": {
+      "type": "object",
+      "required": ["sqlite_snapshot_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "sqlite_snapshot_hash": {
+          "type": ["string", "null"],
+          "description": "SHA-256 of the source atlas sqlite. null when merge ran without a reachable atlas file (the dataset is then NOT reproducibility-pinned — merge warns)."
+        },
+        "schema_version": { "type": "string" },
+        "build_profile": { "type": "string" }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "required": ["phenotyper_version"],
+      "additionalProperties": false,
+      "properties": {
+        "rop_version": { "type": "string" },
+        "phenotyper_version": { "type": "string" },
+        "scan_policy": { "type": "string" },
+        "sampler": { "type": "string", "description": "Prior sampler: halton (low-discrepancy QMC) or mc." }
+      }
+    },
+    "sampling": {
+      "type": "object",
+      "required": ["entity_kind", "seed"],
+      "additionalProperties": false,
+      "properties": {
+        "entity_kind": { "enum": ["network", "network_io_slice", "behavior_slice", "family", "candidate"] },
+        "max_reactions": { "type": "integer", "minimum": 1 },
+        "max_base_species": { "type": "integer", "minimum": 1 },
+        "num_shards": { "type": "integer", "minimum": 1 },
+        "K": { "type": "integer", "minimum": 1, "description": "Phenotyper prior draws per entity." },
+        "seed": { "type": "integer" },
+        "parameter_prior": {
+          "type": ["object", "null"],
+          "description": "Π — the serialized parameter prior every distributional label was measured against (prior_descriptor): default_total/default_kd/per_symbol/kd_profile."
+        }
+      }
+    },
+    "splits": {
+      "type": "object",
+      "description": "Map of split name -> relative path of the split file.",
+      "additionalProperties": { "type": "string" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

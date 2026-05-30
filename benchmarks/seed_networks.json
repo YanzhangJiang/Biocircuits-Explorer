@@ -1,0 +1,33 @@
+{
+  "schema": "bne-seed-networks/v0",
+  "note": "Curated in-scope binding-network candidate pool for the Phase-1 deterministic baseline. Each network lists its reaction rules and one or more (input qK symbol, output species) assignments. Kd is NOT stored — the phenotyper samples it from the prior. Replace/extend with a full atlas enumeration when a non-path_only atlas is available.",
+  "networks": [
+    {"id": "bind1",  "rules": ["L + A <-> AL"],
+      "io": [{"input": "tL", "output": "AL"}],
+      "note": "single binding: activation with saturation"},
+
+    {"id": "comp2",  "rules": ["L + A <-> AL", "L + B <-> BL"],
+      "io": [{"input": "tL", "output": "AL"}, {"input": "tL", "output": "BL"}],
+      "note": "competitive binding (buffered activation)"},
+
+    {"id": "comp3",  "rules": ["L + A <-> AL", "L + B <-> BL", "L + C <-> CL"],
+      "io": [{"input": "tL", "output": "AL"}],
+      "note": "three-way competition (more buffering)"},
+
+    {"id": "coop2",  "rules": ["A + L <-> AL", "AL + L <-> AL2"],
+      "io": [{"input": "tL", "output": "AL2"}, {"input": "tL", "output": "AL"}],
+      "note": "two-site assembly: AL2 thresholded/ultrasensitive; AL is a biphasic intermediate"},
+
+    {"id": "hook3",  "rules": ["L + A <-> AL", "L + B <-> BL", "AL + B <-> ALB"],
+      "io": [{"input": "tL", "output": "ALB"}],
+      "note": "prozone / hook: biphasic peak in the ternary complex"},
+
+    {"id": "tern3",  "rules": ["A + L <-> AL", "AL + B <-> ALB"],
+      "io": [{"input": "tL", "output": "ALB"}, {"input": "tB", "output": "ALB"}],
+      "note": "sequential ternary assembly"},
+
+    {"id": "inhib2", "rules": ["E + S <-> ES", "E + I <-> EI"],
+      "io": [{"input": "tI", "output": "ES"}, {"input": "tS", "output": "ES"}],
+      "note": "competitive inhibition: sweep tI -> repression of ES; sweep tS -> activation"}
+  ]
+}

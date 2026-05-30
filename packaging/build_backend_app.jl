@@ -80,8 +80,10 @@ function materialize_external_symlinks!(root_dir::AbstractString)
 end
 
 Pkg.activate(PACKAGING_DIR)
+Pkg.resolve()
 Pkg.instantiate()
 Pkg.activate(WEBAPP_DIR)
+Pkg.develop(Pkg.PackageSpec(path=joinpath(REPO_ROOT, "Bnc_julia")))
 Pkg.resolve()
 Pkg.instantiate()
 Pkg.activate(PACKAGING_DIR)

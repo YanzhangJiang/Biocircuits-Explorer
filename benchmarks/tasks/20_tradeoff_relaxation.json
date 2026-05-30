@@ -1,0 +1,20 @@
+{
+    "natural_language": "When no candidate satisfies all hard constraints, report the best minimal relaxation.",
+    "task_id": "20_tradeoff_relaxation",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "fall_slope_min": 2.5,
+        "max_reactions": 3,
+        "behavior_class": "bandpass_with_plateau",
+        "plateau_width_log10_input_min": 1.5
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

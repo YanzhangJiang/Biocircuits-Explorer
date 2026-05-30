@@ -11,17 +11,17 @@
 # already reads. The async job path attaches it at the single dispatch point so
 # every persisted/shared result (resolved via `result_ref`) is self-describing.
 #
-# Flat-included into BiocircuitsExplorerBackend; relies on `_stable_canonical_value`
-# (inverse_design.jl), `_now_iso_timestamp` (atlas.jl), `network_ir_hash` /
-# `parse_network_ir` (ir.jl), `biocircuits_explorer_version` (version.jl), and
-# `_raw_get` / `_raw_haskey` (atlas.jl).
+# Flat-included into BiocircuitsExplorerBackend; relies on `canonical_hash`,
+# `_now_iso_timestamp`, `_raw_get` / `_raw_haskey` (canonicalization.jl),
+# `network_ir_hash` / `parse_network_ir` (ir.jl), and `biocircuits_explorer_version`
+# (version.jl).
 
 const RESULT_ARTIFACT_SCHEMA_VERSION = "bne-result/v1.0.0"
 
-# SHA-256 over the canonicalized JSON of any value. Reuses the same canonicalizer
-# as the IR hashes, so identical configs/specs hash identically (key invariant
-# for cache hits and reproducibility checks).
-_canonical_hash(value) = bytes2hex(SHA.sha256(JSON3.write(_stable_canonical_value(value))))
+# SHA-256 over the canonical JSON of any value. Reuses the same canonicalizer as the
+# IR hashes (canonicalization.jl), so identical configs/specs hash identically (key
+# invariant for cache hits and reproducibility checks).
+_canonical_hash(value) = canonical_hash(value)
 
 # Best-effort content hashes of the network(s) referenced by a request/spec, for
 # linking a result back to the exact IR it came from. Never throws: anything

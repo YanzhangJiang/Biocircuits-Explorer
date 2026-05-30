@@ -1,0 +1,18 @@
+{
+    "natural_language": "Find a binding network with a monotone activation that rises to a saturating high plateau, at most three reactions.",
+    "task_id": "01_monotone_activation_r3",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 3,
+        "behavior_class": "activation_with_saturation"
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

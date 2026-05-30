@@ -150,37 +150,8 @@ atlas_library_default() = Dict(
     "query_audit_log" => Dict{String, Any}[],
 )
 
-function _raw_haskey(raw, key::Symbol)
-    return haskey(raw, key) || haskey(raw, String(key))
-end
-
-function _raw_get(raw, key::Symbol, default)
-    if haskey(raw, key)
-        return raw[key]
-    elseif haskey(raw, String(key))
-        return raw[String(key)]
-    else
-        return default
-    end
-end
-
-_now_iso_timestamp() = Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS")
-
-function _materialize(value)
-    if value isa AbstractDict
-        out = Dict{String, Any}()
-        for (k, v) in pairs(value)
-            out[String(k)] = _materialize(v)
-        end
-        return out
-    elseif value isa AbstractVector || value isa Tuple
-        return Any[_materialize(v) for v in value]
-    elseif value isa Symbol
-        return String(value)
-    else
-        return value
-    end
-end
+# _raw_haskey / _raw_get / _now_iso_timestamp / _materialize were moved to
+# canonicalization.jl (included earlier in the same flat namespace).
 
 function _sorted_unique_strings(values)
     items = String[]
@@ -1110,18 +1081,7 @@ function inverse_refinement_spec_to_dict(spec::InverseRefinementSpec)
     )
 end
 
-function _all_permutations(items::Vector{T}) where {T}
-    length(items) <= 1 && return [copy(items)]
-    perms = Vector{Vector{T}}()
-    for idx in eachindex(items)
-        head = items[idx]
-        tail = T[items[j] for j in eachindex(items) if j != idx]
-        for perm in _all_permutations(tail)
-            push!(perms, vcat(T[head], perm))
-        end
-    end
-    return perms
-end
+# _all_permutations moved to canonicalization.jl (shared with the network code).
 
 function _combinations(items::Vector{T}, k::Int) where {T}
     if k == 0
@@ -1505,54 +1465,8 @@ function enumerate_network_specs(
     )
 end
 
-function _merge_support_signature!(dest::Vector{Symbol}, src::Vector{Symbol}, copies::Integer=1)
-    copies <= 0 && return dest
-    for _ in 1:copies
-        append!(dest, src)
-    end
-    return dest
-end
-
-function _infer_binding_supports(rules::Vector{String})
-    reactants, products = parse_reactions(rules)
-    _, _, free_syms, prod_syms = parse_network_structure(rules)
-    supports = Dict{Symbol, Vector{Symbol}}(sym => [sym] for sym in free_syms)
-
-    progress = true
-    while progress
-        progress = false
-        for idx in eachindex(rules)
-            reactant_dict = reactants[idx]
-            product_dict = products[idx]
-            if length(product_dict) != 1 || any(coeff != 1 for coeff in values(product_dict))
-                continue
-            end
-            all(haskey(supports, sym) for sym in keys(reactant_dict)) || continue
-
-            product_sym = first(keys(product_dict))
-            merged = Symbol[]
-            for sym in sort!(collect(keys(reactant_dict)))
-                coeff = reactant_dict[sym]
-                _merge_support_signature!(merged, supports[sym], coeff)
-            end
-            sort!(merged)
-
-            if !haskey(supports, product_sym)
-                supports[product_sym] = merged
-                progress = true
-            elseif supports[product_sym] != merged
-                return nothing, "inconsistent_support_assignment:$(product_sym)"
-            end
-        end
-    end
-
-    missing = Symbol[sym for sym in prod_syms if !haskey(supports, sym)]
-    if !isempty(missing)
-        return nothing, "support_inference_failed:" * join(sort(string.(missing)), ",")
-    end
-
-    return supports, nothing
-end
+# _merge_support_signature! and _infer_binding_supports moved to
+# canonicalization.jl (shared with canonical_network_code).
 
 function _support_metrics(supports::Dict{Symbol, Vector{Symbol}}, free_syms::Vector{Symbol}, prod_syms::Vector{Symbol})
     support_sizes = [length(supports[sym]) for sym in prod_syms if haskey(supports, sym)]
@@ -1653,47 +1567,9 @@ function validate_rules_against_profile(rules::Vector{String}, profile::AtlasSea
     )
 end
 
-function _canonical_term_string(sym::Symbol, supports::Dict{Symbol, Vector{Symbol}}, remap::Dict{Symbol, Int})
-    term = sort(collect(remap[base] for base in supports[sym]))
-    return "[" * join(term, ",") * "]"
-end
-
-function canonical_network_code(rules::Vector{String})
-    reactants, products = parse_reactions(rules)
-    _, _, free_syms, _ = parse_network_structure(rules)
-    supports, support_issue = _infer_binding_supports(rules)
-    support_issue === nothing || error("Cannot canonicalize network: $support_issue")
-
-    candidates = String[]
-    for perm in _all_permutations(copy(free_syms))
-        remap = Dict(sym => idx for (idx, sym) in enumerate(perm))
-        serialized_rules = String[]
-        for idx in eachindex(rules)
-            left_terms = String[]
-            for (sym, coeff) in reactants[idx]
-                term = _canonical_term_string(sym, supports, remap)
-                for _ in 1:coeff
-                    push!(left_terms, term)
-                end
-            end
-            right_terms = String[]
-            for (sym, coeff) in products[idx]
-                term = _canonical_term_string(sym, supports, remap)
-                for _ in 1:coeff
-                    push!(right_terms, term)
-                end
-            end
-            sort!(left_terms)
-            sort!(right_terms)
-            push!(serialized_rules, join(left_terms, "+") * "<->" * join(right_terms, "+"))
-        end
-        sort!(serialized_rules)
-        push!(candidates, join(serialized_rules, "|"))
-    end
-
-    sort!(candidates)
-    return first(candidates)
-end
+# _canonical_term_string and canonical_network_code moved to canonicalization.jl
+# (now the single, shared graph-canonical network identity used by both the atlas
+# and the IR/CAD hash).
 
 function _config_signature(config::AtlasBehaviorConfig)
     return join([

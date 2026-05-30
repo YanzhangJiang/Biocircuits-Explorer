@@ -84,6 +84,7 @@ Solve for `logx` given `logqK` using a nonlinear solver.
 function _logqK2logx_nlsolve(Bnc::Bnc, logqK::AbstractArray{<:Real,1};
     startlogx::Union{Vector{<:Real},Nothing}=nothing,
     method ::Union{Symbol,Missing} = missing,
+    status::Union{Nothing,Base.RefValue{Symbol}}=nothing,
     kwargs...
 )::Vector{<:Real}
     n = Bnc.n
@@ -127,9 +128,11 @@ function _logqK2logx_nlsolve(Bnc::Bnc, logqK::AbstractArray{<:Real,1};
     prob = NonlinearProblem(keep_manifold!, startlogx, params; resid_prototype=zeros(n), jac = manifold_jac!, jac_prototype=J)
     
     sol = solve(prob, method; kwargs...)
-    if !SciMLBase.successful_retcode(sol.retcode)
+    converged = SciMLBase.successful_retcode(sol.retcode)
+    if !converged
         @warn("Nonlinear solver did not converge successfully. Retcode: $(sol.retcode)")
     end
+    status !== nothing && (status[] = converged ? :success : :failure)
     return sol.u
 end
 
@@ -170,6 +173,7 @@ function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,1};
     method::Union{Symbol,Missing} = :homotopy,
     reltol = 1e-8,
     abstol = 1e-10,
+    status::Union{Nothing,Base.RefValue{Symbol}}=nothing,
     kwargs...)::Vector{<:Real}
     # Map from qK space to x space using homotopy or nonlinear solving.
     #---Solve the homotopy ODE to find x from qK.---
@@ -200,13 +204,15 @@ function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,1};
         perm = assign_vertex_qK(Bnc,endlogqK; input_logspace=true,asymptotic_only=false)
         H,H0 = get_H_H0(Bnc,perm)
         x = H* endlogqK .+ H0
+        status !== nothing && (status[] = :success)   # closed-form, no iterative solve
     elseif ismissing(method) || method != :homotopy
-        x = _logqK2logx_nlsolve(Bnc, 
+        x = _logqK2logx_nlsolve(Bnc,
             endlogqK;
             startlogx=startlogx,
             method=method,
             reltol = reltol,
             abstol = abstol,
+            status=status,
             kwargs...
         )
     else
@@ -221,6 +227,12 @@ function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,1};
             abstol = abstol,
             kwargs...
         )
+        # Surface ODE-homotopy convergence so callers (e.g. the phenotyper) can
+        # discard non-converged points instead of folding a bogus x[end] into
+        # metrics as if it were exact. Previously sol.u[end] was returned blind.
+        if status !== nothing
+            status[] = SciMLBase.successful_retcode(sol.retcode) ? :success : :failure
+        end
         x = sol.u[end]
     end
 

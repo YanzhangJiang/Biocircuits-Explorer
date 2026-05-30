@@ -1,0 +1,47 @@
+{
+  "source_label": "atlas_full_smoke",
+  "network_parallelism": 1,
+  "skip_existing": false,
+  "persist_sqlite": true,
+  "sqlite_path": "/tmp/bne_atlas_full_smoke.sqlite",
+  "sqlite_persist_mode": "full",
+  "search_profile": {
+    "name": "binding_pairwise_orthant_v0",
+    "max_base_species": 2,
+    "max_reactions": 2,
+    "max_support": 2,
+    "slice_mode": "change",
+    "input_mode": "totals_only",
+    "allow_higher_order_templates": false,
+    "allow_homomeric_templates": false,
+    "max_homomer_order": 2
+  },
+  "behavior_config": {
+    "path_scope": "feasible",
+    "compute_volume": false,
+    "include_path_records": true,
+    "min_volume_mean": 0.0,
+    "deduplicate": true,
+    "keep_singular": true,
+    "keep_nonasymptotic": false
+  },
+  "change_expansion": {
+    "mode": "orthant",
+    "max_active_dims": 1,
+    "include_axis_slices": true,
+    "include_negative_directions": false,
+    "limit_per_network": 0
+  },
+  "enumeration": {
+    "mode": "pairwise_binding",
+    "base_species_counts": [2],
+    "min_reactions": 1,
+    "max_reactions": 2,
+    "min_template_order": 2,
+    "max_template_order": 2,
+    "require_homomeric_template": false,
+    "require_complex_growth_template": false,
+    "require_product_support_at_least": 0,
+    "limit": 6
+  }
+}

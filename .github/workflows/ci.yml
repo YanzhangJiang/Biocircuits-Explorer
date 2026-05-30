@@ -86,6 +86,16 @@ jobs:
           JULIA_NUM_THREADS: auto
         run: julia --project=webapp --color=yes webapp/test/runtests.jl
 
+      - name: Math-core golden-value regression suite (BindingAndCatalysis)
+        env:
+          JULIA_NUM_THREADS: auto
+        run: julia --project=webapp --color=yes Bnc_julia/test/runtests.jl
+
+      - name: Latent Atlas phenotyper tests
+        env:
+          JULIA_NUM_THREADS: auto
+        run: julia --project=webapp --color=yes webapp/test/test_phenotype_pipeline.jl
+
       - name: IR schemas in sync with Julia structs
         env:
           JULIA_NUM_THREADS: auto

@@ -1,0 +1,19 @@
+{
+    "natural_language": "Find a bandpass with a wide input-axis plateau.",
+    "task_id": "06_bandpass_wide_plateau",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "bandpass_with_plateau",
+        "plateau_width_log10_input_min": 0.5
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}

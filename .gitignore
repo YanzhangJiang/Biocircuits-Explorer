@@ -46,11 +46,14 @@ tests/
 **/test/
 **/tests/
 
-# …but the checked-in webapp test suite (Julia runtests.jl + JS *.test.mjs)
-# is real source, not ad-hoc/generated output. Re-include it so new tests
-# there are visible to git and CI rather than silently ignored.
+# …but the checked-in webapp test suite (Julia runtests.jl + JS *.test.mjs) and
+# the Bnc_julia math-core golden suite are real source, not ad-hoc/generated
+# output. Re-include them so new tests there are visible to git and CI rather than
+# silently ignored (CI runs both webapp/test and Bnc_julia/test).
 !webapp/test/
 !webapp/test/**
+!Bnc_julia/test/
+!Bnc_julia/test/**
 
 *.tex
 *.doc

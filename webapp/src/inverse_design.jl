@@ -87,25 +87,10 @@ const _DISALLOWED_RAW_IDENTIFIER_KEYS = Set([
     "path_idx", "path_record_id", "from_vertex_idx", "to_vertex_idx",
 ])
 
-function _stable_canonical_value(value)
-    if value isa AbstractDict
-        out = Dict{String, Any}()
-        for key in sort!(String.(collect(keys(value))))
-            out[key] = _stable_canonical_value(value[key])
-        end
-        return out
-    elseif value isa AbstractVector || value isa Tuple
-        return Any[_stable_canonical_value(item) for item in value]
-    elseif value isa Symbol
-        return String(value)
-    else
-        return value
-    end
-end
-
-function stable_hash(value)
-    return bytes2hex(SHA.sha1(JSON3.write(_stable_canonical_value(value))))
-end
+# _stable_canonical_value and stable_hash moved to canonicalization.jl. `stable_hash`
+# now hashes the genuinely-sorted canonical JSON (the old version sorted keys into a
+# Dict whose JSON3 iteration order was only incidentally stable). Hash *values* shift
+# accordingly, which is fine: these are in-run query/witness ids, not persisted keys.
 
 function _audit_versions(profile::AtlasSearchProfile, compiler_version::AbstractString, policies)
     return Dict(

@@ -12,9 +12,12 @@
 #
 # Design notes:
 #   • Flat-include into BiocircuitsExplorerBackend (matches atlas.jl /
-#     inverse_design.jl convention). Relies on the parent module having already
-#     defined `_raw_get`, `_raw_haskey`, `_materialize`, `_now_iso_timestamp`
-#     (atlas.jl) and `ReactionParser.parse_reactions`.
+#     inverse_design.jl convention). The canonicalization/hash primitives it relies
+#     on — `_raw_get`, `_raw_haskey`, `_materialize`, `_now_iso_timestamp`,
+#     `canonical_hash`, `_canonical_json`, `canonical_network_code` — now live in
+#     canonicalization.jl (included earlier), so this substrate no longer depends
+#     backwards on atlas.jl/inverse_design.jl. Also relies on
+#     `ReactionParser.parse_reactions`.
 #   • Pure data + validation. No simulation, no DB access.
 #   • Version field uses a "<family>/<semver>" pattern so future incompatible
 #     schemas can fork the family.
@@ -769,14 +772,42 @@ end
 
 # ─── Stable hash for provenance / cache keys ───────────────────────────────────
 
+# Graph-canonical topology code for a NetworkIR — the single structural identity
+# shared with the atlas (canonicalization.jl `canonical_network_code`). Invariant
+# to reaction reordering and base-species renaming. Returns `nothing` for networks
+# outside the binding grammar that canonicalizes (e.g. catalysis), in which case
+# `network_ir_hash` falls back to the positional content hash.
+function network_canonical_code(net::NetworkIR)
+    rules = String[rx.formula for rx in net.reactions]
+    isempty(rules) && return nothing
+    return canonical_network_code_or_nothing(rules)
+end
+
 function network_ir_hash(net::NetworkIR)
     # Content identity excludes provenance: `created_at`/`created_by`/`notes` are
-    # metadata about *when/who*, not *what* the network is. Excluding them makes
-    # the same network always hash the same way, which is what lets the hash be
-    # used as a stable cache key and parent-lineage reference.
+    # metadata about *when/who*, not *what* the network is. The structural identity
+    # is the graph-canonical `network_canonical_code` (shared with the atlas), so
+    # the atlas and the CAD layer agree on "the same network"; reactions are then
+    # sorted so reaction order does not change the hash. kd/observable *values* stay
+    # part of the content identity (they distinguish otherwise-identical topologies).
     d = network_ir_to_dict(net)
     delete!(d, "provenance")
-    return bytes2hex(SHA.sha256(JSON3.write(_stable_canonical_value(d))))
+    canon = network_canonical_code(net)
+    if canon !== nothing
+        d["_canonical_topology"] = canon
+        # With the canonical topology pinned, the *order* of the structural arrays
+        # is presentation, not identity, so sort them: two IRs that differ only in
+        # reaction/species/observable order then hash the same. (Different species
+        # *names* still differ — full relabel-invariance would require remapping
+        # symbols through the canonical permutation, deferred; use
+        # `network_canonical_code` directly for pure topology equality.)
+        for key in ("reactions", "species", "observables", "parameter_distributions")
+            if haskey(d, key) && d[key] isa AbstractVector
+                d[key] = sort(d[key]; by = _canonical_json)
+            end
+        end
+    end
+    return canonical_hash(d)
 end
 
 # ─── DesignSpec parsing ────────────────────────────────────────────────────────
@@ -874,7 +905,7 @@ function design_spec_hash(ds::DesignSpec)
     # As with network_ir_hash, provenance is metadata, not content identity.
     d = design_spec_to_dict(ds)
     delete!(d, "provenance")
-    return bytes2hex(SHA.sha256(JSON3.write(_stable_canonical_value(d))))
+    return canonical_hash(d)
 end
 
 # ─── DesignSpec → legacy request dict consumed by run_inverse_design_from_spec ─

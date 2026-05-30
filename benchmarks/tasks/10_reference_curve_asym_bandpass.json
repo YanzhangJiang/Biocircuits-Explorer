@@ -1,0 +1,20 @@
+{
+    "natural_language": "Match an asymmetric bandpass sketch (slow rise, sharp fall). [reference-curve mode; v0 treats as bandpass_with_plateau gates]",
+    "task_id": "10_reference_curve_asym_bandpass",
+    "oracle": "phenotyper_v0",
+    "success": {
+        "verified_pass": true,
+        "min_design_score": 0.8,
+        "min_robustness_score": 0.2
+    },
+    "behavior_spec": {
+        "max_reactions": 4,
+        "behavior_class": "bandpass_with_plateau",
+        "rise_slope_max": 0.8,
+        "fall_slope_min": 1.2
+    },
+    "budget": {
+        "max_model_candidates": 1000,
+        "max_exact_verifier_calls": 50
+    }
+}
