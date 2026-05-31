@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 # Phase-2: merge phenotype shards into one dataset + write the reproducibility
 # manifest (latent-atlas-manifest/v0.1.0).
-#   julia --project=webapp webapp/scripts/merge_phenotype_shards.jl --dir datasets/latent-atlas-v0 [--atlas atlas_full/atlas.sqlite]
+#   julia --project=webapp_hpc webapp/scripts/merge_phenotype_shards.jl --dir datasets/latent-atlas-v0 [--atlas atlas_full/atlas.sqlite]
 
 using JSON3, Dates, SHA
 
@@ -20,6 +20,19 @@ function parse_args(args)
 end
 
 git_commit() = try; strip(read(`git rev-parse HEAD`, String)); catch; ""; end
+
+function file_sha256(path::AbstractString; chunk_size::Int = 1024 * 1024)
+    ctx = SHA.SHA256_CTX()
+    buffer = Vector{UInt8}(undef, chunk_size)
+    open(path, "r") do io
+        while !eof(io)
+            n = readbytes!(io, buffer)
+            n == 0 && continue
+            SHA.update!(ctx, view(buffer, 1:n))
+        end
+    end
+    return bytes2hex(SHA.digest!(ctx))
+end
 
 function main(args)
     o = parse_args(args)
@@ -60,7 +73,7 @@ function main(args)
     # so the (documented) merge-without-atlas path still produces a VALID manifest.
     atlas_path = !isempty(o["atlas"]) ? o["atlas"] : meta_atlas
     atlas_hash = (!isempty(atlas_path) && isfile(atlas_path)) ?
-        bytes2hex(sha256(read(atlas_path))) : nothing
+        file_sha256(atlas_path) : nothing
     atlas_hash === nothing && @warn "manifest sqlite_snapshot_hash is null — dataset is NOT " *
         "reproducibility-pinned to an atlas snapshot; pass --atlas <built atlas.sqlite> " *
         "(or merge where the shard-recorded atlas path is reachable)." meta_atlas
