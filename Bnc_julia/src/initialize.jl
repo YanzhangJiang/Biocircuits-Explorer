@@ -23,15 +23,21 @@ import CDDLib
 using Graphs
 import Printf
 import JSON3
-import ImageFiltering: imfilter, Kernel
+
+const _BNC_HEADLESS = lowercase(get(ENV, "BNC_HEADLESS", "")) in ("1", "true", "yes", "on")
+if !_BNC_HEADLESS
+    import ImageFiltering: imfilter, Kernel
+end
 
 import Random
 import Base: summary,show
 
 #---------------------------plot dependency-----------------------------
-using Makie
-using GraphMakie
-using GraphMakie.NetworkLayout
+if !_BNC_HEADLESS
+    using Makie
+    using GraphMakie
+    using GraphMakie.NetworkLayout
+end
 using Latexify
 
 using ProgressMeter
@@ -607,7 +613,9 @@ include(joinpath(@__DIR__,"regimes.jl"))
 include(joinpath(@__DIR__,"regime_assign.jl"))
 include(joinpath(@__DIR__,"symbolics.jl"))
 include(joinpath(@__DIR__,"regime_graphs.jl"))
-include(joinpath(@__DIR__,"visualize.jl"))
+if !_BNC_HEADLESS
+    include(joinpath(@__DIR__,"visualize.jl"))
+end
 
 
 """

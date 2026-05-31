@@ -11,8 +11,8 @@
 # max_reactions). Runs: webapp/scripts/run_atlas_scan.jl <spec>.
 
 #SBATCH --job-name=bne-atlasbuild
-#SBATCH --partition=__PARTITION__        # TODO
-#SBATCH --account=__ACCOUNT__            # TODO or delete
+#SBATCH --partition=intel-sc3,amd-ep2
+#SBATCH -q normal
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
@@ -24,13 +24,51 @@ set -euo pipefail
 : "${ATLAS_PATH:?set ATLAS_PATH (output atlas sqlite, e.g. \$PWD/atlas_full/atlas.sqlite)}"
 SPEC="${SPEC:-atlas_specs/atlas_full_v0.spec.json}"
 JULIA_BIN="${JULIA_BIN:-julia}"
-# module load julia/1.12                 # TODO
+JULIA_PROJECT_DIR="${JULIA_PROJECT_DIR:-webapp_hpc}"
+if ! command -v module >/dev/null 2>&1; then
+  source /etc/profile.d/modules.sh 2>/dev/null || true
+fi
+module load julia/1.10.9
 
 export BNC_NO_PROGRESS=1
+export BNC_HEADLESS=1
 export JULIA_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
-export ATLAS_SQLITE_PATH="$ATLAS_PATH"   # run_atlas_scan overrides the spec's sqlite_path with this
 
 cd "$BNC_ROOT"
-mkdir -p "$(dirname "$ATLAS_PATH")"
-"$JULIA_BIN" --project=webapp -t "$JULIA_NUM_THREADS" \
-  webapp/scripts/run_atlas_scan.jl "$SPEC" "${ATLAS_PATH%.sqlite}.summary.json"
+case "$PWD" in
+  /storage/*|/storage2/*) ;;
+  *) echo "Refusing to run compute from non-storage BNC_ROOT=$PWD" >&2; exit 2 ;;
+esac
+
+FINAL_ATLAS_PATH="$ATLAS_PATH"
+FINAL_SUMMARY_PATH="${FINAL_ATLAS_PATH%.sqlite}.summary.json"
+RUN_ATLAS_PATH="$FINAL_ATLAS_PATH"
+RUN_SUMMARY_PATH="$FINAL_SUMMARY_PATH"
+CACHE_DIR=""
+cleanup() {
+  if [ -n "$CACHE_DIR" ] && [ -d "$CACHE_DIR" ]; then
+    rm -rf "$CACHE_DIR"
+  fi
+}
+trap cleanup EXIT
+
+mkdir -p "$(dirname "$FINAL_ATLAS_PATH")"
+if [ ! -s "$FINAL_ATLAS_PATH" ] && [ -d /data ]; then
+  CACHE_DIR="/data/${SLURM_JOB_ID:-manual}_bne_atlasbuild"
+  mkdir -p "$CACHE_DIR"
+  RUN_ATLAS_PATH="$CACHE_DIR/atlas.sqlite"
+  RUN_SUMMARY_PATH="$CACHE_DIR/atlas.summary.json"
+  echo "Building atlas on local compute-node SSD: $RUN_ATLAS_PATH"
+else
+  echo "Building atlas directly at: $RUN_ATLAS_PATH"
+fi
+
+export ATLAS_SQLITE_PATH="$RUN_ATLAS_PATH"   # run_atlas_scan overrides the spec's sqlite_path with this
+"$JULIA_BIN" --project="$JULIA_PROJECT_DIR" -t "$JULIA_NUM_THREADS" \
+  webapp/scripts/run_atlas_scan.jl "$SPEC" "$RUN_SUMMARY_PATH"
+
+if [ "$RUN_ATLAS_PATH" != "$FINAL_ATLAS_PATH" ]; then
+  echo "Copying atlas back to shared storage: $FINAL_ATLAS_PATH"
+  cp -p "$RUN_ATLAS_PATH" "$FINAL_ATLAS_PATH"
+  cp -p "$RUN_SUMMARY_PATH" "$FINAL_SUMMARY_PATH"
+fi

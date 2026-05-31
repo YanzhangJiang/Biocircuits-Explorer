@@ -7,7 +7,6 @@
 
 #SBATCH --job-name=bne-train
 #SBATCH --partition=__GPU_PARTITION__      # TODO: gpu partition
-#SBATCH --account=__ACCOUNT__              # TODO or delete
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
