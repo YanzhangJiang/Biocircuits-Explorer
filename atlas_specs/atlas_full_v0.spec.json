@@ -1,21 +1,23 @@
 {
-  "_comment": "Phase-2 source B: FULL non-path_only atlas over the MVP binding family. sqlite_persist_mode=full persists network_entries/behavior_slices/regime/transition/family/path records; compute_volume=true adds volume/robustness evidence. change_expansion.max_active_dims=1 keeps slices single-axis (one swept qK total) so the v0 phenotyper can sweep them. ATLAS_SQLITE_PATH env overrides sqlite_path at run time. Scope (base_species_counts/max_reactions) is the knob for build size/cost.",
-  "source_label": "atlas_full_v0",
-  "network_parallelism": 0,
+  "_comment": "Phase-2 source B: FULL non-path_only atlas over the intended MVP assembly family. d=base_species_count in {2,3}; mu=max complex support/order is 5, so homomeric/mixed complexes such as AAAAA, AAAAB, AABBB, and BBBBC are in scope. sqlite_persist_mode=full persists network_entries/behavior_slices/regime/transition/family/path records; compute_volume=true adds volume/robustness evidence. change_expansion.max_active_dims=1 keeps slices single-axis (one swept qK total) so the v0 phenotyper can sweep them. ATLAS_SQLITE_PATH env overrides sqlite_path at run time.",
+  "source_label": "atlas_full_mu5_v0",
+  "network_parallelism": 16,
+  "stream_flush_network_count": 8,
+  "chunk_size": 16,
   "skip_existing": true,
   "persist_sqlite": true,
   "sqlite_path": "atlas_full/atlas.sqlite",
   "sqlite_persist_mode": "full",
   "search_profile": {
-    "name": "binding_pairwise_orthant_v0",
+    "name": "binding_complex_growth_mu5_v0",
     "max_base_species": 3,
-    "max_reactions": 4,
-    "max_support": 2,
+    "max_reactions": 5,
+    "max_support": 5,
     "slice_mode": "change",
     "input_mode": "totals_only",
-    "allow_higher_order_templates": false,
-    "allow_homomeric_templates": false,
-    "max_homomer_order": 2
+    "allow_higher_order_templates": true,
+    "allow_homomeric_templates": true,
+    "max_homomer_order": 5
   },
   "behavior_config": {
     "path_scope": "feasible",
@@ -34,12 +36,12 @@
     "limit_per_network": 0
   },
   "enumeration": {
-    "mode": "pairwise_binding",
+    "mode": "complex_growth_binding",
     "base_species_counts": [2, 3],
     "min_reactions": 1,
-    "max_reactions": 4,
+    "max_reactions": 5,
     "min_template_order": 2,
-    "max_template_order": 2,
+    "max_template_order": 5,
     "require_homomeric_template": false,
     "require_complex_growth_template": false,
     "require_product_support_at_least": 0,
