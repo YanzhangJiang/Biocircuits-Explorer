@@ -27,7 +27,12 @@ bug fix).
 
 1. **Phase-2 (decision B) — the full-atlas pipeline** *(the real outstanding work)*:
    `atlas_build.sbatch` (heavy) → `phenotype_gen.sbatch` (array) → `merge.sbatch`.
-   Only ever validated locally on a 1-network atlas; no real corpus exists.
+   The intended atlas scope is now the assembly family with `d in {2,3}` and
+   `mu <= 5` (max complex support/order), using streaming SQLite writes. The
+   default atlas build requests a full CPU node (`64 CPU`, `450G`) on Westlake.
+   The recommended throughput path is the optional shard build/merge flow:
+   `8` shards at `%4` concurrency request about `128 CPU` and `720G` aggregate
+   while avoiding concurrent writes to one SQLite file.
 2. **Phase-3+ GPU training** (`train.sbatch`): placeholder (`exit 1`s), not started,
    and **contingent** — per the 2026-05-30 strategic reframe it is pursued only if a
    *measured* failure of exact search justifies the learned layer.
@@ -68,10 +73,11 @@ training data yet. Phases 3–6 are contingent; see doc Appendix D.
   `/storage/xiaofangzhouLab/jiangyanzhang/Biocircuits-Explorer`; atlas output goes to
   `$BNC_ROOT/atlas_full/atlas.sqlite`, phenotype shards and dataset to
   `$BNC_ROOT/datasets/latent-atlas-v0`, logs to `$BNC_ROOT/logs`.
-- **Compute-node SSD cache.** `atlas_build.sbatch` builds on `/data` and copies the
-  final SQLite/summary back to `/storage` when possible; `phenotype_gen.sbatch` copies
-  the atlas to `/data` per array task and copies only shard outputs back. This avoids
-  high random I/O on shared storage while keeping exported results persistent.
+- **Compute-node SSD cache.** `atlas_build.sbatch` and the optional atlas shard
+  scripts build on `/data` and copy final SQLite/summary files back to `/storage`
+  when possible; `phenotype_gen.sbatch` copies the atlas to `/data` per array task
+  and copies only shard outputs back. This avoids high random I/O on shared storage
+  while keeping exported results persistent.
 
 ## 1. Cluster configuration
 
@@ -116,13 +122,14 @@ exports are `path_only` and carry no reconstructable networks.)
 cd /storage/xiaofangzhouLab/jiangyanzhang/Biocircuits-Explorer
 export BNC_ROOT=$PWD
 A=$PWD/atlas_full/atlas.sqlite
-# 1) build a FULL (non-path_only) atlas over the MVP scope (heavy, one job)
+# 1) build a FULL (non-path_only) atlas over the MVP assembly scope.
+#    Default: one full CPU node, streaming SQLite writes.
 mkdir -p logs atlas_full datasets/latent-atlas-v0
 BID=$(sbatch --parsable --export=ALL,BNC_ROOT=$PWD,ATLAS_PATH=$A slurm/atlas_build.sbatch)
 
 # 2) phenotype its behavior_slices (array), gated on the build
-N=32
-AID=$(sbatch --parsable --dependency=afterok:$BID --array=0-$((N-1))%16 \
+N=64
+AID=$(sbatch --parsable --dependency=afterok:$BID --array=0-$((N-1))%8 \
         --export=ALL,BNC_ROOT=$PWD,ATLAS_PATH=$A,NUM_SHARDS=$N slurm/phenotype_gen.sbatch)
 
 # 3) merge shards + leakage-aware splits
@@ -131,8 +138,26 @@ sbatch --dependency=afterok:$AID \
 ```
 
 Scope/size of the atlas is the knob in `atlas_specs/atlas_full_v0.spec.json`
-(`base_species_counts`, `max_reactions`). `sqlite_persist_mode=full` +
-`compute_volume=true` are what make it evidence-rich (vs the old `path_only`).
+(`base_species_counts`, `max_reactions`, and `max_support`/`max_template_order`
+for the max complex order `mu`). `sqlite_persist_mode=full` + `compute_volume=true`
+are what make it evidence-rich (vs the old `path_only`).
+
+Optional multi-node atlas build:
+
+```bash
+SHARDS=8
+AID=$(sbatch --parsable --array=0-$((SHARDS-1))%4 \
+        --export=ALL,BNC_ROOT=$PWD,SHARD_COUNT=$SHARDS slurm/atlas_build_shard.sbatch)
+sbatch --dependency=afterok:$AID \
+       --export=ALL,BNC_ROOT=$PWD,SHARD_COUNT=$SHARDS,ATLAS_PATH=$A slurm/atlas_merge_shards.sbatch
+```
+
+Each shard writes a separate SQLite under `atlas_full/shards_n${SHARDS}/`.
+`atlas_merge_shards.sbatch` produces the canonical `$A`. This is the correct way
+to use multiple nodes; do not run multiple writers against one atlas SQLite.
+Each shard currently requests `32 CPU`, `180G`, and `48h`; `%4` concurrency gives
+roughly workstation-class thread count with more aggregate memory, without the
+long queue delay observed for a single `64 CPU`/`450G` full-node job.
 
 **Much later — Phase 3+ GPU training:** `slurm/train.sbatch` is a placeholder and
 intentionally `exit 1`s until a dataset + training entry point exist.
@@ -142,7 +167,9 @@ intentionally `exit 1`s until a dataset + training entry point exist.
 | sbatch | Julia/py script it runs | status |
 |---|---|---|
 | `baseline_bench.sbatch` | `webapp/scripts/run_benchmark.jl` | ✅ ready (seed source) |
-| `atlas_build.sbatch` | `webapp/scripts/run_atlas_scan.jl` (full spec) | ✅ ready |
+| `atlas_build.sbatch` | `webapp/scripts/run_atlas_scan_streaming.jl` (full spec) | ✅ ready |
+| `atlas_build_shard.sbatch` | `webapp/scripts/run_atlas_scan_chunked.jl` (independent shard SQLite) | ✅ optional scale-out |
+| `atlas_merge_shards.sbatch` | `webapp/scripts/merge_atlas_sqlite_shards.jl` | ✅ optional scale-out |
 | `phenotype_gen.sbatch` | `webapp/scripts/gen_phenotype_shards.jl` | ✅ ready |
 | `merge.sbatch` | `merge_phenotype_shards.jl` + `gen_splits.jl` | ✅ ready |
 | `train.sbatch` | `ml/training/train.py` | ⏳ placeholder (Phase 3+) |

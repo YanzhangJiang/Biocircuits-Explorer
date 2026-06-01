@@ -4,9 +4,9 @@
 # scalar cache. Run AFTER the baseline, when building the learned-layer dataset.
 #
 # Submit (keep --array end = NUM_SHARDS-1):
-#   N=32
+#   N=64
 #   mkdir -p logs datasets/latent-atlas-v0
-#   sbatch --array=0-$((N-1))%16 \
+#   sbatch --array=0-$((N-1))%8 \
 #          --export=ALL,BNC_ROOT=$PWD,ATLAS_PATH=/path/to/atlas.sqlite,NUM_SHARDS=$N \
 #          slurm/phenotype_gen.sbatch
 #
@@ -15,17 +15,17 @@
 #SBATCH --job-name=bne-phenogen
 #SBATCH --partition=intel-sc3,amd-ep2
 #SBATCH -q normal
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
-#SBATCH --time=08:00:00
-#SBATCH --array=0-31%16                    # end must equal NUM_SHARDS-1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=12:00:00
+#SBATCH --array=0-63%8                     # end must equal NUM_SHARDS-1
 #SBATCH --output=logs/phenogen_%A_%a.out
 #SBATCH --error=logs/phenogen_%A_%a.err
 
 set -euo pipefail
 : "${BNC_ROOT:?set BNC_ROOT}"
 : "${ATLAS_PATH:?set ATLAS_PATH}"
-NUM_SHARDS="${NUM_SHARDS:-${SLURM_ARRAY_TASK_COUNT:-32}}"
+NUM_SHARDS="${NUM_SHARDS:-${SLURM_ARRAY_TASK_COUNT:-64}}"
 JULIA_BIN="${JULIA_BIN:-julia}"
 JULIA_PROJECT_DIR="${JULIA_PROJECT_DIR:-webapp_hpc}"
 if ! command -v module >/dev/null 2>&1; then
@@ -58,7 +58,7 @@ mkdir -p "$OUT_STORAGE"
 if [ -d /data ]; then
   CACHE_DIR="/data/${SLURM_JOB_ID:-manual}_${SLURM_ARRAY_TASK_ID:-0}_bne_phenogen"
   mkdir -p "$CACHE_DIR/out"
-  sleep $(( (${SLURM_ARRAY_TASK_ID:-0} % 16) * 5 ))
+  sleep $(( (${SLURM_ARRAY_TASK_ID:-0} % 8) * 10 ))
   echo "Copying atlas to compute-node SSD cache: $CACHE_DIR/atlas.sqlite"
   if cp -p "$ATLAS_PATH" "$CACHE_DIR/atlas.sqlite"; then
     WORK_ATLAS="$CACHE_DIR/atlas.sqlite"

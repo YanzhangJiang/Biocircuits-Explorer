@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Phase-2 step 1 (source B): build a FULL non-path_only atlas (ROP evidence +
-# motif/exact labels + volumes) over the MVP binding family. Heavy, multi-threaded,
-# one job. Output: a single atlas sqlite at $ATLAS_PATH.
+# motif/exact labels + volumes) over the MVP assembly family. Heavy,
+# multi-threaded, one job. Output: a single atlas sqlite at $ATLAS_PATH.
 #
 #   mkdir -p logs atlas_full
 #   sbatch --export=ALL,BNC_ROOT=$PWD,ATLAS_PATH=$PWD/atlas_full/atlas.sqlite \
 #          slurm/atlas_build.sbatch
 #
 # Scope/cost knob: edit atlas_specs/atlas_full_v0.spec.json (base_species_counts,
-# max_reactions). Runs: webapp/scripts/run_atlas_scan.jl <spec>.
+# max_reactions, max_support/max_template_order). Runs:
+# webapp/scripts/run_atlas_scan_streaming.jl <spec>.
 
 #SBATCH --job-name=bne-atlasbuild
 #SBATCH --partition=intel-sc3,amd-ep2
 #SBATCH -q normal
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=450G
+#SBATCH --time=72:00:00
 #SBATCH --output=logs/atlasbuild_%j.out
 #SBATCH --error=logs/atlasbuild_%j.err
 
@@ -33,6 +34,7 @@ module load julia/1.10.9
 export BNC_NO_PROGRESS=1
 export BNC_HEADLESS=1
 export JULIA_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export JULIA_NUM_PRECOMPILE_TASKS="${JULIA_NUM_PRECOMPILE_TASKS:-8}"
 
 cd "$BNC_ROOT"
 case "$PWD" in
@@ -63,9 +65,9 @@ else
   echo "Building atlas directly at: $RUN_ATLAS_PATH"
 fi
 
-export ATLAS_SQLITE_PATH="$RUN_ATLAS_PATH"   # run_atlas_scan overrides the spec's sqlite_path with this
+export ATLAS_SQLITE_PATH="$RUN_ATLAS_PATH"   # run_atlas_scan_streaming overrides the spec's sqlite_path with this
 "$JULIA_BIN" --project="$JULIA_PROJECT_DIR" -t "$JULIA_NUM_THREADS" \
-  webapp/scripts/run_atlas_scan.jl "$SPEC" "$RUN_SUMMARY_PATH"
+  webapp/scripts/run_atlas_scan_streaming.jl "$SPEC" "$RUN_SUMMARY_PATH"
 
 if [ "$RUN_ATLAS_PATH" != "$FINAL_ATLAS_PATH" ]; then
   echo "Copying atlas back to shared storage: $FINAL_ATLAS_PATH"
