@@ -91,7 +91,25 @@ def _urlopen_json_retry(req, timeout, tries=4):
     for i in range(tries):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.load(r)
+                raw = r.read()
+                enc = (r.headers.get("Content-Encoding") or "").lower()
+                if "gzip" in enc or raw[:2] == b"\x1f\x8b":          # some providers gzip regardless
+                    import gzip; raw = gzip.decompress(raw)
+                elif "deflate" in enc:
+                    import zlib; raw = zlib.decompress(raw)
+                ctype = r.headers.get("Content-Type") or ""
+                text = raw.decode("utf-8", "replace").strip()
+                if "text/event-stream" in ctype or text.startswith("data:"):
+                    raise RuntimeError("endpoint returned a streaming (SSE) response but this client expects a "
+                                       "single JSON object — use DeepSeek's OpenAI-compatible endpoint "
+                                       "(deepseek-chat), which returns JSON, or turn streaming off "
+                                       f"(content-type {ctype!r})")
+                if not text:
+                    raise RuntimeError(f"empty response body (content-type {ctype!r}) — check the Base URL / model")
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"non-JSON response (content-type {ctype!r}): {text[:240]}")
         except urllib.error.HTTPError as e:
             last = e
             if e.code in (408, 429, 500, 502, 503, 504) and i < tries - 1:
@@ -111,7 +129,8 @@ def openai_chat_tools(messages, tools, *, api_key, base_url, model, timeout=120,
     if effort:                                  # minimal|low|medium|high — reasoning models honour it
         payload["reasoning_effort"] = effort
     req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions", data=json.dumps(payload).encode(),
-                                 headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
+                                 headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json",
+                                          "Accept-Encoding": "identity", "User-Agent": "Mozilla/5.0 (compatible; BiocircuitsExplorer/1.0)"})
     return _urlopen_json_retry(req, timeout)["choices"][0]["message"]
 
 # effort → Anthropic extended-thinking token budget (Anthropic has no reasoning_effort enum; this is a
@@ -125,7 +144,8 @@ def anthropic_chat_tools(system, messages, tools, *, api_key, base_url, model, t
         payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         payload["max_tokens"] = budget + 4096
     req = urllib.request.Request((base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages", data=json.dumps(payload).encode(),
-                                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})
+                                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json",
+                                          "Accept-Encoding": "identity", "User-Agent": "Mozilla/5.0 (compatible; BiocircuitsExplorer/1.0)"})
     return _urlopen_json_retry(req, timeout)
 
 def _extract_json(text):
