@@ -1515,6 +1515,25 @@ textarea {
   padding-right: 4px;
 }
 
+/* Per-family "Show all N paths in E…" toggle: collapses very long feasible-path lists
+   (complex networks can yield hundreds) down to a handful per exact family. */
+.siso-path-showall-wrap {
+  margin: 0 0 8px;
+}
+
+.siso-showall-btn {
+  width: 100%;
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-dim, #888);
+  font-size: 11px;
+}
+
+.siso-showall-btn:hover {
+  color: var(--text-color, inherit);
+  background: var(--panel-hover-bg);
+}
+
 .siso-path-item {
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);

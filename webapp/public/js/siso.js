@@ -229,6 +229,18 @@ export function renderPathChips(nodeId, changeQK, pathIndices, accent) {
   `).join('');
 }
 
+// Reveal the collapsed feasible-path cards for one exact family (the "Show all N paths in E…"
+// toggle). Items past the per-family cap are rendered with display:none + data-of="<family>";
+// this drops the inline display and removes the toggle button it was clicked on.
+export function expandSISOPaths(el) {
+  const fam = el && el.dataset ? el.dataset.of : null;
+  if (fam == null) return;
+  const scope = el.closest('.siso-feasible-list') || document;
+  scope.querySelectorAll(`.siso-path-item[data-of="${fam}"]`).forEach((item) => { item.style.display = ''; });
+  const wrap = el.closest('.siso-path-showall-wrap');
+  if (wrap) wrap.style.display = 'none'; else el.style.display = 'none';
+}
+
 export function renderFamilyTable(nodeId, changeQK, families) {
   if (!families.length) return '';
 
@@ -293,7 +305,28 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
       <div class="path-list siso-feasible-list scroll-panel">
   `;
 
+  // Complex networks can yield hundreds of feasible paths → an endless panel. Show at most
+  // FAM_CAP per exact family (E); the rest are rendered collapsed behind a per-family
+  // "Show all N paths in E…" toggle (paths are already sorted by family, so each family is
+  // a contiguous run). The selected path always stays visible regardless of the cap.
+  const FAM_CAP = 6;
+  const famKey = (p) => exactFamilyByPath.get(p.path_idx) ?? 'none';
+  const famTotals = {};
+  feasiblePaths.forEach((p) => { const k = famKey(p); famTotals[k] = (famTotals[k] || 0) + 1; });
+  const famSeen = {};
   feasiblePaths.forEach(path => {
+    const fam = famKey(path);
+    const n = famSeen[fam] || 0; famSeen[fam] = n + 1;
+    const overflow = n >= FAM_CAP && selectedPathIdx !== path.path_idx;
+    if (n === FAM_CAP && famTotals[fam] > FAM_CAP) {
+      html += `
+      <div class="siso-path-showall-wrap">
+        <button type="button" class="btn btn-small siso-showall-btn" data-action="toggleSISOPaths"
+          data-node="${nodeId}" data-qk="${changeQK}" data-of="${fam}">
+          Show all ${famTotals[fam]} paths in ${fam === 'none' ? 'this group' : 'E' + fam} ▾
+        </button>
+      </div>`;
+    }
     const permStr = path.perms.map(pr => `[${pr.join(',')}]`).join(' → ');
     const exactFamilyIdx = exactFamilyByPath.get(path.path_idx);
     const exactAccent = getFamilyColor(exactFamilyIdx || path.path_idx, 0);
@@ -308,7 +341,8 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
         data-path-idx="${path.path_idx}"
         data-qk="${changeQK}"
         data-node="${nodeId}"
-        style="--exact-accent:${exactAccent}; --exact-soft:${hexToRgba(exactAccent, 0.14)};"
+        ${overflow ? `data-of="${fam}"` : ''}
+        style="--exact-accent:${exactAccent}; --exact-soft:${hexToRgba(exactAccent, 0.14)};${overflow ? 'display:none;' : ''}"
         data-action="selectSISOPath"
       >
         <div class="siso-path-head">

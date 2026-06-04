@@ -1257,6 +1257,121 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
       <p>
         如果你希望跨很多会话复用同一个库，或长期合并增量构建，SQLite 路线是更合适的选择。
       </p>
+
+      <h3><span class="sec-num">8.5</span>设计 Agent &mdash; 描述行为，得到一个经过验证的网络</h3>
+      <p>
+        <strong>设计 Agent（Design Agent）</strong>是逆向设计的对话式入口。你用自然语言
+        &mdash; 任何语言都可以 &mdash; 描述你想要的剂量&ndash;响应行为，由一个 LLM
+        <em>把活的引擎放进循环中</em>，去找出真正能产生该行为的网络。
+      </p>
+      <p>
+        这里的分工很关键，因为正是它让结果可信：
+      </p>
+      <ul>
+        <li>
+          <strong>LLM 负责规划、编译与批判。</strong>它读懂你的请求，把它映射到一个标准的
+          行为标签，提出带有结合常数的候选网络，决定下一步该调用哪个引擎工具，并判断
+          结果是否符合你的要求。
+        </li>
+        <li>
+          <strong>Julia 引擎是唯一的事实基准。</strong>对每个候选网络，它都会构建 ODE
+          模型、在输入扫描区间上求解、并对得到的曲线形状进行分类。没有被真正仿真过的
+          东西，绝不会呈现给你。
+        </li>
+        <li>
+          <strong>Atlas 只是种子与先验，绝非现成答案。</strong>Agent 可能从 atlas 中
+          检索一个结构相似的网络作为起点，然后针对引擎对它进行精炼与重新验证 &mdash;
+          它不会查出一个存好的结果直接丢给你。
+        </li>
+      </ul>
+      <p>
+        由此带来一条硬性的诚实保证：<strong>Agent 绝不编造。</strong>如果计算引擎离线，
+        它会直接告诉你，而不是凭空画一条曲线；它也不会把一句问候或一条离题消息硬变成
+        一个假的设计。请留意标题栏的状态标识 &mdash; 当引擎可达时它显示
+        <em>Agent ready</em>。
+      </p>
+
+      <h3><span class="sec-num">8.6</span>打开它并填入 LLM key</h3>
+      <p>
+        打开<strong>设计 Agent</strong> 视图（网页版的 agent 标签，或 macOS 应用中的
+        agent 页面）。要使用自由的自然语言，你需要一个 LLM key：
+      </p>
+      <ol>
+        <li>点击右下角的 <code>&#9881; LLM key</code> 按钮。</li>
+        <li>
+          选择服务商 &mdash; <em>OpenAI 兼容</em>（key + base URL）或
+          <em>Anthropic</em>（x-api-key）&mdash; 并粘贴你的 key。可选的 base URL
+          让你指向代理或兼容端点；可选的 model 字段可覆盖默认模型。
+        </li>
+        <li>
+          选择<strong>推理强度（reasoning effort）</strong>。OpenAI 提供
+          <code>low</code>&hellip;<code>xhigh</code>；Anthropic 映射为扩展思考预算
+          <code>low</code>&hellip;<code>max</code>。强度越高，多步规划越审慎 &mdash;
+          对困难的二维或超敏感目标更好，但代价是更慢。
+        </li>
+        <li>点击 <strong>Save</strong>。点击面板外任意位置，或按 <kbd>Esc</kbd>，即可关闭。</li>
+      </ol>
+      <p>
+        key 只保存在本浏览器内（localStorage），仅随每次设计请求发送，再由后端转发给你
+        配置的 LLM。没有 key 时，内置的关键词编译器仍能处理简单请求；填入 key 才能解锁
+        任意措辞，包括中文。
+      </p>
+
+      <h3><span class="sec-num">8.7</span>实例</h3>
+      <p>
+        以下是 Agent 能处理的真实请求。你可以随意措辞 &mdash; LLM 会把你的话映射到标准
+        标签，再由引擎验证结果。
+      </p>
+      <dl>
+        <dt>&ldquo;一个目标浓度随输入增大先下降、后上升的网络&rdquo;</dt>
+        <dd>
+          一个双相谷（biphasic valley）。Agent 选定一个结构作种子，在引擎自己选取的
+          对数输入窗口上仿真剂量&ndash;响应，并在结合常数先验上确认该谷形状。
+        </dd>
+        <dt>&ldquo;单调抑制&rdquo; / &ldquo;输入升、输出降&rdquo;</dt>
+        <dd>一条单调递减的剂量&ndash;响应，由一维扫描验证。</dd>
+        <dt>&ldquo;带通 &mdash; 在中间输入处出现峰值&rdquo;</dt>
+        <dd>一个内部极大值；Agent 定位峰位并报告其所在位置。</dd>
+        <dt>&ldquo;对两个输入做一个 AND 逻辑门&rdquo;</dt>
+        <dd>
+          双输入请求会触发二维扫描。Agent 检查输入方块的四个角落是否布尔化为 AND
+          真值表（<code>[0,0,0,1]</code>）。
+        </dd>
+        <dt>&ldquo;一张二维热图，只在正中间有一个亮点 &mdash; 越尖锐越好&rdquo;</dt>
+        <dd>
+          一个二维超敏感目标。Agent 运行二维扫描，找到内部峰，并报告其尖锐度。这类目标
+          通常受益于更高的推理强度。
+        </dd>
+      </dl>
+
+      <h3><span class="sec-num">8.8</span>如何读懂返回结果</h3>
+      <dl>
+        <dt>回复</dt>
+        <dd>首先是一段简短的自然语言回答，说明尝试了什么。</dd>
+        <dt>候选卡片</dt>
+        <dd>
+          每个被提出的网络都以可点击的卡片呈现：标出结合常数（<code>Kd</code>）的反应、
+          设计规则，以及一张引擎计算出的剂量&ndash;响应 <em>Top candidate</em> 图（二维时
+          为热图），带有真实的坐标轴、单位与引擎所选的窗口。只展示少数几个，并按形状去重。
+          点击卡片即可选中。
+        </dd>
+        <dt>证据层级（evidence tier）</dt>
+        <dd>
+          每个候选都标注了它被验证的强度 &mdash; <strong>Tier&nbsp;0</strong>（仅先验）、
+          <strong>Tier&nbsp;1</strong>（单一 Kd 的剂量扫描）、或 <strong>Tier&nbsp;3b</strong>
+          （在结合常数先验上采样）。层级越高，验证越强。
+        </dd>
+        <dt>导出到工作区（Export to Workspace）</dt>
+        <dd>
+          把选中的候选变成画布上一个真正的反应网络节点，从而能用完整的 ROP 工具链来分析它
+          （&sect;<a href="#sec-4">4</a>、&sect;<a href="#sec-6">6</a>）。
+        </dd>
+        <dt>随项目保存</dt>
+        <dd>
+          对话按项目分别保存，且每一轮都会记录为可重放的 trace &mdash; 工具调用加引擎结果
+          &mdash; 因此任何结果之后都能针对活的引擎重新验证。
+        </dd>
+      </dl>
     </section>
 
     <!-- ============ §9 ============ -->
