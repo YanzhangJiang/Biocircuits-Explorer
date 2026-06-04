@@ -44,6 +44,8 @@ import {
 } from './scan.js';
 import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
 import { importSbml, exportSbml, loadSbmlFile } from './sbml-io.js';
+import { initAgentView, setNodeView } from './agent-view.js';
+import './llm-settings.js';   // temporary self-mounting LLM-key panel (OpenAI/Anthropic)
 
 // ===== Event Delegation Dispatcher =====
 const ACTION_HANDLERS = {
@@ -126,6 +128,24 @@ window.showToast = showToast;
 window.runConnectedWorkspace = runConnectedWorkspace;
 window.saveState = saveState;
 window.loadState = loadState;
+window.setNodeView = setNodeView;
+
+// Design Agent → Workspace: drop an engine-verified candidate (its reactions + per-reaction Kd)
+// into a fresh Reaction-Network node and switch to the Workspace, ready to wire up a viewer.
+function exportNetworkToWorkspace(reactions, kd) {
+  const rxns = Array.isArray(reactions) ? reactions.filter(Boolean) : [];
+  if (!rxns.length) { window.showToast?.('No reactions to export'); return null; }
+  setNodeView('workspace');
+  const id = createNode('reaction-network', 90, 100);
+  if (!id) { window.showToast?.('Could not create the Workspace node'); return null; }
+  const list = document.getElementById(`${id}-reactions-list`);
+  if (list) list.innerHTML = '';          // drop the default seed rows from onInit
+  rxns.forEach((r, i) => addReactionRow(id, String(r), (Array.isArray(kd) && kd[i] != null) ? kd[i] : 1));
+  triggerDownstreamNodes?.(id);
+  window.showToast?.(`Added ${rxns.length}-reaction network to the Workspace`);
+  return id;
+}
+window.exportNetworkToWorkspace = exportNetworkToWorkspace;
 
 async function boot() {
   initWorkspaceShell();
@@ -154,6 +174,7 @@ async function boot() {
   initSocketEvents();
   initDebugConsoleEvents();
   initNodeMenuEvents();
+  initAgentView();   // Design Agent surface + Workspace ⇄ Design Agent switch
   installWorkspaceShellObservers();
   (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.markReady?.();
 }

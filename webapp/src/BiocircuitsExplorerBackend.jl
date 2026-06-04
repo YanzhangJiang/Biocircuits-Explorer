@@ -618,6 +618,11 @@ include(joinpath(@__DIR__, "version.jl"))
 include(joinpath(@__DIR__, "result_artifact.jl"))
 include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
+# The Latent-Atlas SISO phenotyper — the SAME labeller that built the dose atlas. Exposed so the
+# design agent verifies a candidate's dose-response shape CONSISTENTLY with the atlas labels
+# (shape_support over the Kd prior Π), not via the different ROP-family view of behavior_families.
+include(joinpath(@__DIR__, "latent_atlas", "phenotype_pipeline.jl"))
+using .PhenotypePipeline: phenotype_profile, PhenotyperPolicy, ParameterPrior, LogUniform, PointMass
 
 export verify_cognito_jwt
 
@@ -1172,6 +1177,39 @@ function handle_behavior_families(req)
     )
 
     return json_response(behavior_result_to_dict(model, siso, result))
+end
+
+# Classify a network's 1-input dose-response with the Latent-Atlas SISO phenotyper — the SAME
+# labeller (shape_support over the Kd prior Π) that built the dose dataset, so the agent's
+# verification matches the atlas. Distinct from /api/behavior_families (ROP path families).
+function handle_phenotype_classify(req)
+    body = read_json(req)
+    bundle, err = _resolve_bundle_or_response(body)
+    err === nothing || return err
+    model = bundle["model"]
+    haskey(body, :input_symbol) || return error_response("input_symbol is required"; status=400)
+    haskey(body, :output_expr) || return error_response("output_expr is required"; status=400)
+    input_sym = Symbol(String(body[:input_symbol]))
+    output_expr = String(body[:output_expr])
+    K = clamp(Int(get(body, :K, 8)), 1, 64)
+    # Canonical prior Π: Kd ~ LogUniform(-3,3), totals pinned — matches the dose dataset default.
+    prior = ParameterPrior(; default_kd = LogUniform(-3.0, 3.0), default_total = PointMass(0.0))
+    policy = PhenotyperPolicy(; K = K)
+    prof = try
+        phenotype_profile(model; input_sym = input_sym, output_expr = output_expr, prior = prior, policy = policy)
+    catch e
+        return error_response("phenotype_classify failed: $(sprint(showerror, e))"; status=400)
+    end
+    dom = prof.dominant_shape
+    support = get(prof.shape_fractions, dom == :none ? :flat : dom, 0.0)
+    return json_response(Dict(
+        "dominant_shape" => String(dom),
+        "shape_support" => support,
+        "shape_fractions" => Dict(String(k) => v for (k, v) in prof.shape_fractions),
+        "n_draws" => prof.n_draws, "n_evaluated" => prof.n_evaluated, "n_failed" => prof.n_failed,
+        "input_symbol" => String(input_sym), "output" => prof.output,
+        "phenotyper_version" => prof.phenotyper_version,
+    ))
 end
 
 function handle_rop_cloud(req)

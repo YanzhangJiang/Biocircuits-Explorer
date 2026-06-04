@@ -1,0 +1,59 @@
+{
+  "_comment": "Phase-2 source B, d=4 EXTENSION of atlas_full_v0 (the d in {2,3} build). d=base_species_count=4 ONLY (the d<=3 atlas at atlas_full/atlas.sqlite is unchanged; this builds the 2467 new d4 networks of the d<=4 mu5 family — est_d4 enumerated d in {2,3,4} mu5 = 5240 = d2(596)+d3(2177)+d4(2467)). mu=max complex support/order stays 5 (homomeric/mixed complexes AAAAA..BBBBC in scope). FULL PARITY with the d<=3 run: sqlite_persist_mode=full, compute_volume=true, change_expansion.max_active_dims=1 (single-axis slices the v0 phenotyper can sweep), network_parallelism=128. Writes to atlas_d4/atlas.sqlite on /raid (60+ TB mechanical disk) to avoid the SSD quota; ATLAS_SQLITE_PATH env overrides sqlite_path at run time.",
+  "source_label": "atlas_full_mu5_d4",
+  "network_parallelism": 128,
+  "stream_flush_network_count": 8,
+  "chunk_size": 128,
+  "skip_existing": true,
+  "persist_sqlite": true,
+  "sqlite_path": "atlas_d4/atlas.sqlite",
+  "sqlite_persist_mode": "full",
+  "search_profile": {
+    "name": "binding_complex_growth_mu5_d4",
+    "max_base_species": 4,
+    "max_reactions": 5,
+    "max_support": 5,
+    "slice_mode": "change",
+    "input_mode": "totals_only",
+    "allow_higher_order_templates": true,
+    "allow_homomeric_templates": true,
+    "max_homomer_order": 5
+  },
+  "behavior_config": {
+    "path_scope": "feasible",
+    "compute_volume": true,
+    "include_path_records": true,
+    "min_volume_mean": 0.0,
+    "deduplicate": true,
+    "keep_singular": true,
+    "keep_nonasymptotic": false
+  },
+  "change_expansion": {
+    "mode": "orthant",
+    "max_active_dims": 1,
+    "include_axis_slices": true,
+    "include_negative_directions": false,
+    "limit_per_network": 0
+  },
+  "enumeration": {
+    "mode": "complex_growth_binding",
+    "base_species_counts": [
+      4
+    ],
+    "min_reactions": 1,
+    "max_reactions": 5,
+    "min_template_order": 2,
+    "max_template_order": 5,
+    "require_homomeric_template": false,
+    "require_complex_growth_template": false,
+    "require_product_support_at_least": 0,
+    "limit": 0
+  },
+  "source_metadata": {
+    "workstation_target": "9995WX/bmac",
+    "julia_threads": 128,
+    "network_parallelism": 128,
+    "blas_threads": 1,
+    "prepared_for": "workstation_mu5_d4_extension"
+  }
+}

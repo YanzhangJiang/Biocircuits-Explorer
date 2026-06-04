@@ -1,0 +1,15 @@
+{
+  "schema_version": "bne-behavior/v0.1.0",
+  "goal": {
+    "behavior_class": "bandpass_with_plateau",
+    "input_axis": "log10_total_input",
+    "output": { "kind": "species", "symbol": "A" }
+  },
+  "shape_preferences": {
+    "rise_slope":  { "preference": "gentle", "max": 0.4, "weight": 1.0 },
+    "fall_slope":  { "preference": "sharp",  "min": 1.5, "weight": 1.0 },
+    "plateau_width_log10_input": { "preference": "wide", "min": 0.3 }
+  },
+  "network_constraints": { "max_reactions": 4 },
+  "verification_policy": { "require_rop_evidence": true, "min_robustness_score": 0.5 }
+}

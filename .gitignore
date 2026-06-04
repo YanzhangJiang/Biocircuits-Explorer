@@ -35,6 +35,17 @@ webapp/job_store/
 *.duckdb
 *.duckdb.wal
 
+# Derived label corpora (latent-atlas-*-v0): large (datasets/ ~382 MB: dataset.jsonl,
+# splits/*.json ~26 MB each, *_labels.jsonl, shards) and REGENERABLE from the atlas — keep
+# local, like the atlas DBs above. Otherwise `git add .` would stage hundreds of MB.
+datasets/
+# Raw SQL dumps (e.g. the biocircuits-design-extract export) — large, never commit.
+*.sql
+# Local mirror of the design-system skill (byte-identical to .claude/skills/, already ignored).
+design/
+# DesignAgentTrace store (traces.jsonl + artifacts/) — local runtime evidence, can grow.
+traces/
+
 # Local docs, reports, and TeX drafts.
 doc/
 docs/

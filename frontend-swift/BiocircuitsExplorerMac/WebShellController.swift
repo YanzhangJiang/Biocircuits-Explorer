@@ -153,6 +153,23 @@ final class WebShellController: NSObject, ObservableObject {
         evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setCloudComputeEnabled?.(\(enabled ? "true" : "false"));")
     }
 
+    func setSurface(_ surface: String) {
+        let normalized = (surface == "agent") ? "agent" : "workspace"
+        evaluateNativeShellScript("typeof window.setNodeView === 'function' && window.setNodeView('\(normalized)');")
+    }
+
+    /// Point the embedded Design Agent at the locally-spawned design-chat backend
+    /// (`DesignChatBackendController`). The web default is 127.0.0.1:8765; this
+    /// keeps the two in sync if the port was overridden.
+    func setDesignChatEndpoint(_ urlString: String) {
+        do {
+            let argument = try javaScriptStringLiteral(for: urlString)
+            evaluateNativeShellScript("typeof window.setDesignChatEndpoint === 'function' && window.setDesignChatEndpoint(\(argument));")
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
     func setThemeMode(_ mode: String, effectiveThemeOverride: String? = nil, completion: (() -> Void)? = nil) {
         prepareInitialThemeMode(mode)
         do {
@@ -440,6 +457,10 @@ private extension WebShellController {
             height: 100vh !important;
           }
           #debug-console {
+            top: 0 !important;
+            height: 100vh !important;
+          }
+          #agent-view {
             top: 0 !important;
             height: 100vh !important;
           }

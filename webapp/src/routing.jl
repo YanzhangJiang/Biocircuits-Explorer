@@ -16,6 +16,7 @@ const API_ROUTES = Dict{String, Function}(
     "/api/siso_path_condition"  => handle_siso_path_condition,
     "/api/siso_trajectory"      => handle_siso_trajectory,
     "/api/behavior_families"    => handle_behavior_families,
+    "/api/phenotype_classify"   => handle_phenotype_classify,
     "/api/rop_cloud"            => handle_rop_cloud,
     "/api/vertex_detail"        => handle_vertex_detail,
     "/api/fret_heatmap"         => handle_fret_heatmap,

@@ -5,8 +5,13 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @AppStorage("biocircuitsExplorer.themeMode") private var themeMode = "auto"
     @AppStorage("biocircuitsExplorer.cloudComputeEnabled") private var cloudComputeEnabled = false
+    // Active surface inside the embedded canvas: "agent" (Design Agent) or
+    // "workspace" (node graph). The native shell hides the web header, so this
+    // switcher is the only way to reach the Design Agent — it opens here by default.
+    @AppStorage("biocircuitsExplorer.activeSurface") private var activeSurface = "agent"
     @StateObject private var store: ProjectStore
     @StateObject private var backendController: BiocircuitsBackendController
+    @StateObject private var designChatController: DesignChatBackendController
     @StateObject private var webController: WebShellController
     @State private var selectedProjectIDs: Set<String>
     @State private var activeProjectID: String?
@@ -105,6 +110,7 @@ struct ContentView: View {
     init() {
         let store = ProjectStore()
         let backendController = BiocircuitsBackendController()
+        let designChatController = DesignChatBackendController()
         let defaults = UserDefaults.standard
         if defaults.string(forKey: "biocircuitsExplorer.themeMode") == nil,
            let legacyThemeMode = defaults.string(forKey: "ropExplorer.themeMode")
@@ -128,6 +134,7 @@ struct ContentView: View {
 
         _store = StateObject(wrappedValue: store)
         _backendController = StateObject(wrappedValue: backendController)
+        _designChatController = StateObject(wrappedValue: designChatController)
         _webController = StateObject(wrappedValue: webController)
         _selectedProjectIDs = State(initialValue: initialProjectID.map { Set([$0]) } ?? [])
         _activeProjectID = State(initialValue: initialProjectID)
@@ -144,9 +151,8 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color(nsColor: .windowBackgroundColor))
 
-                    Color.black.opacity(isSidebarPresented ? (selectedProject == nil ? 0.06 : 0.12) : 0)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
+                    // (Removed the full-page dimming scrim that appeared behind the project drawer —
+                    // the operator found the page-wide overlay ugly; the drawer slides over content as-is.)
 
                     sidebarOverlay(width: panelWidth, height: panelHeight)
                         .padding(.top, sidebarTopInset)
@@ -165,6 +171,27 @@ struct ContentView: View {
                     } label: {
                         Label(isSidebarPresented ? "Hide Projects" : "Show Projects", systemImage: "sidebar.left")
                     }
+                }
+
+                // Sits just to the right of the sidebar toggle in the leading
+                // area, but in its OWN glass group — the spacer breaks the
+                // Liquid Glass grouping so the two controls aren't boxed together.
+                ToolbarSpacer(.fixed, placement: .navigation)
+
+                ToolbarItem(placement: .navigation) {
+                    // Native segmented control: macOS's built-in Liquid Glass
+                    // toggle, whose selection slides between the two segments.
+                    Picker("Surface", selection: $activeSurface) {
+                        Text("Design Agent").tag("agent")
+                        Text("Workspace").tag("workspace")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    // The Design Agent needs only the embedded web shell — not a
+                    // selected project — so gate the switcher on the shell alone.
+                    .disabled(!webController.isReady)
+                    .help("Switch between the Design Agent and the node Workspace")
                 }
 
                 ToolbarItemGroup {
@@ -356,8 +383,15 @@ struct ContentView: View {
             }
             await startBackend()
         }
+        .task {
+            // The Design Agent backend (Python) starts in parallel with the Julia
+            // analysis server so a slow first Julia boot never delays the agent.
+            // Failure is non-fatal: the Workspace still loads, the agent shows offline.
+            await designChatController.startIfNeeded()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             backendController.stop()
+            designChatController.stop()
         }
         .onChange(of: selectedProjectIDs) { oldValue, newValue in
             reconcileSelectionChange(from: oldValue, to: newValue)
@@ -386,6 +420,11 @@ struct ContentView: View {
 
             syncThemeModeToWeb(themeMode)
             webController.setCloudComputeEnabled(cloudComputeEnabled)
+            webController.setSurface(activeSurface)
+            injectDesignChatEndpoint()
+        }
+        .onChange(of: designChatController.isReady) { _, _ in
+            injectDesignChatEndpoint()
         }
         .onChange(of: cloudComputeEnabled) { _, enabled in
             guard webController.isReady else {
@@ -393,6 +432,13 @@ struct ContentView: View {
             }
 
             webController.setCloudComputeEnabled(enabled)
+        }
+        .onChange(of: activeSurface) { _, surface in
+            guard webController.isReady else {
+                return
+            }
+
+            webController.setSurface(surface)
         }
     }
 
@@ -422,7 +468,9 @@ struct ContentView: View {
     }
 
     private var windowToolbarTitle: String {
-        "Biocircuits Explorer Node Edition"
+        // No title text in the window chrome — the top bar stays clean. (The
+        // app name still appears in the system menu bar, which is standard macOS.)
+        ""
     }
 
     private var appearanceToolbarSymbol: String {
@@ -438,34 +486,28 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        if selectedProject != nil {
-            Group {
-                if backendController.isReady {
-                    WebShellView(controller: webController)
-                } else if let backendError = backendController.lastErrorMessage {
-                    ContentUnavailableView(
-                        "Backend Failed",
-                        systemImage: "bolt.horizontal.circle",
-                        description: Text(backendError)
-                    )
-                } else {
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text("Starting Biocircuits Explorer")
-                            .font(.headline)
-                        Text("If no compiled backend is available, the first Julia startup can take several minutes.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-        } else {
+        // The embedded page hosts BOTH surfaces and opens on the Design Agent,
+        // which needs no workspace project — so mount the web shell as soon as the
+        // backend is ready rather than gating it on a project selection. Workspace
+        // node controls stay gated on a project via canUseEmbeddedWorkspaceControls.
+        if backendController.isReady {
+            WebShellView(controller: webController)
+        } else if let backendError = backendController.lastErrorMessage {
             ContentUnavailableView(
-                "Select a Project",
-                systemImage: "sidebar.left",
-                description: Text("Choose a workspace JSON file from the project drawer to load it into the embedded Biocircuits Explorer page.")
+                "Backend Failed",
+                systemImage: "bolt.horizontal.circle",
+                description: Text(backendError)
             )
+        } else {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Starting Biocircuits Explorer")
+                    .font(.headline)
+                Text("If no compiled backend is available, the first Julia startup can take several minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -675,6 +717,12 @@ struct ContentView: View {
     }
 
     private func restartBackend() {
+        // Restart the Design Agent backend independently so its (fast) restart is
+        // not blocked by the Julia server's slower one. The endpoint is re-injected
+        // when the reloaded web shell signals ready.
+        Task {
+            await designChatController.restart()
+        }
         Task {
             do {
                 try await backendController.restart()
@@ -684,6 +732,14 @@ struct ContentView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func injectDesignChatEndpoint() {
+        guard webController.isReady, designChatController.isReady else {
+            return
+        }
+
+        webController.setDesignChatEndpoint(designChatController.endpointURL.absoluteString)
     }
 
     private func revealSelection() {

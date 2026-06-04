@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DesignAgentTrace",
+  "description": "One replayable record per conversational design run (incl. failures/clarifications). Large arrays (curves, surfaces) are NOT stored inline — tool_calls/cards carry a result_hash pointing at traces/artifacts/<hash>.json. The LLM api_key is NEVER recorded.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["trace_schema_version", "trace_id", "raw_user_message", "compiler", "tool_calls", "final_response"],
+  "properties": {
+    "trace_schema_version": { "const": "design-agent-trace/v0.1.0" },
+    "trace_id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "conversation_turn": { "type": "integer" },
+    "raw_user_message": { "type": "string" },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "effort": { "type": ["string", "null"] },
+        "prompt_version": { "type": "string" }
+      }
+    },
+    "family": { "type": ["string", "null"] },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tool", "status"],
+        "properties": {
+          "call_id": { "type": "string" },
+          "tool": { "type": "string" },
+          "args": { "type": "object" },
+          "status": { "type": "string", "enum": ["ok", "error", "engine_offline"] },
+          "summary": { "type": "object" },
+          "result_hash": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "final_response": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string" },
+        "n_cards": { "type": "integer" },
+        "abstained": { "type": "boolean" },
+        "engine_offline": { "type": "boolean" },
+        "cards": { "type": "array", "description": "compact per-card summary (shape/gate/support/tier/rules/kd + result_hash); full card with arrays lives in artifacts/" }
+      }
+    },
+    "failure_tags": { "type": "array", "items": { "type": "string" } },
+    "user_feedback": { "type": ["object", "null"] }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": "bne-behavior/v0.1.0",
+  "goal": {
+    "substrate": "competitive_dimerization",
+    "behavior_family": "logic",
+    "arity": "two_input",
+    "input_domain": "dose_grid",
+    "inputs": ["tA", "tB"],
+    "output": { "kind": "species", "symbol": "C_A_B" },
+    "output_semantics": "booleanized",
+    "evidence_backend": "multi_input_grid_scan",
+    "logic": {
+      "logic_type": "AND",
+      "booleanization": {
+        "off_levels": [-2.0, -1.0],
+        "on_levels": [1.0, 3.0],
+        "output_threshold_policy": "max_off_less_than_min_on"
+      }
+    }
+  },
+  "network_constraints": { "max_reactions": 6, "max_base_species": 3 },
+  "verification_policy": { "require_rop_evidence": true, "min_robustness_score": 0.5 }
+}
