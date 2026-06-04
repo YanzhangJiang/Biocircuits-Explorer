@@ -1,0 +1,50 @@
+{
+  "artifact_schema_version": "bne-result/v1.0.0",
+  "kind": "design_search",
+  "input_hashes": {
+    "dataset_id": "latent-atlas-v0",
+    "source_atlas_sha256": "e3ac29d258053b814917a9859a8334eaddbbeecc794b7fab49f5b043f83bce94"
+  },
+  "algorithm": {
+    "name": "design_search",
+    "version": "0.1.0",
+    "config_hash": "sha256:e54da2028255c4db83fdaf5ddcfb9e3caabc0ad1961e774d02b5a4cb6fa9f73a"
+  },
+  "created_at": "2026-06-03T09:32:47.177215+00:00",
+  "result": {
+    "query": {
+      "behavior_class": "bandpass_with_plateau",
+      "max_reactions": 4,
+      "rise_slope_max": 0.4,
+      "fall_slope_min": 1.5,
+      "plateau_width_log10_input_min": 0.3,
+      "min_robustness": 0.5
+    },
+    "corpus_size": 7409,
+    "hard_pass": 1,
+    "behavior_class": "bandpass_with_plateau",
+    "shape_key": "bandpass_with_plateau",
+    "status": "verified_candidates",
+    "candidates": [
+      {
+        "verdict": "pass",
+        "evidence_tier": "tier-1-scan-observed",
+        "shape_support": 0.5,
+        "n_reactions": 4,
+        "input_symbol": "tC",
+        "output_symbol": "C_A_A_B_B_B",
+        "atlas_volume_mean": 0.06727466159594814,
+        "metrics_median": {
+          "rise_slope": 0.0785,
+          "fall_slope": 1.9857,
+          "plateau_width_log10_input": 0.8158,
+          "output_fold_change_log10": 2.7745
+        },
+        "network_id": "[1,1,2,2]+[1]<->[1,1,1,2,2]|[1,2]+[1,2]<->[1,1,2,2]|[1]+[2]<->[1,2]|[2]+[3]<->[2,3]",
+        "slice_id": "[1,1,2,2]+[1]<->[1,1,1,2,2]|[1,2]+[1,2]<->[1,1,2,2]|[1]+[2]<->[1,2]|[2]+[3]<->[2,3]::input=tC::output=C_A_A_B_B_B::cfg=scope=feasible;min_volume_mean=0.0;deduplicate=true;keep_singular=true;keep_nonasymptotic=false;compute_volume=true;motif_zero_tol=1.0e-6;logqk_min=nothing;logqk_max=nothing;ro_quantization_digits=3;ro_quantization_scale=1000;program_identity=exact_profile_v1;support_semantics=included_exact_family_path_count_v1",
+        "misses": []
+      }
+    ],
+    "relaxation": null
+  }
+}

@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://biocircuits-explorer/schemas/behavior-spec.schema.json",
   "title": "BehaviorSpec",
-  "description": "Typed behavior sublanguage carried inside DesignSpec.goal / DesignSpec.objectives. Compiled from natural language; serializable, editable and testable. NOTE: hand-authored first cut for Phase 1 — to be wired into webapp/scripts/gen_schemas.jl (struct-generated) so the CI drift-guard covers it.",
-  "$comment": "This is the AUTHORED / NL-facing NESTED form. It is intentionally DIFFERENT from the FLAT `behavior_spec` block in the benchmark task JSONs (benchmarks/tasks/*.json), which is a LOWERED verifier query (flat shape-gate keys like rise_slope_max / fall_slope_min / plateau_width_log10_input_min, per the roadmap Task Format) consumed directly by run_benchmark.jl. They share a name but not a schema — this schema does NOT validate the task blocks. Convergence (NL compiler emits THIS nested form, then a lowering step produces the flat gates) is a Phase-5 item; until then they are two layers, not one format.",
+  "description": "Typed behavior sublanguage carried inside DesignSpec.goal / DesignSpec.objectives. Compiled from natural language; serializable, editable and testable. Extended 2026-06-03 with the behavior-language axes (substrate / behavior_family / arity / input_domain / output_semantics / evidence_backend + logic and analog-surface blocks) for the move from the SISO Bandpass MVP to a modular behavior design language; the extension is additive — Suite-A dose-shape specs (behavior_family=dose_shape, behavior_class + shape_preferences) remain valid unchanged. NOTE: hand-authored; to be wired into webapp/scripts/gen_schemas.jl (struct-generated) so the CI drift-guard covers it.",
+  "$comment": "This is the AUTHORED / NL-facing NESTED form. It is intentionally DIFFERENT from the FLAT `behavior_spec` block in the benchmark task JSONs (benchmarks/tasks/*.json), which is a LOWERED verifier query (flat shape-gate keys like rise_slope_max / fall_slope_min / plateau_width_log10_input_min) consumed by run_benchmark.jl / design_search.py. They share a name but not a schema. Per-family lowering (dose_shape -> flat gates; logic -> truth-table query; analog -> surface-match query) is the evaluator-registry dispatch; only dose_shape lowering exists today. behavior_class is required only for behavior_family=dose_shape (enforced by the DoseShapeEvaluator, not by this schema's required list, to stay within the dependency-free validator's draft-07 subset).",
   "type": "object",
   "required": ["schema_version", "goal"],
   "additionalProperties": false,
@@ -11,11 +11,42 @@
     "schema_version": { "const": "bne-behavior/v0.1.0" },
     "goal": {
       "type": "object",
-      "required": ["behavior_class", "output"],
+      "required": ["output"],
       "additionalProperties": false,
       "properties": {
+        "substrate": {
+          "description": "Physical substrate / evidence backend family. The committed substrate is equilibrium binding / competitive dimerization; others are declared-but-deferred (the compiler must not silently route a request to an unsupported substrate).",
+          "enum": ["equilibrium_binding", "competitive_dimerization", "higher_order_binding", "catalytic_crn", "gene_regulatory", "spatial_multicellular"],
+          "default": "equilibrium_binding"
+        },
+        "behavior_family": {
+          "description": "Top-level behavior family selecting the evaluator. Only the first four are supported by the current equilibrium backend; the rest are declared-but-unsupported.",
+          "enum": ["dose_shape", "logic", "analog_surface", "contextual_versatility", "temporal_filter", "adaptation", "oscillation", "memory_bistability", "noise_robustness", "spatial_pattern", "gene_circuit_motif"],
+          "default": "dose_shape"
+        },
+        "arity": {
+          "enum": ["one_input", "two_input", "n_input", "multi_output", "context_indexed"],
+          "default": "one_input"
+        },
+        "input_domain": {
+          "enum": ["dose", "dose_grid", "expression_context", "temporal_waveform", "frequency", "spatial_coordinate"],
+          "default": "dose"
+        },
+        "output_semantics": {
+          "enum": ["species", "dimer", "linear_combination", "booleanized", "multi_output", "reporter_proxy"],
+          "default": "species"
+        },
+        "evidence_backend": {
+          "enum": ["rop_path", "equilibrium_scan", "multi_input_grid_scan", "expression_context_sweep", "qmc_highbudget", "ode_sim", "stochastic_sim"],
+          "default": "equilibrium_scan"
+        },
+        "inputs": {
+          "description": "Input total symbols for multi-input families (e.g. [\"tA\",\"tB\"]). For one-input dose_shape the single swept axis is given by input_axis instead.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "behavior_class": {
-          "description": "Vocabulary v0 class. 'bandpass_like' is a user-language alias resolved by the compiler to biphasic_peak or bandpass_with_plateau after checking for a true high-input falloff.",
+          "description": "dose_shape (Suite A) vocabulary-v0 class. Required when behavior_family=dose_shape. 'bandpass_like' is a user-language alias resolved by the compiler.",
           "enum": [
             "monotone_activation",
             "activation_with_saturation",
@@ -30,9 +61,35 @@
           ]
         },
         "input_axis": {
-          "description": "Swept axis. 'plateau'/'range' refer to width along this log axis, NOT real-time duration.",
+          "description": "Swept axis for one-input dose_shape. 'plateau'/'range' refer to width along this log axis, NOT real-time duration.",
           "enum": ["log10_total_input", "log10_parameter"],
           "default": "log10_total_input"
+        },
+        "logic": {
+          "description": "Suite-B logic target (behavior_family=logic). The LogicTruthTableEvaluator returns a truth-table-agreement score and on/off margins.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "logic_type": {
+              "enum": ["AND", "OR", "NAND", "NOR", "NOT", "NIMPLY", "IMPLY", "XOR", "XNOR", "MAJORITY", "MINORITY", "AT_LEAST_K", "EXACTLY_K", "ONE_HOT", "VETO", "PRIORITY"]
+            },
+            "k": { "type": "integer", "minimum": 1 },
+            "fuzzy": { "type": "boolean", "default": false },
+            "booleanization": { "$ref": "#/$defs/booleanization" }
+          }
+        },
+        "analog": {
+          "description": "Suite-C analog response-surface target (behavior_family=analog_surface). The AnalogSurfaceEvaluator scores the 2D output heatmap against the target.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "enum": ["ratio_sensor", "equality_detector", "diagonal_ridge", "anti_diagonal_ridge", "two_input_bump", "saddle", "synergy", "antagonism", "coincidence", "gating"]
+            },
+            "similarity_metric": {
+              "enum": ["pearson", "chebyshev_log", "ssim", "margin"]
+            }
+          }
         },
         "output": {
           "type": "object",
@@ -48,7 +105,7 @@
     },
     "shape_preferences": {
       "type": "object",
-      "description": "Soft preferences / numeric gates on per-curve metrics (names match the phenotyper output fields).",
+      "description": "Soft preferences / numeric gates on per-curve metrics (names match the phenotyper output fields). dose_shape only.",
       "additionalProperties": false,
       "properties": {
         "rise_slope":                 { "$ref": "#/$defs/preference_term" },
@@ -99,6 +156,16 @@
         "max":    { "type": "number" },
         "range":  { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
         "weight": { "type": "number", "default": 1.0 }
+      }
+    },
+    "booleanization": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Maps continuous output (log10 of the output species/observable) to high/low for truth-table scoring.",
+      "properties": {
+        "off_levels": { "type": "array", "items": { "type": "number" }, "minItems": 1, "maxItems": 2 },
+        "on_levels":  { "type": "array", "items": { "type": "number" }, "minItems": 1, "maxItems": 2 },
+        "output_threshold_policy": { "enum": ["max_off_less_than_min_on", "fixed_threshold", "relative_output_threshold"] }
       }
     },
     "kd_profile": {

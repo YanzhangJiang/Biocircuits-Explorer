@@ -103,3 +103,7 @@ jobs:
           julia --project=webapp --color=yes webapp/scripts/gen_schemas.jl
           git diff --exit-code schemas/ \
             || (echo "schemas/ is stale — regenerate with: julia --project=webapp webapp/scripts/gen_schemas.jl" && exit 1)
+
+      - name: Produced artifacts conform to hand-authored schemas
+        run: |
+          python3 webapp/scripts/validate_artifacts.py

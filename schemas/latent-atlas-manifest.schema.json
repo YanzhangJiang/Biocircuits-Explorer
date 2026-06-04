@@ -29,9 +29,11 @@
       "additionalProperties": false,
       "properties": {
         "rop_version": { "type": "string" },
-        "phenotyper_version": { "type": "string" },
+        "phenotyper_version": { "type": "string", "description": "Engine/phenotyper version that pins the solver; required even for non-dose-shape evaluators (they share qK2x)." },
         "scan_policy": { "type": "string" },
-        "sampler": { "type": "string", "description": "Prior sampler: halton (low-discrepancy QMC) or mc." }
+        "sampler": { "type": "string", "description": "Prior sampler: halton (low-discrepancy QMC) or mc." },
+        "evaluator": { "type": "string", "description": "Behavior Evaluator Registry key when the labels come from a non-dose-shape evaluator, e.g. LogicTruthTableEvaluator / AnalogSurfaceEvaluator." },
+        "evaluator_version": { "type": "string" }
       }
     },
     "sampling": {
@@ -39,12 +41,16 @@
       "required": ["entity_kind", "seed"],
       "additionalProperties": false,
       "properties": {
-        "entity_kind": { "enum": ["network", "network_io_slice", "behavior_slice", "family", "candidate"] },
+        "entity_kind": { "enum": ["network", "network_io_slice", "network_input_pair_slice", "behavior_slice", "family", "candidate"] },
         "max_reactions": { "type": "integer", "minimum": 1 },
         "max_base_species": { "type": "integer", "minimum": 1 },
         "num_shards": { "type": "integer", "minimum": 1 },
-        "K": { "type": "integer", "minimum": 1, "description": "Phenotyper prior draws per entity." },
+        "K": { "type": "integer", "minimum": 1, "description": "Prior draws per entity." },
         "seed": { "type": "integer" },
+        "grid_npoints": { "type": "integer", "minimum": 2, "description": "Per-axis grid resolution for multi-input (logic/analog) evaluators." },
+        "kd_log10_range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "input_log10_range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "scheme": { "type": "string", "description": "Sampling scheme, e.g. two_input_grid." },
         "parameter_prior": {
           "type": ["object", "null"],
           "description": "Π — the serialized parameter prior every distributional label was measured against (prior_descriptor): default_total/default_kd/per_symbol/kd_profile."

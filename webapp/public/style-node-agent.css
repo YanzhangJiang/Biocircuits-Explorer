@@ -1,0 +1,524 @@
+/* =============================================================================
+   Biocircuits Explorer — Design Agent surface (sibling to the node canvas)
+   -----------------------------------------------------------------------------
+   Pixel-matched recreation of the design system's Design Agent UI kit
+   (.claude/skills/biocircuits-explorer-design/ui_kits/node-app/agent.{jsx,css}),
+   ported to the live vanilla ES-module app.
+
+   Left:  the conversation (the "front end" / requirements).
+   Right: live results — behavior chart + reaction rules — rendered from the
+          workspace analysis nodes the agent built (the "back end").
+
+   Theme model matches the rest of the Node Edition: dark is the default
+   :root, light is keyed off :root[data-effective-theme="light"] (set by
+   js/theme.js). Tokens & fonts follow colors_and_type.css.
+   ============================================================================= */
+
+:root {
+  /* Canonical font stacks (colors_and_type.css). Additive — the rest of the
+     app uses literal stacks, so defining these tokens is harmless. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Tahoma, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, Menlo, monospace;
+
+  /* ---- Design Agent palette (dark, default) ---- */
+  --ax-bg: #1c1c1c;            /* results / canvas background */
+  --ax-chat-bg: #181818;       /* chat column */
+  --ax-card-bg: #171717;       /* result cards */
+  --ax-border: #2b2b2b;
+  --ax-border-soft: #242424;
+  --ax-text: #e7edf3;
+  --ax-text-2: #aab3bd;
+  --ax-text-3: #79828d;
+  --ax-bubble: rgba(255, 255, 255, 0.06);
+  --ax-bubble-bd: rgba(255, 255, 255, 0.07);
+  --ax-input-bg: #101010;
+  --ax-chip-bg: #121212;
+  --ax-accent: #3560a8;
+  --ax-accent-2: #6c8cff;
+  --ax-grid: #262626;
+  --ax-axis: #3a3a3a;
+  --ax-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  --ax-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+:root[data-effective-theme="light"] {
+  --ax-bg: #f5f6f8;
+  --ax-chat-bg: #ffffff;
+  --ax-card-bg: #ffffff;
+  --ax-border: #e4e7eb;
+  --ax-border-soft: #edeff2;
+  --ax-text: #1b1e23;
+  --ax-text-2: #535c67;
+  --ax-text-3: #8b939d;
+  --ax-bubble: #eef1f5;
+  --ax-bubble-bd: #e4e7eb;
+  --ax-input-bg: #f2f4f7;
+  --ax-chip-bg: #f4f6f8;
+  --ax-accent: #2f6fe0;
+  --ax-accent-2: #3560a8;
+  --ax-grid: #e9ebef;
+  --ax-axis: #cdd2d8;
+  --ax-shadow: 0 4px 16px rgba(25, 35, 55, 0.07);
+}
+
+/* =============================================================================
+   Header: view switch (Design Agent ⇄ Workspace)
+   ============================================================================= */
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.view-switch {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+.view-switch button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  color: #aab6c2;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 5px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.view-switch button.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f3f7fb;
+}
+.view-switch button .vs-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ax-accent-2);
+}
+
+:root[data-effective-theme="light"] .view-switch {
+  background: rgba(20, 30, 55, 0.05);
+  border-color: rgba(20, 30, 55, 0.08);
+}
+:root[data-effective-theme="light"] .view-switch button { color: #5a6470; }
+:root[data-effective-theme="light"] .view-switch button.active {
+  background: #ffffff;
+  color: #1b1e23;
+  box-shadow: 0 1px 4px rgba(20, 30, 55, 0.12);
+}
+
+/* =============================================================================
+   View visibility — driven by data-node-view on <html>
+   ============================================================================= */
+#agent-view { display: none; }
+:root[data-node-view="agent"] #agent-view { display: flex; }
+:root[data-node-view="agent"] #editor { display: none; }
+:root[data-node-view="agent"] #debug-console { display: none; }
+:root[data-node-view="agent"] .workspace-only { display: none !important; }
+
+/* =============================================================================
+   Layout — sits below the 50px glassy header (matches #editor). The flex row
+   is applied by the [data-node-view="agent"] rule above; keeping `display`
+   out of this block lets the default `display:none` win in Workspace view.
+   ============================================================================= */
+#agent-view {
+  position: absolute;
+  top: 50px;
+  left: 0;
+  width: 100vw;
+  height: calc(100vh - 50px);
+  background: var(--ax-bg);
+  overflow: hidden;
+  color: var(--ax-text);
+  font-family: var(--font-ui);
+}
+/* In the native macOS shell the web #header is hidden (WebShellController injects
+   `#header{display:none}` and pulls #editor to top:0). Do the same for the agent surface,
+   else it floats 50px below an absent header — the large empty band at the top. */
+html.biocircuits-native-shell #agent-view { top: 0; height: 100vh; }
+/* The Design Agent is a reading/feedback surface — its text MUST be selectable & copyable
+   (the base node stylesheet sets user-select:none for the canvas). Buttons stay unselectable. */
+#agent-view, #agent-view * { -webkit-user-select: text; user-select: text; cursor: auto; }
+#agent-view .send-btn, #agent-view .view-switch button, #agent-view .built-chip {
+  -webkit-user-select: none; user-select: none; cursor: pointer;
+}
+#agent-view .agent-split { cursor: col-resize; }
+.rxn-chip .chip-kd { color: var(--ax-text-3); }
+/* clickable candidate cards: click one to drive the right-pane viz/rules */
+#agent-view .cand-card { cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+#agent-view .cand-card:hover { border-color: var(--ax-accent-2); }
+#agent-view .cand-card.active { border-color: var(--ax-accent); box-shadow: inset 0 0 0 1px var(--ax-accent); }
+.cand-hint { font-size: 11px; color: var(--ax-text-3); font-family: var(--font-mono); margin: 2px 0 4px; }
+/* "Export to Workspace" button in the results pane head */
+.export-ws-btn {
+  appearance: none; -webkit-appearance: none; border: 1px solid var(--ax-border);
+  background: var(--ax-chip-bg); color: var(--ax-text-2); font-family: inherit; font-size: 11.5px;
+  font-weight: 600; padding: 5px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+  transition: border-color .15s, color .15s, background .15s;
+}
+#agent-view .export-ws-btn { -webkit-user-select: none; user-select: none; }
+.export-ws-btn:hover:not(:disabled) { border-color: var(--ax-accent); color: var(--ax-text); background: var(--ax-bubble); }
+.export-ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---------- Left: chat ---------- */
+.agent-chat {
+  flex: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  background: var(--ax-chat-bg);
+}
+.agent-thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 22px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.agent-thread::-webkit-scrollbar { width: 8px; }
+.agent-thread::-webkit-scrollbar-thumb { background: var(--ax-border); border-radius: 99px; }
+
+.msg { display: flex; flex-direction: column; gap: 8px; }
+.msg.user { align-items: flex-end; }
+.msg.user .bubble {
+  max-width: 88%;
+  background: var(--ax-bubble);
+  border: 1px solid var(--ax-bubble-bd);
+  color: var(--ax-text);
+  padding: 11px 14px;
+  border-radius: 14px 14px 4px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.agent .who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ax-text-2);
+  letter-spacing: 0.02em;
+}
+.msg.agent .who .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ax-accent-2); }
+.msg.agent .agent-text { font-size: 13px; line-height: 1.62; color: var(--ax-text-2); }
+.msg.agent .agent-text b { color: var(--ax-text); font-weight: 620; }
+
+/* agent reasoning timeline */
+.steps { display: flex; flex-direction: column; gap: 0; margin: 2px 0; }
+.step { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 5px 0; position: relative; }
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 18px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--ax-border);
+}
+.step-dot { width: 8px; height: 8px; border-radius: 50%; margin: 5px auto 0; }
+.step-body { display: flex; flex-direction: column; gap: 2px; }
+.step-label { font-size: 12px; color: var(--ax-text); font-weight: 540; }
+.step-detail {
+  font-size: 11px;
+  color: var(--ax-text-3);
+  font-family: var(--font-mono);
+  line-height: 1.45;
+}
+
+/* reaction chips inside chat */
+.rxn-inline { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.rxn-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ax-text);
+  background: var(--ax-chip-bg);
+  border: 1px solid var(--ax-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+/* "built nodes in workspace" affordance */
+.built-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.built-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 540;
+  color: var(--ax-text);
+  background: transparent;
+  border: 1px solid var(--ax-border);
+  border-radius: 999px;
+  padding: 5px 11px 5px 9px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.18s, background 0.18s;
+}
+.built-chip:hover { border-color: var(--ax-accent); background: var(--ax-bubble); }
+.built-chip .nodes { display: inline-flex; gap: 3px; }
+.built-chip .nd { width: 7px; height: 7px; border-radius: 2px; }
+.built-chip .arr { opacity: 0.6; transition: transform 0.18s var(--ax-ease); }
+.built-chip:hover .arr { transform: translateX(3px); }
+
+/* composer */
+.agent-composer { padding: 14px 16px 16px; border-top: 1px solid var(--ax-border-soft); }
+.composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--ax-input-bg);
+  border: 1px solid var(--ax-border);
+  border-radius: 14px;
+  padding: 8px 8px 8px 14px;
+  transition: border-color 0.18s;
+}
+.composer-box:focus-within { border-color: var(--ax-accent); }
+.composer-box textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--ax-text);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  max-height: 120px;
+  font-family: inherit;
+  padding: 5px 0;
+}
+.composer-box textarea::placeholder { color: var(--ax-text-3); }
+.send-btn {
+  flex: none;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  height: 32px;
+  padding: 0 16px;
+  background: var(--ax-accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: 0.01em;
+  transition: filter 0.18s, transform 0.12s;
+}
+.send-btn:hover { filter: brightness(1.08); }
+.send-btn:active { transform: scale(0.97); }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* keyboard focus — a visible ring on the interactive controls (WCAG 2.4.7) */
+.view-switch button:focus-visible,
+.built-chip:focus-visible,
+.send-btn:focus-visible {
+  outline: 2px solid var(--ax-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Splitter ---------- */
+.agent-split {
+  flex: none;
+  width: 9px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+}
+.agent-split::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: var(--ax-border);
+  transition: background 0.15s, width 0.15s, left 0.15s;
+}
+.agent-split:hover::after,
+.agent-split.dragging::after { background: var(--ax-accent); width: 2px; left: 3.5px; }
+
+/* ---------- Right: results ---------- */
+.agent-results {
+  flex: 1;
+  height: 100%;
+  overflow-y: auto;
+  padding: 26px 30px 40px;
+  min-width: 0;
+}
+.agent-results::-webkit-scrollbar { width: 10px; }
+.agent-results::-webkit-scrollbar-thumb {
+  background: var(--ax-border);
+  border-radius: 99px;
+  border: 2px solid var(--ax-bg);
+}
+.results-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.card {
+  background: var(--ax-card-bg);
+  border: 1px solid var(--ax-border);
+  border-radius: 14px;
+  box-shadow: var(--ax-shadow);
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 18px 0;
+}
+.card-title { font-size: 13px; font-weight: 600; color: var(--ax-text); letter-spacing: -0.01em; }
+
+/* chart */
+.chart-card { padding-bottom: 16px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 11px 18px 4px; }
+.leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ax-text-2);
+  font-family: var(--font-mono);
+}
+.leg .swatch { width: 14px; height: 3px; border-radius: 2px; }
+.leg.target { color: var(--ax-text); font-weight: 600; }
+.chart-wrap { padding: 6px 14px 0; }
+.chart svg { width: 100%; height: auto; display: block; }
+.grid-line { stroke: var(--ax-grid); stroke-width: 1; }
+.axis-line { stroke: var(--ax-axis); stroke-width: 1; }
+.tick-text { fill: var(--ax-text-3); font-size: 10px; font-family: var(--font-mono); }
+.axis-title { fill: var(--ax-text-3); font-size: 10.5px; font-weight: 600; }
+.agent-series {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ax-draw 0.62s var(--ax-ease) forwards;
+}
+.agent-series.target { stroke-width: 3; }
+.target-marker {
+  fill: var(--ax-card-bg);
+  stroke-width: 2.5;
+  opacity: 0;
+  animation: ax-fade 0.4s ease 0.7s forwards;
+}
+
+@keyframes ax-draw { to { stroke-dashoffset: 0; } }
+@keyframes ax-fade { to { opacity: 1; } }
+
+/* reaction rules card */
+.rules-list { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px 18px; }
+.rule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--ax-input-bg);
+  border: 1px solid var(--ax-border);
+  border-radius: 9px;
+  padding: 11px 14px;
+}
+.rule .eq { font-family: var(--font-mono); font-size: 13px; color: var(--ax-text); }
+.rule .eq .arrow { color: var(--ax-accent-2); margin: 0 7px; }
+.rule .kd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ax-text-3);
+}
+.rule .kd b { color: var(--ax-text-2); font-weight: 600; }
+
+/* ---------- Motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .agent-series { animation: none; stroke-dashoffset: 0; }
+  .target-marker { animation: none; opacity: 1; }
+  .built-chip .arr { transition: none; }
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 900px) {
+  #agent-view { top: 54px; height: calc(100vh - 54px); }
+}
+
+/* ---------- Live NL-chat candidate cards + per-family viz (brand-aligned) ---------- */
+.cand-card {
+  border: 1px solid var(--ax-border); border-left: 3px solid var(--ax-text-3);
+  border-radius: 9px; padding: 8px 11px; margin: 7px 0; background: var(--ax-chip-bg);
+}
+/* family accent = signature port colours (model/params/result/reactions) */
+.cand-card.fam-dose_shape { border-left-color: #6c8cff; }
+.cand-card.fam-logic { border-left-color: #9b59b6; }
+.cand-card.fam-analog_surface { border-left-color: #17a2b8; }
+.cand-card.fam-contextual_versatility { border-left-color: #e8854a; }
+.cand-card .cand-head { font-size: 12.5px; color: var(--ax-text); font-weight: 560; letter-spacing: -0.01em; }
+.cand-card .cand-meta { font-family: var(--font-mono); font-size: 11px; color: var(--ax-text-3); margin-top: 3px; }
+.agent-disambig { border-left: 3px solid #d3b53b; padding-left: 9px; color: #d3b53b; font-size: 12.5px; line-height: 1.55; }
+.agent-abstain { border-left: 3px solid #e06c6c; padding-left: 9px; color: #e06c6c; font-size: 12.5px; line-height: 1.55; }
+
+.cand-viz { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.cand-viz .viz-title { font-size: 12px; color: var(--ax-text-3); font-family: var(--font-mono); }
+.tt-grid { display: grid; grid-template-columns: 46px 40px 40px; gap: 4px; font-family: var(--font-mono); font-size: 12px; }
+.tt-cell { height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+.tt-cell.hi { background: #17a2b8; color: #04282d; font-weight: 700; }
+.tt-cell.lo { background: var(--ax-bg); color: var(--ax-text-3); border: 1px solid var(--ax-border); }
+.tt-cell.lbl { color: var(--ax-text-3); justify-content: flex-end; padding-right: 4px; }
+.bar-row { display: grid; grid-template-columns: 96px 1fr 52px; gap: 9px; align-items: center; font-size: 12px; color: var(--ax-text-2); }
+.bar-track { height: 8px; border-radius: 5px; background: var(--ax-bg); overflow: hidden; }
+.bar-fill { height: 100%; background: var(--ax-accent); border-radius: 5px; }
+.ctx-strip { display: flex; gap: 7px; flex-wrap: wrap; }
+.ctx-pill { font-family: var(--font-mono); font-size: 11px; padding: 4px 9px; border-radius: 99px; background: var(--ax-bg); border: 1px solid var(--ax-border); color: var(--ax-text-2); }
+.ctx-pill b { color: var(--ax-text); }
+
+/* ---- backend status pill (top of the chat column) ---- */
+.agent-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--ax-border-soft);
+  font-size: 12px;
+  color: var(--ax-text-2);
+}
+.agent-status-dot {
+  width: 8px; height: 8px; border-radius: 99px;
+  background: var(--ax-text-3);
+  flex: none;
+}
+.agent-status-dot.online { background: #46c46b; box-shadow: 0 0 0 3px rgba(70, 196, 107, 0.18); }
+.agent-status-dot.offline { background: #e0564f; box-shadow: 0 0 0 3px rgba(224, 86, 79, 0.16); }
+.agent-status-dot.checking { background: #e6a23c; animation: ax-status-pulse 1.1s var(--ax-ease) infinite; }
+@keyframes ax-status-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.agent-status-text { font-family: var(--font-mono); }
+
+/* ---- empty-state placeholders in the results pane ---- */
+.agent-placeholder {
+  padding: 22px 4px;
+  color: var(--ax-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}

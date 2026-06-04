@@ -240,6 +240,10 @@ export function serializeState() {
     canvas: { panX: canvasState.panX, panY: canvasState.panY, scale },
     nodes,
     connections: connections.map(c => ({ ...c })),
+    // The Design-Agent conversation rides with the document → one project = one
+    // workspace + one conversation. (undefined when the agent surface isn't loaded.)
+    designAgent: (typeof window !== 'undefined' && window.getDesignAgentConversation)
+      ? window.getDesignAgentConversation() : undefined,
   };
 }
 
@@ -421,6 +425,11 @@ export function applyState(data) {
         });
       }
     }
+  }
+
+  // 4b. Restore this project's Design-Agent conversation (or clear it for a fresh project).
+  if (typeof window !== 'undefined' && window.setDesignAgentConversation) {
+    window.setDesignAgentConversation(data.designAgent || null);
   }
 
   // 5. Update wires
