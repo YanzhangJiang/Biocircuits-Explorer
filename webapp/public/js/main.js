@@ -31,6 +31,7 @@ import {
 import {
   computeSISOResult, recomputeSISO, recomputeROPCloud, recomputeHeatmap,
   plotSISOPath, selectSISOPath, toggleSISOPathCondition, executeQKPolyResult, updateSISOPlotMode, refreshSISOPlot,
+  expandSISOPaths,
 } from './siso.js';
 import {
   executeROPCloudResult, updateROPCloudMode, refreshROPCloudPlot,
@@ -61,6 +62,7 @@ const ACTION_HANDLERS = {
   selectSISOPath: (el) => selectSISOPath(el),
   plotSISOPath: (el) => plotSISOPath(el.dataset.node, el.dataset.qk, parseInt(el.dataset.idx), el),
   toggleSISOPathCondition: (el) => toggleSISOPathCondition(el),
+  toggleSISOPaths: (el) => expandSISOPaths(el),
   updateSISOPlotMode: (el) => updateSISOPlotMode(el.dataset.node, el.value),
   refreshSISOPlot: (el) => refreshSISOPlot(el.dataset.node),
   executeQKPolyResult: (el) => executeQKPolyResult(el.dataset.node),

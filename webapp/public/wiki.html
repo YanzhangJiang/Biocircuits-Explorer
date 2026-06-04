@@ -1384,6 +1384,141 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         The SQLite route is the right choice when you expect to reuse the
         library across many sessions or merge incremental builds over time.
       </p>
+
+      <h3><span class="sec-num">8.5</span>The Design Agent &mdash; describe a behavior, get a verified network</h3>
+      <p>
+        The <strong>Design Agent</strong> is the conversational front door to
+        inverse design. You describe the dose&ndash;response behavior you want in
+        plain language &mdash; in any language &mdash; and an LLM works
+        <em>with the live engine in the loop</em> to find a network that actually
+        produces it.
+      </p>
+      <p>
+        The division of labor matters, because it is what makes the answers
+        trustworthy:
+      </p>
+      <ul>
+        <li>
+          <strong>The LLM is the planner, compiler, and critic.</strong> It reads
+          your request, maps it to a standard behavior label, proposes a candidate
+          network with binding constants, decides which engine tool to call next,
+          and judges whether the result matches what you asked for.
+        </li>
+        <li>
+          <strong>The Julia engine is the ground truth.</strong> For every
+          candidate it builds the ODE model, solves it across a sweep of the input,
+          and classifies the resulting shape. Nothing reaches you that was not
+          actually simulated.
+        </li>
+        <li>
+          <strong>The atlas is a seed and a prior, never a canned answer.</strong>
+          The agent may retrieve a structurally similar network from the atlas to
+          use as a starting point, then refine and re-verify it against the engine.
+          It does not look up a stored result and hand it back.
+        </li>
+      </ul>
+      <p>
+        The consequence is a hard honesty guarantee: <strong>the agent does not
+        fabricate.</strong> If the compute engine is offline it tells you so
+        instead of inventing a curve, and it will not turn a greeting or an
+        off-topic message into a fake design. Check the status pill in the
+        header &mdash; it reads <em>Agent ready</em> when the engine is reachable.
+      </p>
+
+      <h3><span class="sec-num">8.6</span>Opening it and supplying an LLM key</h3>
+      <p>
+        Open the <strong>Design Agent</strong> view (the agent tab in the web app,
+        or the agent page in the macOS app). To use free-form natural language you
+        need an LLM key:
+      </p>
+      <ol>
+        <li>Click the <code>&#9881; LLM key</code> button at the bottom-right.</li>
+        <li>
+          Pick a provider &mdash; <em>OpenAI-compatible</em> (key + base URL) or
+          <em>Anthropic</em> (x-api-key) &mdash; and paste your key. The optional
+          base URL lets you point at a proxy or a compatible endpoint; the optional
+          model field overrides the default.
+        </li>
+        <li>
+          Choose a <strong>reasoning effort</strong>. OpenAI exposes
+          <code>low</code>&hellip;<code>xhigh</code>; Anthropic maps to an
+          extended-thinking budget <code>low</code>&hellip;<code>max</code>. Higher
+          effort means more deliberate multi-step planning &mdash; better on hard
+          2D or ultrasensitive targets, at the cost of latency.
+        </li>
+        <li>Click <strong>Save</strong>. Click anywhere outside the panel, or press <kbd>Esc</kbd>, to close it.</li>
+      </ol>
+      <p>
+        The key is stored in this browser only (localStorage) and is sent only with
+        each design request, which the backend forwards to the LLM you configured.
+        Without a key a built-in keyword compiler still handles simple requests; a
+        key unlocks arbitrary phrasing, including non-English.
+      </p>
+
+      <h3><span class="sec-num">8.7</span>Worked examples</h3>
+      <p>
+        These are real prompts the agent handles. Phrase them however you like &mdash;
+        the LLM maps your words to a standard label and the engine verifies the
+        result.
+      </p>
+      <dl>
+        <dt>&ldquo;A network whose target first falls, then rises as the input increases.&rdquo;</dt>
+        <dd>
+          A biphasic valley. The agent seeds a structure, simulates the
+          dose&ndash;response over the log-input window the engine itself chooses,
+          and confirms the valley shape over the binding-constant prior.
+        </dd>
+        <dt>&ldquo;monotone repression&rdquo; / &ldquo;output goes down as input goes up&rdquo;</dt>
+        <dd>A monotonically decreasing dose&ndash;response, verified by a 1D scan.</dd>
+        <dt>&ldquo;a bandpass &mdash; peak at intermediate input&rdquo;</dt>
+        <dd>An interior maximum; the agent locates the peak and reports where it sits.</dd>
+        <dt>&ldquo;an AND logic gate on two inputs&rdquo;</dt>
+        <dd>
+          A two-input request triggers a 2D scan. The agent checks that the four
+          corners of the input square booleanize to the AND truth table
+          (<code>[0,0,0,1]</code>).
+        </dd>
+        <dt>&ldquo;a 2D heatmap with a single bright spot in the middle &mdash; as sharp as possible&rdquo;</dt>
+        <dd>
+          A 2D ultrasensitive target. The agent runs a 2D scan, finds the interior
+          peak, and reports its sharpness. Targets like this often benefit from a
+          higher reasoning effort.
+        </dd>
+      </dl>
+
+      <h3><span class="sec-num">8.8</span>Reading what comes back</h3>
+      <dl>
+        <dt>The reply</dt>
+        <dd>A short natural-language answer comes first, explaining what was tried.</dd>
+        <dt>Candidate cards</dt>
+        <dd>
+          Each proposed network is shown as a clickable card: its reactions with
+          binding constants (<code>Kd</code>) called out, the design rules, and a
+          <em>Top candidate</em> plot of the engine-computed dose&ndash;response
+          (or a heatmap, for 2D) with real axes, units, and the window the engine
+          chose. Only a handful are shown, deduplicated by shape. Click a card to
+          select it.
+        </dd>
+        <dt>Evidence tier</dt>
+        <dd>
+          Every candidate carries how strongly it was checked &mdash;
+          <strong>Tier&nbsp;0</strong> (prior only), <strong>Tier&nbsp;1</strong>
+          (a single-Kd dose scan), or <strong>Tier&nbsp;3b</strong> (sampled across
+          the binding-constant prior). Higher tiers mean stronger verification.
+        </dd>
+        <dt>Export to Workspace</dt>
+        <dd>
+          Turns the selected candidate into a real reaction-network node on the
+          canvas, so you can analyze it with the full ROP toolset
+          (&sect;<a href="#sec-4">4</a>, &sect;<a href="#sec-6">6</a>).
+        </dd>
+        <dt>Saved with the project</dt>
+        <dd>
+          The conversation is stored per project, and every turn is recorded as a
+          replayable trace &mdash; the tool calls plus engine results &mdash; so any
+          result can be re-verified later against the live engine.
+        </dd>
+      </dl>
     </section>
 
     <!-- ============ §9 ============ -->

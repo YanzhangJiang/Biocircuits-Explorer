@@ -83,9 +83,10 @@ def _call_anthropic(user, api_key, base_url, model):
 # ── tool-calling chat (for the design AGENT, design_agent.py) ────────────────────
 # Thin provider HTTP helpers; the agent loop (message accumulation, tool dispatch) lives
 # in design_agent.py. OpenAI returns the native assistant message; Anthropic the full body.
-def _urlopen_json_retry(req, timeout, tries=4):
-    """POST with retry on transient upstream failures (429/5xx, connection resets) — local
-    reverse proxies intermittently 503 on upstream EOF. Backs off; re-raises the last error."""
+def _urlopen_json_retry(req, timeout, tries=6):
+    """POST with retry on transient upstream failures (429/5xx, connection resets). Rate-limited
+    relays (e.g. shared anyrouter keys) 429 readily, and one agent turn fires several LLM calls, so
+    we honour Retry-After and back off harder on 429/503. Re-raises the last error if it never clears."""
     import time
     last = None
     for i in range(tries):
@@ -113,7 +114,12 @@ def _urlopen_json_retry(req, timeout, tries=4):
         except urllib.error.HTTPError as e:
             last = e
             if e.code in (408, 429, 500, 502, 503, 504) and i < tries - 1:
-                time.sleep(1.0 + 1.5 * i); continue
+                ra = e.headers.get("Retry-After") if getattr(e, "headers", None) else None
+                try:
+                    wait = float(ra)                                   # server told us how long
+                except (TypeError, ValueError):
+                    wait = (2.0 + 2.0 * i) if e.code in (429, 503) else (1.0 + 1.5 * i)
+                time.sleep(min(wait, 12)); continue
             raise
         except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as e:
             last = e
