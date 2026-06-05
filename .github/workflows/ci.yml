@@ -107,3 +107,8 @@ jobs:
       - name: Produced artifacts conform to hand-authored schemas
         run: |
           python3 webapp/scripts/validate_artifacts.py
+
+      - name: Function-Space Reader no-fabrication + usage-boundary regression
+        run: |
+          python3 -m pip install --quiet numpy || python3 -m pip install --quiet --break-system-packages numpy
+          python3 webapp/scripts/reader/test_reader_nofabrication.py

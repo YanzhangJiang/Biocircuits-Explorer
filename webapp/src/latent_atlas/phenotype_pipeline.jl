@@ -1,4 +1,12 @@
-# phenotype_pipeline.jl — Latent Atlas phenotyper, v0.3.0 (Phase 1).
+# phenotype_pipeline.jl — Latent Atlas phenotyper, v0.4.0 (Phase 1).
+#
+# v0.4.0 change: `multimodal` is now a first-class, targetable vocabulary class —
+# a dose-response whose response order ρ reverses sign ≥2 times (sign seq length
+# ≥3, e.g. [+,-,+] / [-,+,-]), each interior run guarded by `multimodal_min_swing`
+# decades so deadband jitter is never mislabeled as a real oscillation. Previously
+# every such curve fell into the non-targetable `:complex` catch-all. `sign_seq` +
+# `n_sign_changes` + `min_swing_log10` are now surfaced by per_curve_metrics,
+# phenotype, phenotype_profile and rop_order_crosscheck.
 #
 # Implements the reference phenotyper of the roadmap
 # (doc/Biocircuits_Latent_Atlas_Roadmap.tex, "Phenotype Measurement"):
@@ -44,7 +52,7 @@ using Statistics
 
 export PhenotyperPolicy, ParameterPrior, PointMass, LogUniform, LogNormal10, KdProfile,
        phenotype, phenotype_profile, classify_shape, reshape_prior, prior_descriptor,
-       per_curve_metrics, response_order, scan_curve,
+       per_curve_metrics, response_order, scan_curve, phenotype_packet,
        PHENOTYPE_VOCAB_V0
 
 # ── Phenotype Vocabulary v0 ───────────────────────────────────────────────────
@@ -59,6 +67,7 @@ const PHENOTYPE_VOCAB_V0 = (
     biphasic_peak         = "canonical peak; sign seq [+,-] with prominence ≥ P_min",
     bandpass_with_plateau = "biphasic_peak with a broad high region; plateau_width_log10_input ≥ plateau_min",
     biphasic_valley       = "valley/notch; sign seq [-,+]",
+    multimodal            = "response order reverses ≥2 times; sign seq length ≥3 (e.g. [+,-,+] rise-fall-rise, or [-,+,-]) with every interior run swinging ≥ multimodal_min_swing decades",
 )
 
 # ── Parameter prior (log10 space, matching qK convention) ─────────────────────
@@ -157,7 +166,7 @@ end
 
 # ── Policy (pins determinism + the phenotyper_version) ────────────────────────
 Base.@kwdef struct PhenotyperPolicy
-    version::String   = "bne-phenotyper/v0.3.0"
+    version::String   = "bne-phenotyper/v0.4.0"   # v0.4.0: first-class `multimodal` (≥2 turning points)
     # grid
     npoints::Int      = 161
     u_lo::Float64     = -6.0          # initial bracket, log10 input total
@@ -178,6 +187,8 @@ Base.@kwdef struct PhenotyperPolicy
     plateau_min::Float64       = 0.5  # bandpass_with_plateau: min plateau width (log10 input)
     thresh_flat_min_frac::Float64 = 0.25  # thresholded_activation: min leading-flat input fraction
     thresh_slope_min::Float64     = 1.0   # thresholded_activation: min rising response order
+    multimodal_min_swing::Float64 = 0.1   # multimodal: min output swing (decades) per interior run,
+                                          # so deadband jitter is never read as a real oscillation
     # distributional
     sampler::Symbol = :halton         # :halton (low-discrepancy QMC) | :mc (Monte-Carlo)
     K::Int          = 64              # prior draws
@@ -350,6 +361,54 @@ function sign_sequence(rho::Vector{Float64}, dz::Float64)
     return out
 end
 
+# Turning-point analysis on the deadbanded response order: the number of sign
+# reversals of ρ (= turning points) and the smallest output swing |Δlog10 y|
+# (decades) across the runs they delimit. The swing is the guard that keeps a
+# genuine oscillation distinct from deadband jitter when calling `multimodal`.
+function turning_analysis(ylog::Vector{Float64}, rho::Vector{Float64}, dz::Float64)
+    n = length(ylog)
+    n < 2 && return (0, 0.0)
+    bounds = Int[1]                       # sample indices that delimit monotone runs
+    last = 0
+    @inbounds for i in eachindex(rho)
+        s = abs(rho[i]) < dz ? 0 : (rho[i] > 0 ? 1 : -1)
+        s == 0 && continue
+        (last != 0 && s != last) && push!(bounds, i)   # sign reversal at sample i
+        last = s
+    end
+    push!(bounds, n)
+    n_sign_changes = max(0, length(bounds) - 2)
+    min_swing = Inf
+    @inbounds for k in 1:(length(bounds) - 1)
+        sw = abs(ylog[bounds[k+1]] - ylog[bounds[k]])
+        sw < min_swing && (min_swing = sw)
+    end
+    return (n_sign_changes, isfinite(min_swing) ? min_swing : 0.0)
+end
+
+# Representative sign behavior over a set of draws: the most frequent compressed
+# sign sequence (first-seen wins ties → deterministic) and the median reversal
+# count / min swing. Surfaced so callers can show the actual ±-pattern, not only
+# the class name. `rows` are per_curve_metrics NamedTuples; `mask` selects draws.
+function _sign_summary(rows::Vector, mask::AbstractVector{Bool})
+    idx = findall(mask)
+    isempty(idx) && return (; sign_seq = Int[], n_sign_changes = 0, min_swing_log10 = 0.0)
+    counts = Dict{Vector{Int},Int}(); order = Vector{Vector{Int}}()
+    for i in idx
+        s = collect(rows[i].sign_seq)
+        haskey(counts, s) || push!(order, s)
+        counts[s] = get(counts, s, 0) + 1
+    end
+    best = order[1]
+    for s in order
+        counts[s] > counts[best] && (best = s)
+    end
+    med(v) = (sort!(v); v[cld(length(v), 2)])
+    return (; sign_seq = best,
+            n_sign_changes = med(Int[rows[i].n_sign_changes for i in idx]),
+            min_swing_log10 = med(Float64[rows[i].min_swing_log10 for i in idx]))
+end
+
 # Leading-flat input fraction: width of the initial run where |ρ| < dz, as a
 # fraction of the total input span. Used to recognise a thresholded shoulder.
 function _leading_flat_frac(u::Vector{Float64}, rho::Vector{Float64}, dz::Float64)
@@ -484,13 +543,15 @@ function per_curve_metrics(u::Vector{Float64}, ylog::Vector{Float64},
 
     leading_flat_frac = _leading_flat_frac(u, rho, policy.rho_zero)
     seq = sign_sequence(rho, policy.rho_zero)
+    n_sign_changes, min_swing_log10 = turning_analysis(ylog, rho, policy.rho_zero)
 
     return (; ylo, yhi, ypeak, ytrough, upeak,
             peak_prominence, baseline_return,
             rise_slope, fall_slope, asymmetry,
             output_fold_change_log10, output_fold_change_floor_limited = floor_limited,
             plateau_width_log10_input, input_operating_range_log10,
-            leading_flat_frac, sign_seq = seq)
+            leading_flat_frac, sign_seq = seq,
+            n_sign_changes, min_swing_log10)
 end
 
 # Vocabulary membership gate (Tier-2-style, on the deterministic curve).
@@ -513,14 +574,26 @@ function shape_gate(m, cls::Symbol, policy::PhenotyperPolicy)
                m.plateau_width_log10_input >= policy.plateau_min
     elseif cls === :biphasic_valley
         return seq == [-1, 1]
+    elseif cls === :multimodal
+        # ≥2 sign reversals (length-≥3 sign seq), each interior run a genuine swing
+        return length(seq) >= 3 && m.n_sign_changes >= 2 &&
+               m.min_swing_log10 >= policy.multimodal_min_swing
     else
         return false
     end
 end
 
-# Exact ROP order cross-check hook (doc: "where exposed"). v0 returns nothing;
-# a follow-on can compare finite-difference ρ against get_RO_paths tokens.
-rop_order_crosscheck(model, input_idx, u, ylog) = nothing
+# Finite-difference response-order summary for a single curve — the numeric side
+# of the RO cross-check (doc: "compare finite-difference ρ against RO-path tokens").
+# Returns the deadbanded sign sequence, its reversal count, and the min interior
+# swing (decades). The agent compares this against the analytic SISO behavior to
+# flag numeric-vs-analytic disagreement; here we provide the verified numeric RO.
+function rop_order_crosscheck(model, input_idx, u, ylog; dz::Float64 = 0.05)
+    rho = response_order(u, ylog)
+    seq = sign_sequence(rho, dz)
+    n_sign_changes, min_swing_log10 = turning_analysis(ylog, rho, dz)
+    return (; sign_seq = seq, n_sign_changes, min_swing_log10)
+end
 
 # ── Distributional aggregation ────────────────────────────────────────────────
 function _quantile_sorted(sorted::Vector{Float64}, q::Float64)
@@ -614,9 +687,12 @@ function phenotype(model; input_sym::Symbol, output_expr::AbstractString,
 
     shape_support = count(in_shape) / policy.K        # failures dilute support
     stats = conditional_quantiles(rows, in_shape, policy.alpha)
+    sign = _sign_summary(rows, count(in_shape) > 0 ? in_shape : trues(length(rows)))
 
     return (; shape_support,
             stats,
+            sign_seq = sign.sign_seq, n_sign_changes = sign.n_sign_changes,
+            min_swing_log10 = sign.min_swing_log10,
             n_draws = policy.K,
             n_evaluated = length(rows),
             n_failed,
@@ -648,7 +724,12 @@ function classify_shape(seq::Vector{Int}, m, policy::PhenotyperPolicy)
         return :biphasic_valley
     elseif isempty(seq)
         return :flat
+    elseif length(seq) >= 3 && m.n_sign_changes >= 2 &&
+           m.min_swing_log10 >= policy.multimodal_min_swing
+        return :multimodal
     else
+        # length-≥3 sign runs that fail the swing guard (deadband jitter) stay in
+        # the non-vocabulary catch-all rather than being called a real oscillation.
         return :complex
     end
 end
@@ -701,9 +782,112 @@ function phenotype_profile(model; input_sym::Symbol, output_expr::AbstractString
         f > best && (best = f; dominant = c)
     end
     isempty(shapes) && (dominant = :none)
+    # representative ±-pattern of the dominant shape's draws (so callers can show
+    # e.g. [+,-,+] for a multimodal verdict, not just the class name)
+    dom_mask = Bool[s === dominant for s in shapes]
+    sign = _sign_summary(rows, any(dom_mask) ? dom_mask : trues(length(rows)))
     return (; shape_fractions, dominant_shape = dominant, stats,
+            sign_seq = sign.sign_seq, n_sign_changes = sign.n_sign_changes,
+            min_swing_log10 = sign.min_swing_log10,
             n_draws = K, n_evaluated = length(rows), n_failed,
             input_sym, output = String(output_expr),
+            sampler = policy.sampler, prior = prior_descriptor(prior),
+            phenotyper_version = policy.version)
+end
+
+# ── K-draw curve packet (Function-Space Atlas spike: spike-curve-packet/v0) ───
+# A class-salient, non-negative per-draw confidence for the curve's assigned shape
+# (a convenience field; the full per_curve_metrics are kept alongside it).
+function _shape_score(cls::Symbol, m)
+    if cls === :biphasic_peak || cls === :bandpass_with_plateau
+        return m.peak_prominence
+    elseif cls === :biphasic_valley
+        span = m.ypeak - m.ytrough
+        return span <= 0 ? 0.0 : (max(m.ylo, m.yhi) - m.ytrough) / span   # valley depth fraction
+    elseif cls === :monotone_activation || cls === :thresholded_activation
+        return m.rise_slope
+    elseif cls === :monotone_repression
+        return m.fall_slope
+    elseif cls === :multimodal
+        return m.min_swing_log10
+    else
+        return 0.0
+    end
+end
+
+"""
+    phenotype_packet(model; input_sym, output_expr, prior, policy, grid_lo, grid_hi, grid_n)
+
+Emit the K per-draw dose-response curves the distributional phenotyper already
+computes — but on a SHARED fixed log-input grid, so they are directly comparable
+in function space. `phenotype`/`phenotype_profile` auto-bracket a *different*
+window per draw (right for metric precision, wrong for cross-curve comparison);
+here every draw is scanned on the same `(grid_lo, grid_hi, grid_n)` grid and
+classified on THAT curve, so each stored array stays self-consistent with its
+label. Phenotype is prior-conditioned, so this keeps the whole DISTRIBUTION of K
+curves, never a single "representative" curve.
+
+Returns `(; u_grid, draws, dominant_shape, shape_fractions, n_valid, n_failed,
+medoid_draw_id, n_draws, …)` where each `draws[k]` is `(; draw_id, valid, y,
+shape_class, shape_score, log_qK, metrics)`. `y` is log10 observable on `u_grid`
+(NaN-filled when the draw's solve raised); `valid` is false for a raised or
+non-converged draw and such draws are excluded from `shape_fractions`/`medoid`.
+"""
+function phenotype_packet(model; input_sym::Symbol, output_expr::AbstractString,
+                          prior::ParameterPrior = ParameterPrior(),
+                          policy::PhenotyperPolicy = PhenotyperPolicy(),
+                          grid_lo::Float64 = policy.u_lo, grid_hi::Float64 = policy.u_hi,
+                          grid_n::Int = 64)
+    input_idx = locate_sym_qK(model, input_sym)
+    input_idx === nothing && error("unknown input qK symbol: $input_sym")
+    coeffs = Vector{Vector{Float64}}([parse_linear_combination(model, String(output_expr))])
+    u_grid = collect(range(grid_lo, grid_hi, length = grid_n))
+    rng = MersenneTwister(policy.seed)
+    draws = Vector{NamedTuple}(undef, policy.K)
+    shapes = Symbol[]; n_failed = 0
+    for k in 1:policy.K
+        log_qK = draw_log_qK(model, prior, k, policy, rng)
+        local u, ylog, valid
+        ok = true
+        try
+            u, ylog, _r, valid = scan_curve(model, input_idx, coeffs, log_qK, grid_lo, grid_hi, grid_n)
+        catch
+            ok = false
+        end
+        if !ok
+            n_failed += 1
+            draws[k] = (; draw_id = k, valid = false, y = fill(NaN, grid_n),
+                          shape_class = :failed, shape_score = 0.0, log_qK = log_qK, metrics = nothing)
+            continue
+        end
+        v = all(valid)
+        rho = response_order(u, ylog)
+        m = per_curve_metrics(u, ylog, rho, policy)
+        cls = classify_shape(m.sign_seq, m, policy)
+        v ? push!(shapes, cls) : (n_failed += 1)   # non-converged draw dilutes, like phenotype_profile
+        draws[k] = (; draw_id = k, valid = v, y = copy(ylog),
+                      shape_class = cls, shape_score = _shape_score(cls, m),
+                      log_qK = log_qK, metrics = m)
+    end
+    # shape_fractions over policy.K (failures dilute) — matches phenotype_profile semantics
+    shape_fractions = Dict(c => count(==(c), shapes) / policy.K for c in _PROFILE_CLASSES)
+    dominant = :none; best = -1.0
+    for c in _PROFILE_CLASSES
+        f = shape_fractions[c]
+        f > best && (best = f; dominant = c)
+    end
+    isempty(shapes) && (dominant = :none)
+    # medoid = the valid draw whose curve is closest (L2) to the per-point median curve
+    valid_ids = Int[d.draw_id for d in draws if d.valid]
+    medoid = 0
+    if !isempty(valid_ids)
+        Y = hcat((draws[i].y for i in valid_ids)...)          # grid_n × n_valid
+        med = [median(view(Y, r, :)) for r in 1:grid_n]
+        medoid = valid_ids[argmin([sum(abs2, draws[i].y .- med) for i in valid_ids])]
+    end
+    return (; u_grid, draws, dominant_shape = dominant, shape_fractions,
+            n_valid = length(shapes), n_failed, medoid_draw_id = medoid,
+            n_draws = policy.K, input_sym, output = String(output_expr),
             sampler = policy.sampler, prior = prior_descriptor(prior),
             phenotyper_version = policy.version)
 end
