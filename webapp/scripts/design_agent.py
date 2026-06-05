@@ -25,13 +25,18 @@ import engine_client as E
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DOSE_DS = os.path.join(ROOT, "datasets", "latent-atlas-v0")
+# Richer d≤4 full-parity dose corpus (2467 networks); unioned into the dose prior when present.
+DOSE_DS_D4 = os.path.join(ROOT, "datasets", "latent-atlas-d4-v0")
+# Curated multimodal (RO sign-oscillation) seed pack extracted from the d4 atlas — networks the
+# phenotyper found robustly multi-sign-change. Read by retrieve_multimodal_seed.
+MULTIMODAL_SEEDS = os.path.join(ROOT, "datasets", "multimodal_seeds_d4.json")
 LOGIC_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-logic-v0", "logic_labels.jsonl")
 ANALOG_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-analog-v0", "analog_labels.jsonl")
 CONTEXTUAL_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-contextual-v0", "contextual_labels.jsonl")
 
 # ── DesignAgentTrace: one replayable record per turn (large arrays → artifacts/<hash>.json). ──
 TRACE_SCHEMA_VERSION = "design-agent-trace/v0.1.0"
-COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.3.0"
+COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.4.0"   # v0.4.0: multimodal (RO sign-oscillation) target
 TRACE_DIR = os.environ.get("BNE_TRACE_DIR", os.path.join(ROOT, "traces"))
 
 def _hash(obj):
@@ -47,7 +52,7 @@ def _evidence(card):
                 "basis": f"realized gate from a fresh equilibrium corner scan at the given kd; on/off margin {card.get('margin_decades')} dec — single kd, not Π-sampled"}
     if card.get("shape_support") is not None:
         return {"tier": "3b", "label": f"Tier 3b · support {card.get('shape_support')} over Π (K=8)",
-                "basis": f"shape_support over the Kd prior Π=LogUniform(-3,3), totals pinned, K=8; phenotyper {card.get('phenotyper_version', 'v0.3.0')}"}
+                "basis": f"shape_support over the Kd prior Π=LogUniform(-3,3), totals pinned, K=8; phenotyper {card.get('phenotyper_version', 'v0.4.0')}"}
     return {"tier": "1", "label": "Tier 1 · fresh dose scan", "basis": "single-kd dose-response scan"}
 
 _HEAVY_KEYS = {"_card", "surface", "candidates", "seeds", "curve_sample_log10", "phenotype_families",
@@ -96,9 +101,17 @@ def _rows_file(path):
     if path not in _CACHE:
         _CACHE[path] = [json.loads(l) for l in open(path)] if os.path.isfile(path) else []
     return _CACHE[path]
+def _json_file(path):                          # whole-file JSON (e.g. the multimodal seed pack array)
+    if path not in _CACHE:
+        try: _CACHE[path] = json.load(open(path)) if os.path.isfile(path) else []
+        except Exception: _CACHE[path] = []
+    return _CACHE[path]
 def _dose_rows():
     if "dose" not in _CACHE:
-        _CACHE["dose"] = list(ds.iter_rows(DOSE_DS))
+        rows = list(ds.iter_rows(DOSE_DS))
+        if os.path.isdir(DOSE_DS_D4):          # union the richer d≤4 corpus when present
+            rows += list(ds.iter_rows(DOSE_DS_D4))
+        _CACHE["dose"] = rows
     return _CACHE["dose"]
 
 # ── tools ────────────────────────────────────────────────────────────────────
@@ -179,6 +192,26 @@ def retrieve_analog_seed(target, top=3):
              for r in ranked[:top]]
     return {"target": target, "total": len(rows),
             "best_score": round(keyfn(ranked[0]), 3) if ranked else 0.0, "seeds": seeds}
+
+def retrieve_multimodal_seed(top=6):
+    """SEED 1-input networks the atlas found to produce a MULTIMODAL dose-response — the response
+    order reverses sign ≥2 times (up-down-up / down-up-down). A PRIOR / starting point: pass each
+    seed's reactions + input_symbol + observe_species to `simulate` to recompute and VERIFY it this
+    session. Ranked by the phenotyper's multimodal fraction over the Kd prior Π (highest-confidence
+    multimodal topologies first). Use this when the user asks for an oscillating / 来回穿梭 / 先增后减再增
+    response — it is far more likely to yield a real multimodal than a hand-guessed topology."""
+    pack = _json_file(MULTIMODAL_SEEDS)
+    if not pack:
+        return {"target": "multimodal", "total": 0, "seeds": [],
+                "note": "no multimodal seed pack on disk — propose a topology and verify with simulate / ro_behavior instead"}
+    seeds = [{"reactions": s.get("rules") or [], "input_symbol": s.get("input_symbol"),
+              "observe_species": s.get("output_symbol"),
+              "atlas_multimodal_fraction": s.get("complex_fraction"),
+              "atlas_label": s.get("dominant_shape"), "n_reactions": s.get("n_reactions"),
+              "note": "atlas prior (multimodal) — NOT re-verified this session; pass reactions+input_symbol+observe_species to simulate"}
+             for s in pack[:top]]
+    return {"target": "multimodal", "total": len(pack),
+            "best_atlas_fraction": pack[0].get("complex_fraction") if pack else 0.0, "seeds": seeds}
 
 def _interior_peak(xs, ys, grid):
     """Detect an interior peak (a 'bump'): is the global max strictly inside the grid and above the
@@ -270,13 +303,16 @@ def simulate(reactions, kd=None, input_symbol=None, observe_species=None,
     # faithful verification: the SAME SISO phenotyper that labelled the atlas — shape_support over
     # the Kd prior Π (NOT behavior_families' ROP-volume view, which can disagree with the atlas).
     ph = E.phenotype_classify(sid, input_symbol=inp, output_expr=obs, K=8)
-    shape = support = None; fracs = {}
+    shape = support = None; fracs = {}; sign_seq = None; n_sign_changes = None
     pheno_offline = bool(ph.get("engine_offline"))
     pheno_err = ph.get("error") if isinstance(ph, dict) else None
     if isinstance(ph, dict) and not pheno_offline and not pheno_err:
         shape = ph.get("dominant_shape")
         support = round(ph.get("shape_support") or 0, 3)
         fracs = {k: round(v, 3) for k, v in (ph.get("shape_fractions") or {}).items() if (v or 0) > 0}
+        # the actual ±-pattern of the verified shape (e.g. [1,-1,1] = rise-fall-rise),
+        # so the agent can cite RO sign oscillation and the UI can show n_sign_changes
+        sign_seq = ph.get("sign_seq"); n_sign_changes = ph.get("n_sign_changes")
     # compact view for the LLM (downsampled curve so it can SEE+reason about the shape)
     step = max(1, len(series) // 16)
     sample = [[s["x"], s["y"]] for s in series[::step]]
@@ -287,12 +323,14 @@ def simulate(reactions, kd=None, input_symbol=None, observe_species=None,
               "y_min": round(min(ys), 4) if ys else None, "y_max": round(max(ys), 4) if ys else None,
               "x_at_ymax": round(xs[ymax_i], 3) if xs else None, "x_at_ymin": round(xs[ymin_i], 3) if xs else None,
               "phenotype_shape": shape, "shape_support": support, "shape_fractions": fracs,
+              "sign_seq": sign_seq, "n_sign_changes": n_sign_changes,
               "phenotype_note": ("phenotyper offline" if pheno_offline else pheno_err),
               "evidence_tier": "engine-verified (this session)"}
     # full-resolution UI card (computed_series drives the real plotted curve in agent-view.js)
     card = {"family": "dose_shape", "verdict": shape or "computed", "shape_support": support,
             "n_reactions": len(reactions), "output_symbol": obs, "rules": reactions, "kd": kd,
             "dominant_shape": shape, "shape_fractions": fracs, "input_symbol": inp,
+            "sign_seq": sign_seq, "n_sign_changes": n_sign_changes,
             "phenotyper_version": (ph or {}).get("phenotyper_version"),
             "metrics_median": {}, "computed_series": series}
     ev = _evidence(card); card["evidence"] = ev; card["evidence_tier"] = ev["label"]
@@ -376,9 +414,123 @@ def simulate_2d(reactions, kd=None, input1=None, input2=None, observe_species=No
     result["evidence_tier"] = ev["label"]; result["_card"] = card
     return result
 
+def _ro_sign_seq(profile):
+    """Collapse an analytic RO profile into a compressed sign sequence (+1/-1; flats and singular
+    NaN/±Inf transitions dropped; repeats collapsed) — comparable to the phenotyper's sign_seq.
+    Accepts the per-regime sign/RO list (motif_profile ['+','0','-'] or exact_profile [1.0,'NaN',-1.0])
+    or the arrow-joined exact_label string ('1 → 0 → -1'). Returns [] for a multi-input regime token."""
+    if profile is None:
+        return []
+    if isinstance(profile, str):
+        toks = profile.replace("->", "→").split("→")        # exact_label uses the unicode arrow
+    elif isinstance(profile, (list, tuple)):
+        toks = list(profile)
+    else:
+        return []
+    out = []
+    for tok in toks:
+        t = str(tok).strip().strip("[]").strip()
+        if "," in t:                       # multi-input regime token → not a scalar dose word
+            return []
+        if t in ("NaN", "nan", "missing", "", "?"):
+            continue                       # singular transition — no defined sign
+        if t == "+": s = 1
+        elif t == "-": s = -1
+        elif t == "0": s = 0
+        elif t in ("+Inf", "Inf", "inf"): s = 1
+        elif t == "-Inf": s = -1
+        else:
+            try: v = float(t)
+            except ValueError: continue
+            s = 1 if v > 1e-9 else (-1 if v < -1e-9 else 0)
+        if s == 0:
+            continue
+        if not out or out[-1] != s:
+            out.append(s)
+    return out
+
+def ro_behavior(reactions, kd=None, input_symbol=None, observe_species=None, **_):
+    """ANALYTIC RO (reaction-order) behavior of a 1-input network — the parameter-free SISO
+    enumeration of which dose-response sign patterns this TOPOLOGY can produce over ALL kd. Use it
+    BEFORE hunting kd to check whether a target is even structurally possible (esp. multimodal: does
+    any feasible family reverse sign ≥2 times?), and to cross-check a numeric `simulate` verdict.
+    Complements `simulate` (numeric, one kd) with structure. Returns the feasible exact families with
+    their RO sign sequences + n_sign_changes + robustness volume, or {engine_offline}."""
+    reactions = list(reactions or [])
+    if not reactions:
+        return {"error": "ro_behavior needs a non-empty reactions list"}
+    kd = [float(x) for x in kd] if kd else [1.0] * len(reactions)
+    m = E.build_model(reactions=reactions, kd=kd)
+    if m.get("engine_offline"):
+        return {"engine_offline": True, "error": m.get("error")}
+    if m.get("error"):
+        return {"error": f"build_model rejected the network: {m.get('error')}"}
+    sid, q, sp, prod = m.get("session_id"), m.get("q_sym") or [], m.get("x_sym") or [], m.get("product_species") or []
+    inp = input_symbol if input_symbol in q else \
+          (("t" + input_symbol) if input_symbol and ("t" + input_symbol) in q else (q[0] if q else None))
+    if inp not in q:
+        return {"error": f"input_symbol '{input_symbol}' is not a swept input", "valid_inputs": q}
+    obs = observe_species or (prod[-1] if prod else (sp[-1] if sp else None))
+    if obs not in sp:
+        return {"error": f"observe_species '{obs}' is not a species", "valid_species": sp}
+    bf = E.phenotype(sid, change_qK=inp, observe_x=obs, path_scope="feasible", compute_volume=True)
+    if bf.get("engine_offline"):
+        return {"engine_offline": True, "error": bf.get("error")}
+    if bf.get("error"):
+        return {"error": f"behavior_families failed: {bf.get('error')}"}
+    fams = []
+    for fam in (bf.get("exact_families") or []):
+        seq = _ro_sign_seq(fam.get("motif_profile") or fam.get("exact_label"))
+        vol = fam.get("total_volume") or {}
+        fams.append({"family_idx": fam.get("family_idx"), "ro_profile": fam.get("exact_label"),
+                     "motif": fam.get("motif_label"),
+                     "sign_seq": seq, "n_sign_changes": max(0, len(seq) - 1),
+                     "n_paths": fam.get("n_paths"),
+                     "volume_mean": (round(vol["mean"], 4) if isinstance(vol, dict) and vol.get("mean") is not None else None)})
+    fams.sort(key=lambda f: (-f["n_sign_changes"], -(f["volume_mean"] or 0)))
+    max_nsc = max((f["n_sign_changes"] for f in fams), default=0)
+    return {"family": "ro_behavior", "input_symbol": inp, "observe_species": obs,
+            "feasible_paths": bf.get("feasible_paths"), "total_paths": bf.get("total_paths"),
+            "n_exact_families": len(fams), "max_sign_changes": max_nsc,
+            "n_multimodal_families": sum(1 for f in fams if f["n_sign_changes"] >= 2),
+            "multimodal_feasible": max_nsc >= 2, "families": fams[:12],
+            "note": ("analytic parameter-free SISO enumeration: which RO sign sequences this TOPOLOGY "
+                     "admits over all kd. max_sign_changes>=2 ⇒ a multimodal dose-response is "
+                     "STRUCTURALLY POSSIBLE here (then find a kd with simulate). max_sign_changes<2 ⇒ "
+                     "multimodal is impossible for this topology, change the network. This is the "
+                     "ROP-volume view; the numeric phenotype at a specific kd is the per-design arbiter.")}
+
+_READER_PROTOS = ["bump", "broad_bump", "right_peak", "left_peak", "valley",
+                  "switch_on", "switch_off", "late_dip", "double_bump", "shoulder"]
+
+def reader_panel(prototype="bump", intent="typical", behavior_class=None, k=6, max_reactions=None, **_):
+    """Stage-2-lite Function-Space Reader: a hybrid, evidence-backed candidate PANEL from the
+    precomputed curve-packet atlas (label recall → function rerank → ROP-evidence rerank → diverse
+    panel). A PRIOR/seed list — VERIFY a pick with `simulate` before presenting, never fabricate."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "reader"))
+    try:
+        import reader_service as RS
+    except Exception as e:
+        return {"error": f"reader service unavailable: {e}"}
+    res = RS.panel(prototype=prototype, intent=intent, behavior_label=behavior_class, k=k, max_reactions=max_reactions)
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    cands = [{"record_id": c["record_id"], "reactions": c["reactions"],
+              "input_symbol": (c.get("io") or {}).get("input_symbol"),
+              "observe_species": (c.get("io") or {}).get("output_symbol"),
+              "dominant_shape": c["dominant_shape"], "match_score": c["match_score"],
+              "evidence_tier": c["evidence"]["evidence_tier"], "shape_support": c["evidence"]["shape_support"],
+              "rop_volume": c["evidence"]["volume_mean"], "robust_path_count": c["evidence"]["robust_path_count"]}
+             for c in res.get("candidates", [])]
+    return {"family": "reader_panel", "intent": intent, "pipeline": res.get("pipeline"),
+            "panel_diversity": res.get("panel_diversity"), "candidates": cands,
+            "note": "function-space atlas panel (PRIOR ranked by curve-match + ROP evidence). VERIFY a pick "
+                    "with `simulate` (its reactions+input_symbol+observe_species) before presenting — do not fabricate."}
+
 TOOLS_DISPATCH = {"corpus_overview": corpus_overview, "retrieve_atlas_seed": retrieve_atlas_seed,
                   "retrieve_logic_seed": retrieve_logic_seed, "retrieve_analog_seed": retrieve_analog_seed,
-                  "simulate": simulate, "simulate_2d": simulate_2d}
+                  "retrieve_multimodal_seed": retrieve_multimodal_seed, "reader_panel": reader_panel,
+                  "simulate": simulate, "simulate_2d": simulate_2d, "ro_behavior": ro_behavior}
 
 _DOSE_CLASSES = sorted(set(ds.CLASS_MAP))
 TOOLSPEC = [
@@ -418,6 +570,26 @@ TOOLSPEC = [
          "input2": {"type": "string", "description": "second swept input total, e.g. 'tB'"},
          "observe_species": {"type": "string", "description": "observed output species, e.g. 'C_A_B'"}},
          "required": ["reactions"], "additionalProperties": False}},
+    {"name": "retrieve_multimodal_seed",
+     "description": "Get SEED 1-input networks the atlas found to produce a MULTIMODAL dose-response (response order reverses sign ≥2 times: up-down-up / down-up-down) — a PRIOR ranked by the phenotyper's multimodal fraction over the Kd prior. Call this FIRST for any oscillating / 来回穿梭 / 先增后减再增 request: these topologies are known to realise multimodal, so they are a far better starting point than a hand-guessed network. Then pass a seed's reactions+input_symbol+observe_species to `simulate` to recompute and verify it this session.",
+     "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "ro_behavior",
+     "description": "ANALYTIC, parameter-free RO (reaction-order) behavior of a 1-input network: the SISO enumeration of which dose-response sign patterns the TOPOLOGY can produce over ALL kd. Use it to decide whether a target is structurally possible BEFORE hunting kd — especially multimodal: it returns whether any feasible family reverses sign ≥2 times (multimodal_feasible). max_sign_changes<2 ⇒ multimodal is impossible for this network, change the topology; ≥2 ⇒ possible, then realise it with `simulate` and cross-check the sign_seq. Complements simulate (numeric, one kd) with structure.",
+     "parameters": {"type": "object", "properties": {
+         "reactions": {"type": "array", "items": {"type": "string"}},
+         "kd": {"type": "array", "items": {"type": "number"}, "description": "dissociation constant per reaction (does not affect the analytic enumeration; default all 1.0)"},
+         "input_symbol": {"type": "string", "description": "the swept input total, e.g. 'tA' (omit to use the first total)"},
+         "observe_species": {"type": "string", "description": "observed output species (omit to use the main product)"}},
+         "required": ["reactions"], "additionalProperties": False}},
+    {"name": "reader_panel",
+     "description": "Stage-2-lite FUNCTION-SPACE READER: a hybrid, evidence-backed candidate PANEL from the precomputed curve-packet atlas — label recall → function-shape rerank (by intent) → ROP-evidence rerank → diverse panel. `prototype` picks the target dose shape; `intent` = existential (find ANY θ realising it — best for discovery / off-label) / typical (medoid) / robust (many θ realise it). Returns candidates with match_score, evidence_tier (T1/T2/T3a/T3b), shape_support, ROP volume + robust_path_count, and panel diversity. A PRIOR/seed list (like retrieve_*): VERIFY a pick with `simulate` before presenting. Needs the packet corpus (env BNE_PACKET_CORPUS); returns {error} if unavailable.",
+     "parameters": {"type": "object", "properties": {
+         "prototype": {"type": "string", "enum": _READER_PROTOS, "description": "target dose shape nearest the user's request"},
+         "intent": {"type": "string", "enum": ["existential", "typical", "robust"], "description": "existential=find any realisation (discovery/off-label), typical=medoid, robust=many θ realise it"},
+         "behavior_class": {"type": "string", "description": "optional nearest vocab label to seed label-recall"},
+         "k": {"type": "integer", "description": "panel size (default 6)"},
+         "max_reactions": {"type": "integer", "description": "optional network-size cap"}},
+         "required": ["prototype"], "additionalProperties": False}},
 ]
 OPENAI_TOOLS = [{"type": "function", "function": t} for t in TOOLSPEC]
 ANTHROPIC_TOOLS = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in TOOLSPEC]
@@ -430,7 +602,9 @@ present to the user MUST be backed by a fresh `simulate` result from THIS sessio
 
 THE LOOP for any design request:
 1. (optional) corpus_overview / retrieve_atlas_seed (1-input) / retrieve_logic_seed (2-input) to get a
-   starting topology and gauge feasibility.
+   starting topology and gauge feasibility. For a multimodal / oscillating target use
+   `retrieve_multimodal_seed` (known-good topologies); `ro_behavior` checks whether a given topology
+   can structurally produce a sign pattern before sweeping kd.
 2. Propose a concrete network (reactions + kd) — a seed, or your own design. kd is a DESIGN VARIABLE,
    not a constant: do NOT just leave every kd at 1.0. Choose and VARY kd (strong↔weak binding, roughly
    1e-3…1e3 per reaction) to place and shape the requested feature — e.g. weaker/stronger Kd to shift a
@@ -448,11 +622,30 @@ THE LOOP for any design request:
 
 The system's STANDARD dose (1-input) class labels are exactly: monotone_activation,
 activation_with_saturation, monotone_repression, repression_with_floor, thresholded_activation,
-biphasic_peak, bandpass_with_plateau, biphasic_valley. Map the user's request — in ANY language and
-ANY phrasing — to the right label using YOUR OWN language understanding (the code does not translate
-natural language; do not expect it to). The engine's phenotype label is the final arbiter of which
-class a candidate actually realises, so if you are unsure which label fits, propose one, simulate,
-and read back the engine's verdict.
+biphasic_peak, bandpass_with_plateau, biphasic_valley, multimodal. Map the user's request — in ANY
+language and ANY phrasing — to the right label using YOUR OWN language understanding (the code does
+not translate natural language; do not expect it to). The engine's phenotype label is the final
+arbiter of which class a candidate actually realises, so if you are unsure which label fits, propose
+one, simulate, and read back the engine's verdict.
+
+`multimodal` = the output's response order changes sign ≥2 times as the single input sweeps — it goes
+up then down then up (or down-up-down, or more) — i.e. ≥2 turning points, distinct from biphasic_peak
+/biphasic_valley which have exactly one. Map requests like "RO 正负来回穿梭 / 先增后减再增 / oscillating
+/ wiggly / multiple peaks" to `multimodal`. `simulate` returns the engine's sign_seq (e.g. [1,-1,1] =
+rise-fall-rise) and n_sign_changes — cite them. Multimodal is RARE in this μ≤5 equilibrium-binding
+family and usually needs extra competing complexes / binding sites — so DO NOT hand-guess a topology.
+For a multimodal request, START with `retrieve_multimodal_seed`: it returns networks the atlas already
+found to realise a multimodal dose-response (ranked by robustness over the Kd prior). Pick a seed,
+pass its reactions+input_symbol+observe_species to `simulate`, and read back the verdict. Use
+`ro_behavior` when you want the analytic, parameter-free check of which sign sequences a topology can
+produce over ALL kd. If `multimodal_feasible` is false (max_sign_changes < 2) the shape
+is STRUCTURALLY impossible for that network — change the topology, don't waste kd sweeps. If true,
+then find a kd that realises it with `simulate` and confirm the numeric sign_seq matches one of the
+analytic families (a real cross-check, not a guess). If after several genuine attempts (varying
+topology AND kd) the engine never returns multimodal — and `ro_behavior` shows it is infeasible for
+the topologies you tried — SAY SO PLAINLY: "this appears rare/absent in the in-scope networks I tried;
+analytically max sign changes was N." DO NOT relabel a single-peak result as multimodal to please the
+user. An honest "I could not realise it in scope" is a correct answer; a fabricated match is not.
 
 HARD RULES:
 - NEVER invent a network, curve, label, or robustness number. If `simulate` returns engine_offline:true,
@@ -460,6 +653,13 @@ HARD RULES:
   return no candidates.
 - The atlas seeds and corpus_overview are PRIORS, explicitly unverified — never present them as the answer
   without simulating. Verify 1-input seeds with `simulate` and 2-input seeds with `simulate_2d`.
+- `reader_panel` returns a FUNCTION-SPACE PRIOR panel (candidates ranked by curve-match + ROP evidence from
+  the PRECOMPUTED atlas) — it is NOT verification. Treat every reader_panel candidate exactly like an atlas
+  seed: its match_score, evidence_tier, and shape_support describe the precomputed phenotype, not a fresh
+  result. You MUST re-verify a reader_panel pick with `simulate` (its reactions + input_symbol +
+  observe_species) before presenting it; never show a reader_panel candidate or its match_score/tier as a
+  verified answer. If reader_panel returns {error} (corpus unavailable), do NOT fabricate a panel — say so
+  and fall back to retrieve_* or your own design.
 - A 3-input / context-indexed (contextual-versatility) request: simulate_2d computes the 2-input
   surface holding the other totals at their default level. Sweeping a third (context) total across
   levels is NOT yet wired, so present the default-context surface and say plainly that the per-context

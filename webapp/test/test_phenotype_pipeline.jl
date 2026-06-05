@@ -17,7 +17,7 @@ using .PhenotypePipeline
 # Smaller-but-still-deterministic policy for a fast smoke test.
 const POLICY = PhenotyperPolicy(; K = 24, npoints = 81, bracket_npoints = 25)
 
-@testset "phenotyper v0.3.0" begin
+@testset "phenotyper v0.4.0" begin
     mono, = build_model(["L + A <-> AL"], [1.0])                                            # monotone activation
     coop, = build_model(["A + L <-> AL", "AL + L <-> AL2"], [1.0, 1.0])                     # two-site / thresholded AL2
     hook, = build_model(["L + A <-> AL", "L + B <-> BL", "AL + B <-> ALB"], [1.0,1.0,1.0])  # prozone/hook
@@ -91,6 +91,35 @@ const POLICY = PhenotyperPolicy(; K = 24, npoints = 81, bracket_npoints = 25)
         a = phenotype(mono; input_sym=:tL, output_expr="AL", policy=pmc, target_class=:monotone_activation)
         b = phenotype(mono; input_sym=:tL, output_expr="AL", policy=pmc, target_class=:monotone_activation)
         @test a.shape_support == b.shape_support    # MC path deterministic under fixed seed
+    end
+
+    @testset "multimodal: ≥2 sign reversals, guarded against deadband jitter" begin
+        # multimodal is in the vocabulary and the profile classes
+        @test :multimodal in PhenotypePipeline._PROFILE_CLASSES
+        @test haskey(PhenotypePipeline.PHENOTYPE_VOCAB_V0, :multimodal)
+
+        # turning_analysis counts reversals + reports the min interior swing
+        rho = [1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+        ylog = [0.0, 0.5, 1.0, 0.6, 0.2, 0.7]
+        ncs, swing = PhenotypePipeline.turning_analysis(ylog, rho, POLICY.rho_zero)
+        @test ncs == 2
+        @test swing ≈ 0.5 atol = 1e-9
+
+        # an up-down-up curve with genuine swings → :multimodal (and the gate passes)
+        m_osc = (; sign_seq = [1, -1, 1], n_sign_changes = 2, min_swing_log10 = 0.5)
+        @test classify_shape([1, -1, 1], m_osc, POLICY) === :multimodal
+        @test PhenotypePipeline.shape_gate(m_osc, :multimodal, POLICY)
+
+        # the SAME sign sequence but a tiny middle swing is deadband jitter, NOT a
+        # real oscillation → stays :complex and fails the gate (the no-fabrication guard)
+        m_jit = (; sign_seq = [1, -1, 1], n_sign_changes = 2, min_swing_log10 = 0.01)
+        @test classify_shape([1, -1, 1], m_jit, POLICY) === :complex
+        @test !PhenotypePipeline.shape_gate(m_jit, :multimodal, POLICY)
+
+        # a single peak must NOT be called multimodal
+        m_peak = (; sign_seq = [1, -1], n_sign_changes = 1, min_swing_log10 = 0.5,
+                  peak_prominence = 0.5, plateau_width_log10_input = 0.0)
+        @test !PhenotypePipeline.shape_gate(m_peak, :multimodal, POLICY)
     end
 
     @testset "kd_profile mostly_weak honors fractional/outlier semantics" begin

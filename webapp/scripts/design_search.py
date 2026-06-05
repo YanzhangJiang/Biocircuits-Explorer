@@ -18,7 +18,21 @@ CLASS_MAP = {
     "thresholded_activation":"thresholded_activation","biphasic_peak":"biphasic_peak",
     "bandpass_with_plateau":"bandpass_with_plateau","bandpass_like":"bandpass_with_plateau",
     "biphasic_valley":"biphasic_valley","window_repression":"biphasic_valley",
+    # Multi-sign-change / oscillating response order ("RO 来回穿梭": rise-fall-rise, …).
+    # The on-disk v0.3.0 dataset holds these under the "complex" catch-all key; the
+    # v0.4.0 phenotyper relabels them "multimodal" (live verification uses that). We
+    # read whichever key the dataset carries (see _shape_fraction).
+    "multimodal":"complex","oscillatory":"complex","multi_turning":"complex","biphasic_double":"complex",
 }
+# Dataset keys a class may appear under, oldest→newest, so retrieval works on both a
+# v0.3.0 atlas ("complex") and a future v0.4.0 rebuild ("multimodal").
+_KEY_ALIASES = {"complex": ("complex", "multimodal"), "multimodal": ("multimodal", "complex")}
+def _shape_fraction(row, cls_key):
+    frac = row.get("shape_fractions") or {}
+    for k in _KEY_ALIASES.get(cls_key, (cls_key,)):
+        if frac.get(k):
+            return frac.get(k)
+    return frac.get(cls_key)
 # flat gate key -> (label-metric, which label stat, direction)  [mirrors run_benchmark gates]
 MIN_GATES = {"fall_slope_min":("fall_slope","q"), "plateau_width_log10_input_min":("plateau_width_log10_input","q"),
              "peak_prominence_min":("peak_prominence","q")}
@@ -62,7 +76,7 @@ def label_stat(row, metric, kind):  # kind: 'q' (q_alpha) or 'm' (median)
     return num(d.get(metric))
 
 def eval_row(row, flat, cls_key):
-    ss = num((row.get("shape_fractions") or {}).get(cls_key)) or 0.0
+    ss = num(_shape_fraction(row, cls_key)) or 0.0
     reasons = []
     if ss < flat.get("min_robustness", 0.2): reasons.append(("shape_support", ss, flat.get("min_robustness",0.2), "min"))
     for k,(metric,kind) in MIN_GATES.items():

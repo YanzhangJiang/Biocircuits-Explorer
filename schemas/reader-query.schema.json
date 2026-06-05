@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bne-reader-query",
+  "title": "Function-Space Atlas ReaderQuery (Stage-2-lite)",
+  "type": "object",
+  "required": ["schema_version", "intent_type", "target"],
+  "properties": {
+    "schema_version": {"const": "bne-reader-query/v0.1.0"},
+    "intent_type": {"enum": ["existential", "typical", "robust"]},
+    "target": {
+      "type": "object",
+      "required": ["object_type"],
+      "properties": {
+        "object_type": {"enum": ["reference_curve", "constraint_curve", "refinement_delta"]},
+        "u_grid_id": {"type": "string"},
+        "curve": {"type": "array", "items": {"type": "number"}},
+        "regions": {"type": "array", "items": {"type": "object"}},
+        "prototype": {"type": "string"}
+      }
+    },
+    "behavior_label": {"type": ["string", "null"]},
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "max_reactions": {"type": ["integer", "null"]},
+        "min_shape_support": {"type": "number"}
+      }
+    },
+    "k": {"type": "integer"}
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bne-reader-result",
+  "title": "Function-Space Atlas ReaderResult (Stage-2-lite)",
+  "type": "object",
+  "required": ["schema_version", "query", "corpus", "pipeline", "candidates", "panel_diversity", "provenance"],
+  "properties": {
+    "schema_version": {"const": "bne-reader-result/v0.1.0"},
+    "query": {
+      "type": "object",
+      "required": ["intent_type", "target_object_type"],
+      "properties": {
+        "intent_type": {"enum": ["existential", "typical", "robust"]},
+        "target_object_type": {"enum": ["reference_curve", "constraint_curve", "refinement_delta"]},
+        "behavior_label": {"type": ["string", "null"]},
+        "k": {"type": "integer"}
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "properties": {
+        "id": {"type": ["string", "null"]},
+        "n_records": {"type": "integer"},
+        "u_grid_id": {"type": ["string", "null"]},
+        "phenotyper_version": {"type": ["string", "null"]}
+      }
+    },
+    "pipeline": {"type": "array", "items": {"type": "string"}},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["record_id", "dominant_shape", "match_score", "evidence"],
+        "properties": {
+          "record_id": {"type": "string"},
+          "network_id": {"type": ["string", "null"]},
+          "slice_id": {"type": ["string", "null"]},
+          "io": {"type": ["object", "null"]},
+          "reactions": {"type": "array", "items": {"type": "string"}},
+          "n_reactions": {"type": ["integer", "null"]},
+          "dominant_shape": {"type": "string"},
+          "match_score": {"type": "number"},
+          "evidence": {
+            "type": "object",
+            "required": ["evidence_tier", "shape_support"],
+            "properties": {
+              "evidence_tier": {"enum": ["T0", "T1", "T2", "T3a", "T3b"]},
+              "shape_support": {"type": "number"},
+              "volume_mean": {"type": "number"},
+              "robust_path_count": {"type": "integer"},
+              "rop_family": {"type": ["string", "null"]},
+              "invalid_rate": {"type": "number"}
+            }
+          },
+          "follow_ups": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "panel_diversity": {
+      "type": "object",
+      "properties": {
+        "mechanism_diversity": {"type": "number"},
+        "network_diversity": {"type": "number"}
+      }
+    },
+    "provenance": {"type": "object"}
+  }
+}

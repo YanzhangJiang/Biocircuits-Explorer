@@ -1206,6 +1206,10 @@ function handle_phenotype_classify(req)
         "dominant_shape" => String(dom),
         "shape_support" => support,
         "shape_fractions" => Dict(String(k) => v for (k, v) in prof.shape_fractions),
+        # the actual ±-pattern behind the verdict (e.g. [1,-1,1] = rise-fall-rise),
+        # so the agent/UI can show RO sign oscillation, not just the class name
+        "sign_seq" => prof.sign_seq, "n_sign_changes" => prof.n_sign_changes,
+        "min_swing_log10" => prof.min_swing_log10,
         "n_draws" => prof.n_draws, "n_evaluated" => prof.n_evaluated, "n_failed" => prof.n_failed,
         "input_symbol" => String(input_sym), "output" => prof.output,
         "phenotyper_version" => prof.phenotyper_version,

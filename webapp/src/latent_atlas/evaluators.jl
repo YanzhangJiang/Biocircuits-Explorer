@@ -27,7 +27,7 @@ end
 # every request. Adding a backend later = adding evaluators, not rewriting the language.
 const REGISTRY = EvaluatorSpec[
     EvaluatorSpec("DoseShapeEvaluator", "equilibrium_binding", "dose_shape", "one_input", "equilibrium_scan", true, true,
-        "phenotyper v0.3.0: SISO dose-response per-curve metrics + distributional shape_support (PhenotypePipeline.phenotype)"),
+        "phenotyper v0.4.0: SISO dose-response per-curve metrics + distributional shape_support, incl. first-class multimodal (PhenotypePipeline.phenotype)"),
     EvaluatorSpec("LogicTruthTableEvaluator", "competitive_dimerization", "logic", "two_input", "multi_input_grid_scan", true, true,
         "2-input Boolean gate: distributional truth-table agreement + on/off margin via scan_parameter_2d (this module)"),
     EvaluatorSpec("AnalogSurfaceEvaluator", "competitive_dimerization", "analog_surface", "two_input", "multi_input_grid_scan", true, true,
