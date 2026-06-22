@@ -44,6 +44,8 @@ import {
   refreshROPPolyhedronPlot, executeROPPolyResult, runROPPolyhedron,
 } from './scan.js';
 import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
+import { executePlacerResult, loadPlacerMenu, realizePlacerProgram } from './node-types/placer.js';
+import { runDesignSearch } from './node-types/design-target.js';
 import { importSbml, exportSbml, loadSbmlFile } from './sbml-io.js';
 import { initAgentView, setNodeView } from './agent-view.js';
 import './llm-settings.js';   // temporary self-mounting LLM-key panel (OpenAI/Anthropic)
@@ -81,6 +83,11 @@ const ACTION_HANDLERS = {
   executeScan2DResult: (el) => executeScan2DResult(el.dataset.node),
   insertSpecies1D: (el) => insertSpecies1D(el.dataset.node),
   insertSpecies2D: (el) => insertSpecies2D(el.dataset.node),
+  // Parameter Placer (non-conversational)
+  executePlacerResult: (el) => executePlacerResult(el.dataset.node),
+  loadPlacerMenu: (el) => loadPlacerMenu(el.dataset.node),
+  realizePlacerProgram: (el) => realizePlacerProgram(el.dataset.node),
+  runDesignSearch: (el) => runDesignSearch(el.dataset.node),
   // ROP Polyhedron
   runROPPolyhedron: (el) => runROPPolyhedron(el.dataset.node),
   executeROPPolyResult: (el) => executeROPPolyResult(el.dataset.node),

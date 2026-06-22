@@ -1,0 +1,1579 @@
+diff --git a/Bnc_julia/src/qK_x_mapping.jl b/Bnc_julia/src/qK_x_mapping.jl
+index e9e096b..437984f 100644
+--- a/Bnc_julia/src/qK_x_mapping.jl
++++ b/Bnc_julia/src/qK_x_mapping.jl
+@@ -1,3 +1,5 @@
++export x2qK, qK2x, x_traj_with_qK_change, x_traj_with_q_change, x_traj_cat, qK_traj_cat, q_traj_cat
++
+ # ----------------Functions for mapping between qK space and x space----------------------------------
+ 
+ """
+@@ -25,39 +27,157 @@ function x2qK(Bnc::Bnc, x::AbstractArray{<:Real};
+     if !only_q
+         if input_logspace
+             if output_logspace
+-                K = Bnc._N_sparse * x
+-                q = log10.(Bnc._L_sparse * exp10.(x))
++                K = Bnc.N * x
++                q = log10.(Bnc.L * exp10.(x))
+             else
+-                K = exp10.(Bnc._N_sparse * x)
+-                q = Bnc._L_sparse * exp10.(x)
++                K = exp10.(Bnc.N * x)
++                q = Bnc.L * exp10.(x)
+             end
+         else
+             if output_logspace
+-                K = Bnc._N_sparse * log10.(x)
+-                q = log10.(Bnc._L_sparse * x)
++                K = Bnc.N * log10.(x)
++                q = log10.(Bnc.L * x)
+             else
+-                K = exp10.(Bnc._N_sparse * log10.(x))
+-                q = Bnc._L_sparse * x
++                K = exp10.(Bnc.N * log10.(x))
++                q = Bnc.L * x
+             end
+         end
+         return vcat(q, K)
+     else
+         if input_logspace
+             if output_logspace
+-                q = log10.(Bnc._L_sparse * exp10.(x))
++                q = log10.(Bnc.L * exp10.(x))
+             else
+-                q = Bnc._L_sparse * exp10.(x)
++                q = Bnc.L * exp10.(x)
+             end
+         else
+             if output_logspace
+-                q = log10.(Bnc._L_sparse * x)
++                q = log10.(Bnc.L * x)
+             else
+-                q = Bnc._L_sparse * x
++                q = Bnc.L * x
+             end
+         end
+         return q
+     end
+ end
++
++
++
++"""
++    qK2x(bnc::Bnc, qK; K=nothing, logK=nothing, input_logspace=false, output_logspace=false,
++        startlogx=nothing, startlogqK=nothing, use_vtx=false, method=:homotopy,
++        reltol=1e-8, abstol=1e-10, kwargs...) -> Vector
++
++Map from totals/binding constants (`qK`) to species concentrations `x`.
++
++# Arguments
++- `bnc`: Binding network model.
++- `qK`: Vector of totals (and optionally binding constants).
++
++# Keyword Arguments
++- `K`: Binding constants in linear space.
++- `logK`: Binding constants in log10 space.
++- `input_logspace`: Treat inputs as log10 values when `true`.
++- `output_logspace`: Return log10 values when `true`.
++- `startlogx`: Initial guess for log10(x).
++- `startlogqK`: Initial log10(qK) for homotopy.
++- `use_vtx`: Use regime-based closed form when `true`.
++- `method`: Solver method (`:homotopy` or NonlinearSolve symbol).
++- `reltol`, `abstol`: Solver tolerances.
++- `kwargs...`: Passed through to the solver.
++
++# Returns
++- Vector of `x` values in log10 or linear space.
++"""
++function qK2x(Bnc::Bnc, qK::AbstractVector{<:Real};
++    input_logspace::Bool=false,
++    output_logspace::Bool=false,
++    startlogx::Union{Vector{<:Real},Nothing}=nothing,
++    startlogqK::Union{Vector{<:Real},Nothing}=nothing,
++    use_vtx::Bool=false,
++    method::Union{Symbol,Missing} = :homotopy,
++    reltol = 1e-8,
++    abstol = 1e-10,
++    status::Union{Nothing,Base.RefValue{Symbol}}=nothing,
++    kwargs...
++)::Vector{Float64}
++    # Map from qK space to x space using homotopy or nonlinear solving.
++    #---Solve the homotopy ODE to find x from qK.---
++
++    # Define the start point
++
++
++    endlogqK = input_logspace ? qK : log10.(qK)
++
++    helper = use_vtx ? nothing : _integration_helper!(Bnc)
++
++    logx = if use_vtx
++            perm = assign_regime_qK(Bnc,endlogqK; input_logspace=true,asymptotic_only=false)
++            H,H0 = get_H_H0(Bnc,perm)
++            status !== nothing && (status[] = :success)
++            H* endlogqK .+ H0
++        elseif ismissing(method) || method != :homotopy
++            _logqK2logx_nlsolve(Bnc,
++                endlogqK;
++                startlogx = isnothing(startlogx) ? copy(helper._anchor_log_x) : Float64.(startlogx),
++                method=method,
++                reltol=reltol,
++                abstol=abstol,
++                status=status,
++                kwargs...
++            )
++        else
++            if isnothing(startlogqK) || isnothing(startlogx)
++                # If no starting point is provided, use the default
++                # Make deep copies to avoid shared state in threaded environment
++                startlogx = copy(helper._anchor_log_x)
++                startlogqK = copy(helper._anchor_log_qK)
++            end
++            sol = _logx_traj_with_logqK_change(Bnc,
++                startlogqK,
++                endlogqK;
++                startlogx=startlogx,
++                alg=ODE.Tsit5(),
++                save_everystep=false,
++                save_start=false,
++                reltol = reltol,
++                abstol = abstol,
++                kwargs...
++            )
++            status !== nothing && (status[] = SciMLBase.successful_retcode(sol.retcode) ? :success : :failure)
++            sol.u[end]
++        end
++
++    logx = output_logspace ? logx : exp10.(logx)
++    return logx
++end
++
++"""
++    qK2x(bnc::Bnc, qK::AbstractArray{<:Real,2}; kwargs...) -> AbstractArray
++
++Batch mapping from qK space to x space for each column of `qK`.
++"""
++function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,2};kwargs...)::AbstractArray{<:Real}
++    # batch mapping of qK2x for each column of qK and return as matrix.
++    # Make thread-safe by creating separate copies for each thread
++    f = x -> qK2x(Bnc, x; kwargs...)
++    return matrix_iter(f, qK;byrow=false,multithread=true)
++end
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
+ #----------------------------------------------------------------
+ # Playground for mapping different methods for solving the nonlinear system
+ # of equations to find x from qK.
+@@ -90,38 +210,39 @@ function _logqK2logx_nlsolve(Bnc::Bnc, logqK::AbstractArray{<:Real,1};
+     n = Bnc.n
+     d = Bnc.d
+     #---Solve the nonlinear equation to find x from qK.---
++    helper = _integration_helper!(Bnc)
+ 
+-    startlogx = isnothing(startlogx) ? copy(Bnc._anchor_log_x) : startlogx
++    startlogx = isnothing(startlogx) ? copy(helper._anchor_log_x) : startlogx
+ 
+     resid = Vector{Float64}(undef, n)
+ 
+     logq = @view logqK[1:d]
+     logK = @view logqK[d+1:end]
+ 
+-    J = deepcopy(Bnc._LN_sparse)# Make deep copies of sparse matrices to avoid shared state
++    J = copy(helper._LN_sparse)
+     x = Vector{Float64}(undef, n)
+     q = Vector{Float64}(undef, d)
+-    x_J_view = @view x[Bnc._LN_top_cols] # view for faster updating J
+-    q_J_view = @view q[Bnc._LN_top_rows] # view for faster updating J
+-    J_top = @view J.nzval[Bnc._LN_top_idx] # view for faster updating J
+-    L_nzval = copy(Bnc._LN_sparse.nzval[Bnc._LN_top_idx])
++    x_M_view = @view x[helper._LN_top_cols] # view for faster updating J
++    q_M_view = @view q[helper._LN_top_rows] # view for faster updating J
++    M_top = @view J.nzval[helper._LN_top_idx] # view for faster updating J
++    L_nzval = copy(helper._LN_sparse.nzval[helper._LN_top_idx])
+ 
+-    params = (; x, q, logq, logK, J, x_J_view, q_J_view, J_top)
++    params = (; x, q, logq, logK, J, x_M_view, q_M_view, M_top)
+ 
+ 
+     keep_manifold! = function(resid, u, p) 
+         logq, logK = p
+-        resid[1:d] .= log10.(Bnc._L_sparse * exp10.(u)) .- logq
+-        resid[d+1:end] .= Bnc._N_sparse * u .- logK
++        resid[1:d] .= log10.(Bnc.L * exp10.(u)) .- logq
++        resid[d+1:end] .= Bnc.N * u .- logK
+         return resid
+     end
+ 
+     manifold_jac! = function(J,u,p) # to have the same signature as keep_manifold!()
+-        @unpack x,q,logq,J,x_J_view,q_J_view, J_top = p
++        @unpack x,q,logq,J,x_M_view,q_M_view, M_top = p
+         # update jac for the current logx     
+         @. x = exp10(u) # update x
+-        q .= Bnc._L_sparse * x #update q
+-        @. J_top = x_J_view * L_nzval / q_J_view
++        q .= Bnc.L * x #update q
++        @. M_top = x_M_view * L_nzval / q_M_view
+         return J
+     end
+ 
+@@ -136,121 +257,12 @@ function _logqK2logx_nlsolve(Bnc::Bnc, logqK::AbstractArray{<:Real,1};
+     return sol.u
+ end
+ 
+-"""
+-    qK2x(bnc::Bnc, qK; K=nothing, logK=nothing, input_logspace=false, output_logspace=false,
+-        startlogx=nothing, startlogqK=nothing, use_vtx=false, method=:homotopy,
+-        reltol=1e-8, abstol=1e-10, kwargs...) -> Vector
+ 
+-Map from totals/binding constants (`qK`) to species concentrations `x`.
+ 
+-# Arguments
+-- `bnc`: Binding network model.
+-- `qK`: Vector of totals (and optionally binding constants).
+ 
+-# Keyword Arguments
+-- `K`: Binding constants in linear space.
+-- `logK`: Binding constants in log10 space.
+-- `input_logspace`: Treat inputs as log10 values when `true`.
+-- `output_logspace`: Return log10 values when `true`.
+-- `startlogx`: Initial guess for log10(x).
+-- `startlogqK`: Initial log10(qK) for homotopy.
+-- `use_vtx`: Use regime-based closed form when `true`.
+-- `method`: Solver method (`:homotopy` or NonlinearSolve symbol).
+-- `reltol`, `abstol`: Solver tolerances.
+-- `kwargs...`: Passed through to the solver.
+ 
+-# Returns
+-- Vector of `x` values in log10 or linear space.
+-"""
+-function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,1};
+-    K::Union{Vector{<:Real},Nothing}=nothing,
+-    logK::Union{Vector{<:Real},Nothing}=nothing,
+-    input_logspace::Bool=false,
+-    output_logspace::Bool=false,
+-    startlogx::Union{Vector{<:Real},Nothing}=nothing,
+-    startlogqK::Union{Vector{<:Real},Nothing}=nothing,
+-    use_vtx::Bool=false,
+-    method::Union{Symbol,Missing} = :homotopy,
+-    reltol = 1e-8,
+-    abstol = 1e-10,
+-    status::Union{Nothing,Base.RefValue{Symbol}}=nothing,
+-    kwargs...)::Vector{<:Real}
+-    # Map from qK space to x space using homotopy or nonlinear solving.
+-    #---Solve the homotopy ODE to find x from qK.---
+ 
+-    # Define the start point 
+-    if isnothing(startlogqK) || isnothing(startlogx)
+-        # If no starting point is provided, use the default
+-        # Make deep copies to avoid shared state in threaded environment
+-        startlogx = copy(Bnc._anchor_log_x)
+-        startlogqK = copy(Bnc._anchor_log_qK)
+-    end
+-
+-    # Define the end point
+-    processed_logqK = input_logspace ? qK : log10.(qK)
+-    local log_K_to_append = nothing
+-    if !isnothing(logK)
+-        if !isnothing(K)
+-            @warn("Both K and logK are provided; using logK.")
+-        end
+-        log_K_to_append = logK
+-    elseif !isnothing(K)
+-        log_K_to_append = log.(K)
+-    end
+-    endlogqK = isnothing(log_K_to_append) ? processed_logqK : vcat(processed_logqK, log_K_to_append)
+-
+-
+-    if use_vtx
+-        perm = assign_vertex_qK(Bnc,endlogqK; input_logspace=true,asymptotic_only=false)
+-        H,H0 = get_H_H0(Bnc,perm)
+-        x = H* endlogqK .+ H0
+-        status !== nothing && (status[] = :success)   # closed-form, no iterative solve
+-    elseif ismissing(method) || method != :homotopy
+-        x = _logqK2logx_nlsolve(Bnc,
+-            endlogqK;
+-            startlogx=startlogx,
+-            method=method,
+-            reltol = reltol,
+-            abstol = abstol,
+-            status=status,
+-            kwargs...
+-        )
+-    else
+-        sol = _logx_traj_with_logqK_change(Bnc,
+-            startlogqK,
+-            endlogqK;
+-            startlogx=startlogx,
+-            alg=ODE.Tsit5(),
+-            save_everystep=false,
+-            save_start=false,
+-            reltol = reltol,
+-            abstol = abstol,
+-            kwargs...
+-        )
+-        # Surface ODE-homotopy convergence so callers (e.g. the phenotyper) can
+-        # discard non-converged points instead of folding a bogus x[end] into
+-        # metrics as if it were exact. Previously sol.u[end] was returned blind.
+-        if status !== nothing
+-            status[] = SciMLBase.successful_retcode(sol.retcode) ? :success : :failure
+-        end
+-        x = sol.u[end]
+-    end
+ 
+-    x = output_logspace ? x : exp10.(x)
+-    return x
+-end
+-
+-"""
+-    qK2x(bnc::Bnc, qK::AbstractArray{<:Real,2}; kwargs...) -> AbstractArray
+-
+-Batch mapping from qK space to x space for each column of `qK`.
+-"""
+-function qK2x(Bnc::Bnc, qK::AbstractArray{<:Real,2};kwargs...)::AbstractArray{<:Real}
+-    # batch mapping of qK2x for each column of qK and return as matrix.
+-    # Make thread-safe by creating separate copies for each thread
+-    f = x -> qK2x(Bnc, x; kwargs...)
+-    return matrix_iter(f, qK;byrow=false,multithread=true)
+-end
+ 
+ #----------------Functions using homotopyContinuous to moving across x space along with qK change----------------------
+ 
+@@ -285,13 +297,12 @@ function x_traj_with_qK_change(
+     startlogqK = input_logspace ? start_point : log10.(start_point)
+     endlogqK = input_logspace ? end_point : log10.(end_point)
+ 
+-    solution = _logx_traj_with_logqK_change(Bnc, startlogqK, endlogqK;
+-        dense=false,
+-        kwargs...
+-    )
++    solution = _logx_traj_with_logqK_change(Bnc, startlogqK, endlogqK; dense=false, kwargs...)
++
+     if !output_logspace
+         foreach(u -> u .= exp10.(u), solution.u)
+     end
++
+     return _ode_solution_wrapper(solution)
+ end
+ 
+@@ -310,9 +321,7 @@ function x_traj_with_q_change(
+     input_logspace::Bool=false,
+     kwargs...
+ )
+-    
+     K_prepared = input_logspace ? (isnothing(logK) ? log10.(K) : logK) : (isnothing(K) ? K : exp10.(K))
+-
+     x_traj_with_qK_change(Bnc, [start_q;K_prepared], [end_q;K_prepared]; input_logspace=input_logspace,kwargs...)
+ end
+ 
+@@ -324,143 +333,151 @@ end
+ Cache container for homotopy-based qK→x integration.
+ """
+ struct HomotopyParams{V<:Vector{Float64},SV1<:SubArray,SV2<:SubArray}
+-
++    ### Constants
++    startlogqK::V
+     ΔlogqK::V
+     logx::V
+     logqK::V
+     logq::SV1
+     logK::SV1
++    logqK_max::Float64
+ 
+-    J::SparseMatrixCSC{Float64,Int} 
+-    J_lu::SparseArrays.UMFPACK.UmfpackLU{Float64,Int}
++    M::SparseMatrixCSC{Float64,Int} 
++    M_lu::SparseArrays.UMFPACK.UmfpackLU{Float64,Int}
+ 
+-    logx_J_view::SV2
+-    logq_J_view::SV2
+-    J_top::SV2
+-    J_top_diag::SV2
+-    
+-    # logx_local::V
+-    # logx_J_view_local::SV2
+-    # logLx_local::V
+-    # logLx_J_view_local::SV2
++    logx_M_view::SV2
++    logq_M_view::SV2
++    M_top::SV2
++    M_top_diag::SV2
+ end
+ 
+-"""
+-    _logx_traj_with_logqK_change(bnc::Bnc, startlogqK, endlogqK; startlogx=nothing,
+-        alg=nothing, reltol=1e-8, abstol=1e-9, ensure_manifold=true, npoints=nothing, kwargs...) -> ODESolution
+ 
+-Integrate a homotopy path in log space to map qK changes to x trajectories.
+ """
+-function _logx_traj_with_logqK_change(Bnc::Bnc,
+-    startlogqK::Union{Vector{<:Real},Nothing},
+-    endlogqK::Vector{<:Real};
+-    # Optional parameters for the initial log(x) values,act as initial point for ode solving
+-    startlogx::Union{Vector{<:Real},Nothing}=nothing,
+-    # Optional parameters for the ODE solver
+-    alg=nothing, # Default to nothing, will use Tsit5() if not provided
+-    reltol=1e-8,
+-    abstol=1e-9,
+-    ensure_manifold::Bool=true, # Make sure the trajectory stays on the manifold defined by Lx=q and Nlogx=logK
+-    npoints::Union{Nothing, Integer}=nothing,
+-    kwargs... #other Optional arguments for ODE solver
+-)::ODESolution
+-    # println("_logx_traj_with_logqK_change get kwargs: ", kwargs)
+-    #---Solve the homotopy ODE to find x from qK.---
++    get_homotopy_param(bnc::Bnc, startlogqK, endlogqK; startlogx=nothing)
++
++构造 homotopy ODE 所需的参数/缓存（线程局部可变对象）。
+ 
++返回：
++- p::HomotopyParams
++- startlogqK0::Vector{Float64}  （用于 ODE 右端项里构造 logqK(t)）
++- startlogx0::Vector{Float64}   （ODE 初值）
++"""
++function get_homotopy_param(Bnc::Bnc, startlogqK::Vector{<:Real}, endlogqK::Vector{<:Real})
++    helper = _integration_helper!(Bnc)
++    logqK_max = maximum([20.0,maximum(startlogqK), maximum(endlogqK)])
+     n = Bnc.n
+     d = Bnc.d
+-    # Prepare starting x if not given
+-    startlogx = isnothing(startlogx) ? qK2x(Bnc, startlogqK; input_logspace=true, output_logspace=true) : startlogx
+-    
+-    #Homotopy path in log-space( a straight line)
++    startlogqK = Float64.(startlogqK)
+     ΔlogqK = Float64.(endlogqK - startlogqK)
+-
+     # Create thread-local copies of all mutable data structures
+     logx = Vector{Float64}(undef, n)
+     logqK = Vector{Float64}(undef, n)
+     logq = @view logqK[1:d]
+     logK = @view logqK[d+1:end]
+-    J= deepcopy(Bnc._LN_sparse)# Make deep copies of sparse matrices to avoid shared state
+-    J_lu = deepcopy(Bnc._LN_lu)
+-
+-    logx_J_view = @view logx[Bnc._LN_top_cols] # view for faster updating J
+-    logq_J_view = @view logqK[Bnc._LN_top_rows] # view for faster updating J
+-    J_top = @view J.nzval[Bnc._LN_top_idx] # view for faster updating J
+-    J_top_diag = @view J.nzval[Bnc._LN_top_diag_idx] # view for perturb when J is singular
++    M = copy(helper._LN_sparse)
++    M_lu = deepcopy(helper._LN_lu)
+ 
+-    #Parameters helps for manifold projection
+-    # logx_local = Vector{Float64}(undef, n)
+-    # logx_J_view_local = @view logx_local[Bnc._LN_top_cols]
+-    # logLx_local = Vector{Float64}(undef, d)
+-    # logLx_J_view_local = @view logLx_local[Bnc._LN_top_rows]
+-
+-    # Constants helps for updating mutable datas
+-    L_nzval = log10.(Bnc._LN_sparse.nzval[Bnc._LN_top_idx]) # copy the nzval to avoid shared access
++    logx_M_view = @view logx[helper._LN_top_cols] # view for faster updating J
++    logq_M_view = @view logqK[helper._LN_top_rows] # view for faster updating J
++    M_top = @view M.nzval[helper._LN_top_idx] # view for faster updating J
++    M_top_diag = @view M.nzval[helper._LN_top_diag_idx] # view for perturb when J is singular
+ 
+-    params = HomotopyParams(ΔlogqK, logx, logqK,logq,logK, J, J_lu, logx_J_view, logq_J_view, J_top, J_top_diag,
+-        # logx_local,logx_J_view_local,logLx_local, logLx_J_view_local
++    p = HomotopyParams(startlogqK, ΔlogqK, logx, logqK,logq,logK, logqK_max, M, M_lu, 
++        logx_M_view, logq_M_view, M_top, M_top_diag
++        # logx_local,logx_M_view_local,logLx_local, logLx_M_view_local
+         )
++    return p
++end
+ 
+-   callback = if !ensure_manifold
+-         CB.CallbackSet()
+-    else
+-        keep_manifold! = function(resid, u, p)  #  Can not write to forms like log_sum_exp10!(logLx_local, Bnc._L_sparse, u) for Autodiff.
+-            @unpack logq,logK = p
+-            resid[1:d] .= log10.(Bnc._L_sparse * exp10.(u)) .- logq
+-            resid[d+1:end] .= Bnc._N_sparse * u .- logK
+-        end
+-        # manifold_jac! = function(J,u,p) # to have the same signature as keep_manifold!()
+-        #     @unpack logx_local, J,logx_J_view_local, J_top, logLx_local,logLx_J_view_local = p
+-        #     # update jac for the current logx     
+-        #     @. logx_local = exp10(u) # though name logx , it is actually x here
+-        #     logLx_local .= Bnc._L_sparse * logx_local # update logLx_local avoid modify logq that involving in "keep_manifold!"
+-        #     @. J_top = logx_J_view_local * L_nzval / logLx_J_view_local
+-        #     return J
+-        # end
+-
+-        equilibrium_cb = CB.ManifoldProjection(keep_manifold!;
+-            save=false,
+-            resid_prototype=zeros(n),
+-            # manifold_jacobian=manifold_jac!,
+-            # jac_prototype = [Bnc.L;Bnc.N],
+-            autodiff = AutoForwardDiff(),
+-            abstol=1e-12,
+-            reltol=1e-10
+-        )
+-        CB.CallbackSet(equilibrium_cb)
+-    end
+ 
+-    @inline function update_J_lu(J_lu,J,max_try=100)
+-        lu!(J_lu, J,check=false) # recalculate the LU decomposition of J
++function get_homotopy_ode(Bnc::Bnc)
++    # Constants helps for updating mutable datas
++    helper = _integration_helper!(Bnc)
++    L_nzval = log10.(helper._LN_sparse.nzval[helper._LN_top_idx]) # copy the nzval to avoid shared access
++
++    @inline function update_M_lu(M_lu,M,max_try=100)
++        lu!(M_lu, M,check=false) # recalculate the LU decomposition of J
+         try_count = 0
+-        while !issuccess(J_lu) && try_count < max_try
+-            @.J_top_diag += eps() # perturb the diagonal elements a bit to avoid singularity
+-            lu!(J_lu, J,check=false)
++        while !issuccess(M_lu) && try_count < max_try
++            @.M_top_diag += eps() # perturb the diagonal elements a bit to avoid singularity
++            lu!(M_lu, M,check=false)
+             try_count += 1
+         end
+         if try_count == max_try
+-            @show logx logqK
+-            @show J
+-            @warn("Jacobian is still singular after maximum perturbation attempts.")
++            @error("M is still singular after maximum perturbation attempts.")
++            @show M
+         end
+     end
+-    homotopy_process! = function(du, u, p, t)
+-        @unpack ΔlogqK, logx, logqK, J, J_lu, logx_J_view, logq_J_view, J_top,J_top_diag = p
++
++    function(du, u, p, t)
++        @unpack startlogqK, ΔlogqK, logx, logqK,logqK_max, M, M_lu, logx_M_view, logq_M_view, M_top,M_top_diag = p
+         #update q & x
+-        clamp!(u,-Inf,20) # make sure not overflow.
++        clamp!(u,-Inf,logqK_max) # make sure not overflow.
+         @. logx = u
+         @. logqK = startlogqK + t * ΔlogqK
+-        #update J_top(sparse version) - use the local copy of nzval
+-        @. J_top = exp10(logx_J_view - logq_J_view + L_nzval)
++        #update M_top(sparse version) - use the local copy of nzval
++        @. M_top = exp10(logx_M_view - logq_M_view + L_nzval)
+         # Update the dlogx
+-        update_J_lu(J_lu,J)
+-        ldiv!(du, J_lu, ΔlogqK)
++        update_M_lu(M_lu,M)
++        ldiv!(du, M_lu, ΔlogqK)
+     end
++end
++
++
++"""
++    _logx_traj_with_logqK_change(bnc::Bnc, startlogqK, endlogqK; startlogx=nothing,
++        alg=nothing, reltol=1e-8, abstol=1e-9, ensure_manifold=true, npoints=nothing, kwargs...) -> ODESolution
++
++Integrate a homotopy path in log space to map qK changes to x trajectories.
++"""
++function _logx_traj_with_logqK_change(Bnc::Bnc,
++    startlogqK::Vector{<:Real},
++    endlogqK::Vector{<:Real};
++    # Optional parameters for the initial log(x) values,act as initial point for ode solving
++    startlogx::Union{Vector{<:Real},Nothing}=nothing,
++    # Optional parameters for the ODE solver
++    alg=nothing, # Default to nothing, will use Tsit5() if not provided
++    reltol=1e-8,
++    abstol=1e-9,
++    ensure_manifold::Bool=true, # Make sure the trajectory stays on the manifold defined by Lx=q and Nlogx=logK
++    npoints::Union{Nothing, Integer}=nothing,
++    kwargs... #other Optional arguments for ODE solver
++)::ODESolution
++    # println("_logx_traj_with_logqK_change get kwargs: ", kwargs)
++    #---Solve the homotopy ODE to find x from qK.---
++
+     
+-    # Define the ODE system for the homotopy process
++    # Prepare starting x if not given
++    u0 = isnothing(startlogx) ? qK2x(Bnc, startlogqK; input_logspace=true, output_logspace=true) : startlogx
++    p = get_homotopy_param(Bnc, startlogqK, endlogqK)
++    f! = get_homotopy_ode(Bnc)
++
++    callback = if !ensure_manifold
++            CB.CallbackSet()
++        else
++            n = Bnc.n
++            d = Bnc.d
++            keep_manifold! = function(resid, u, p)  # Can not write to forms like log_sum_exp10!(logLx_local, Bnc.L, u) for Autodiff.
++                @unpack logq,logK = p
++                resid[1:d] .= log10.(Bnc.L * exp10.(u)) .- logq
++                resid[d+1:end] .= Bnc.N * u .- logK
++            end
++            equilibrium_cb = CB.ManifoldProjection(keep_manifold!;
++                save=false,
++                resid_prototype=zeros(n),
++                # manifold_jacobian=manifold_jac!,
++                # jac_prototype = [Bnc.L;Bnc.N],
++                autodiff = AutoForwardDiff(),
++                abstol=1e-12,
++                reltol=1e-10
++            )
++            CB.CallbackSet(equilibrium_cb)
++        end
++
+     # Solve the ODE using the DifferentialEquations.jl package
+-    tspan = (0.0, 1.0)
+-    prob = ODE.ODEProblem(homotopy_process!, startlogx, tspan, params)
++
++    prob = ODE.ODEProblem(f!, u0, (0.0, 1.0), p)
++
+     sol =  if isnothing(npoints) 
+                 ODE.solve(prob, alg; reltol=reltol, abstol=abstol, callback=callback, kwargs...)
+             else
+@@ -472,6 +489,8 @@ function _logx_traj_with_logqK_change(Bnc::Bnc,
+ end
+ 
+ 
++
++
+ #--------------------------------------------------------------------------------
+ #      Functions for modeling when envolving catalysis reactions, 
+ #--------------------------------------------------------------------------------
+@@ -484,26 +503,15 @@ end
+ 
+ Simulate species trajectories under catalysis dynamics.
+ """
+-function x_traj_cat(Bnc::Bnc, qK0_or_q0::Vector{<:Real}, tspan::Tuple{Real,Real};
+-    K::Union{Vector{<:Real},Nothing}=nothing,
+-    logK::Union{Vector{<:Real},Nothing}=nothing,
++function x_traj_cat(Bnc::Bnc, x0::Vector{<:Real}, tspan::Tuple{Real,Real};
+     input_logspace::Bool=false,
+     output_logspace::Bool=false,
+     kwargs...
+     )
+-    # prepare the qK0 and calculate start logx0
+-    if isnothing(K) && isnothing(logK)
+-        @assert length(qK0_or_q0) == Bnc.n "qK0 must have length n, or you shall pass K as keyword argument"
+-        qK0 = qK0_or_q0
+-    else
+-        @assert length(qK0_or_q0)== Bnc.d "q0 must have length d"
+-        K_prepared = input_logspace ? (isnothing(logK) ? log10.(K) : logK) : (isnothing(K) ? K : exp10.(K))
+-        qK0 = vcat(qK0_or_q0, K_prepared)
+-    end
+-    startlogx = qK2x(Bnc, qK0; input_logspace=input_logspace, output_logspace=true)
+-    
++    x0 = input_logspace ? x0 : log10.(x0)
++    # startlogx = qK2x(Bnc, qK0; input_logspace=input_logspace, output_logspace=true)
+     #---Solve the ODE to find the time curve of log(x) as catalysis happens
+-    sol = catalysis_logx(Bnc, startlogx, tspan;
++    sol = catalysis_logx(Bnc, x0, tspan;
+         dense = false, #manually handle later
+         kwargs...
+     )
+@@ -519,128 +527,337 @@ end
+ 
+ Simulate catalysis dynamics and return trajectories in q/K space.
+ """
+-function qK_traj_cat(Bnc::Bnc, args...; only_q::Bool=false, output_logspace::Bool=false, kwargs...)::Tuple{Vector{Float64}, Matrix{Float64}}
+-    t,u = x_traj_cat(Bnc, args...; output_logspace=true, kwargs...)
+-    u = x2qK(Bnc, u',input_logspace=true, output_logspace=output_logspace, only_q=only_q)'
++function qK_traj_cat(Bnc::Bnc, qK0::Vector{<:Real}, args...;
++    only_q::Bool=false,
++    input_logspace::Bool=false,
++    output_logspace::Bool=false,
++    kwargs...
++    )
++
++    logx0 = qK2x(Bnc, qK0; input_logspace=input_logspace, output_logspace=true)
++    t,u = x_traj_cat(Bnc, logx0, args...; input_logspace=true,output_logspace=true, kwargs...)
++    u = x2qK.(Ref(Bnc), u;input_logspace=true,output_logspace=output_logspace, only_q=only_q)
+     return (t,u)
+ end
+ 
++q_traj_cat(args...;kwargs...) = qK_traj_cat(args...;only_q=true,kwargs...)
++
++
++function have_catalysis(model::Bnc)
++    return !isnothing(model.catalysis)
++end
++
++
++
++
++#--------------------------------------------------------------------------
++#   Below are most AI generated code, which is more experimental and less tested, especially for the catalysis part. Use with caution and report any issues.
++#--------------------------------------------------------------------------
++
++
++
++
++
++
++
++
+ 
+ """
+     TimecurveParam
+-
++    ### Constant
++    # logk: R^rcat  # Changed to log10(k) for stability
++
++    ### Cache
++    # x: R^n  # Now used as buffer for scaled computations
++    # q: R^d  # Buffer for q_scaled or log_q if needed
++    # v: R^rcat  # Buffer for log(v_cat) = Π * u + logk
++    # f: R^n  # First d values: Λ_q^{-1} Γ v_cat(x)
++    # M: SparseMatrixCSC{Float64,Int}  # Jacobian matrix buffer [diag(1/q) L diag(x); N]
++    # M_lu: SparseArrays.UMFPACK.UmfpackLU{Float64,Int}  # LU decomposition of M
+ Cache container for catalysis time-course integration.
+ """
+-struct TimecurveParam{V<:Vector{Float64},
+-    SV1<:SubArray,SV2<:SubArray,SV3<:SubArray,SV4<:SubArray}
++struct TimecurveParam{V<:Vector{Float64}}
++    logk::V  # log10(k)
++    x::V 
++    q::V
++    v::V 
++    f::V 
++    M::SparseMatrixCSC{Float64,Int}
++    M_lu::SparseArrays.UMFPACK.UmfpackLU{Float64,Int}
++end
++
++"""
++Get the catalysis parameter for ODE f construction
++"""
++function get_catalysis_param(model::Bnc, k)
++    @assert have_catalysis(model) "Should fill catalysis data first"
++    helper = _integration_helper!(model)
++    logk = log10.(k)
++    x = Vector{Float64}(undef, model.n)  # Buffer
++    q = Vector{Float64}(undef, model.d)  # Buffer
++    v = Vector{Float64}(undef, length(logk))  # Catalysis flux buffer (log scale)
++    f = zeros(model.n)  # Catalysis rate vector
++    M = copy(helper._LN_sparse)  # Sparse [L; N]
++    M_lu = deepcopy(helper._LN_lu)  # LU decomp
++    TimecurveParam(logk, x, q, v, f, M, M_lu)
++end
++
++"""
++return the f(du,u,p,t) for ODE solver
++"""
++function get_catalysis_ode(model::Bnc)
++    @assert have_catalysis(model) "Should fill catalysis data first"
++    helper = _integration_helper!(model)
++    # No longer need L_nzval as log10, since we avoid exp10 in matrix updates
+ 
+-    x::V # Buffer for x values
+-    K::V # Buffer for K values
+-    v::V # Buffer for the catalysis flux vector
+-    Sv::V # Buffer for the catalysis rate vector multiplied by S
+-    J::SparseMatrixCSC{Float64,Int} # Jacobian matrix buffer
+-    J_lu::SparseArrays.UMFPACK.UmfpackLU{Float64,Int} # LU decomposition of J
++    @inline function update_M_lu(M_lu, M, max_try=100)
++        lu!(M_lu, M, check=false)
++        try_count = 0
++        while !issuccess(M_lu) && try_count < max_try
++            # Clamp to prevent extreme values (though less needed now)
++            # clamp!(M.nzval, 1e-100, 1e100)
++            # Perturb diagonal elements slightly
++            @. M.nzval[helper._LN_top_diag_idx] += 1e-10 * rand()  # Random small perturbation
++            lu!(M_lu, M, check=false)
++            try_count += 1
++        end
++        if try_count == max_try
++            @error("M is still singular after maximum perturbation attempts.")
++        end
++    end
+ 
+-    x_view::SV1 # View for x
+-    K_view::SV2 # View for K
+-    J_top::SV3 # View for the left part of the Jacobian matrix
+-    J_bottom::SV4 # View for the right part of the Jacobian matrix
++    function f(du, u, p::TimecurveParam, t) 
++        @unpack logk, x, q, v, f, M, M_lu = p
++
++        # Compute v = Π * u + logk  (log10(v_cat))
++        mul!(v, model.catalysis._Π_sparse, u)
++        v .+= logk
++
++        # Stably compute f[1:d] = Λ_q^{-1} * Γ * 10^v  (where 10^v = v_cat)
++        # And simultaneously compute scaled x and q for M update
++        # Scale for x: exp10(u) = 10^{max_u} * exp10(u - max_u)
++        max_u = maximum(u)
++        @. x = exp10.(u - max_u)  # x_scaled in (0,1]
++        mul!(q, model.L, x)  # q_scaled = L * x_scaled
++        @. q = max(q, 1e-300)  # Floor to avoid div-by-zero or tiny denoms
++
++        # Update M top block: diag(1/q_scaled) * L * diag(x_scaled)
++        # This is equivalent to (L * exp10(u)) ./ q but scaled: since exp10(u) = 10^{max_u} x_scaled, q = 10^{max_u} q_scaled
++        # So (L exp10(u)) ./ q = (L * 10^{max_u} x_scaled) ./ (10^{max_u} q_scaled) = (L x_scaled) ./ q_scaled
++        # We scale L copy in-place for efficiency
++        # M_top = @view M[1:model.d, :]  # View of top block (L part)
++        # Reset M_top to original L values (assuming M was initialized with [L; N] as Float64)
++        M.nzval[helper._LN_top_idx] .= model.L.nzval  # Reset to L values
++        # Scale columns by x_scaled
++        for j = 1:model.n
++            for p = M.colptr[j]:(M.colptr[j+1]-1)
++                if M.rowval[p] <= model.d  # Only top block
++                    M.nzval[p] *= x[j]
++                end
++            end
++        end
++        # Scale rows by 1 ./ q
++        for j = 1:model.n
++            for p = M.colptr[j]:(M.colptr[j+1]-1)
++                row = M.rowval[p]
++                if row <= model.d
++                    M.nzval[p] /= q[row]
++                end
++            end
++        end
++        # Bottom block remains N (unchanged)
++
++        # Now update LU
++        update_M_lu(M_lu, M)
++
++        # Compute f[1:d] using stable_Linv_Γexp10: (Γ * 10^v) ./ (L * 10^u) = Λ_q^{-1} Γ v_cat
++        @view(f[1:model.d]) .= stable_Linv_Γexp10(model.L, model.catalysis._Γ_sparse, u, v)
++        fill!(@view(f[model.d+1:end]), 0.0)  # Last r are 0
++
++        # Solve du = M_lu \ f
++        ldiv!(du, M_lu, f)
++        if any(isnan, du)
++            @error("du has NaN values, cannot proceed.")
++        end
++    end
+ end
+ 
++"""
++Compute  Λ_{L*exp10(a)}^{-1} * Γ*exp10(b) in a stable way
++(No changes needed, but included for completeness)
++"""
++function stable_Linv_Γexp10(L::SparseMatrixCSC{<:Real,Int},
++                            Γ::SparseMatrixCSC{<:Real,Int},
++                            a::AbstractVector{<:Real},
++                            b::AbstractVector{<:Real};
++                            q_floor::Float64 = 1e-300)
++    # Scale exp10(a) to avoid overflow/underflow: exp10(a) = 10^c * exp10(a-c)
++    c = maximum(a)
++    xscaled = exp10.(Float64.(a) .- c)               # in (0,1]
++    qscaled = Vector{Float64}(undef, size(L,1))
++    mul!(qscaled, sparse(Float64.(L)), xscaled)      # qscaled = L * exp10(a-c)
++    # q = 10^c * qscaled, so 1/q = 10^(-c) ./ qscaled
++    @inbounds @. qscaled = max(qscaled, q_floor)
++    # Scale exp10(b): exp10(b) = 10^d * exp10(b-d)
++    d = maximum(b)
++    vscaled = exp10.(Float64.(b) .- d)               # in (0,1]
++    yscaled = Vector{Float64}(undef, size(Γ,1))
++    mul!(yscaled, sparse(Float64.(Γ)), vscaled)      # yscaled = Γ * exp10(b-d)
++    # Combine scales: (Γ*10^b) ./ (L*10^a) = 10^(d-c) * (yscaled ./ qscaled)
++    scale = exp10(d - c)
++    out = Vector{Float64}(undef, length(yscaled))
++    @inbounds @. out = (yscaled / qscaled) * scale
++    return out
++end
++
++
++
+ """
+     catalysis_logx(bnc::Bnc, logx0, tspan; alg=nothing, reltol=1e-8, abstol=1e-9, kwargs...) -> ODESolution
+ 
+ Solve the catalysis ODE system in log space.
+ """
+ function catalysis_logx(Bnc::Bnc, logx0::Vector{<:Real}, tspan::Tuple{Real,Real};
++    k::AbstractVector{<:Real},
+     alg=nothing, # Default to nothing, will use Tsit5() if not provided
+     reltol=1e-8,
+     abstol=1e-9,
+     kwargs...
+ )::ODESolution
+     # ---Solve the ODE to find the time curve of log(x) with respect to qK change.---
+-    if isnothing(Bnc.catalysis.S)||isnothing(Bnc.catalysis.aT)||isnothing(Bnc.catalysis.k)
+-        @error("S or aT or k is not defined, cannot perform catalysis logx calculation")
+-    end
++    p = get_catalysis_param(Bnc, k)
++    f = get_catalysis_ode(Bnc)
++    # Create the ODE problem
++    prob = ODE.ODEProblem(f, logx0, tspan, p)
++    sol = ODE.solve(prob, alg; reltol=reltol, abstol=abstol, kwargs...)
++    return sol
++end
++
++
+ 
+-    k = Bnc.k
+-    
+-    x = Vector{Float64}(undef, Bnc.n)
+-    K = Vector{Float64}(undef, Bnc.r)
+-    v = Vector{Float64}(undef, length(k)) # catalysis flux vector
+-    Sv = Vector{Float64}(undef, Bnc.n) # catalysis rate vector
+-    J = deepcopy(Bnc._LN_sparse) # Use the sparse version of the Jacobian matrix
+-    J_lu = deepcopy(Bnc._LN_lu) # LU decomposition of J
+-
+-    x_view = @view x[Bnc._LN_top_cols]
+-    K_view = @view K[Bnc._LN_bottom_rows]
+-    J_top = @view J.nzval[Bnc._LN_top_idx]
+-    J_bottom = @view J.nzval[Bnc._LN_bottom_idx]
+-    # create view for the J_buffer , for updating [LΛ_x; Λ_KN]
+-    params = TimecurveParam(
+-        x, # x_buffer
+-        K, # K_buffer
+-        v, # v buffer / flux
+-        Sv, # Sv buffer
+-        J, # J_buffer
+-        J_lu, # Jt_lu
+-        #Views for updating J
+-        x_view,
+-        K_view,
+-        J_top,
+-        J_bottom
+-    )
+ 
+ 
+-    L_nzval = copy(Bnc._LN_sparse.nzval[Bnc._LN_top_idx]) # copy the nzval to avoid shared access
+-    N_nzval = copy(Bnc._LN_sparse.nzval[Bnc._LN_bottom_idx]) # copy the nzval to avoid shared access
+-    aT_sparse = Bnc.catalysis._aT_sparse # copy the aT_sparse to avoid shared access
+-    S_sparse = Bnc.catalysis._S_sparse # copy the S_sparse to avoid shared access
+-    N_sparse = Bnc._N_sparse # copy the N_sparse to avoid shared access
+-    _is_change_of_K_involved = Bnc._is_change_of_K_involved
+-
+-    # Define the ODE system for the time curve
+-    if _is_change_of_K_involved
+-        Catalysis_process! = function (dlogx, logx, p, t)
+-            @unpack x, K, v, Sv, J, J_lu, J_top, J_bottom = p
+-            #update the values
+-            x .= exp10.(logx)
+-            K .= exp10.(N_sparse * logx)
+-
+-            # Update the Jacobian matrix J
+-            @. J_top = x_view * L_nzval 
+-            @. J_bottom = N_nzval * K_view
+-            lu!(J_lu, J) # recalculate the LU decomposition of J
+-
+-            # dlogx .= J \ (S * (k .* exp10.(aT * logx)))
+-            mul!(v, aT_sparse, logx)
+-            @. v = k * exp10(v) # calculate the catalysis rate vector
+-            mul!(Sv, S_sparse, v) # reuse x as a temporary buffer, but need change if x is used in other places, like to act call back for ODESolution
+-            ldiv!(dlogx, J_lu, Sv) # Use the LU decomposition for fast calculation
++
++# Helper functions to scale sparse matrices
++function scale_columns!(A::SparseMatrixCSC{Float64, Int}, s::Vector{Float64})
++    n = size(A, 2)
++    @inbounds for j = 1:n
++        for p = A.colptr[j]:(A.colptr[j+1]-1)
++            A.nzval[p] *= s[j]
+         end
+-    else
+-        # If K is not involved, we can skip the K update
+-        params.K .= exp10.(N_sparse * logx0) #initialize K_view once
+-        # @show length(Bnc._Nt_sparse.nzval) length(params.K_view) length(params.Jt_right)
+-        @. params.J_bottom = N_nzval * params.K_view #initialize Jt_right once
+-
+-        Catalysis_process! = function (dlogx, logx, p, t)
+-            @unpack x, v, Sv, J, J_lu, J_top = p
+-            #update the values
+-            x .= exp10.(logx)
+-            # Update the Jacobian matrix J
+-            @. J_top = x_view * L_nzval
+-            lu!(J_lu, J) # recalculate the LU decomposition of J
+-
+-            mul!(v, aT_sparse, logx)
+-            @. v = k * exp10(v) # calculate the catalysis rate vector
+-            mul!(Sv, S_sparse, v) # reuse x as a temporary buffer, but need change if x is used in other places, like to act call back for ODESolution
+-            ldiv!(dlogx, J_lu, Sv)
++    end
++    return A
++end
++
++function scale_rows!(A::SparseMatrixCSC{Float64, Int}, s::Vector{Float64})
++    @inbounds for j = 1:size(A, 2)
++        for p = A.colptr[j]:(A.colptr[j+1]-1)
++            row = A.rowval[p]
++            A.nzval[p] *= s[row]
+         end
+     end
++    return A
++end
++
++# The right-hand side function for the ODE: dy/dt = f(y)
++function ode_rhs!(dy::Vector{Float64}, y::Vector{Float64}, p, t)
++    Lf, Γf, Nf, Πf, k::Vector{Float64}, q_floor::Float64 = p
++
++    n = length(y)
++    d = size(Lf, 1)
++    r = size(Nf, 1)
++
++    # Scale x = 10.^y
++    max_y = maximum(y)
++    xscaled = exp10.(y .- max_y)
++
++    # qscaled = L * xscaled
++    qscaled = Vector{Float64}(undef, d)
++    mul!(qscaled, Lf, xscaled)
++    @. qscaled = max(qscaled, q_floor)
++
++    # Build A = Λ_q^{-1} * L * Λ_x (stably: diag(1./qscaled) * L * diag(xscaled))
++    L_scaled = copy(Lf)
++    scale_columns!(L_scaled, xscaled)
++    scale_rows!(L_scaled, 1.0 ./ qscaled)  # Now L_scaled is A
++
++    # Build M = [A; N]
++    M = vcat(L_scaled, Nf)
++
++    # Compute v_cat stably: v_cat = k .* exp10.(Π * y)
++    u = Πf * y
++    c = maximum(u)
++    vscaled = exp10.(u .- c)
++    v_cat_scaled = k .* vscaled
++
++    # sv_scaled = Γ * v_cat_scaled
++    sv_scaled = Vector{Float64}(undef, d)
++    mul!(sv_scaled, Γf, v_cat_scaled)
++
++    # zscaled = (1 ./ qscaled) .* sv_scaled
++    zscaled = (1.0 ./ qscaled) .* sv_scaled
++
++    # Full scale for z = exp10(c - max_y) * zscaled
++    scale = exp10(c - max_y)
++    z = scale .* zscaled
++
++    # w = [z; zeros(r)]
++    w = vcat(z, zeros(Float64, r))
++
++    # Solve M * dy = w (using factorization for sparse matrix)
++    fact = factorize(M)
++    dy[:] = fact \ w
++
++    return nothing
++end
++
++# Main simulation function
++function simulate_ode(L::SparseMatrixCSC{<:Real, Int},
++                      Γ::SparseMatrixCSC{<:Real, Int},
++                      N::SparseMatrixCSC{<:Real, Int},
++                      Π::SparseMatrixCSC{<:Real, Int},
++                      k::AbstractVector{<:Real},  # Assuming Lambda_k is a vector k
++                      y0::AbstractVector{<:Real},  # Initial log10(x)
++                      tspan::Tuple{<:Real, <:Real};
++                      q_floor::Float64 = 1e-300,
++                      rtol::Float64 = 1e-6,
++                      atol::Float64 = 1e-6,
++                      solver = ODE.Tsit5())  # Can change to other solvers like Rodas5() for stiff systems
++    # Convert to Float64 sparse matrices
++    Lf = sparse(Float64.(L))
++    Γf = sparse(Float64.(Γ))
++    Nf = sparse(Float64.(N))
++    Πf = sparse(Float64.(Π))
++
++    # Convert vectors to Float64
++    kf = Float64.(k)
++    y0f = Float64.(y0)
++
++    # Pack parameters
++    p = (Lf, Γf, Nf, Πf, kf, q_floor)
++
++    # Define ODE problem
++    prob = ODE.ODEProblem(ode_rhs!, y0f, tspan, p)
++
++    # Solve
++    sol = ODE.solve(prob, solver; reltol=rtol, abstol=atol)
+ 
+-    # Create the ODE problem
+-    prob = ODE.ODEProblem(Catalysis_process!, logx0, tspan, params)
+-    sol = ODE.solve(prob, alg; reltol=reltol, abstol=abstol, kwargs...)
+     return sol
+ end
++
++# function catalysis_logx(Bnc::Bnc, logx0::Vector{<:Real}, tspan::Tuple{Real,Real};
++#     k::AbstractVector{<:Real},
++#     alg=nothing, # Default to nothing, will use Tsit5() if not provided
++#     reltol=1e-8,
++#     abstol=1e-9,
++#     kwargs...
++# )::ODESolution
++#     return simulate_ode(Bnc.L, 
++#             Bnc.catalysis._Γ_sparse, 
++#             Bnc.N, 
++#             sparse(Bnc.catalysis.Π), 
++#             k, 
++#             logx0,
++#             tspan; 
++#             rtol=reltol, atol=abstol, solver=alg === nothing ? ODE.Tsit5() : alg)
++# end
+diff --git a/Bnc_julia/src/symbolics.jl b/Bnc_julia/src/symbolics.jl
+index 0c43782..76b2cea 100644
+--- a/Bnc_julia/src/symbolics.jl
++++ b/Bnc_julia/src/symbolics.jl
+@@ -1,5 +1,19 @@
++export x_sym, q_sym, K_sym, k_sym, qK_sym, q_cat_sym, w_sym, q_para_sym, q_ss_sym
++export ∂logqK_∂logx_sym, ∂logx_∂logqK_sym, logder_qK_x_sym, logder_x_qK_sym
++export show_condition_poly, show_condition_x, show_condition_qK, show_condition
++export show_condition_xk, show_condition_qKk, show_condition_qssKk, show_consistency_condition
++export show_expression_mapping, show_expression_x, show_expression_qK, show_expression_path
++export show_expression_qcat
++export show_dominant_condition, show_conservation, show_equilibrium, show_interface
++export show_catalysis_dynamics, show_reduced_catalysis_dynamics
++export sym_direction, print_path, print_paths, format_arrow
++
+ #----------------------------------------------------------Symbolics calculation fucntions-----------------------------------------------------------
+ 
++#===============================================#
++# Get variables name from the model
++#===============================================#
++#Binding network symbols
+ """
+     x_sym(args...) -> Vector{Num}
+ 
+@@ -18,6 +32,7 @@ q_sym(args...)=get_binding_network(args...).q_sym
+ Return binding constant symbols for a binding network.
+ """
+ K_sym(args...)=get_binding_network(args...).K_sym
++
+ """
+     qK_sym(args...) -> Vector{Num}
+ 
+@@ -25,6 +40,74 @@ Return concatenated `[q; K]` symbols for a binding network.
+ """
+ qK_sym(args...)= [q_sym(args...); K_sym(args...)]
+ 
++
++
++
++#Catalysis network symbols
++"""
++    k_sym(args...) -> Vector{Num}
++
++Return catalysis rate-constant symbols.
++"""
++k_sym(args...) = _require_catalysis_network(args...).k_sym
++
++"""
++    q_cat_sym(args...) -> Vector{Num}
++
++Return the catalysis-active total concentration symbols.
++"""
++function q_cat_sym(args...)
++    bn = get_binding_network(args...)
++    cn = _require_catalysis_network(args...)
++    return bn.q_sym[1:cn.r_v]
++end
++
++"""
++    w_sym(args...) -> Vector{Num}
++
++Return the catalysis-dependent conserved symbols `w`.
++"""
++function w_sym(args...)
++    bn = get_binding_network(args...)
++    cn = _require_catalysis_network(args...)
++    return bn.q_sym[cn.r_v+1:cn.r_v+cn.d_w]
++end
++"""
++    q_para_sym(args...) -> Vector{Num}
++
++Return the catalysis-parameter total concentration symbols.
++"""
++function q_para_sym(args...)
++    bn = get_binding_network(args...)
++    cn = _require_catalysis_network(args...)
++    return bn.q_sym[cn.r_v+cn.d_w+1:bn.d]
++end
++
++"""
++    q_ss_sym(args...) -> Vector{Num}
++
++Return the steady-state reduced symbols `(w, q_para)`.
++"""
++q_ss_sym(args...) = [w_sym(args...); q_para_sym(args...)]
++
++@inline xk_sym(args...) = [x_sym(args...); k_sym(args...)]
++@inline qKk_sym(args...) = [q_sym(args...); K_sym(args...); k_sym(args...)]
++@inline qssKk_sym(args...) = [q_ss_sym(args...); K_sym(args...); k_sym(args...)]
++
++@inline _time_sym() = Symbolics.variable(:t)
++@inline _d_dt(syms) = Symbolics.Differential(_time_sym()).(syms)
++
++function _flux_sym(args...)
++    cn = _require_catalysis_network(args...)
++    flux_monomials = handle_log_weighted_sum(cn.Π, x_sym(args...))
++    return k_sym(args...) .* flux_monomials
++end
++
++
++
++
++
++# SISO path associated symbols
+ """
+     q_sym(grh::SISOPaths, args...) -> Vector{Num}
+ 
+@@ -32,8 +115,9 @@ Return q symbols for a SISO path, excluding the varying coordinate.
+ """
+ q_sym(grh::SISOPaths,args...)= begin
+     bn = get_binding_network(grh)
+-    q_sym = if grh.change_qK_idx <= bn.d
+-        deleteat!(copy(bn.q_sym), grh.change_qK_idx)
++    change_qK_idx = get_change_qK_idx(grh)
++    q_sym = if change_qK_idx <= bn.d
++        deleteat!(copy(bn.q_sym), change_qK_idx)
+     else
+         bn.q_sym
+     end
+@@ -46,32 +130,39 @@ Return K symbols for a SISO path, excluding the varying coordinate.
+ """
+ K_sym(grh::SISOPaths,args...)= begin
+     bn = get_binding_network(grh)
+-    K_sym = if grh.change_qK_idx > bn.d
+-        deleteat!(copy(bn.K_sym), grh.change_qK_idx - bn.d)
++    change_qK_idx = get_change_qK_idx(grh)
++    K_sym = if change_qK_idx > bn.d
++        deleteat!(copy(bn.K_sym), change_qK_idx - bn.d)
+     else
+         bn.K_sym
+     end
+     return K_sym
+ end
+ 
++
++
++
++
++#===============================================#
++# Basic Reaction order symbols
++#===============================================#
+ """
+     ∂logqK_∂logx_sym(bnc::Bnc; show_x_space=false) -> Matrix{Num}
+ 
+ Symbolically compute `∂log(qK)/∂log(x)`.
+ """
+ function ∂logqK_∂logx_sym(Bnc::Bnc; show_x_space::Bool=false)::Matrix{Num}
+-
+     if show_x_space
+         q = Bnc.L * Bnc.x_sym
+     else
+         q = Bnc.q_sym
+     end
+-
+     return [
+-        transpose(Bnc.x_sym) .* Bnc.L ./ q
+-        Bnc.N
++        transpose(Bnc.x_sym) .* Matrix(Bnc.L) ./ q
++        Matrix(Bnc.N)
+     ]
+ end
++
+ """
+     logder_qK_x_sym(args...; kwargs...) -> Matrix{Num}
+ 
+@@ -97,22 +188,17 @@ Alias for `∂logx_∂logqK_sym`.
+ logder_x_qK_sym(args...;kwargs...) = ∂logx_∂logqK_sym(args...;kwargs...)
+ 
+ 
+-#---------------------------------------------------------
+-#   Below are regimes associtaed symbolic functions
+-#---------------------------------------------------------
+-
+-@inline function _symbolic_pretty_scalar(x::Real)
+-    if x isa Integer || x isa Rational
+-        return x
+-    elseif x isa AbstractFloat && isfinite(x)
+-        rounded = round(Int, x)
+-        return isapprox(x, rounded; atol=1e-12, rtol=0.0) ? rounded : x
+-    end
+-    return x
+-end
++#===============================================#
++# Regimes associated symbols
++#===============================================#
+ 
+-_symbolic_pretty_vector(v::AbstractVector{<:Real}) = [_symbolic_pretty_scalar(x) for x in v]
+-_symbolic_pretty_matrix(A::AbstractMatrix{<:Real}) = [_symbolic_pretty_scalar(A[i, j]) for i in axes(A, 1), j in axes(A, 2)]
++_symbolic_pretty_scalar(v) = (v isa AbstractFloat && isfinite(v) && abs(v - round(v)) <= 1e-12) ? Int(round(v)) : v
++_symbolic_pretty_vector(x) = map(_symbolic_pretty_scalar, x)
++# For dense matrices, prettify scalars (may widen eltype, but dense multiply is type-flexible).
++# For sparse matrices, skip prettify: map() over a SparseMatrixCSC{Float64} produces
++# SparseMatrixCSC{Real} (abstract eltype) which fails to multiply with Vector{Num} on Julia 1.12.
++_symbolic_pretty_matrix(A::AbstractMatrix) = map(_symbolic_pretty_scalar, A)
++_symbolic_pretty_matrix(A::SparseArrays.AbstractSparseMatrix) = A
+ 
+ """
+     show_condition_poly(C, C0, nullity=0; syms, log_space=true, asymptotic=false) -> Vector
+@@ -127,7 +213,7 @@ function show_condition_poly(C::AbstractMatrix{<:Real},
+                         log_space::Bool = true,
+                         asymptotic::Bool = false
+ )
+-    C_pretty = _symbolic_pretty_matrix(C)
++    C_pretty  = _symbolic_pretty_matrix(C)
+     C0_pretty = _symbolic_pretty_vector(C0)
+ 
+     # Helper: generate symbolic expression per row
+@@ -236,14 +322,14 @@ end
+ Return symbolic expressions for mappings of the form `log(y) = C log(x) + C0`.
+ """
+ function show_expression_mapping(C::AbstractMatrix{<:Real}, C0::AbstractVector{<:Real}, y, x; log_space::Bool=true,asymptotic::Bool=false)::Vector{Equation}
+-    C_pretty = _symbolic_pretty_matrix(C)
++    C_pretty  = _symbolic_pretty_matrix(C)
+     C0_pretty = _symbolic_pretty_vector(C0)
+     if log_space
+         expr =  asymptotic ?   log10.(y) .~ C_pretty * log10.(x) : log10.(y) .~ C_pretty * log10.(x) .+ C0_pretty
+     else
+         expr =  asymptotic ? y .~ handle_log_weighted_sum(C_pretty, x) : y .~ handle_log_weighted_sum(C_pretty, x, C0_pretty)
+     end
+-    return expr 
++    return expr
+ end
+ """
+     show_expression_mapping(C::AbstractVector, C0::Real, args...; kwargs...) -> Equation
+@@ -263,6 +349,8 @@ show_expression_x(args...;kwargs...)= begin
+     x = qK_sym(bn)
+     show_expression_mapping(get_H_H0(args...)..., y,x; kwargs...)
+ end
++show_expression_x(rgm::BncRegime; kwargs...) = show_expression_mapping(get_H_H0(rgm)..., x_sym(rgm), qssKk_sym(rgm); kwargs...)
++show_expression_x(model::Bnc, bind, cat; kwargs...) = show_expression_x(get_bnc_regime(model, bind, cat; check=true); kwargs...)
+ 
+ """
+     show_expression_qK(args...; kwargs...) -> Vector{Equation}
+@@ -276,6 +364,15 @@ show_expression_qK(args...;kwargs...)= begin
+     show_expression_mapping(get_M_M0(args...)..., y,x; kwargs...)
+ end
+ 
++"""
++    show_expression_qcat(args...; kwargs...) -> Vector{Equation}
++
++Show the affine expression of `q_cat` in the `(q_ss, K, k)` variables for a
++regular `BncRegime`.
++"""
++show_expression_qcat(rgm::BncRegime; kwargs...) = show_expression_mapping(get_qcat_F_F0(rgm)..., q_cat_sym(rgm), qssKk_sym(rgm); kwargs...)
++show_expression_qcat(model::Bnc, bind, cat; kwargs...) = show_expression_qcat(get_bnc_regime(model, bind, cat; check=true); kwargs...)
++
+ 
+ """
+     show_dominant_condition(args...; log_space=false, kwargs...) -> Vector{Equation}
+@@ -293,7 +390,7 @@ end
+ 
+ Return conservation equations `q = Lx`.
+ """
+-show_conservation(Bnc::Bnc)=Bnc.q_sym .~ Bnc._L_sparse * Bnc.x_sym
++show_conservation(Bnc::Bnc)=Bnc.q_sym .~ Bnc.L * Bnc.x_sym
+ """
+     show_equilibrium(bnc::Bnc; log_space=true) -> Vector{Equation}
+ 
+@@ -302,6 +399,99 @@ Return equilibrium equations relating `K` and `x`.
+ show_equilibrium(Bnc::Bnc;log_space::Bool=true) = show_expression_mapping(Bnc.N, zeros(Int,Bnc.r), Bnc.K_sym, Bnc.x_sym; log_space=log_space)
+ 
+ 
++"""
++    show_catalysis_dynamics(args...) -> Vector{Equation}
++
++Render the unreduced catalysis dynamics
++`d(q_cat,w)/dt = Γ * Diag(k) * x^Π`, `dq_para/dt = 0`.
++"""
++function show_catalysis_dynamics(args...)
++    cn = _require_catalysis_network(args...)
++    q_cat_w = [q_cat_sym(args...); w_sym(args...)]
++    q_para = q_para_sym(args...)
++    v = _flux_sym(args...)
++
++    eqs = Symbolics.Equation[]
++    append!(eqs, _d_dt(q_cat_w) .~ (cn.Γ * v))
++    append!(eqs, _d_dt(q_para) .~ 0)
++    return eqs
++end
++
++"""
++    show_reduced_catalysis_dynamics(args...) -> Vector{Equation}
++
++Render the reduced catalysis dynamics
++`dq_cat/dt = S * Diag(k) * x^Π`, `dw/dt = 0`, `dq_para/dt = 0`.
++"""
++function show_reduced_catalysis_dynamics(args...)
++    cn = _require_catalysis_network(args...)
++    v = _flux_sym(args...)
++
++    eqs = Symbolics.Equation[]
++    append!(eqs, _d_dt(q_cat_sym(args...)) .~ (cn.S * v))
++    append!(eqs, _d_dt(w_sym(args...)) .~ 0)
++    append!(eqs, _d_dt(q_para_sym(args...)) .~ 0)
++    return eqs
++end
++
++
++
++
++
++"""
++    show_condition_xk(args...; kwargs...) -> Vector
++
++Show conditions in the `(x, k)` variables.
++"""
++function show_condition_xk(rgm::CatalysisRegime; kind::Symbol=:all, kwargs...)
++    syms = xk_sym(rgm)
++    if kind === :steady_state
++        return show_condition_poly(get_P_xk(rgm), get_P0(rgm), size(get_P(rgm), 1); syms=syms, kwargs...)
++    elseif kind === :dominance
++        return show_condition_poly(get_C_xk(rgm), get_C0(rgm); syms=syms, kwargs...)
++    elseif kind === :all || kind === :combined
++        return show_condition_poly(get_C_C0_nullity_xk(rgm)...; syms=syms, kwargs...)
++    else
++        error("Unsupported kind=$kind. Use :steady_state, :dominance, or :all.")
++    end
++end
++show_condition_xk(model::CatalysisData, perm_or_idx; kwargs...) = show_condition_xk(get_catalysis_regime(model, perm_or_idx; check=true); kwargs...)
++show_condition_xk(model::AbstractBnc, perm_or_idx; kwargs...) = show_condition_xk(get_catalysis_regime(model, perm_or_idx; check=true); kwargs...)
++
++function show_condition_xk(rgm::BncRegime; kind::Symbol=:combined, kwargs...)
++    return show_condition_poly(get_C_C0_nullity_xk(rgm, kind)...; syms=xk_sym(rgm), kwargs...)
++end
++show_condition_xk(model::Bnc, bind, cat; kwargs...) = show_condition_xk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
++
++
++
++
++
++"""
++    show_condition_qKk(args...; kwargs...) -> Vector
++
++Show conditions in the `(q_cat, w, q_para, K, k)` variables.
++"""
++function show_condition_qKk(rgm::BncRegime; kind::Symbol=:combined, kwargs...)
++    return show_condition_poly(get_C_C0_nullity_qKk(rgm, kind)...; syms=qKk_sym(rgm), kwargs...)
++end
++show_condition_qKk(model::Bnc, bind, cat; kwargs...) = show_condition_qKk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
++
++
++
++
++"""
++    show_condition_qssKk(args...; kwargs...) -> Vector
++
++Show the steady-state consistency conditions in the `(w, q_para, K, k)` variables.
++"""
++function show_condition_qssKk(rgm::BncRegime; kwargs...)
++    return show_condition_poly(get_C_C0_nullity_qssKk(rgm)...; syms=qssKk_sym(rgm), kwargs...)
++end
++show_condition_qssKk(model::Bnc, bind, cat; kwargs...) = show_condition_qssKk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
++show_consistency_condition(args...; kwargs...) = show_condition_qssKk(args...; kwargs...)
++
++
+ 
+ 
+ 
+@@ -326,6 +516,48 @@ function handle_log_weighted_sum(A::AbstractMatrix{<:Real}, x , b::Union{Nothing
+ end
+ 
+ 
++
++"""
++    solve_sym_expr(a, b, x, idx; log_space=true) -> Equation
++
++Solve `a'x + b = 0` for the variable at `idx` symbolically.
++"""
++function solve_sym_expr(a::AbstractVector{<:Real}, b::Real, x, idx; log_space::Bool=true)
++    a = copy(collect(a))
++    x = copy(x)
++    ai = popat!(a, idx)
++    target_x = popat!(x, idx)
++    @assert abs(ai) > 1e-10 "Cannot solve for the variable at index $idx since its coefficient is zero." 
++    a ./= -ai
++    b /= -ai
++
++    target = log_space ? log10(target_x) : target_x
++    expr = log_space ? a' * log10.(x) .+ b : handle_log_weighted_sum(a', x, [b])[1]
++    return target ~ expr
++end
++
++"""
++    show_interface(bnc::Bnc, from, to; lhs_idx=nothing, kwargs...) -> Any
++
++Display the interface expression between two regimes.
++"""
++function show_interface(Bnc::Bnc, from,to;  lhs_idx::Union{Nothing,Integer}=nothing, kwargs...)
++    C, C0 = get_interface(Bnc,from,to) # C' log qK + C0 =0
++    if isnothing(lhs_idx)
++        return show_condition_poly(C, C0, 1 ;syms =  qK_sym(Bnc) ,kwargs...)
++    else
++        return solve_sym_expr(C,C0, qK_sym(Bnc), lhs_idx;kwargs...)
++    end
++end
++
++
++
++
++
++#===============================================================================================================#
++# Regime Path associated symbolic functions
++#===============================================================================================================#
++
+ """
+     sym_direction(bnc::Bnc, dir) -> String
+ 
+@@ -501,45 +733,6 @@ print_path(path::AbstractVector; id = nothing, volume = nothing, kwargs...) =
+         ); kwargs...)
+ 
+ 
+-
+-
+-"""
+-    solve_sym_expr(a, b, x, idx; log_space=true) -> Equation
+-
+-Solve `a'x + b = 0` for the variable at `idx` symbolically.
+-"""
+-function solve_sym_expr(a::AbstractVector{<:Real}, b::Real, x, idx; log_space::Bool=true)
+-    a = copy(collect(a))
+-    x = copy(x)
+-    ai = popat!(a, idx)
+-    target_x = popat!(x, idx)
+-    @assert abs(ai) > 1e-10 "Cannot solve for the variable at index $idx since its coefficient is zero." 
+-    a ./= -ai
+-    b /= -ai
+-
+-    target = log_space ? log10(target_x) : target_x
+-    expr = log_space ? a' * log10.(x) .+ b : handle_log_weighted_sum(a', x, [b])[1]
+-    return target ~ expr
+-end
+-
+-"""
+-    show_interface(bnc::Bnc, from, to; lhs_idx=nothing, kwargs...) -> Any
+-
+-Display the interface expression between two regimes.
+-"""
+-function show_interface(Bnc::Bnc, from,to;  lhs_idx::Union{Nothing,Integer}=nothing, kwargs...)
+-    C, C0 = get_interface(Bnc,from,to) # C' log qK + C0 =0
+-    if isnothing(lhs_idx)
+-        return show_condition_poly(C, C0, 1 ;syms =  qK_sym(Bnc) ,kwargs...)
+-    else
+-        return solve_sym_expr(C,C0, qK_sym(Bnc), lhs_idx;kwargs...)
+-    end
+-end
+-
+-
+-
+-
+-
+ """
+     show_expression_path(grh::SISOPaths, pth; observe_x=nothing, kwargs...) -> nothing
+ 
+@@ -550,7 +743,7 @@ function show_expression_path(grh::SISOPaths, pth; observe_x=nothing, kwargs...)
+     bn = get_binding_network(grh)
+ 
+     observe_x_idx = isnothing(observe_x) ? (1:bn.n) : locate_sym_x.(Ref(bn), observe_x)
+-    change_qK_idx = grh.change_qK_idx
++    change_qK_idx = get_change_qK_idx(grh)
+ 
+     xsym = x_sym(bn)[observe_x_idx]
+     qKsym = qK_sym(bn)
+@@ -631,7 +824,7 @@ Return symbolic expressions and interface locations along a regime path.
+ function show_expression_path(model::Bnc, rgm_path, change_qK_idx, observe_x_idx;log_space::Bool=false)::Tuple{Vector,Vector}
+     change_qK_idx = locate_sym([model.q_sym;model.K_sym],change_qK_idx)
+     observe_x_idx = locate_sym(model.x_sym, observe_x_idx)
+-    have_volume_mask = _get_vertices_mask(model, rgm_path; singular=false)
++    have_volume_mask = _get_regimes_mask(model, rgm_path; singular=false)
+     idx = findall(have_volume_mask)
+     exprs = map(idx) do id
+         show_expression_x(model, rgm_path[id];log_space=log_space)[observe_x_idx].rhs
+@@ -650,4 +843,4 @@ end
+ 
+ Convenience wrapper for `show_expression_path` with a SISO path index.
+ """
+-show_expression_path(grh::SISOPaths, pth_idx, observe_x; kwargs...)=show_expression_path(get_binding_network(grh), grh.rgm_paths[pth_idx], grh.change_qK_idx, observe_x; kwargs...)
++show_expression_path(grh::SISOPaths, pth_idx, observe_x; kwargs...)=show_expression_path(get_binding_network(grh), grh.rgm_paths[pth_idx], get_change_qK_idx(grh), observe_x; kwargs...)

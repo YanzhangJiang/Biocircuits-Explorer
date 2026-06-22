@@ -143,8 +143,11 @@ end
     @test string.(model.q_sym) == ["tA", "tL"]
     @test string.(model.K_sym) == ["Kd1"]
 
-    perms = find_all_vertices!(model)
-    @test length(perms) == 4                                # characterization snapshot
+    # UPSTREAM CHANGE (b30087f): find_all_vertices! (alias for find_all_regimes!)
+    # now returns `nothing` (mutates model in place) rather than returning the
+    # permutation vector. Use n_vertices() to assert the count instead.
+    find_all_vertices!(model)
+    @test n_vertices(model) == 4                            # characterization snapshot
     @test length(get_vertices(model; asymptotic=true, return_idx=true)) == 4   # snapshot
     @test length(get_vertices(model; singular=false, return_idx=true)) == 3    # snapshot
 

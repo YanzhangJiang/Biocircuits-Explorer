@@ -503,16 +503,19 @@ def ro_behavior(reactions, kd=None, input_symbol=None, observe_species=None, **_
 _READER_PROTOS = ["bump", "broad_bump", "right_peak", "left_peak", "valley",
                   "switch_on", "switch_off", "late_dip", "double_bump", "shoulder"]
 
-def reader_panel(prototype="bump", intent="typical", behavior_class=None, k=6, max_reactions=None, **_):
-    """Stage-2-lite Function-Space Reader: a hybrid, evidence-backed candidate PANEL from the
-    precomputed curve-packet atlas (label recall → function rerank → ROP-evidence rerank → diverse
-    panel). A PRIOR/seed list — VERIFY a pick with `simulate` before presenting, never fabricate."""
+def reader_panel(prototype="bump", intent="typical", behavior_class=None, nl=None, k=6, max_reactions=None, **_):
+    """Function-Space Reader: an INTENT-ROUTED, evidence-backed candidate PANEL from the frozen
+    industrial atlas_root (robust→label+support primary; typical/refinement→label recall+function
+    rerank; existential/discovery→function primary). `nl` (the user's behaviour description) is
+    compiled to target+intent; else `prototype`+`intent`. Returns route + coverage_status. A
+    PRIOR/seed list — VERIFY a pick with `simulate` before presenting, never fabricate."""
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "reader"))
     try:
         import reader_service as RS
     except Exception as e:
         return {"error": f"reader service unavailable: {e}"}
-    res = RS.panel(prototype=prototype, intent=intent, behavior_label=behavior_class, k=k, max_reactions=max_reactions)
+    res = RS.panel(nl=nl, prototype=None if nl else prototype, intent=None if nl else intent,
+                   behavior_label=behavior_class, k=k, max_reactions=max_reactions)
     if isinstance(res, dict) and res.get("error"):
         return res
     cands = [{"record_id": c["record_id"], "reactions": c["reactions"],
@@ -522,10 +525,15 @@ def reader_panel(prototype="bump", intent="typical", behavior_class=None, k=6, m
               "evidence_tier": c["evidence"]["evidence_tier"], "shape_support": c["evidence"]["shape_support"],
               "rop_volume": c["evidence"]["volume_mean"], "robust_path_count": c["evidence"]["robust_path_count"]}
              for c in res.get("candidates", [])]
-    return {"family": "reader_panel", "intent": intent, "pipeline": res.get("pipeline"),
-            "panel_diversity": res.get("panel_diversity"), "candidates": cands,
-            "note": "function-space atlas panel (PRIOR ranked by curve-match + ROP evidence). VERIFY a pick "
-                    "with `simulate` (its reactions+input_symbol+observe_species) before presenting — do not fabricate."}
+    out = {"family": "reader_panel", "intent": res.get("query", {}).get("intent_type", intent),
+           "route": res.get("route"), "coverage_status": res.get("coverage_status"),
+           "pipeline": res.get("pipeline"), "panel_diversity": res.get("panel_diversity"), "candidates": cands,
+           "note": "intent-routed function-space atlas panel (PRIOR ranked by curve-match + ROP evidence; "
+                   "see coverage_status). VERIFY each pick with `simulate` (its reactions+input_symbol+"
+                   "observe_species) before presenting; if coverage_status is rare-or-absent, say so honestly."}
+    if res.get("compiled_spec"):
+        out["compiled_spec"] = res["compiled_spec"]
+    return out
 
 TOOLS_DISPATCH = {"corpus_overview": corpus_overview, "retrieve_atlas_seed": retrieve_atlas_seed,
                   "retrieve_logic_seed": retrieve_logic_seed, "retrieve_analog_seed": retrieve_analog_seed,
@@ -582,14 +590,15 @@ TOOLSPEC = [
          "observe_species": {"type": "string", "description": "observed output species (omit to use the main product)"}},
          "required": ["reactions"], "additionalProperties": False}},
     {"name": "reader_panel",
-     "description": "Stage-2-lite FUNCTION-SPACE READER: a hybrid, evidence-backed candidate PANEL from the precomputed curve-packet atlas — label recall → function-shape rerank (by intent) → ROP-evidence rerank → diverse panel. `prototype` picks the target dose shape; `intent` = existential (find ANY θ realising it — best for discovery / off-label) / typical (medoid) / robust (many θ realise it). Returns candidates with match_score, evidence_tier (T1/T2/T3a/T3b), shape_support, ROP volume + robust_path_count, and panel diversity. A PRIOR/seed list (like retrieve_*): VERIFY a pick with `simulate` before presenting. Needs the packet corpus (env BNE_PACKET_CORPUS); returns {error} if unavailable.",
+     "description": "FUNCTION-SPACE READER: an INTENT-ROUTED, evidence-backed candidate PANEL from the frozen industrial atlas — robust→label+support primary; typical/refinement→label recall+function rerank; existential/discovery→function primary; plus a coverage_status (well-covered / sparse / rare-or-absent). Pass EITHER `nl` (the user's behaviour description, compiled to target+intent) OR `prototype`+`intent`. Returns candidates with match_score, evidence_tier (T1/T2/T3a/T3b), shape_support, ROP volume + robust_path_count, panel diversity, route, and coverage_status. A PRIOR/seed list (like retrieve_*): VERIFY each pick with `simulate` before presenting; if coverage_status is rare-or-absent, report that honestly. Needs the atlas (env BNE_ATLAS_ROOT / BNE_PACKET_CORPUS); returns {error} if unavailable.",
      "parameters": {"type": "object", "properties": {
-         "prototype": {"type": "string", "enum": _READER_PROTOS, "description": "target dose shape nearest the user's request"},
+         "nl": {"type": "string", "description": "the user's behaviour request in natural language (preferred; compiled to target+intent+coverage)"},
+         "prototype": {"type": "string", "enum": _READER_PROTOS, "description": "target dose shape (if not using nl)"},
          "intent": {"type": "string", "enum": ["existential", "typical", "robust"], "description": "existential=find any realisation (discovery/off-label), typical=medoid, robust=many θ realise it"},
          "behavior_class": {"type": "string", "description": "optional nearest vocab label to seed label-recall"},
          "k": {"type": "integer", "description": "panel size (default 6)"},
          "max_reactions": {"type": "integer", "description": "optional network-size cap"}},
-         "required": ["prototype"], "additionalProperties": False}},
+         "additionalProperties": False}},
 ]
 OPENAI_TOOLS = [{"type": "function", "function": t} for t in TOOLSPEC]
 ANTHROPIC_TOOLS = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in TOOLSPEC]

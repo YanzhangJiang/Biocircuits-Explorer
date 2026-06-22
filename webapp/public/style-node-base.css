@@ -767,6 +767,18 @@ textarea {
   background: var(--item-selected-bg); border-color: var(--item-selected-border); color: var(--item-selected-color);
 }
 
+/* ===== Design Target: selectable minimal-network rows (reuse .path-item) ===== */
+.design-net-row { display: flex; align-items: flex-start; gap: 8px; }
+.design-net-id {
+  flex: 1; min-width: 0;
+  font-family: 'Consolas', monospace; font-size: 12px;
+  color: var(--text-color); overflow-wrap: anywhere;
+}
+.design-net-io { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.design-net-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* .btn defaults to width:100%; margin-top:8px — demote the per-row action to compact inline. */
+.design-build-btn { width: auto; margin-top: 0; white-space: nowrap; }
+
 .scroll-panel {
   overflow-y: auto;
   scrollbar-gutter: stable;

@@ -1,3 +1,6 @@
+export locate_sym_x, locate_sym_qK, pythonprint, N_generator, L_generator, randomize
+export same_polyhedron
+
 """
     L_from_N(N::Matrix{Int}) -> Matrix{Int}
 
@@ -104,8 +107,6 @@ Return indices into `A.nzval` for diagonal entries up to `end_row`.
 """
 function diag_indices(A::SparseMatrixCSC,end_row::Int)
     # 获取稀疏矩阵 A 中对角线前end_row行元素在 nzval 中的位置
-    # rows = Int[]        # 存储行坐标
-    # cols = Int[]        # 存储列坐标
     idxs = Int[]        # 存储 nzval 的索引位置
 
     for j in 1:size(A,2)              # 遍历列
@@ -118,82 +119,6 @@ function diag_indices(A::SparseMatrixCSC,end_row::Int)
     end
     return idxs
 end
-
-#= Unused helpers retained for potential future reference.
-function log_sum_exp10(L::AbstractMatrix,logx::AbstractArray)
-    m = maximum(logx)
-    z = exp10.(x .-m)
-    y = L * z
-    return log10.(y) .+ m
-end
-
-function log_sum_exp10!(logq::AbstractVector, L::SparseMatrixCSC, logx::AbstractVector)
-    d, n = size(L)
-    m = maximum(logx)
-    fill!(logq, 0.0)
-    for col = 1:n
-        xj = logx[col] - m
-        ej = exp10(xj)
-        for idx = L.colptr[col]:(L.colptr[col+1]-1)
-            row = L.rowval[idx]
-            logq[row] += L.nzval[idx] * ej
-        end
-    end
-    @inbounds for i in 1:d
-        logq[i] = log10(logq[i]) + m
-    end
-    return logq
-end
-=#
-
-# helper funtions to taking inverse when the matrix is singular.
-"""
-    _adj_singular_matrix(A::AbstractMatrix; atol=1e-12) -> (SparseMatrixCSC, Int)
-
-Compute a sparse adjugate-like matrix for a near-singular square matrix using
-its smallest singular vector, and return the inferred nullity.
-
-# Arguments
-- `A`: Square matrix to analyze.
-
-# Keyword Arguments
-- `atol`: Absolute tolerance for identifying zero singular values.
-
-# Returns
-- Tuple `(adj_A, nullity)`.
-"""
-function  _adj_singular_matrix(A::AbstractMatrix; atol=1e-12)::Tuple{SparseMatrixCSC,Int}
-    n, m = size(A)
-    @assert n == m "A must be square"
-    F = svd(Array(A))
-    S = F.S
-    thresh = atol * maximum(S)
-    zero_ids = findall(σ -> σ ≤ thresh, S)
-    nullity = length(zero_ids)
-    if nullity == 1
-        k = zero_ids[1]
-        logσprod = sum(log, S[setdiff(1:n,[k])])
-        σprod = exp(logσprod)
-        sign_correction = det(F.U) * det(F.V) # to ensure the sign is right!!!!!!
-        u = F.U[:, k]   # 左奇异向量
-        v = F.V[:, k]   # 右奇异向量
-        adj_A = (sign_correction *σprod) * (sparsevec(v) * sparsevec(u)') 
-        return droptol!(adj_A,1e-10), 1  # rank-1 矩阵
-        # return σprod * (v * u'), 1  # rank-1 矩阵
-    else
-        return spzeros(0,0), nullity
-    end
-end
-
-# function inv_singularity_matrix(M::Matrix{<:Real})
-#     M_lu = lu(M,check=false)
-#     if issuccess(M_lu) # Lu successfully.
-#         return inv(M_lu),0  # singularity is 0, not singular
-#     else
-#         return _adj_singular_matrix(M)  # calculate the adj matrix, singularity is calculated and returned,
-#     end
-# end
-
 
 """
     randomize(n::Int, size; kwargs...) -> Array{Vector{Float64}}
@@ -699,28 +624,9 @@ end
 
 Return the provided index directly for convenience.
 """
-function locate_sym(syms, target_sym::Integer)
-    return target_sym
-end
-"""
-    locate_sym_x(model::Bnc, target_sym) -> Int
-
-Locate a species symbol in a `Bnc` model.
-"""
-function locate_sym_x(model::Bnc,target_sym)
-    return locate_sym(model.x_sym, target_sym)
-end
-"""
-    locate_sym_qK(model::Bnc, target_sym) -> Int
-
-Locate a total or binding constant symbol in a `Bnc` model.
-"""
-function locate_sym_qK(model::Bnc,target_sym)
-    return locate_sym([model.q_sym;model.K_sym], target_sym)
-end
-
-
-
+locate_sym(syms, target_sym::Integer) = target_sym
+locate_sym_x(model::Bnc,target_sym) = locate_sym(x_sym(model), target_sym)
+locate_sym_qK(model::Bnc,target_sym) = locate_sym(qK_sym(model), target_sym)
 
 
 #--------------------------------------------
@@ -732,24 +638,6 @@ end
 Remove everything before the first `[` character, including the bracket.
 """
 strip_before_bracket(s::AbstractString) =    replace(s, r"^[^\[]*" => "")
-
-#----------------------------------
-# helper functions for calculation
-#------------------------------------
-#= Unused helper for copying vectors without an index.
-function removed_copy(v::Vector{T}, i::Int) where T
-    n = length(v)
-    @boundscheck 1 ≤ i ≤ n || throw(BoundsError(v, i))
-    out = Vector{T}(undef, n - 1)
-    @inbounds begin
-        copyto!(out, 1, v, 1, i - 1)
-        copyto!(out, i, v, i + 1, n - i)
-    end
-    return out
-end
-
-rest = removed_copy(v, i)
-=#
 
 
 #------------------------------------------------------------
@@ -797,53 +685,6 @@ function sources_sinks_from_paths(paths::AbstractVector{<:AbstractVector{<:Integ
     return sources, sinks
 end
 
-
-
-
-# #---------------------------------------------------
-# # Try using DAE solver to solve the logx-logqK conversion problem.
-# #---------------------------------------------------
-
-# function _logx_traj_with_logqK_change_test(Bnc::Bnc,
-#     startlogqK::Union{Vector{<:Real},Nothing},
-#     endlogqK::Vector{<:Real};
-#     startlogx::Union{Vector{<:Real},Nothing}=nothing,
-#     reltol=1e-8,
-#     abstol=1e-9,
-#     kwargs... 
-# )::ODESolution
-#     n = Bnc.n
-#     d = Bnc.d
-#     startlogx = isnothing(startlogx) ? qK2x(Bnc, startlogqK; input_logspace=true, output_logspace=true) : startlogx
-#     #Homotopy path in log-space( a straight line)
-#     ΔlogqK = Float64.(endlogqK - startlogqK)
-#     # Create thread-local copies of all mutable data structures
-#     logqK = Vector{Float64}(undef, n)
-
-#     L = Bnc.L
-#     N = Bnc.N
-    
-#     function f(resid,du,u,p,t) # du:δlogx u:logx, 
-#         logqK .= t* ΔlogqK .+ startlogqK
-#         J = [diagm( 1 ./ exp10.(logqK[1:d])) * L * diagm( exp10.(u) );
-#                 N ] # J = diag(1/q) * L * diag(x)
-#         resid .= J * du .- ΔlogqK
-#     end
-
-#     function jac(J,du,u,p,gamma,t)
-#         logqK .= t* ΔlogqK .+ startlogqK
-#         J .= [diagm( 1 ./ exp10.(logqK[1:d])) * L * diagm(exp10.(u) .* (du .+ gamma));
-#                 N ]
-#     end
-
-#     func = DAEFunction(f; jac=jac, jac_prototype = sparse([L;N]))
-
-#     tspan = (0.0, 1.0)
-#     prob = ODE.DAEProblem(func, startlogx, tspan, params)
-#     sol = ODE.solve(prob, Sundials.IDA(linear_solver=:KLU); reltol=reltol, abstol=abstol, callback=callback, kwargs...)
-#     return sol
-# end
-
 """
     norm_vec_space(x::AbstractVector{<:Real}) -> Vector{Float64}
 
@@ -870,7 +711,7 @@ Render an array as a formatted string, optionally replacing specified entries.
 function render_array(M::AbstractArray,empty_posi_subs=nothing)
     A = Array{Any}(M)
     f(x) = begin
-            a = try
+            a = try 
                     Int(round(x;digits=3))
                 catch
                     round(x;digits=5)
@@ -882,124 +723,9 @@ function render_array(M::AbstractArray,empty_posi_subs=nothing)
 end
 
 
-#------------------------------------------------------------
-# Expression parser for linear combinations
-#------------------------------------------------------------
-
-"""
-    parse_linear_combination(model::Bnc, expr::String) -> Vector{Float64}
-
-Parse a linear combination expression and return coefficient vector.
-
-# Examples
-- "C_ES" → [0, 0, 1, 0, ...] (if C_ES is at index 3)
-- "2*C_ES + C_EP" → [0, 0, 2, 1, ...] (if C_ES at 3, C_EP at 4)
-- "C_ES + C_EP + C_EI" → [0, 0, 1, 1, 1, ...] (sum of products)
-
-# Supported syntax
-- Species names: must match model.x_sym
-- Operators: +, -, *
-- Numbers: integers and floats (e.g., 2, 0.5, 1.5)
-- Whitespace: ignored
-
-# Returns
-- Vector{Float64} of length model.n with coefficients
-"""
-function parse_linear_combination(model::Bnc, expr::String)::Vector{Float64}
-    # Remove all whitespace
-    expr = replace(expr, r"\s+" => "")
-
-    # Check for empty expression
-    isempty(expr) && error("Empty expression")
-
-    # Initialize coefficient vector
-    coeffs = zeros(Float64, model.n)
-
-    # Split by + and - while keeping the operators
-    terms = split_with_operators(expr)
-
-    for term in terms
-        # Parse each term: [sign][coeff]*species or [sign]species
-        sign, coeff, species = parse_term(term)
-
-        # Find species index
-        idx = locate_sym_x(model, Symbol(species))
-        idx === nothing && error("Unknown species: $species")
-
-        # Add to coefficient vector
-        coeffs[idx] += sign * coeff
-    end
-
-    return coeffs
-end
-
-"""
-    split_with_operators(expr::String) -> Vector{String}
-
-Split expression by + and -, keeping track of signs.
-"""
-function split_with_operators(expr::String)::Vector{String}
-    terms = String[]
-    current = ""
-    sign = "+"
-
-    for c in expr
-        if c == '+' || c == '-'
-            if !isempty(current)
-                push!(terms, sign * current)
-                current = ""
-            end
-            sign = string(c)
-        else
-            current *= c
-        end
-    end
-
-    if !isempty(current)
-        push!(terms, sign * current)
-    end
-
-    isempty(terms) && error("Invalid expression: no terms found")
-
-    return terms
-end
-
-"""
-    parse_term(term::String) -> (Float64, Float64, String)
-
-Parse a single term: [+/-][number]*species or [+/-]species.
-
-# Returns
-- Tuple (sign, coefficient, species_name)
-"""
-function parse_term(term::String)::Tuple{Float64, Float64, String}
-    # Parse: [+/-][number]*species or [+/-]species
-    sign = term[1] == '-' ? -1.0 : 1.0
-    term = term[1] in ['+', '-'] ? term[2:end] : term
-
-    isempty(term) && error("Invalid term: empty after sign")
-
-    if '*' in term
-        parts = split(term, '*')
-        length(parts) == 2 || error("Invalid term: $term (multiple * operators)")
-        try
-            coeff = parse(Float64, parts[1])
-            species = parts[2]
-            isempty(species) && error("Invalid term: $term (no species after *)")
-            return sign, coeff, species
-        catch e
-            error("Invalid term: $term (cannot parse coefficient)")
-        end
-    else
-        coeff = 1.0
-        species = term
-        return sign, coeff, species
-    end
-end
-
 
 #--------------------------------------------------------
-# Helper functions to handle adjacency matrix compress
+# Helper functions to handle adjency matrix compress
 #---------------------------------------------------------
 
 function compress_adjacency(
@@ -1018,6 +744,7 @@ function compress_adjacency(
 
     m = length(keep)
 
+    # 原图编号 -> 压缩后编号；非 keep 节点记 0
     keep_pos = zeros(Int, n)
     for (i, v) in enumerate(keep)
         keep_pos[v] = i
@@ -1035,6 +762,7 @@ function compress_adjacency(
     I = Int[]
     J = Int[]
 
+    # 1) 保留 keep-keep 原始边
     @inbounds for j in keep
         jj = keep_pos[j]
         for p in nzrange(A2, j)
@@ -1047,6 +775,7 @@ function compress_adjacency(
         end
     end
 
+    # 2) 在 drop 子图中找连通块；每个连通块接触到的 keep 点两两补边
     visited = falses(n)
     stack = Int[]
 
@@ -1093,16 +822,16 @@ function compress_adjacency(
             ia = touched[a]
             for b in a+1:t
                 ib = touched[b]
-                push!(I, ia)
-                push!(J, ib)
-                push!(I, ib)
-                push!(J, ia)
+                push!(I, ia); push!(J, ib)
+                push!(I, ib); push!(J, ia)
             end
         end
     end
 
+    # 用逻辑或合并重复边，得到 Bool 稀疏邻接矩阵
     B = sparse(I, J, fill(true, length(I)), m, m, |)
 
+    # 去掉自环
     if nnz(B) > 0
         B = B - spdiagm(0 => diag(B))
         dropzeros!(B)
@@ -1110,6 +839,8 @@ function compress_adjacency(
 
     return B
 end
+
+
 
 function connected_components_sparse(A::SparseMatrixCSC)
     n = size(A, 1)
@@ -1134,6 +865,7 @@ function connected_components_sparse(A::SparseMatrixCSC)
             u = pop!(stack)
             push!(comp, u)
 
+            # 遍历第 u 列所有非零行号
             for p in nzrange(A, u)
                 v = rows[p]
                 if v != u && !visited[v]
@@ -1149,3 +881,243 @@ function connected_components_sparse(A::SparseMatrixCSC)
 
     return Set.(groups), labels
 end
+
+
+#============================================================#
+# Helper functions to calculate a matrix's left nullspace
+#============================================================#
+
+
+# Row-reduced echelon form over an arbitrary exact scalar type,
+# e.g. Rational{Int}. Returns:
+#   M          : RREF(A)
+#   pivotcols  : pivot columns of A
+function rref_exact(A::AbstractMatrix{T}) where {T<:Number}
+    M = copy(A)
+    m, n = size(M)
+    pivotcols = Int[]
+    row = 1
+
+    @inbounds for col in 1:n
+        row > m && break
+
+        # find pivot row
+        pivot = 0
+        for r in row:m
+            if M[r, col] != 0
+                pivot = r
+                break
+            end
+        end
+        pivot == 0 && continue
+
+        # swap rows manually (avoids slice allocations)
+        if pivot != row
+            for j in 1:n
+                M[row, j], M[pivot, j] = M[pivot, j], M[row, j]
+            end
+        end
+
+        # normalize pivot row
+        piv = M[row, col]
+        if piv != one(T)
+            for j in col:n
+                M[row, j] /= piv
+            end
+        end
+
+        # eliminate other rows
+        for r in 1:m
+            r == row && continue
+            c = M[r, col]
+            c == 0 && continue
+            for j in col:n
+                M[r, j] -= c * M[row, j]
+            end
+        end
+
+        push!(pivotcols, col)
+        row += 1
+    end
+
+    return M, pivotcols
+end
+
+
+# Convert a rational vector to a primitive integer vector.
+# Optionally flips sign so the first nonzero entry is positive.
+function primitive_integer(v::AbstractVector{<:Rational})
+    dens = denominator.(v)
+    L = foldl(lcm, dens; init=1)
+
+    w = Int.(L .* v)
+
+    g = foldl(gcd, abs.(w); init=0)
+    g = g == 0 ? 1 : g
+    w = div.(w, g)
+
+    # canonical sign choice: first nonzero entry positive
+    for x in w
+        if x != 0
+            if x < 0
+                w = .-w
+            end
+            break
+        end
+    end
+
+    return w
+end
+
+
+# Left nullspace basis of S:
+# finds B such that B' * S = 0
+# Returns:
+#   B          : columns are primitive integer basis vectors for left nullspace
+#   pivotrows  : pivot row indices of S
+function left_nullspace_integer(S::AbstractMatrix{Int})
+    A = Rational{Int}.(transpose(S))   # nullspace of S'
+    M, pivotrows = rref_exact(A)
+
+    m, n = size(M)                     # n = number of rows of S
+    ispivot = falses(n)
+    for c in pivotrows
+        ispivot[c] = true
+    end
+    freecols = findall(!, ispivot)
+
+    B = Matrix{Int}(undef, n, length(freecols))
+
+    @inbounds for (j, fc) in enumerate(freecols)
+        x = zeros(Rational{Int}, n)
+        x[fc] = 1
+        for (i, pc) in enumerate(pivotrows)
+            x[pc] = -M[i, fc]
+        end
+        B[:, j] = primitive_integer(x)
+    end
+
+    return B, pivotrows
+end
+
+
+
+function S_to_S_pos_neg(S::SparseMatrixCSC{T,Ti}) where {T<:Real,Ti<:Integer}
+    m, n = size(S)
+    nnzS = nnz(S)
+
+    colptr = Vector{Ti}(undef, n + 1)
+    rowval = Vector{Ti}(undef, nnzS)
+    nzval  = Vector{T}(undef, nnzS)
+
+    pos = 1
+    colptr[1] = 1
+
+    @inbounds for j in 1:n
+        for p in S.colptr[j]:(S.colptr[j+1] - 1)
+            i = S.rowval[p]
+            v = S.nzval[p]
+
+            if v > zero(T)
+                rowval[pos] = i
+                nzval[pos]  = v
+                pos += 1
+            elseif v < zero(T)
+                rowval[pos] = i + m
+                nzval[pos]  = -v
+                pos += 1
+            end
+            # skip exact zeros if any are stored
+        end
+        colptr[j+1] = pos
+    end
+
+    resize!(rowval, pos - 1)
+    resize!(nzval,  pos - 1)
+
+    return SparseMatrixCSC(2m, n, colptr, rowval, nzval)
+end
+
+
+
+# function get_max_denom(M::AbstractMatrix{<:Integer})
+#     F = snf(M)
+#     return F[2][end,end]
+# end
+
+
+
+function same_polyhedron(P, Q)
+    HP = hrep(P)
+    HQ = hrep(Q)
+    all(h -> issubset(P, h), allhalfspaces(HQ)) &&
+    all(h -> issubset(Q, h), allhalfspaces(HP))
+end
+
+
+"""
+    group_sum(keys, vals; sort_values=true) -> Vector{Tuple}
+
+Group values by keys, returning indices, key, and summed values.
+"""
+function group_sum(keys::AbstractVector{I}, vals::AbstractVector{J}; 
+    sort_values::Bool=true
+    ) :: Vector{Tuple{Vector{Int}, I, J}} where {I,J}
+
+    @assert length(keys) == length(vals)
+    # Dictionary to accumulate sum of values for each key
+    dict = Dict{I,J}()
+    # Store indices of keys for later reference
+    index_dict = Dict{I, Vector{Int}}()
+    
+    @inbounds for (i, (k, v)) in enumerate(zip(keys, vals))
+        dict[k] = get(dict, k, zero(v)) + v
+        push!(get!(index_dict, k, Int[]), i)  # Store the index
+    end
+    
+    # Collect and sort if needed
+    dict_vec = collect(dict)
+    
+    if sort_values
+        # Sort by values (sum of vals)
+        sort!(dict_vec, by=x->x[2], rev=true)
+    end
+    
+    # Create a Vector of Tuples with (index, key, summed value)
+    result = Vector{Tuple{Vector{Int}, I, J}}(undef, length(dict))
+    
+    # @show dict, index_dict
+    for i in eachindex(dict_vec)
+        key, sum_val = dict_vec[i]
+        group = index_dict[key]
+        result[i] = (group, key, sum_val)
+    end
+    
+    return result
+end
+
+function group_sum(
+    keys::AbstractVector{I},
+    vals::AbstractVector{Nothing};
+    sort_values::Bool=true,
+)::Vector{Tuple{Vector{Int}, I, Nothing}} where {I}
+
+    @assert length(keys) == length(vals)
+
+    index_dict = Dict{I, Vector{Int}}()
+    order = I[]
+
+    @inbounds for (i, k) in enumerate(keys)
+        if !haskey(index_dict, k)
+            push!(order, k)
+        end
+        push!(get!(index_dict, k, Int[]), i)
+    end
+
+    if sort_values
+        sort!(order, by = k -> length(index_dict[k]), rev = true)
+    end
+
+    return [(index_dict[k], k, nothing) for k in order]
+end
+

@@ -138,6 +138,68 @@ class Reader:
         cands = [self._candidate(int(i), float(scores[i]), intent) for i in order[:k]]
         return self._result(cands, intent, target_object_type, None, k, ["agent_candidate_rerank", "rop_evidence_rerank"])
 
+    # ── Step 3: intent-routed search (spike A/B verdict) + coverage status ────────
+    def _diverse(self, ordered, k):
+        chosen, fams = [], set()
+        for i in ordered:
+            fam = (self.store.records[int(i)].get("rop_summary") or {}).get("atlas_family_label")
+            if fam in fams:
+                continue
+            chosen.append(int(i)); fams.add(fam)
+            if len(chosen) >= k:
+                break
+        for i in ordered:
+            if len(chosen) >= k:
+                break
+            if int(i) not in chosen:
+                chosen.append(int(i))
+        return chosen[:k]
+
+    def _coverage(self, label, cands):
+        best = max((c["match_score"] for c in cands), default=0.0)
+        n_strong = sum(1 for c in cands if c["match_score"] >= 0.7)
+        status = ("well-covered" if best >= 0.72 and n_strong >= 2
+                  else "sparse" if best >= 0.55 else "rare-or-absent")
+        note = {"well-covered": "strong matches exist",
+                "sparse": "few/weak matches — may be rare in this μ≤5 family; verify or relax constraints",
+                "rare-or-absent": "no strong match — this behaviour appears rare/absent in scope; report honestly, do NOT fabricate"}[status]
+        return {"best_match": round(best, 3), "n_strong_in_panel": n_strong,
+                "label_prevalence": len(self.by_label.get(label, [])), "status": status, "note": note}
+
+    def routed_search(self, target, intent, behavior_label=None, k=6, max_reactions=None,
+                      rop_weight=0.12, target_object_type="reference_curve"):
+        """Route by intent (spike A/B): robust→label+support primary; typical/refinement→label
+        recall+function rerank; existential/discovery→function primary. Always returns route +
+        coverage_status (stress/out-of-vocab targets surface as rare-or-absent, not fake answers)."""
+        tv = self._target_vec(target); scores = self._scores(tv, intent)
+        recs = self.store.records; N = len(recs)
+        if intent == "robust" and behavior_label in self.by_label:
+            order = sorted(self.by_label[behavior_label],
+                           key=lambda i: (-(recs[i].get("shape_fractions") or {}).get(behavior_label, 0), scores[i]))
+            route = "label+support primary"
+        elif intent == "existential":
+            order = list(np.argsort(scores)); route = "function primary"
+        else:
+            if behavior_label in self.by_label:
+                seed = self.by_label[behavior_label]; seen = set(seed)
+                order = sorted(seed + [i for i in range(N) if i not in seen], key=lambda i: scores[i])
+            else:
+                order = list(np.argsort(scores))
+            route = "label recall + function rerank"
+        if max_reactions:
+            order = [i for i in order if (recs[i].get("n_reactions") or 99) <= max_reactions]
+        top = list(order[:300])
+        if top:
+            v = np.array([self.vol[i] for i in top]); vn = v / (v.max() + 1e-9)
+            top = [top[j] for j in np.argsort(np.array([scores[i] for i in top]) - rop_weight * vn)]
+        chosen = self._diverse(top, k)
+        cands = [self._candidate(i, float(scores[i]), intent) for i in chosen]
+        res = self._result(cands, intent, target_object_type, behavior_label, k,
+                           [route, "rop_evidence_rerank", "diverse_panel"])
+        res["route"] = route
+        res["coverage_status"] = self._coverage(behavior_label, cands)
+        return res
+
     # ── candidate + result assembly ──────────────────────────────────────────────
     def _candidate(self, i, score, intent):
         r = self.store.records[i]

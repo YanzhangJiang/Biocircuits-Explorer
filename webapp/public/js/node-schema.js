@@ -165,6 +165,15 @@ export const NODE_SCHEMAS = {
       _expr:         { suffix: '-expr',   type: 'expr',  arrayKey: 'output_exprs' },
     },
   },
+  'placer-params': {
+    fields: {
+      input_sym:  { suffix: '-input',  type: 'string' },
+      output_sym: { suffix: '-output', type: 'string' },
+      target_ro:  { suffix: '-target', type: 'float', default: '1' },
+      kd_lo:      { suffix: '-kdlo',   type: 'float', default: '-3' },
+      kd_hi:      { suffix: '-kdhi',   type: 'float', default: '3' },
+    },
+  },
 
   'scan-2d-params': {
     fields: {

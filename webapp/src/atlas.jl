@@ -2058,20 +2058,20 @@ function _graph_reachability_masks(g, sources::AbstractVector{<:Integer}, sinks:
 end
 
 function _active_change_graph_mask(change_paths)
-    from_sources, can_reach_sinks = _graph_reachability_masks(change_paths.qK_grh, change_paths.sources, change_paths.sinks)
+    from_sources, can_reach_sinks = _graph_reachability_masks(get_SISO_graph(change_paths), get_sources(change_paths), get_sinks(change_paths))
     return from_sources .& can_reach_sinks
 end
 
 function _active_change_graph_vertices(change_paths; active_mask=nothing)
     mask = active_mask === nothing ? _active_change_graph_mask(change_paths) : active_mask
-    return Int[vertex_idx for vertex_idx in vertices(change_paths.qK_grh) if mask[vertex_idx]]
+    return Int[vertex_idx for vertex_idx in vertices(get_SISO_graph(change_paths)) if mask[vertex_idx]]
 end
 
 function _active_change_graph_edge_pairs(change_paths; active_mask=nothing)
     mask = active_mask === nothing ? _active_change_graph_mask(change_paths) : active_mask
     return Tuple{Int, Int}[
         (src(edge), dst(edge))
-        for edge in edges(change_paths.qK_grh)
+        for edge in edges(get_SISO_graph(change_paths))
         if mask[src(edge)] && mask[dst(edge)]
     ]
 end
@@ -2088,8 +2088,8 @@ function _active_change_graph_degrees(change_paths; active_mask=nothing)
 end
 
 function _regime_role(change_paths, vertex_idx::Integer, indegrees::AbstractDict{Int, Int}, outdegrees::AbstractDict{Int, Int})
-    is_source = vertex_idx in change_paths.sources
-    is_sink = vertex_idx in change_paths.sinks
+    is_source = vertex_idx in get_sources(change_paths)
+    is_sink = vertex_idx in get_sinks(change_paths)
     is_branch = get(outdegrees, vertex_idx, 0) > 1
     is_merge = get(indegrees, vertex_idx, 0) > 1
 
@@ -2136,11 +2136,11 @@ function _build_input_graph_slice(change_paths, network_id::String, change_spec:
         ),
         "vertex_count" => length(active_vertices),
         "edge_count" => length(active_edges),
-        "full_vertex_count" => nv(change_paths.qK_grh),
-        "full_edge_count" => ne(change_paths.qK_grh),
+        "full_vertex_count" => nv(get_SISO_graph(change_paths)),
+        "full_edge_count" => ne(get_SISO_graph(change_paths)),
         "path_count" => length(change_paths.rgm_paths),
-        "source_vertex_indices" => sort!(collect(change_paths.sources)),
-        "sink_vertex_indices" => sort!(collect(change_paths.sinks)),
+        "source_vertex_indices" => sort!(collect(get_sources(change_paths))),
+        "sink_vertex_indices" => sort!(collect(get_sinks(change_paths))),
         "active_vertex_indices" => active_vertices,
     )
 end
@@ -2149,7 +2149,7 @@ function _build_slice_regime_transition_records(model, change_paths, network_id:
     observe_x_idx = locate_sym_x(model, Symbol(output_symbol))
     input_symbol = _change_input_symbol(change_spec)
     change_record = _change_spec_record(change_spec)
-    reachable_from_sources, can_reach_sinks = _graph_reachability_masks(change_paths.qK_grh, change_paths.sources, change_paths.sinks)
+    reachable_from_sources, can_reach_sinks = _graph_reachability_masks(get_SISO_graph(change_paths), get_sources(change_paths), get_sinks(change_paths))
     active_mask = reachable_from_sources .& can_reach_sinks
     active_vertices = sort!(_active_change_graph_vertices(change_paths; active_mask=active_mask))
     active_edges = _active_change_graph_edge_pairs(change_paths; active_mask=active_mask)
@@ -2181,8 +2181,8 @@ function _build_slice_regime_transition_records(model, change_paths, network_id:
             "output_symbol" => output_symbol,
             "vertex_idx" => vertex_idx,
             "role" => role,
-            "is_source" => vertex_idx in change_paths.sources,
-            "is_sink" => vertex_idx in change_paths.sinks,
+            "is_source" => vertex_idx in get_sources(change_paths),
+            "is_sink" => vertex_idx in get_sinks(change_paths),
             "is_branch" => outdeg > 1,
             "is_merge" => indeg > 1,
             "indegree" => indeg,

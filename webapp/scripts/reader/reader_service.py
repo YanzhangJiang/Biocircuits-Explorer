@@ -21,11 +21,18 @@ _CACHE = {}
 
 
 def _reader(corpus):
-    corpus = corpus or os.environ.get("BNE_PACKET_CORPUS")
+    # prefer the frozen industrial atlas_root (HNSW etc.), fall back to a raw packet corpus
+    corpus = corpus or os.environ.get("BNE_ATLAS_ROOT") or os.environ.get("BNE_PACKET_CORPUS")
     if not corpus or not os.path.isdir(corpus):
-        raise FileNotFoundError(f"packet corpus not found: {corpus!r} (set BNE_PACKET_CORPUS)")
+        raise FileNotFoundError(f"atlas/corpus not found: {corpus!r} (set BNE_ATLAS_ROOT or BNE_PACKET_CORPUS)")
     if corpus not in _CACHE:
-        _CACHE[corpus] = Reader(PacketStore(corpus))
+        from atlas_store import open_store
+        rd = Reader(open_store(corpus))
+        try:
+            rd.attach_indexes(corpus)              # HNSW + diffusion + Mapper if this is an atlas_root
+        except Exception:
+            pass
+        _CACHE[corpus] = rd
     return _CACHE[corpus]
 
 
@@ -39,17 +46,33 @@ def _target(rd, prototype=None, curve=None):
     return c, nearest
 
 
-def panel(prototype=None, curve=None, intent="typical", behavior_label=None, k=6,
-          max_reactions=None, corpus=None):
-    """Hybrid function-space panel for a target behavior. Returns a ReaderResult."""
+def panel(nl=None, prototype=None, curve=None, intent=None, behavior_label=None, k=6,
+          max_reactions=None, corpus=None, llm_cfg=None):
+    """Intent-ROUTED function-space panel. If `nl` is given it is compiled (NL→target-spec) into
+    target + intent + label + constraints; else use prototype/curve + intent. Returns a ReaderResult
+    with route + coverage_status (+ compiled_spec when NL). PRIOR only — verify before showing."""
     try:
         rd = _reader(corpus)
     except FileNotFoundError as e:
         return {"error": str(e)}
-    tv, nearest = _target(rd, prototype, curve)
-    return rd.search(tv, intent=intent, behavior_label=behavior_label or nearest, k=k,
-                     max_reactions=max_reactions,
-                     target_object_type="reference_curve")
+    u = rd.store.u_grid
+    spec = None
+    if nl:
+        from nl_target_compiler import compile_target, render_target
+        spec = compile_target(nl, llm_cfg)
+        tgt, intent, behavior_label, mx = render_target(spec, u)
+        max_reactions = max_reactions or mx
+        tot = spec["target_object_type"]
+    else:
+        tgt, nearest = _target(rd, prototype, curve)
+        behavior_label = behavior_label or nearest; intent = intent or "typical"; tot = "reference_curve"
+    res = rd.routed_search(tgt, intent, behavior_label=behavior_label, k=k,
+                           max_reactions=max_reactions, target_object_type=tot)
+    if spec:
+        res["compiled_spec"] = {x: spec.get(x) for x in
+                                ("intent_type", "target_object_type", "behavior_label_hint", "constraints",
+                                 "preferences", "ambiguities", "unsupported_parts", "_source")}
+    return res
 
 
 def rerank(record_ids, prototype=None, curve=None, intent="typical", k=None, corpus=None):

@@ -3,6 +3,8 @@ import { INPUT_TYPES } from './input.js';
 import { PROCESS_TYPES } from './process.js';
 import { SISO_TYPES } from './siso.js';
 import { SCAN_TYPES } from './scan.js';
+import { PLACER_TYPES } from './placer.js';
+import { DESIGN_TARGET_TYPES } from './design-target.js';
 import { ROP_CLOUD_TYPES } from './rop-cloud.js';
 import { ROP_POLY_TYPES } from './rop-poly.js';
 import { ATLAS_TYPES } from './atlas.js';
@@ -15,6 +17,8 @@ export const NODE_TYPES = {
   ...PROCESS_TYPES,
   ...SISO_TYPES,
   ...SCAN_TYPES,
+  ...PLACER_TYPES,
+  ...DESIGN_TARGET_TYPES,
   ...ROP_CLOUD_TYPES,
   ...ROP_POLY_TYPES,
   ...ATLAS_TYPES,

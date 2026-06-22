@@ -1,5 +1,19 @@
+export x_sym, q_sym, K_sym, k_sym, qK_sym, q_cat_sym, w_sym, q_para_sym, q_ss_sym
+export ∂logqK_∂logx_sym, ∂logx_∂logqK_sym, logder_qK_x_sym, logder_x_qK_sym
+export show_condition_poly, show_condition_x, show_condition_qK, show_condition
+export show_condition_xk, show_condition_qKk, show_condition_qssKk, show_consistency_condition
+export show_expression_mapping, show_expression_x, show_expression_qK, show_expression_path
+export show_expression_qcat
+export show_dominant_condition, show_conservation, show_equilibrium, show_interface
+export show_catalysis_dynamics, show_reduced_catalysis_dynamics
+export sym_direction, print_path, print_paths, format_arrow
+
 #----------------------------------------------------------Symbolics calculation fucntions-----------------------------------------------------------
 
+#===============================================#
+# Get variables name from the model
+#===============================================#
+#Binding network symbols
 """
     x_sym(args...) -> Vector{Num}
 
@@ -18,6 +32,7 @@ q_sym(args...)=get_binding_network(args...).q_sym
 Return binding constant symbols for a binding network.
 """
 K_sym(args...)=get_binding_network(args...).K_sym
+
 """
     qK_sym(args...) -> Vector{Num}
 
@@ -25,6 +40,74 @@ Return concatenated `[q; K]` symbols for a binding network.
 """
 qK_sym(args...)= [q_sym(args...); K_sym(args...)]
 
+
+
+
+#Catalysis network symbols
+"""
+    k_sym(args...) -> Vector{Num}
+
+Return catalysis rate-constant symbols.
+"""
+k_sym(args...) = _require_catalysis_network(args...).k_sym
+
+"""
+    q_cat_sym(args...) -> Vector{Num}
+
+Return the catalysis-active total concentration symbols.
+"""
+function q_cat_sym(args...)
+    bn = get_binding_network(args...)
+    cn = _require_catalysis_network(args...)
+    return bn.q_sym[1:cn.r_v]
+end
+
+"""
+    w_sym(args...) -> Vector{Num}
+
+Return the catalysis-dependent conserved symbols `w`.
+"""
+function w_sym(args...)
+    bn = get_binding_network(args...)
+    cn = _require_catalysis_network(args...)
+    return bn.q_sym[cn.r_v+1:cn.r_v+cn.d_w]
+end
+"""
+    q_para_sym(args...) -> Vector{Num}
+
+Return the catalysis-parameter total concentration symbols.
+"""
+function q_para_sym(args...)
+    bn = get_binding_network(args...)
+    cn = _require_catalysis_network(args...)
+    return bn.q_sym[cn.r_v+cn.d_w+1:bn.d]
+end
+
+"""
+    q_ss_sym(args...) -> Vector{Num}
+
+Return the steady-state reduced symbols `(w, q_para)`.
+"""
+q_ss_sym(args...) = [w_sym(args...); q_para_sym(args...)]
+
+@inline xk_sym(args...) = [x_sym(args...); k_sym(args...)]
+@inline qKk_sym(args...) = [q_sym(args...); K_sym(args...); k_sym(args...)]
+@inline qssKk_sym(args...) = [q_ss_sym(args...); K_sym(args...); k_sym(args...)]
+
+@inline _time_sym() = Symbolics.variable(:t)
+@inline _d_dt(syms) = Symbolics.Differential(_time_sym()).(syms)
+
+function _flux_sym(args...)
+    cn = _require_catalysis_network(args...)
+    flux_monomials = handle_log_weighted_sum(cn.Π, x_sym(args...))
+    return k_sym(args...) .* flux_monomials
+end
+
+
+
+
+
+# SISO path associated symbols
 """
     q_sym(grh::SISOPaths, args...) -> Vector{Num}
 
@@ -32,8 +115,9 @@ Return q symbols for a SISO path, excluding the varying coordinate.
 """
 q_sym(grh::SISOPaths,args...)= begin
     bn = get_binding_network(grh)
-    q_sym = if grh.change_qK_idx <= bn.d
-        deleteat!(copy(bn.q_sym), grh.change_qK_idx)
+    change_qK_idx = get_change_qK_idx(grh)
+    q_sym = if change_qK_idx <= bn.d
+        deleteat!(copy(bn.q_sym), change_qK_idx)
     else
         bn.q_sym
     end
@@ -46,32 +130,39 @@ Return K symbols for a SISO path, excluding the varying coordinate.
 """
 K_sym(grh::SISOPaths,args...)= begin
     bn = get_binding_network(grh)
-    K_sym = if grh.change_qK_idx > bn.d
-        deleteat!(copy(bn.K_sym), grh.change_qK_idx - bn.d)
+    change_qK_idx = get_change_qK_idx(grh)
+    K_sym = if change_qK_idx > bn.d
+        deleteat!(copy(bn.K_sym), change_qK_idx - bn.d)
     else
         bn.K_sym
     end
     return K_sym
 end
 
+
+
+
+
+#===============================================#
+# Basic Reaction order symbols
+#===============================================#
 """
     ∂logqK_∂logx_sym(bnc::Bnc; show_x_space=false) -> Matrix{Num}
 
 Symbolically compute `∂log(qK)/∂log(x)`.
 """
 function ∂logqK_∂logx_sym(Bnc::Bnc; show_x_space::Bool=false)::Matrix{Num}
-
     if show_x_space
         q = Bnc.L * Bnc.x_sym
     else
         q = Bnc.q_sym
     end
-
     return [
-        transpose(Bnc.x_sym) .* Bnc.L ./ q
-        Bnc.N
+        transpose(Bnc.x_sym) .* Matrix(Bnc.L) ./ q
+        Matrix(Bnc.N)
     ]
 end
+
 """
     logder_qK_x_sym(args...; kwargs...) -> Matrix{Num}
 
@@ -97,22 +188,17 @@ Alias for `∂logx_∂logqK_sym`.
 logder_x_qK_sym(args...;kwargs...) = ∂logx_∂logqK_sym(args...;kwargs...)
 
 
-#---------------------------------------------------------
-#   Below are regimes associtaed symbolic functions
-#---------------------------------------------------------
+#===============================================#
+# Regimes associated symbols
+#===============================================#
 
-@inline function _symbolic_pretty_scalar(x::Real)
-    if x isa Integer || x isa Rational
-        return x
-    elseif x isa AbstractFloat && isfinite(x)
-        rounded = round(Int, x)
-        return isapprox(x, rounded; atol=1e-12, rtol=0.0) ? rounded : x
-    end
-    return x
-end
-
-_symbolic_pretty_vector(v::AbstractVector{<:Real}) = [_symbolic_pretty_scalar(x) for x in v]
-_symbolic_pretty_matrix(A::AbstractMatrix{<:Real}) = [_symbolic_pretty_scalar(A[i, j]) for i in axes(A, 1), j in axes(A, 2)]
+_symbolic_pretty_scalar(v) = (v isa AbstractFloat && isfinite(v) && abs(v - round(v)) <= 1e-12) ? Int(round(v)) : v
+_symbolic_pretty_vector(x) = map(_symbolic_pretty_scalar, x)
+# For dense matrices, prettify scalars (may widen eltype, but dense multiply is type-flexible).
+# For sparse matrices, skip prettify: map() over a SparseMatrixCSC{Float64} produces
+# SparseMatrixCSC{Real} (abstract eltype) which fails to multiply with Vector{Num} on Julia 1.12.
+_symbolic_pretty_matrix(A::AbstractMatrix) = map(_symbolic_pretty_scalar, A)
+_symbolic_pretty_matrix(A::SparseArrays.AbstractSparseMatrix) = A
 
 """
     show_condition_poly(C, C0, nullity=0; syms, log_space=true, asymptotic=false) -> Vector
@@ -127,7 +213,7 @@ function show_condition_poly(C::AbstractMatrix{<:Real},
                         log_space::Bool = true,
                         asymptotic::Bool = false
 )
-    C_pretty = _symbolic_pretty_matrix(C)
+    C_pretty  = _symbolic_pretty_matrix(C)
     C0_pretty = _symbolic_pretty_vector(C0)
 
     # Helper: generate symbolic expression per row
@@ -236,14 +322,14 @@ end
 Return symbolic expressions for mappings of the form `log(y) = C log(x) + C0`.
 """
 function show_expression_mapping(C::AbstractMatrix{<:Real}, C0::AbstractVector{<:Real}, y, x; log_space::Bool=true,asymptotic::Bool=false)::Vector{Equation}
-    C_pretty = _symbolic_pretty_matrix(C)
+    C_pretty  = _symbolic_pretty_matrix(C)
     C0_pretty = _symbolic_pretty_vector(C0)
     if log_space
         expr =  asymptotic ?   log10.(y) .~ C_pretty * log10.(x) : log10.(y) .~ C_pretty * log10.(x) .+ C0_pretty
     else
         expr =  asymptotic ? y .~ handle_log_weighted_sum(C_pretty, x) : y .~ handle_log_weighted_sum(C_pretty, x, C0_pretty)
     end
-    return expr 
+    return expr
 end
 """
     show_expression_mapping(C::AbstractVector, C0::Real, args...; kwargs...) -> Equation
@@ -263,6 +349,8 @@ show_expression_x(args...;kwargs...)= begin
     x = qK_sym(bn)
     show_expression_mapping(get_H_H0(args...)..., y,x; kwargs...)
 end
+show_expression_x(rgm::BncRegime; kwargs...) = show_expression_mapping(get_H_H0(rgm)..., x_sym(rgm), qssKk_sym(rgm); kwargs...)
+show_expression_x(model::Bnc, bind, cat; kwargs...) = show_expression_x(get_bnc_regime(model, bind, cat; check=true); kwargs...)
 
 """
     show_expression_qK(args...; kwargs...) -> Vector{Equation}
@@ -275,6 +363,15 @@ show_expression_qK(args...;kwargs...)= begin
     x = x_sym(bn)
     show_expression_mapping(get_M_M0(args...)..., y,x; kwargs...)
 end
+
+"""
+    show_expression_qcat(args...; kwargs...) -> Vector{Equation}
+
+Show the affine expression of `q_cat` in the `(q_ss, K, k)` variables for a
+regular `BncRegime`.
+"""
+show_expression_qcat(rgm::BncRegime; kwargs...) = show_expression_mapping(get_qcat_F_F0(rgm)..., q_cat_sym(rgm), qssKk_sym(rgm); kwargs...)
+show_expression_qcat(model::Bnc, bind, cat; kwargs...) = show_expression_qcat(get_bnc_regime(model, bind, cat; check=true); kwargs...)
 
 
 """
@@ -293,13 +390,106 @@ end
 
 Return conservation equations `q = Lx`.
 """
-show_conservation(Bnc::Bnc)=Bnc.q_sym .~ Bnc._L_sparse * Bnc.x_sym
+show_conservation(Bnc::Bnc)=Bnc.q_sym .~ Bnc.L * Bnc.x_sym
 """
     show_equilibrium(bnc::Bnc; log_space=true) -> Vector{Equation}
 
 Return equilibrium equations relating `K` and `x`.
 """
 show_equilibrium(Bnc::Bnc;log_space::Bool=true) = show_expression_mapping(Bnc.N, zeros(Int,Bnc.r), Bnc.K_sym, Bnc.x_sym; log_space=log_space)
+
+
+"""
+    show_catalysis_dynamics(args...) -> Vector{Equation}
+
+Render the unreduced catalysis dynamics
+`d(q_cat,w)/dt = Γ * Diag(k) * x^Π`, `dq_para/dt = 0`.
+"""
+function show_catalysis_dynamics(args...)
+    cn = _require_catalysis_network(args...)
+    q_cat_w = [q_cat_sym(args...); w_sym(args...)]
+    q_para = q_para_sym(args...)
+    v = _flux_sym(args...)
+
+    eqs = Symbolics.Equation[]
+    append!(eqs, _d_dt(q_cat_w) .~ (cn.Γ * v))
+    append!(eqs, _d_dt(q_para) .~ 0)
+    return eqs
+end
+
+"""
+    show_reduced_catalysis_dynamics(args...) -> Vector{Equation}
+
+Render the reduced catalysis dynamics
+`dq_cat/dt = S * Diag(k) * x^Π`, `dw/dt = 0`, `dq_para/dt = 0`.
+"""
+function show_reduced_catalysis_dynamics(args...)
+    cn = _require_catalysis_network(args...)
+    v = _flux_sym(args...)
+
+    eqs = Symbolics.Equation[]
+    append!(eqs, _d_dt(q_cat_sym(args...)) .~ (cn.S * v))
+    append!(eqs, _d_dt(w_sym(args...)) .~ 0)
+    append!(eqs, _d_dt(q_para_sym(args...)) .~ 0)
+    return eqs
+end
+
+
+
+
+
+"""
+    show_condition_xk(args...; kwargs...) -> Vector
+
+Show conditions in the `(x, k)` variables.
+"""
+function show_condition_xk(rgm::CatalysisRegime; kind::Symbol=:all, kwargs...)
+    syms = xk_sym(rgm)
+    if kind === :steady_state
+        return show_condition_poly(get_P_xk(rgm), get_P0(rgm), size(get_P(rgm), 1); syms=syms, kwargs...)
+    elseif kind === :dominance
+        return show_condition_poly(get_C_xk(rgm), get_C0(rgm); syms=syms, kwargs...)
+    elseif kind === :all || kind === :combined
+        return show_condition_poly(get_C_C0_nullity_xk(rgm)...; syms=syms, kwargs...)
+    else
+        error("Unsupported kind=$kind. Use :steady_state, :dominance, or :all.")
+    end
+end
+show_condition_xk(model::CatalysisData, perm_or_idx; kwargs...) = show_condition_xk(get_catalysis_regime(model, perm_or_idx; check=true); kwargs...)
+show_condition_xk(model::AbstractBnc, perm_or_idx; kwargs...) = show_condition_xk(get_catalysis_regime(model, perm_or_idx; check=true); kwargs...)
+
+function show_condition_xk(rgm::BncRegime; kind::Symbol=:combined, kwargs...)
+    return show_condition_poly(get_C_C0_nullity_xk(rgm, kind)...; syms=xk_sym(rgm), kwargs...)
+end
+show_condition_xk(model::Bnc, bind, cat; kwargs...) = show_condition_xk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
+
+
+
+
+
+"""
+    show_condition_qKk(args...; kwargs...) -> Vector
+
+Show conditions in the `(q_cat, w, q_para, K, k)` variables.
+"""
+function show_condition_qKk(rgm::BncRegime; kind::Symbol=:combined, kwargs...)
+    return show_condition_poly(get_C_C0_nullity_qKk(rgm, kind)...; syms=qKk_sym(rgm), kwargs...)
+end
+show_condition_qKk(model::Bnc, bind, cat; kwargs...) = show_condition_qKk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
+
+
+
+
+"""
+    show_condition_qssKk(args...; kwargs...) -> Vector
+
+Show the steady-state consistency conditions in the `(w, q_para, K, k)` variables.
+"""
+function show_condition_qssKk(rgm::BncRegime; kwargs...)
+    return show_condition_poly(get_C_C0_nullity_qssKk(rgm)...; syms=qssKk_sym(rgm), kwargs...)
+end
+show_condition_qssKk(model::Bnc, bind, cat; kwargs...) = show_condition_qssKk(get_bnc_regime(model, bind, cat; check=true); kwargs...)
+show_consistency_condition(args...; kwargs...) = show_condition_qssKk(args...; kwargs...)
 
 
 
@@ -325,6 +515,48 @@ function handle_log_weighted_sum(A::AbstractMatrix{<:Real}, x , b::Union{Nothing
     return rst
 end
 
+
+
+"""
+    solve_sym_expr(a, b, x, idx; log_space=true) -> Equation
+
+Solve `a'x + b = 0` for the variable at `idx` symbolically.
+"""
+function solve_sym_expr(a::AbstractVector{<:Real}, b::Real, x, idx; log_space::Bool=true)
+    a = copy(collect(a))
+    x = copy(x)
+    ai = popat!(a, idx)
+    target_x = popat!(x, idx)
+    @assert abs(ai) > 1e-10 "Cannot solve for the variable at index $idx since its coefficient is zero." 
+    a ./= -ai
+    b /= -ai
+
+    target = log_space ? log10(target_x) : target_x
+    expr = log_space ? a' * log10.(x) .+ b : handle_log_weighted_sum(a', x, [b])[1]
+    return target ~ expr
+end
+
+"""
+    show_interface(bnc::Bnc, from, to; lhs_idx=nothing, kwargs...) -> Any
+
+Display the interface expression between two regimes.
+"""
+function show_interface(Bnc::Bnc, from,to;  lhs_idx::Union{Nothing,Integer}=nothing, kwargs...)
+    C, C0 = get_interface(Bnc,from,to) # C' log qK + C0 =0
+    if isnothing(lhs_idx)
+        return show_condition_poly(C, C0, 1 ;syms =  qK_sym(Bnc) ,kwargs...)
+    else
+        return solve_sym_expr(C,C0, qK_sym(Bnc), lhs_idx;kwargs...)
+    end
+end
+
+
+
+
+
+#===============================================================================================================#
+# Regime Path associated symbolic functions
+#===============================================================================================================#
 
 """
     sym_direction(bnc::Bnc, dir) -> String
@@ -501,45 +733,6 @@ print_path(path::AbstractVector; id = nothing, volume = nothing, kwargs...) =
         ); kwargs...)
 
 
-
-
-"""
-    solve_sym_expr(a, b, x, idx; log_space=true) -> Equation
-
-Solve `a'x + b = 0` for the variable at `idx` symbolically.
-"""
-function solve_sym_expr(a::AbstractVector{<:Real}, b::Real, x, idx; log_space::Bool=true)
-    a = copy(collect(a))
-    x = copy(x)
-    ai = popat!(a, idx)
-    target_x = popat!(x, idx)
-    @assert abs(ai) > 1e-10 "Cannot solve for the variable at index $idx since its coefficient is zero." 
-    a ./= -ai
-    b /= -ai
-
-    target = log_space ? log10(target_x) : target_x
-    expr = log_space ? a' * log10.(x) .+ b : handle_log_weighted_sum(a', x, [b])[1]
-    return target ~ expr
-end
-
-"""
-    show_interface(bnc::Bnc, from, to; lhs_idx=nothing, kwargs...) -> Any
-
-Display the interface expression between two regimes.
-"""
-function show_interface(Bnc::Bnc, from,to;  lhs_idx::Union{Nothing,Integer}=nothing, kwargs...)
-    C, C0 = get_interface(Bnc,from,to) # C' log qK + C0 =0
-    if isnothing(lhs_idx)
-        return show_condition_poly(C, C0, 1 ;syms =  qK_sym(Bnc) ,kwargs...)
-    else
-        return solve_sym_expr(C,C0, qK_sym(Bnc), lhs_idx;kwargs...)
-    end
-end
-
-
-
-
-
 """
     show_expression_path(grh::SISOPaths, pth; observe_x=nothing, kwargs...) -> nothing
 
@@ -550,7 +743,7 @@ function show_expression_path(grh::SISOPaths, pth; observe_x=nothing, kwargs...)
     bn = get_binding_network(grh)
 
     observe_x_idx = isnothing(observe_x) ? (1:bn.n) : locate_sym_x.(Ref(bn), observe_x)
-    change_qK_idx = grh.change_qK_idx
+    change_qK_idx = get_change_qK_idx(grh)
 
     xsym = x_sym(bn)[observe_x_idx]
     qKsym = qK_sym(bn)
@@ -631,7 +824,7 @@ Return symbolic expressions and interface locations along a regime path.
 function show_expression_path(model::Bnc, rgm_path, change_qK_idx, observe_x_idx;log_space::Bool=false)::Tuple{Vector,Vector}
     change_qK_idx = locate_sym([model.q_sym;model.K_sym],change_qK_idx)
     observe_x_idx = locate_sym(model.x_sym, observe_x_idx)
-    have_volume_mask = _get_vertices_mask(model, rgm_path; singular=false)
+    have_volume_mask = _get_regimes_mask(model, rgm_path; singular=false)
     idx = findall(have_volume_mask)
     exprs = map(idx) do id
         show_expression_x(model, rgm_path[id];log_space=log_space)[observe_x_idx].rhs
@@ -650,4 +843,4 @@ end
 
 Convenience wrapper for `show_expression_path` with a SISO path index.
 """
-show_expression_path(grh::SISOPaths, pth_idx, observe_x; kwargs...)=show_expression_path(get_binding_network(grh), grh.rgm_paths[pth_idx], grh.change_qK_idx, observe_x; kwargs...)
+show_expression_path(grh::SISOPaths, pth_idx, observe_x; kwargs...)=show_expression_path(get_binding_network(grh), grh.rgm_paths[pth_idx], get_change_qK_idx(grh), observe_x; kwargs...)
