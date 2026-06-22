@@ -9,7 +9,11 @@ import { commitWorkspaceSnapshot } from './workspace.js';
 // ===== Reaction Editor =====
 export function getReactionsFromNode(nodeId) {
   const info = nodeRegistry[nodeId];
-  if (info?.type === 'network-id-definition') {
+  // Identity-defined reaction sources publish their rules as
+  // config.resolvedDefinition.raw_rules instead of DOM reaction rows:
+  //  - network-id-definition: resolved from a compressed atlas id
+  //  - design-target:         the minimal network the user selected from the search
+  if (info?.type === 'network-id-definition' || info?.type === 'design-target') {
     const config = info.data?.config || {};
     const resolved = config.resolvedDefinition || null;
     const reactions = Array.isArray(resolved?.raw_rules)

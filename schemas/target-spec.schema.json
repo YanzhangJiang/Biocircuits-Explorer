@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bne-target-spec",
+  "title": "NL→TargetObject compiler output (agent product loop, step 2)",
+  "type": "object",
+  "required": ["schema_version", "intent_type", "target_object_type"],
+  "properties": {
+    "schema_version": {"const": "bne-target-spec/v0.1.0"},
+    "intent_type": {"enum": ["existential", "typical", "robust"]},
+    "target_object_type": {"enum": ["reference_curve", "constraint_curve", "refinement_delta", "feature_targets"]},
+    "behavior_label_hint": {"type": ["string", "null"], "description": "a label HINT for recall, never the sole output"},
+    "reference_curve": {
+      "type": ["object", "null"],
+      "properties": {
+        "control_points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}}
+      }
+    },
+    "constraint_curve": {
+      "type": ["object", "null"],
+      "properties": {
+        "regions": {"type": "array", "items": {
+          "type": "object",
+          "properties": {
+            "u": {"type": "array", "items": {"type": "number"}},
+            "want": {"enum": ["low", "high", "mid", "rise", "fall"]},
+            "weight": {"type": "number"}
+          }
+        }}
+      }
+    },
+    "refinement_delta": {
+      "type": ["object", "null"],
+      "properties": {
+        "base_label": {"type": ["string", "null"]},
+        "delta": {"enum": ["longer_plateau", "steeper_fall", "higher_peak", "narrower", "wider", "shift_right", "shift_left"]}
+      }
+    },
+    "feature_targets": {
+      "type": ["object", "null"],
+      "description": "Quantitative, per-handle targets on the dose-response program. Each handle (slope/threshold/level/width) is read off / solved from the dominance regimes by the constructive ParameterPlacer (no sampling). Distinct from the curve-based target_object_types above.",
+      "properties": {
+        "input": {"type": ["string", "null"], "description": "swept input total symbol, e.g. tA"},
+        "output": {"type": ["string", "null"], "description": "observed species symbol, e.g. AB"},
+        "reaction_order": {
+          "type": "array",
+          "description": "target local log-log slopes (the quantized rung); at_input optional",
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "properties": {
+              "value": {"type": "number"},
+              "at_input": {"type": ["number", "null"], "description": "log10 input total where this slope should hold"},
+              "tolerance": {"type": "number", "default": 0.05},
+              "weight": {"type": "number", "default": 1.0}
+            }
+          }
+        },
+        "breakpoints": {
+          "type": "array",
+          "description": "target positions (log10 input) of transitions between regimes: threshold/EC50, peak, knee",
+          "items": {
+            "type": "object",
+            "required": ["at_input"],
+            "properties": {
+              "at_input": {"type": "number"},
+              "kind": {"enum": ["rise", "fall", "peak", "valley", "knee"]},
+              "tolerance_decades": {"type": "number", "default": 0.15},
+              "weight": {"type": "number", "default": 1.0}
+            }
+          }
+        },
+        "levels": {
+          "type": "array",
+          "description": "target output levels (log10) over input regions; endpoints set the dynamic range",
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "properties": {
+              "region": {"type": "array", "items": {"type": "number"}, "description": "[u_lo, u_hi] log10 input range"},
+              "value": {"type": "number", "description": "target log10 output level"},
+              "tolerance": {"type": "number", "default": 0.1},
+              "weight": {"type": "number", "default": 1.0}
+            }
+          }
+        },
+        "dynamic_range": {
+          "type": ["object", "null"],
+          "properties": {
+            "decades": {"type": "number"},
+            "tolerance": {"type": "number", "default": 0.2}
+          }
+        },
+        "window": {
+          "type": ["object", "null"],
+          "description": "operating window over which a behavior holds (e.g. plateau/band-pass span)",
+          "properties": {
+            "center": {"type": ["number", "null"], "description": "log10 input center"},
+            "width_decades": {"type": "number"},
+            "tolerance": {"type": "number", "default": 0.2}
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "max_reactions": {"type": ["integer", "null"]},
+        "min_shape_support": {"type": ["number", "null"]},
+        "kd_bounds": {
+          "type": ["array", "null"],
+          "description": "physical binding-constant box [lo_log10, hi_log10] (e.g. [-3, 3] = Kd in [1e-3, 1e3]); the placer solves within this box (Chebyshev center of regime-cone ∩ box).",
+          "items": {"type": "number"},
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "preferences": {"type": "array", "items": {"type": "string"}},
+    "ambiguities": {"type": "array", "items": {"type": "string"}},
+    "unsupported_parts": {"type": "array", "items": {"type": "string"}}
+  }
+}

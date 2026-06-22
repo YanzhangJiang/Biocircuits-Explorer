@@ -296,7 +296,8 @@ export function setNodeLoading(nodeId, loading) {
 // ===== Auto-Chain Generation =====
 
 function isReactionSourceNodeType(type) {
-  return type === 'reaction-network' || type === 'network-id-definition';
+  return type === 'reaction-network' || type === 'network-id-definition' ||
+         type === 'design-target';
 }
 
 // Find an existing chain ending with a model-builder that has a model output
@@ -474,6 +475,7 @@ export function addQuickAddChain(chainType) {
     'parameter-scan-1d': { params: 'scan-1d-params', result: 'scan-1d-result' },
     'parameter-scan-2d': { params: 'scan-2d-params', result: 'scan-2d-result' },
     'rop-polyhedron': { params: 'rop-poly-params', result: 'rop-poly-result' },
+    'parameter-placer': { params: 'placer-params', result: 'placer-result' },
   };
 
   const chain = chainMap[chainType];

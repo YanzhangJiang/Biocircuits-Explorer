@@ -1,0 +1,61 @@
+{
+  "_comment": "RESYNC rebuild: full d<=4 mu5 atlas with the MIGRATED engine (accepted new singular-regime sign). COMBINED d in {2,3,4} (NOT split) = the 5240-network family (d2 596 + d3 2177 + d4 2467). FULL PARITY config with the old atlas: sqlite_persist_mode=full, compute_volume=true, change_expansion.max_active_dims=1, mu=max support/order 5. network_parallelism dropped 128->64 (128 OOM-crashed d4 historically; 64 = proven sbatch CPU count, safe unattended). Fresh DB -> skip_existing has nothing to skip -> builds all 5240. sqlite_path overridden at runtime by ATLAS_SQLITE_PATH to a fresh /raid path (NOT overwriting the old atlas_full/atlas_d4).",
+  "source_label": "atlas_full_mu5_resync_d234_newsign",
+  "network_parallelism": 64,
+  "stream_flush_network_count": 8,
+  "chunk_size": 128,
+  "skip_existing": true,
+  "persist_sqlite": true,
+  "sqlite_path": "atlas_resync/atlas.sqlite",
+  "sqlite_persist_mode": "full",
+  "search_profile": {
+    "name": "binding_complex_growth_mu5_resync_d234",
+    "max_base_species": 4,
+    "max_reactions": 5,
+    "max_support": 5,
+    "slice_mode": "change",
+    "input_mode": "totals_only",
+    "allow_higher_order_templates": true,
+    "allow_homomeric_templates": true,
+    "max_homomer_order": 5
+  },
+  "behavior_config": {
+    "path_scope": "feasible",
+    "compute_volume": true,
+    "include_path_records": true,
+    "min_volume_mean": 0.0,
+    "deduplicate": true,
+    "keep_singular": true,
+    "keep_nonasymptotic": false
+  },
+  "change_expansion": {
+    "mode": "orthant",
+    "max_active_dims": 1,
+    "include_axis_slices": true,
+    "include_negative_directions": false,
+    "limit_per_network": 0
+  },
+  "enumeration": {
+    "mode": "complex_growth_binding",
+    "base_species_counts": [
+      2,
+      3,
+      4
+    ],
+    "min_reactions": 1,
+    "max_reactions": 5,
+    "min_template_order": 2,
+    "max_template_order": 5,
+    "require_homomeric_template": false,
+    "require_complex_growth_template": false,
+    "require_product_support_at_least": 0,
+    "limit": 0
+  },
+  "source_metadata": {
+    "workstation_target": "9995WX/bmac",
+    "julia_threads": 64,
+    "network_parallelism": 64,
+    "blas_threads": 1,
+    "prepared_for": "resync_full_atlas_rebuild_new_sign"
+  }
+}

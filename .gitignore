@@ -45,6 +45,11 @@ datasets/
 design/
 # DesignAgentTrace store (traces.jsonl + artifacts/) — local runtime evidence, can grow.
 traces/
+# Superpowers SDD dev-process scaffolding (task briefs/reports + progress ledger).
+.superpowers/
+# Atlas-derived slice dumps (regenerable from the workstation atlas; large, duplicated).
+webapp/data/
+**/slices.jsonl.gz
 
 # Local docs, reports, and TeX drafts.
 doc/
