@@ -47,9 +47,12 @@ design/
 traces/
 # Superpowers SDD dev-process scaffolding (task briefs/reports + progress ledger).
 .superpowers/
-# Atlas-derived slice dumps (regenerable from the workstation atlas; large, duplicated).
+# Atlas-derived slice dumps (regenerable; large). Ignore the scratch/duplicate dumps,
+# but TRACK the paper's bundled reduced dataset (the notebooks read it offline; the full
+# atlas is not bundled, so this 14 MB extract is the paper's reproducibility input).
 webapp/data/
 **/slices.jsonl.gz
+!paper_rop_periodic_table/data/slices.jsonl.gz
 
 # Local docs, reports, and TeX drafts.
 doc/
