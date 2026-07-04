@@ -180,12 +180,10 @@ export class CreateNodeCommand {
   }
 
   apply() {
-    // On redo this recreates the node. The id may differ from the original
-    // (createNode allocates a fresh id), which is acceptable for the
-    // skeleton: redo-after-undo-of-create is rare, and connections to the
-    // node were already torn down by the matching revert(). Stage 2's
-    // remove-node command will use serialize/restore to preserve ids.
-    this.createdId = requirePerformer('createNode')(this.nodeType, this.x, this.y);
+    // First apply allocates an id; redo must reuse that id so commands that
+    // were recorded later (move/connect/attr) still target the recreated node.
+    const opts = this.createdId ? { id: this.createdId } : {};
+    this.createdId = requirePerformer('createNode')(this.nodeType, this.x, this.y, opts);
     return this.createdId;
   }
 

@@ -1,6 +1,6 @@
 // Biocircuits Explorer — API Communication & Utility Functions
 
-import { API, CLOUD_API, ensureDebugClientId } from './state.js';
+import { API, CLOUD_API, ensureDebugClientId, state, nodeRegistry } from './state.js';
 import { isCloudComputeEnabled } from './cloud-compute.js';
 import { fetchAuthConfig, getIdToken, signIn } from './auth.js';
 
@@ -29,11 +29,41 @@ export function escapeHtml(text) {
 }
 
 // ===== API Helpers =====
+function contextMatchesSession(ctx, sessionId) {
+  return ctx && String(ctx.sessionId || ctx.session_id || '') === String(sessionId || '');
+}
+
+function findModelContextForSession(sessionId) {
+  for (const info of Object.values(nodeRegistry)) {
+    const ctx = info?.data?.modelContext;
+    if (contextMatchesSession(ctx, sessionId)) return ctx;
+  }
+  if (contextMatchesSession(state.model, sessionId)) return state.model;
+  return null;
+}
+
+export function enrichModelRequestPayload(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  if (!data.session_id || data.network || data.network_ir_hash) return data;
+  const ctx = findModelContextForSession(data.session_id);
+  if (!ctx) return data;
+
+  const networkIrHash = ctx.networkIrHash || ctx.network_ir_hash || null;
+  const networkIr = ctx.networkIr || ctx.network_ir || null;
+  if (!networkIrHash && !networkIr) return data;
+
+  const enriched = { ...data };
+  if (networkIrHash) enriched.network_ir_hash = networkIrHash;
+  if (networkIr) enriched.network = networkIr;
+  return enriched;
+}
+
 export async function apiSilent(endpoint, data) {
+  const payload = enrichModelRequestPayload(data || {});
   const resp = await fetch(`${API}/api/${endpoint}`, {
     method: 'POST',
     headers: apiHeaders(),
-    body: JSON.stringify(data || {}),
+    body: JSON.stringify(payload),
   });
   const contentType = resp.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
@@ -48,10 +78,11 @@ export async function api(endpoint, data) {
   activeApiRequests += 1;
   setStatus('working', activeApiRequests > 1 ? `Computing... (${activeApiRequests})` : 'Computing...');
   try {
+    const payload = enrichModelRequestPayload(data || {});
     const resp = await fetch(`${API}/api/${endpoint}`, {
       method: 'POST',
       headers: apiHeaders(),
-      body: JSON.stringify(data),
+      body: JSON.stringify(payload),
     });
 
     const contentType = resp.headers.get('content-type');

@@ -185,13 +185,30 @@ function _canonical_term_string(sym::Symbol, supports::Dict{Symbol, Vector{Symbo
     return "[" * join(term, ",") * "]"
 end
 
-function canonical_network_code(rules::Vector{String})
+function _canonical_base_species_label(idx::Int)::String
+    if 1 <= idx <= 26
+        return string(Char('A' + idx - 1))
+    end
+    return "S$(idx)"
+end
+
+function _canonical_support_species_symbol(sym::Symbol, supports::Dict{Symbol, Vector{Symbol}}, remap::Dict{Symbol, Int}, free_syms::Set{Symbol})
+    text = String(sym)
+    if !(sym in free_syms || startswith(text, "C_"))
+        return text
+    end
+    labels = sort!([_canonical_base_species_label(remap[base]) for base in supports[sym]])
+    length(labels) == 1 && return only(labels)
+    return "C_" * join(labels, "_")
+end
+
+function canonical_network_identity(rules::Vector{String})
     reactants, products = parse_reactions(rules)
     _, _, free_syms, _ = parse_network_structure(rules)
     supports, support_issue = _infer_binding_supports(rules)
     support_issue === nothing || error("Cannot canonicalize network: $support_issue")
 
-    candidates = String[]
+    candidates = NamedTuple[]
     for perm in _all_permutations(copy(free_syms))
         remap = Dict(sym => idx for (idx, sym) in enumerate(perm))
         serialized_rules = String[]
@@ -215,12 +232,33 @@ function canonical_network_code(rules::Vector{String})
             push!(serialized_rules, join(left_terms, "+") * "<->" * join(right_terms, "+"))
         end
         sort!(serialized_rules)
-        push!(candidates, join(serialized_rules, "|"))
+        push!(candidates, (code=join(serialized_rules, "|"), remap=remap, tie_key=join(String.(perm), ",")))
     end
 
-    sort!(candidates)
-    return first(candidates)
+    sort!(candidates; by=candidate -> (candidate.code, candidate.tie_key))
+    best = first(candidates)
+    free_set = Set(free_syms)
+    species_symbol_map = Dict{String, String}()
+    for sym in keys(supports)
+        species_symbol_map[String(sym)] = _canonical_support_species_symbol(sym, supports, best.remap, free_set)
+    end
+    total_symbol_map = Dict{String, String}(
+        "t" * String(sym) => "t" * _canonical_base_species_label(best.remap[sym])
+        for sym in free_syms
+    )
+    base_symbol_map = Dict{String, String}(
+        String(sym) => _canonical_base_species_label(best.remap[sym])
+        for sym in free_syms
+    )
+    return (
+        code=best.code,
+        species_symbol_map=species_symbol_map,
+        total_symbol_map=total_symbol_map,
+        base_symbol_map=base_symbol_map,
+    )
 end
+
+canonical_network_code(rules::Vector{String}) = canonical_network_identity(rules).code
 
 """
 `canonical_network_code` that returns `nothing` instead of throwing when the

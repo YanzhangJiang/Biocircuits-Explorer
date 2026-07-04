@@ -137,6 +137,8 @@
   /* --- Panels (shared bg/border for info, viewer, path items, etc.) --- */
   --panel-bg: #1a1a1a;
   --panel-border: #333;
+  --status-ok: #2f9e44;
+  --status-error: #c92a2a;
   --panel-hover-bg: #252525;
   --panel-hover-border: #555;
 

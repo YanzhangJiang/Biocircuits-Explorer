@@ -90,6 +90,8 @@
   /* --- Panels --- */
   --panel-bg: #ffffff;
   --panel-border: #d8e2ec;
+  --status-ok: #2f9e44;
+  --status-error: #c92a2a;
   --panel-hover-bg: #eef4fa;
   --panel-hover-border: #bccbdb;
 

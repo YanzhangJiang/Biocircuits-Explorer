@@ -6,6 +6,12 @@ using HTTP
 using JSON3
 using Base64
 
+# Keep the Designability/Design Screen API contracts runnable from the main test
+# entry as well as directly; these run before the older atlas @test_broken gate
+# below.
+include("designability_spec_contract.jl")
+include("design_screen_contract.jl")
+
 # REGRESSION PROBE (Task-15b): atlas.jl accesses SISOPaths.qK_grh/.sources/.sinks
 # as direct struct fields — upstream b30087f moved the graph into SISOProblem.dag.graph
 # (accessor: get_SISO_graph) and removed those fields.  Network builds fail with
@@ -71,6 +77,17 @@ const HOMOMER_MIXED_NETWORK = Dict(
     ],
     "input_symbols" => Any["tA"],
     "output_symbols" => Any["C_A_A"],
+)
+
+const CANONICAL_RELABEL_NETWORK = Dict(
+    "label" => "canonical_relabel",
+    "reactions" => Any[
+        "A + B <-> C_A_B",
+        "B + B <-> C_B_B",
+        "C_A_B + B <-> C_A_B_B",
+    ],
+    "input_symbols" => Any["tB"],
+    "output_symbols" => Any["C_A_B_B"],
 )
 
 const ORTHANT_NETWORK = Dict(
@@ -1862,6 +1879,57 @@ end
     end # _atlas_test
 end
 
+@testset "Atlas Slices Persist Canonical IO Labels" begin
+    _atlas_test() do
+    BEB = BiocircuitsExplorerBackend
+    atlas = build_behavior_atlas_from_spec(Dict(
+        "networks" => Any[CANONICAL_RELABEL_NETWORK],
+        "search_profile" => Dict(
+            "allow_homomeric_templates" => true,
+            "allow_higher_order_templates" => true,
+            "max_support" => 3,
+        ),
+        "behavior_config" => Dict(
+            "compute_volume" => false,
+            "include_path_records" => false,
+            "min_volume_mean" => 0.0,
+        ),
+    ))
+
+    @test atlas["successful_network_count"] == 1
+    slice = only(atlas["behavior_slices"])
+    @test slice["input_symbol"] == "tA"
+    @test slice["output_symbol"] == "C_A_A_B"
+    @test occursin("input=tA", slice["slice_id"])
+    @test occursin("output=C_A_A_B", slice["slice_id"])
+    @test !occursin("C_A_B_B", slice["slice_id"])
+    @test slice["output_symbol"] in first(BEB._design_canonical_species(slice["network_id"]))
+
+    result = query_behavior_atlas(atlas, Dict(
+        "input_symbols" => Any["tA"],
+        "output_symbols" => Any["C_A_A_B"],
+        "limit" => 1,
+    ))
+    @test result["result_count"] == 1
+
+    mktempdir() do tmpdir
+        sqlite_path = joinpath(tmpdir, "atlas.sqlite")
+        atlas_sqlite_merge_atlas!(sqlite_path, atlas; source_label="canonical_io_test")
+        via_sqlite = query_behavior_atlas_from_spec(Dict(
+            "sqlite_path" => sqlite_path,
+            "query" => Dict(
+                "input_symbols" => Any["tA"],
+                "output_symbols" => Any["C_A_A_B"],
+                "limit" => 1,
+            ),
+        ))
+        @test via_sqlite["result_count"] == 1
+        @test via_sqlite["results"][1]["input_symbol"] == "tA"
+        @test via_sqlite["results"][1]["output_symbol"] == "C_A_A_B"
+    end
+    end # _atlas_test
+end
+
 @testset "Higher Nullity Off-Path Vertices Do Not Break Materialization" begin
     _atlas_test() do
     atlas = build_behavior_atlas_from_spec(Dict(
@@ -2950,11 +3018,92 @@ end
         ("network-ir.schema.json", NETWORK_IR_SCHEMA_VERSION),
         ("design-spec.schema.json", DESIGN_SPEC_SCHEMA_VERSION),
         ("result-artifact.schema.json", RESULT_ARTIFACT_SCHEMA_VERSION),
+        ("designability-spec.schema.json", "bne-designability/v1.0.0"),
+        ("designability-screen.schema.json", "bne-design-screen/v0.2.0"),
     ]
         path = joinpath(schema_dir, file)
         @test isfile(path)
         schema = JSON3.read(read(path, String))
-        key = file == "result-artifact.schema.json" ? "artifact_schema_version" : "ir_schema_version"
+        key = file == "result-artifact.schema.json" ? "artifact_schema_version" :
+              startswith(file, "designability-") ? "schema_version" : "ir_schema_version"
         @test schema["properties"][key]["const"] == version
     end
+end
+
+# ── Design pipeline: DesignabilitySpec → screen → selected reaction network ──
+# spec 2026-06-29-tunable-design-workflow-completion-design.md, items 1 & 2:
+# label→RO input, the design index repointed to the tracked new-sign atlas, and
+# the old inverse-design route downgraded (not removed).
+@testset "Design Pipeline (label/sign search, new-sign index, design_labels)" begin
+    BEB = BiocircuitsExplorerBackend
+    idx = BEB._load_design_index()
+    @test !isempty(idx)                                       # tracked new-sign atlas loads
+    @test !isempty(idx[1].motifs)                             # base_motifs field present
+    @test BEB.design_search("label", "biphasic_peak")["designable"] === true
+    @test !isempty(BEB.design_search("label", "biphasic_peak")["minimal"])
+    @test BEB.design_search("sign", "+-+")["designable"] === true   # no regression
+    @test_throws ErrorException BEB.design_search("unknown", [1.0])
+    screen = BEB.design_screen("sign", "+-+")
+    @test screen["schema_version"] == "bne-design-screen/v0.2.0"
+    @test screen["designable"] === true
+    @test haskey(screen, "designability_spec_normalized")
+    @test haskey(screen, "constraint_audit")
+    @test haskey(screen, "verified_recommendations")
+    @test haskey(screen, "screened_candidates")
+    @test isempty(screen["verified_recommendations"])
+    @test screen["recommended"] == screen["verified_recommendations"]
+    @test !isempty(screen["screened_candidates"])
+    @test !isempty(screen["minimal_certificates"])
+    @test all(card -> get(card, "evidence_grade", "") == "proxy_only" &&
+                      card["pass"] === false,
+              screen["screened_candidates"])
+    all_screen = BEB.design_screen("sign", "+-+";
+        candidate_budget=Dict("mode" => "all_matches", "max_recommended" => 3, "max_screened" => 3))
+    @test all_screen["designability_spec_normalized"]["candidate_budget"]["mode"] == "all_matches"
+    @test all_screen["screened_count"] >= screen["screened_count"]
+    @test length(all_screen["screened_candidates"]) <= 3
+    spec_screen = BEB.design_screen("sign", "+-+";
+        designability_spec=Dict("target_kind" => "sign", "target" => "+-+",
+                                "temporal_dynamics" => Dict("peak_width" => "wide")))
+    @test isempty(spec_screen["verified_recommendations"])
+    @test any(item -> item["path"] == "/target/temporal_dynamics" &&
+                      item["support_level"] == "unsupported",
+              spec_screen["constraint_audit"])
+    rec = first(screen["screened_candidates"])
+    for key in ("nid", "inp", "out", "complexity", "constraints", "metrics",
+                "parameter_recommendation", "certificate_grade",
+                "active_failures", "agent_handoff")
+        @test haskey(rec, key)
+    end
+    @test rec["out"] in first(BEB._design_canonical_species(rec["nid"]))
+    @test rec["parameter_recommendation"]["theta_star"]["status"] == "not_computed"
+    @test rec["parameter_recommendation"]["theta_star"]["source_type"] == "proxy"
+    @test rec["constraints"]["bounds_intersection_verified"] === false
+    @test haskey(rec["metrics"], "ranking_margin_proxy")
+    @test haskey(rec["metrics"], "atlas_volume_proxy")
+    @test !haskey(rec["metrics"], "tunable_volume")
+    @test !haskey(rec["metrics"], "condition_number")
+    @test !haskey(rec["metrics"], "parameter_breakpoint_sensitivity")
+    @test rec["agent_handoff"]["endpoint"] == "/api/design_screen"
+    bad_kind_req = HTTP.Request("POST", "/api/design_screen", [],
+        JSON3.write(Dict("target_kind" => "unknown", "target" => Any[1.0])))
+    @test BEB.router(bad_kind_req).status == 400
+    bad_spec_req = HTTP.Request("POST", "/api/design_screen", [],
+        JSON3.write(Dict("designability_spec" => "not-an-object", "target" => "+-+")))
+    @test BEB.router(bad_spec_req).status == 400
+    for cell in BEB.design_search("sign", "+-+")["minimal"], net in cell["networks"]
+        @test net["out"] in first(BEB._design_canonical_species(net["nid"]))
+    end
+    relabeled_nid = "[1,2]+[1]<->[1,1,2]|[1,2]+[3]<->[1,2,3]|[1]+[2]<->[1,2]|[2]+[3]<->[2,3]"
+    relabeled_outs = Set(r.out for r in idx if r.nid == relabeled_nid)
+    @test "C_A_A_B" in relabeled_outs
+    @test "C_B_C" in relabeled_outs
+    @test !("C_A_B_B" in relabeled_outs)
+    @test !("C_A_C" in relabeled_outs)
+    rl = JSON3.read(String(copy(BEB.handle_design_labels(nothing).body)))
+    @test length(rl["labels"]) == 16                          # the 16-motif vocab
+    @test all(l -> !isempty(l["ro_program"]), rl["labels"])   # each carries an RO translation
+    @test haskey(BEB.API_ROUTES, "/api/run_inverse_design")   # downgraded, not removed
+    @test haskey(BEB.API_ROUTES, "/api/design_labels")        # new endpoint wired
+    @test haskey(BEB.API_ROUTES, "/api/design_screen")        # tunability-aware screen wired
 end

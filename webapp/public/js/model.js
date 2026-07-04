@@ -12,7 +12,7 @@ export function getReactionsFromNode(nodeId) {
   // Identity-defined reaction sources publish their rules as
   // config.resolvedDefinition.raw_rules instead of DOM reaction rows:
   //  - network-id-definition: resolved from a compressed atlas id
-  //  - design-target:         the minimal network the user selected from the search
+  //  - design-target:         the candidate network the user selected from the screen
   if (info?.type === 'network-id-definition' || info?.type === 'design-target') {
     const config = info.data?.config || {};
     const resolved = config.resolvedDefinition || null;

@@ -1,0 +1,157 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Figure export: pulse design plot panels</title>
+  <script src="/vendor/plotly-2.27.0.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      color: #223242;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .wrap {
+      width: 1520px;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 720px 720px;
+      gap: 24px;
+    }
+    .plot {
+      width: 720px;
+      height: 520px;
+      border: 1px solid #d7e1eb;
+      background: #ffffff;
+    }
+    #status {
+      grid-column: 1 / -1;
+      font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #52616f;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="ropPlot" class="plot"></div>
+    <div id="scanPlot" class="plot"></div>
+    <div id="status">loading</div>
+  </div>
+
+  <script type="module">
+    import { applyThemeMode } from '/js/theme.js';
+    import { plotROPPolyhedron, plotParameterScan1D } from '/js/scan.js';
+
+    async function api(endpoint, body) {
+      const resp = await fetch(`/api/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await resp.json();
+      if (!resp.ok || json.error) throw new Error(json.error || `${endpoint} failed`);
+      return json;
+    }
+
+    function chooseFamily(behavior) {
+      const preferred = behavior.exact_families.find(f => f.exact_label === '1 \u2192 0 \u2192 -1');
+      if (preferred) return preferred;
+      return behavior.exact_families.find(f => f.exact_label === '1 \u2192 -1') || behavior.exact_families[0];
+    }
+
+    const network = {
+      species: [
+        { name: 'A', role: 'free' },
+        { name: 'B', role: 'free' },
+        { name: 'C_A_B', role: 'bound' },
+        { name: 'C_A_A_B', role: 'bound' },
+      ],
+      reactions: [
+        { kind: 'binding', formula: 'A + B <-> C_A_B', reversible: true, kd: 1.0 },
+        { kind: 'binding', formula: 'C_A_B + A <-> C_A_A_B', reversible: true, kd: 1.0 },
+      ],
+    };
+
+    try {
+      await applyThemeMode('light', { persist: false });
+      const model = await api('build_model', { network });
+      const session_id = model.session_id;
+      const rop = await api('rop_polyhedron', {
+        session_id,
+        dimension: 2,
+        pairs: [
+          { x_symbol: 'A', qk_symbol: 'Kd1' },
+          { x_symbol: 'B', qk_symbol: 'Kd1' },
+        ],
+        add_inner_points: true,
+        npoints: 4000,
+        singular_extends: 2,
+      });
+      const behavior = await api('behavior_families', {
+        session_id,
+        change_qK: 'tA',
+        observe_x: 'C_A_B',
+        path_scope: 'all',
+        min_volume_mean: 0,
+        deduplicate: true,
+        keep_singular: true,
+        keep_nonasymptotic: false,
+        compute_volume: false,
+      });
+      const family = chooseFamily(behavior);
+      const selectedPath = family.representative_path_idx || family.path_indices[0];
+      const trajectory = await api('siso_trajectory', {
+        session_id,
+        change_qK: 'tA',
+        path_idx: selectedPath,
+        start: -9,
+        stop: 9,
+        npoints: 700,
+      });
+      const fixedQK = [...trajectory.parameters];
+      fixedQK.splice(behavior.change_qK_idx - 1, 0, 0);
+      const scan = await api('parameter_scan_1d', {
+        session_id,
+        param_symbol: 'tA',
+        param_min: -9,
+        param_max: 9,
+        n_points: 700,
+        fixed_qK: fixedQK,
+        output_exprs: ['C_A_B'],
+      });
+
+      plotROPPolyhedron(rop, 'ropPlot', { fitInnerPoints: false });
+      plotParameterScan1D(scan, 'scanPlot');
+
+      await Plotly.relayout('ropPlot', {
+        'title.text': 'Reaction-order geometry',
+        'title.font.size': 15,
+        'xaxis.title.text': 'reaction order of A',
+        'yaxis.title.text': 'reaction order of B',
+        'font.family': 'Arial, Helvetica, sans-serif',
+      });
+      await Plotly.restyle('scanPlot', {
+        'line.color': ['#2c7fb8'],
+        'line.width': [3],
+        name: ['AB readout'],
+      });
+      await Plotly.relayout('scanPlot', {
+        'title.text': 'Forward equilibrium check: bell-shaped AB readout',
+        'title.font.size': 15,
+        'xaxis.title.text': 'log10(total A)',
+        'yaxis.title.text': 'log10(AB concentration)',
+        'font.family': 'Arial, Helvetica, sans-serif',
+        'showlegend': false,
+      });
+
+      window.__figureExport = { model, rop, behavior, family, selectedPath, trajectory, scan, done: true };
+      document.getElementById('status').textContent = `done: path #${selectedPath}, RO ${family.exact_label}`;
+    } catch (err) {
+      console.error(err);
+      window.__figureExport = { done: false, error: String(err && err.message || err) };
+      document.getElementById('status').textContent = `error: ${String(err && err.message || err)}`;
+    }
+  </script>
+</body>
+</html>

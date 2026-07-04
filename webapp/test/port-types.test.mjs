@@ -18,6 +18,7 @@ function test(name, fn) {
 const PORT_IDS = [
   'reactions', 'model', 'params', 'result',
   'atlas-spec', 'atlas', 'atlas-query', 'atlas-network',
+  'designability-spec',
 ];
 
 test('every known port id maps to a declared type (no raw-id fallback)', () => {

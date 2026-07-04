@@ -21,6 +21,7 @@ export const PORT_TYPES = Object.freeze({
   AtlasArtifact: 'AtlasArtifact',  // a built atlas / preview library
   AtlasQuery:    'AtlasQuery',     // an atlas query / inverse-design config
   AtlasNetwork:  'AtlasNetwork',   // a network feeding an atlas spec
+  DesignabilitySpec: 'DesignabilitySpec', // an explicit behavior/constraint target
 });
 
 // port id → type: the single source of truth for what flows on each socket.
@@ -33,6 +34,7 @@ export const PORT_TYPE_OF = Object.freeze({
   atlas:           PORT_TYPES.AtlasArtifact,
   'atlas-query':   PORT_TYPES.AtlasQuery,
   'atlas-network': PORT_TYPES.AtlasNetwork,
+  'designability-spec': PORT_TYPES.DesignabilitySpec,
 });
 
 // Resolve a socket's type. A node may override per-port with a `type` field on

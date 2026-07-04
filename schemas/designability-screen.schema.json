@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bne-design-screen",
+  "title": "DesignabilityScreen",
+  "description": "Candidate screening contract for DesignabilitySpec. Verified recommendations require an explicit spec plus exact or sampled evidence; proxy-only cards are exploratory screened candidates.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "designable",
+    "verified_recommendations",
+    "screened_candidates",
+    "minimal_certificates",
+    "constraint_audit",
+    "designability_spec_normalized"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "bne-design-screen/v0.2.0" },
+    "designability_spec_normalized": {
+      "description": "The normalized DesignabilitySpec used for this screen. This is the target contract, not optional display metadata.",
+      "$ref": "designability-spec.schema.json"
+    },
+    "target_kind": { "enum": ["sign", "exact", "label"] },
+    "target": {},
+    "designable": { "type": "boolean" },
+    "verified_designable": { "type": "boolean" },
+    "n_matches": { "type": "integer", "minimum": 0 },
+    "screened_count": { "type": "integer", "minimum": 0 },
+    "candidate_budget": { "type": "object", "additionalProperties": true },
+    "tuning": { "type": "object", "additionalProperties": true },
+    "ranking_policy": { "type": "object", "additionalProperties": true },
+    "constraint_audit": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/constraint_audit_item" }
+    },
+    "verified_recommendations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/verified_designability_card" }
+    },
+    "screened_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/designability_card" }
+    },
+    "recommended": {
+      "description": "Transitional alias for verified_recommendations. New callers must read verified_recommendations.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/verified_designability_card" }
+    },
+    "near_misses": {
+      "description": "Transitional alias for screened_candidates. New callers must read screened_candidates.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/designability_card" }
+    },
+    "minimal_certificates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/minimal_certificate_group" }
+    },
+    "screen_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "verified_status": {
+          "enum": [
+            "verified_recommendations_available",
+            "screened_only",
+            "blocked_by_unsupported_hard_clause",
+            "not_designable"
+          ]
+        },
+        "relaxations": { "type": "array" }
+      }
+    },
+    "relaxations": { "type": "array" }
+  },
+  "$defs": {
+    "bounds": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "parameter_bounds_evidence": {
+      "type": "object",
+      "required": ["basis", "by_class"],
+      "additionalProperties": false,
+      "properties": {
+        "basis": { "const": "log10_qK" },
+        "by_class": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "kd": { "$ref": "#/$defs/bounds" },
+            "total": { "$ref": "#/$defs/bounds" }
+          }
+        }
+      }
+    },
+    "minimal_certificate_group": {
+      "type": "object",
+      "required": ["d", "r", "mu", "networks"],
+      "additionalProperties": true,
+      "properties": {
+        "d": { "type": "integer", "minimum": 1 },
+        "r": { "type": "integer", "minimum": 0 },
+        "mu": { "type": "integer", "minimum": 1 },
+        "networks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["nid", "inp", "out"],
+            "additionalProperties": true,
+            "properties": {
+              "nid": { "type": "string" },
+              "inp": { "type": "string" },
+              "out": { "type": "string" },
+              "certificate_grade": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "verified_designability_card": {
+      "allOf": [
+        { "$ref": "#/$defs/designability_card" },
+        {
+          "type": "object",
+          "required": ["pass", "screen_status", "evidence_grade"],
+          "properties": {
+            "pass": { "const": true },
+            "screen_status": { "enum": ["verified_exact", "verified_sampled"] },
+            "evidence_grade": { "enum": ["enforced_exact", "enforced_sampled", "enforced_exact+sampled_forward"] },
+            "certificate_grade": {
+              "enum": [
+                "exact-union-siso-rop",
+                "exact-union-siso-rop-path",
+                "exact-window-siso-rop-path",
+                "exact-linear",
+                "union-of-polytopes",
+                "sampled-robust"
+              ]
+            },
+            "constraints": {
+              "type": "object",
+              "required": [
+                "parameter_bounds_verified",
+                "parameter_bounds_source",
+                "effective_parameter_bounds"
+              ],
+              "additionalProperties": true,
+              "properties": {
+                "parameter_bounds_verified": { "const": true },
+                "parameter_bounds_source": {
+                  "enum": ["declared_spec"]
+                },
+                "effective_parameter_bounds": {
+                  "$ref": "#/$defs/parameter_bounds_evidence"
+                },
+                "parameter_bounds": {
+                  "$ref": "#/$defs/parameter_bounds_evidence"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "designability_card": {
+      "type": "object",
+      "required": [
+        "nid",
+        "inp",
+        "out",
+        "complexity",
+        "constraints",
+        "metrics",
+        "parameter_recommendation",
+        "certificate_grade",
+        "pass",
+        "active_failures",
+        "agent_handoff"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "const": "bne-designability-card/v0.1.0" },
+        "card_id": { "type": "string" },
+        "nid": { "type": "string" },
+        "inp": { "type": "string" },
+        "out": { "type": "string" },
+        "minimal": { "type": "boolean" },
+        "pass": { "type": "boolean" },
+        "screen_status": {
+          "enum": [
+            "verified_exact",
+            "verified_sampled",
+            "screened_proxy",
+            "blocked_unsupported",
+            "minimal_certificate",
+            "exact_linear_pass",
+            "proxy_near_miss",
+            "proxy_pass"
+          ]
+        },
+        "evidence_grade": {
+          "enum": ["enforced_exact", "enforced_sampled", "enforced_exact+sampled_forward", "forwarded", "proxy_only", "unsupported"]
+        },
+        "tunability_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "certificate_grade": {
+          "enum": [
+            "exact-union-siso-rop",
+            "exact-union-siso-rop-path",
+            "exact-window-siso-rop-path",
+            "exact-linear",
+            "union-of-polytopes",
+            "proxy-only",
+            "atlas-volume-proxy",
+            "screened-surrogate",
+            "minimal-structural-certificate",
+            "finite-grid sampled",
+            "sampled-robust",
+            "conservative",
+            "unsupported",
+            "infeasible"
+          ]
+        },
+        "complexity": {
+          "type": "object",
+          "required": ["d", "r", "mu"],
+          "additionalProperties": true,
+          "properties": {
+            "d": { "type": "integer", "minimum": 1 },
+            "r": { "type": "integer", "minimum": 0 },
+            "mu": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kd_bounds": { "$ref": "#/$defs/bounds" },
+            "total_bounds": { "$ref": "#/$defs/bounds" },
+            "supported_constraints": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/constraint_audit_item" }
+            },
+            "unsupported_constraints": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/constraint_audit_item" }
+            },
+            "parameter_bounds_verified": { "type": "boolean" },
+            "parameter_bounds_source": {
+              "enum": ["declared_spec"]
+            },
+            "effective_parameter_bounds": {
+              "$ref": "#/$defs/parameter_bounds_evidence"
+            },
+            "parameter_bounds": {
+              "$ref": "#/$defs/parameter_bounds_evidence"
+            },
+            "bounds_intersection_verified": { "type": "boolean" },
+            "total_bounds_role": { "type": "string" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "chebyshev_radius": { "type": "number" },
+            "chebyshev_radius_source": {
+              "enum": ["theta_union_cell", "theta_union_path", "sampled_region", "not_computed", "legacy_proxy"]
+            },
+            "ranking_margin_proxy": { "type": "number" },
+            "tunable_volume": { "type": "number" },
+            "tunable_volume_source": {
+              "enum": ["chebyshev_ball_lower_bound", "not_computed", "legacy_proxy"]
+            },
+            "tunable_volume_dimension": { "type": "integer", "minimum": 0 },
+            "tunable_volume_units": {
+              "enum": ["log10_qK_euclidean_ball"]
+            },
+            "dynamic_range": { "type": "number" },
+            "transition_spacing": { "type": "number" },
+            "parameter_extremeness": { "type": "number" },
+            "condition_number": { "type": "number" },
+            "parameter_breakpoint_sensitivity": { "type": "number" },
+            "sampled_robustness": { "type": "number" },
+            "predicted_RO": { "type": "number" },
+            "measured_RO": { "type": "number" },
+            "exact_vertex_idx": { "type": "integer" },
+            "exact_solve_mode": { "type": "string" }
+          }
+        },
+        "parameter_recommendation": {
+          "type": "object",
+          "required": ["theta_star", "downstream"],
+          "additionalProperties": true,
+          "properties": {
+            "theta_star": {
+              "type": "object",
+              "required": ["status", "source", "log_qK", "kd", "totals"],
+              "additionalProperties": true,
+              "properties": {
+                "status": { "enum": ["computed", "not_computed"] },
+                "source": { "type": "string" },
+                "source_type": {
+                  "enum": ["feasible_region_chebyshev", "exact_solver", "sampled_solver", "seed", "proxy", "cache"]
+                },
+                "bounds_verified": { "type": "boolean" },
+                "log_qK": { "type": "array", "items": { "type": "number" } },
+                "kd": { "type": "array", "items": { "type": "number" } },
+                "totals": { "type": "object" }
+              }
+            },
+            "downstream": { "type": "object" }
+          }
+        },
+        "certificate_stack": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "active_failures": { "type": "array", "items": { "type": "string" } },
+        "active_failure_details": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "agent_handoff": {
+          "type": "object",
+          "required": ["endpoint", "role", "next_actions"],
+          "additionalProperties": true,
+          "properties": {
+            "endpoint": { "const": "/api/design_screen" },
+            "role": { "type": "string" },
+            "next_actions": { "type": "array", "items": { "type": "string" } },
+            "agent_should_not": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "constraint_audit_item": {
+      "type": "object",
+      "required": ["path", "support_level", "stage"],
+      "additionalProperties": true,
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "kind": { "type": "string" },
+        "requested": {},
+        "effective": {},
+        "hard": { "type": "boolean" },
+        "support_level": {
+          "enum": ["enforced_exact", "enforced_sampled", "sampled_forward", "forwarded", "proxy_only", "unsupported", "enforced", "ignored"]
+        },
+        "stage": { "type": "string" },
+        "solver": { "type": "string" },
+        "reason": { "type": "string" },
+        "relaxation_hint": { "type": "string" }
+      }
+    }
+  }
+}

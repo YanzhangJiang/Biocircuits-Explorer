@@ -81,6 +81,11 @@ export function bezierPath(x1, y1, x2, y2) {
 }
 
 export function updateConnections() {
+  if (!svgLayer || !svgLayer.isConnected) {
+    svgLayer = document.getElementById('svg-layer');
+  }
+  if (!svgLayer) return;
+
   // Store transmitting state before removing wires
   const transmittingWires = new Set();
   svgLayer.querySelectorAll('.wire.connected.transmitting').forEach(w => {

@@ -1,0 +1,275 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Biocircuits Explorer figure export</title>
+  <script src="/vendor/plotly-2.27.0.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #ddd;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .wrap {
+      width: 1500px;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 720px 720px;
+      gap: 24px;
+    }
+    .node {
+      background: #242424;
+      border: 1px solid #3a3a3a;
+      box-shadow: 0 0 0 1px #111 inset;
+    }
+    .node-head {
+      background: #1aa3b2;
+      color: #fff;
+      font-size: 22px;
+      font-weight: 750;
+      padding: 16px 20px;
+    }
+    .node-body {
+      padding: 18px 18px 20px;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .chip {
+      background: #1a1a1a;
+      border: 1px solid #383838;
+      border-radius: 4px;
+      color: #cfcfcf;
+      padding: 7px 10px;
+      font-weight: 650;
+      font-size: 15px;
+    }
+    .plot-container {
+      width: 100%;
+      height: 480px;
+      background: #111;
+      border: 1px solid #333;
+    }
+    #trajectoryPlot {
+      height: 430px;
+    }
+    #status {
+      grid-column: 1 / -1;
+      color: #aaa;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="node" id="ropNode">
+      <div class="node-head">ROP Polyhedron Result</div>
+      <div class="node-body">
+        <div class="chips">
+          <span class="chip">2D</span>
+          <span class="chip">A1: A / Kd1</span>
+          <span class="chip">A2: B / Kd1</span>
+          <span class="chip">Minimal multimodal witness</span>
+        </div>
+        <div class="plot-container" id="ropPlot"></div>
+      </div>
+    </div>
+    <div class="node" id="scanNode">
+      <div class="node-head">Parameter Scan Result</div>
+      <div class="node-body">
+        <div class="chips">
+          <span class="chip">Scan: tA</span>
+          <span class="chip">Output: C_A_B_B</span>
+          <span class="chip">path interior parameters</span>
+        </div>
+        <div class="plot-container" id="scanPlot"></div>
+      </div>
+    </div>
+    <div class="node" id="trajectoryNode">
+      <div class="node-head">SISO Trajectory Result</div>
+      <div class="node-body">
+        <div class="chips">
+          <span class="chip" id="pathChip">Path: selecting...</span>
+          <span class="chip">Input: tA</span>
+          <span class="chip">Readout: C_A_B_B</span>
+        </div>
+        <div class="plot-container" id="trajectoryPlot"></div>
+      </div>
+    </div>
+    <div id="status">loading</div>
+  </div>
+  <script type="module">
+    import { plotROPPolyhedron, plotParameterScan1D } from '/js/scan.js';
+    import { plotTrajectory } from '/js/plotting.js';
+
+    async function api(endpoint, body) {
+      const resp = await fetch(`/api/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await resp.json();
+      if (!resp.ok || json.error) throw new Error(json.error || `${endpoint} failed`);
+      return json;
+    }
+
+    function responseStats(trajectory, targetName) {
+      const targetIdx = trajectory.x_sym.indexOf(targetName);
+      if (targetIdx < 0) return { switches: -1, range: 0, extrema: 0 };
+      const x = trajectory.change_values;
+      const y = trajectory.logx.map(row => row[targetIdx]);
+      const slopes = [];
+      for (let i = 1; i < x.length; i += 1) {
+        const dx = x[i] - x[i - 1];
+        const dy = y[i] - y[i - 1];
+        if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) < 1e-12) continue;
+        const s = dy / dx;
+        if (Number.isFinite(s) && Math.abs(s) > 0.025) slopes.push(Math.sign(s));
+      }
+      const compressed = [];
+      for (const s of slopes) {
+        if (!compressed.length || compressed[compressed.length - 1] !== s) compressed.push(s);
+      }
+      const switches = Math.max(0, compressed.length - 1);
+      const finiteY = y.filter(Number.isFinite);
+      const range = finiteY.length ? Math.max(...finiteY) - Math.min(...finiteY) : 0;
+      return { switches, range, extrema: compressed.length };
+    }
+
+    async function chooseTrajectory(session_id, siso, targetName) {
+      const candidates = [...siso.paths]
+        .sort((a, b) => (b.vertex_indices.length - a.vertex_indices.length) || (a.idx - b.idx))
+        .slice(0, 80);
+      let best = null;
+      for (const candidate of candidates) {
+        try {
+          const trajectory = await api('siso_trajectory', {
+            session_id,
+            change_qK: 'tA',
+            path_idx: candidate.idx,
+            start: -6,
+            stop: 6,
+            npoints: 360,
+          });
+          const stats = responseStats(trajectory, targetName);
+          const score = stats.switches * 1000 + stats.range * 10 + candidate.vertex_indices.length;
+          if (!best || score > best.score) best = { trajectory, candidate, stats, score };
+          if (stats.switches >= 3 && stats.range > 2) break;
+        } catch (_err) {
+          continue;
+        }
+      }
+      if (!best) throw new Error('No feasible SISO trajectory found among candidate paths');
+      return best;
+    }
+
+    function labelSwitches(label) {
+      const values = label
+        .split('→')
+        .map(part => Number(part.trim()))
+        .filter(v => Number.isFinite(v) && Math.abs(v) > 1e-9);
+      let switches = 0;
+      for (let i = 1; i < values.length; i += 1) {
+        if (Math.sign(values[i]) !== Math.sign(values[i - 1])) switches += 1;
+      }
+      return switches;
+    }
+
+    function chooseExactFamily(behavior) {
+      const preferred = behavior.exact_families.find(f => f.exact_label === '1 → -1 → 1 → -1');
+      if (preferred) return preferred;
+      return [...behavior.exact_families].sort((a, b) => {
+        const cleanA = /NaN|Inf/.test(a.exact_label) ? 0 : 1;
+        const cleanB = /NaN|Inf/.test(b.exact_label) ? 0 : 1;
+        return (labelSwitches(b.exact_label) - labelSwitches(a.exact_label))
+          || (cleanB - cleanA)
+          || (b.n_paths - a.n_paths);
+      })[0];
+    }
+
+    const network = {
+      species: [
+        { name: 'A', role: 'free' },
+        { name: 'B', role: 'free' },
+        { name: 'C', role: 'free' },
+        { name: 'C_A_B', role: 'bound' },
+        { name: 'C_A_B_B', role: 'bound' },
+        { name: 'C_A_C', role: 'bound' },
+        { name: 'C_A_B_C', role: 'bound' },
+      ],
+      reactions: [
+        { kind: 'binding', formula: 'C_A_B + B <-> C_A_B_B', reversible: true, kd: 1.0 },
+        { kind: 'binding', formula: 'B + C_A_C <-> C_A_B_C', reversible: true, kd: 1.0 },
+        { kind: 'binding', formula: 'A + B <-> C_A_B', reversible: true, kd: 1.0 },
+        { kind: 'binding', formula: 'A + C <-> C_A_C', reversible: true, kd: 1.0 },
+      ],
+    };
+
+    try {
+      const model = await api('build_model', { network });
+      const session_id = model.session_id;
+      const rop = await api('rop_polyhedron', {
+        session_id,
+        dimension: 2,
+        pairs: [
+          { x_symbol: 'A', qk_symbol: 'Kd1' },
+          { x_symbol: 'B', qk_symbol: 'Kd1' },
+        ],
+        add_inner_points: true,
+        npoints: 5000,
+        singular_extends: 2,
+      });
+      const behavior = await api('behavior_families', {
+        session_id,
+        change_qK: 'tA',
+        observe_x: 'C_A_B_B',
+        path_scope: 'all',
+        min_volume_mean: 0,
+        deduplicate: true,
+        keep_singular: true,
+        keep_nonasymptotic: false,
+        compute_volume: false,
+      });
+      const family = chooseExactFamily(behavior);
+      const selectedPath = family.representative_path_idx || family.path_indices[0];
+      document.getElementById('pathChip').textContent =
+        `Path: #${selectedPath}; RO ${family.exact_label}`;
+      const trajectory = await api('siso_trajectory', {
+        session_id,
+        change_qK: 'tA',
+        path_idx: selectedPath,
+        start: -8,
+        stop: 8,
+        npoints: 600,
+      });
+      const fixedQK = [...trajectory.parameters];
+      fixedQK.splice(behavior.change_qK_idx - 1, 0, 0);
+      const scan = await api('parameter_scan_1d', {
+        session_id,
+        param_symbol: 'tA',
+        param_min: -8,
+        param_max: 8,
+        n_points: 500,
+        fixed_qK: fixedQK,
+        output_exprs: ['C_A_B_B'],
+      });
+
+      plotROPPolyhedron(rop, 'ropPlot', { fitInnerPoints: false });
+      plotParameterScan1D(scan, 'scanPlot');
+      plotTrajectory(trajectory, 'trajectoryPlot');
+      window.__figureExport = { model, rop, behavior, family, selectedPath, scan, trajectory, done: true };
+      document.getElementById('status').textContent = 'done';
+    } catch (err) {
+      console.error(err);
+      window.__figureExport = { done: false, error: String(err && err.message || err) };
+      document.getElementById('status').textContent = `error: ${String(err && err.message || err)}`;
+    }
+  </script>
+</body>
+</html>

@@ -5,6 +5,8 @@
 
 // ===== Module Imports =====
 import { showToast } from './api.js';
+import { nodeRegistry } from './state.js';
+import { shouldDispatchActionForEvent } from './action-events.js';
 import { initAuthUiEvents } from './auth-ui.js';
 import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { applyThemeMode, installThemeChangeObserver } from './theme.js';
@@ -45,7 +47,12 @@ import {
 } from './scan.js';
 import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
 import { executePlacerResult, loadPlacerMenu, realizePlacerProgram } from './node-types/placer.js';
-import { runDesignSearch } from './node-types/design-target.js';
+import {
+  runDesignSearch,
+  onDesignTargetKindChange,
+  onDesignSpecKindChange,
+  validateDesignSpecConfig,
+} from './node-types/design-target.js';
 import { importSbml, exportSbml, loadSbmlFile } from './sbml-io.js';
 import { initAgentView, setNodeView } from './agent-view.js';
 import './llm-settings.js';   // temporary self-mounting LLM-key panel (OpenAI/Anthropic)
@@ -88,6 +95,9 @@ const ACTION_HANDLERS = {
   loadPlacerMenu: (el) => loadPlacerMenu(el.dataset.node),
   realizePlacerProgram: (el) => realizePlacerProgram(el.dataset.node),
   runDesignSearch: (el) => runDesignSearch(el.dataset.node),
+  designTargetKindChange: (el) => onDesignTargetKindChange(el.dataset.node),
+  designSpecKindChange: (el) => onDesignSpecKindChange(el.dataset.node),
+  validateDesignSpecConfig: (el) => validateDesignSpecConfig(el.dataset.node),
   // ROP Polyhedron
   runROPPolyhedron: (el) => runROPPolyhedron(el.dataset.node),
   executeROPPolyResult: (el) => executeROPPolyResult(el.dataset.node),
@@ -112,19 +122,16 @@ const ACTION_HANDLERS = {
   resetView: () => resetView(),
 };
 
-document.addEventListener('click', (e) => {
+function dispatchActionEvent(e) {
   const target = e.target.closest('[data-action]');
   if (!target) return;
+  if (!shouldDispatchActionForEvent(e.type, target)) return;
   const handler = ACTION_HANDLERS[target.dataset.action];
   if (handler) handler(target);
-});
+}
 
-document.addEventListener('change', (e) => {
-  const target = e.target.closest('[data-action]');
-  if (!target) return;
-  const handler = ACTION_HANDLERS[target.dataset.action];
-  if (handler) handler(target);
-});
+document.addEventListener('click', dispatchActionEvent);
+document.addEventListener('change', dispatchActionEvent);
 
 // ===== Expose globals for Swift bridge (evaluateJavaScript calls) =====
 window.addNodeFromMenu = addNodeFromMenu;
@@ -138,6 +145,23 @@ window.runConnectedWorkspace = runConnectedWorkspace;
 window.saveState = saveState;
 window.loadState = loadState;
 window.setNodeView = setNodeView;
+
+let headerOffsetObserver = null;
+
+function installHeaderOffsetObserver() {
+  const header = document.getElementById('header');
+  if (!header) return;
+  const update = () => {
+    const height = Math.ceil(header.getBoundingClientRect().height || 50);
+    document.documentElement.style.setProperty('--app-header-offset', `${height}px`);
+  };
+  update();
+  if (typeof ResizeObserver !== 'undefined' && !headerOffsetObserver) {
+    headerOffsetObserver = new ResizeObserver(update);
+    headerOffsetObserver.observe(header);
+  }
+  window.addEventListener('resize', update, { passive: true });
+}
 
 // Design Agent → Workspace: drop an engine-verified candidate (its reactions + per-reaction Kd)
 // into a fresh Reaction-Network node and switch to the Workspace, ready to wire up a viewer.
@@ -155,6 +179,91 @@ function exportNetworkToWorkspace(reactions, kd) {
   return id;
 }
 window.exportNetworkToWorkspace = exportNetworkToWorkspace;
+
+function populateDesignSpecConfigNode(nodeId, spec) {
+  const target = spec?.target?.legacy_target || null;
+  const behavior = spec?.target?.behavior_spec || null;
+  const kindEl = document.getElementById(`${nodeId}-spec-kind`);
+  const targetEl = document.getElementById(`${nodeId}-spec-target`);
+  if (kindEl && target?.target_kind) kindEl.value = String(target.target_kind);
+  if (kindEl && behavior) kindEl.value = 'behavior_spec';
+  if (targetEl && target?.target != null) {
+    targetEl.value = Array.isArray(target.target) ? target.target.join(', ') : String(target.target);
+  }
+  if (targetEl && behavior?.program) {
+    targetEl.value = behavior.program
+      .filter(step => step && step.kind === 'reaction_order')
+      .map(step => step.value)
+      .filter(value => value != null)
+      .join(', ');
+  }
+  const inputEl = document.getElementById(`${nodeId}-spec-input`);
+  const outputEl = document.getElementById(`${nodeId}-spec-output`);
+  if (inputEl && behavior?.input) inputEl.value = String(behavior.input);
+  if (outputEl && behavior?.output) outputEl.value = String(behavior.output);
+  const window = behavior?.input_window || spec?.target?.input_window || null;
+  const inputWindow = Array.isArray(window?.input_log10) ? window.input_log10 : null;
+  const winLoEl = document.getElementById(`${nodeId}-spec-window-lo`);
+  const winHiEl = document.getElementById(`${nodeId}-spec-window-hi`);
+  if (inputWindow && winLoEl) winLoEl.value = String(inputWindow[0]);
+  if (inputWindow && winHiEl) winHiEl.value = String(inputWindow[1]);
+  const outputFeature = spec?.target?.output_feature || null;
+  const outFeatureEl = document.getElementById(`${nodeId}-spec-output-feature`);
+  const outValueEl = document.getElementById(`${nodeId}-spec-output-value`);
+  if (outFeatureEl && outputFeature?.feature) outFeatureEl.value = String(outputFeature.feature);
+  if (outValueEl && outputFeature?.value != null) outValueEl.value = String(outputFeature.value);
+  const shapeEl = document.getElementById(`${nodeId}-spec-shape`);
+  if (shapeEl && spec?.target?.shape?.class) shapeEl.value = String(spec.target.shape.class);
+  const dynEl = document.getElementById(`${nodeId}-spec-dynamic-range`);
+  if (dynEl && spec?.constraints?.dynamic_range?.min_fold_change != null) {
+    dynEl.value = String(spec.constraints.dynamic_range.min_fold_change);
+  }
+  const spacingEl = document.getElementById(`${nodeId}-spec-transition-spacing`);
+  if (spacingEl && spec?.constraints?.transitions?.min_spacing_decades != null) {
+    spacingEl.value = String(spec.constraints.transitions.min_spacing_decades);
+  }
+  const jsonEl = document.getElementById(`${nodeId}-spec-json`);
+  if (jsonEl) jsonEl.value = JSON.stringify(spec, null, 2);
+  const info = NODE_TYPES['design-spec-config'];
+  if (nodeRegistry[nodeId]) {
+    nodeRegistry[nodeId].data = nodeRegistry[nodeId].data || {};
+    nodeRegistry[nodeId].data.config = {
+      ...(nodeRegistry[nodeId].data.config || {}),
+      designabilitySpec: spec,
+    };
+  }
+  return !!info;
+}
+
+function exportDesignSpecToWorkspace(spec) {
+  if (!spec || typeof spec !== 'object') {
+    window.showToast?.('No DesignabilitySpec to export');
+    return null;
+  }
+  if (spec.schema_version !== 'bne-designability/v1.0.0') {
+    window.showToast?.('Unsupported DesignabilitySpec version');
+    return null;
+  }
+  setNodeView('workspace');
+  const specId = createNode('design-spec-config', 90, 100);
+  const targetId = createNode('design-target', 590, 100);
+  if (!specId || !targetId) {
+    window.showToast?.('Could not create the Design Spec workflow');
+    return null;
+  }
+  populateDesignSpecConfigNode(specId, spec);
+  addConnection({
+    fromNode: specId,
+    fromPort: 'designability-spec',
+    toNode: targetId,
+    toPort: 'designability-spec',
+  });
+  updateConnections();
+  commitWorkspaceSnapshot('agent-design-spec-export');
+  window.showToast?.('Added Design Spec Config and Design Target to the Workspace');
+  return { specNodeId: specId, designTargetNodeId: targetId };
+}
+window.exportDesignSpecToWorkspace = exportDesignSpecToWorkspace;
 
 async function boot() {
   initWorkspaceShell();
@@ -176,7 +285,7 @@ async function boot() {
   initUndoKeyboard();
   initAttrHistory();
   initEditorUI();   // alignment toolbar + selection shortcuts + cheatsheet
-  await installThemeChangeObserver();
+  installHeaderOffsetObserver();
   initCloudComputeToggleEvents();
   initAuthUiEvents();
   initCanvasEvents();
@@ -185,6 +294,7 @@ async function boot() {
   initNodeMenuEvents();
   initAgentView();   // Design Agent surface + Workspace ⇄ Design Agent switch
   installWorkspaceShellObservers();
+  await installThemeChangeObserver();
   (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.markReady?.();
 }
 

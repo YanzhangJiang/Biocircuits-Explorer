@@ -39,6 +39,10 @@ jobs:
         working-directory: webapp
         run: npm run test:js
 
+      - name: Python Agent contract tests
+        working-directory: webapp
+        run: npm run test:py
+
       - name: index.html / index.zh.html structural sync
         working-directory: webapp
         run: npm run check-i18n-sync
