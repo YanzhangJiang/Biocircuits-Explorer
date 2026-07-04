@@ -49,9 +49,17 @@ struct ContentView: View {
             id: "input",
             title: "Input",
             items: [
-                NodeMenuItem(id: "reaction-network", title: "Reaction Network", systemImage: "point.3.connected.trianglepath"),
+                NodeMenuItem(id: "reaction-network", title: "Reaction Network", systemImage: "network"),
                 NodeMenuItem(id: "network-id-definition", title: "Network ID", systemImage: "number.square"),
                 NodeMenuItem(id: "ai-import", title: "AI Import", systemImage: "sparkles")
+            ]
+        ),
+        NodeMenuSection(
+            id: "design",
+            title: "Design",
+            items: [
+                NodeMenuItem(id: "design-spec-config", title: "Design Spec Config", systemImage: "slider.horizontal.3"),
+                NodeMenuItem(id: "design-target", title: "Design Target", systemImage: "target")
             ]
         ),
         NodeMenuSection(
@@ -65,7 +73,8 @@ struct ContentView: View {
                 NodeMenuItem(id: "fret-params", title: "FRET Config", systemImage: "sparkles.rectangle.stack"),
                 NodeMenuItem(id: "rop-poly-params", title: "ROP Polyhedron Config", systemImage: "hexagon"),
                 NodeMenuItem(id: "atlas-spec", title: "Atlas Spec", systemImage: "map"),
-                NodeMenuItem(id: "atlas-query-config", title: "Atlas Query Config", systemImage: "line.3.horizontal.decrease.circle")
+                NodeMenuItem(id: "atlas-query-config", title: "Atlas Query Config", systemImage: "line.3.horizontal.decrease.circle"),
+                NodeMenuItem(id: "placer-params", title: "Parameter Placer Config", systemImage: "tuningfork")
             ]
         ),
         NodeMenuSection(
@@ -90,7 +99,8 @@ struct ContentView: View {
                 NodeMenuItem(id: "fret-result", title: "FRET Result", systemImage: "camera.filters"),
                 NodeMenuItem(id: "rop-poly-result", title: "ROP Polyhedron Result", systemImage: "cube"),
                 NodeMenuItem(id: "atlas-query-result", title: "Atlas Search Result", systemImage: "scope"),
-                NodeMenuItem(id: "atlas-inverse-result", title: "Atlas Inverse Design", systemImage: "wand.and.stars")
+                NodeMenuItem(id: "atlas-inverse-result", title: "Atlas Inverse Design (advanced / unbounded)", systemImage: "wand.and.stars"),
+                NodeMenuItem(id: "placer-result", title: "Parameter Placer Result", systemImage: "ruler")
             ]
         )
     ]
@@ -101,10 +111,11 @@ struct ContentView: View {
         NodeMenuItem(id: "fret-heatmap", title: "FRET Heatmap", systemImage: "camera.filters"),
         NodeMenuItem(id: "parameter-scan-1d", title: "Parameter Scan (1D)", systemImage: "chart.line.uptrend.xyaxis"),
         NodeMenuItem(id: "parameter-scan-2d", title: "Parameter Scan (2D)", systemImage: "square.grid.2x2"),
+        NodeMenuItem(id: "parameter-placer", title: "Parameter Placer (solve)", systemImage: "scalemass"),
         NodeMenuItem(id: "rop-polyhedron", title: "ROP Polyhedron", systemImage: "hexagon"),
         NodeMenuItem(id: "atlas-preview", title: "Atlas Preview", systemImage: "map"),
         NodeMenuItem(id: "atlas-search", title: "Atlas Search", systemImage: "scope"),
-        NodeMenuItem(id: "atlas-inverse-design", title: "Atlas Inverse Design", systemImage: "wand.and.stars")
+        NodeMenuItem(id: "atlas-inverse-design", title: "Atlas Inverse Design (advanced / unbounded)", systemImage: "wand.and.stars")
     ]
 
     init() {

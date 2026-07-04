@@ -1878,6 +1878,59 @@ function _change_spec_record(change_spec::AbstractDict)
     )
 end
 
+function _canonical_total_symbol_index(sym::AbstractString)
+    text = String(sym)
+    startswith(text, "t") || return nothing
+    label = text[2:end]
+    if length(label) == 1
+        ch = only(label)
+        ('A' <= ch <= 'Z') && return Int(ch - 'A') + 1
+    end
+    if startswith(label, "S")
+        return tryparse(Int, label[2:end])
+    end
+    return nothing
+end
+
+_canonicalized_total_symbol(total_symbol_map::AbstractDict, sym::AbstractString) =
+    String(get(total_symbol_map, String(sym), String(sym)))
+
+_canonicalized_species_symbol(species_symbol_map::AbstractDict, sym::AbstractString) =
+    String(get(species_symbol_map, String(sym), String(sym)))
+
+function _canonicalize_change_spec_for_storage(change_spec::AbstractDict, total_symbol_map::AbstractDict)
+    kind = _change_kind(change_spec)
+    raw_qk_symbols = _change_qk_symbols(change_spec)
+    raw_qk_indices = _change_qk_indices(change_spec)
+    raw_qk_signs = _change_qk_signs(change_spec)
+    mapped = []
+    for idx in eachindex(raw_qk_symbols)
+        mapped_symbol = _canonicalized_total_symbol(total_symbol_map, raw_qk_symbols[idx])
+        mapped_idx = something(_canonical_total_symbol_index(mapped_symbol), raw_qk_indices[idx])
+        push!(mapped, (mapped_idx, mapped_symbol, raw_qk_signs[idx]))
+    end
+    sort!(mapped; by=item -> (item[1], item[2], item[3]))
+    mapped_indices = [item[1] for item in mapped]
+    mapped_symbols = [item[2] for item in mapped]
+    mapped_signs = [item[3] for item in mapped]
+    label = if kind == "axis" && length(mapped_symbols) == 1 && mapped_signs[1] == 1
+        mapped_symbols[1]
+    else
+        _default_change_label(mapped_symbols, mapped_signs)
+    end
+    input_symbol = kind == "axis" && length(mapped_symbols) == 1 && mapped_signs[1] == 1 ? mapped_symbols[1] : label
+    return Dict(
+        "kind" => kind,
+        "label" => label,
+        "input_symbol" => input_symbol,
+        "qk_symbols" => mapped_symbols,
+        "qk_indices" => mapped_indices,
+        "qk_signs" => mapped_signs,
+        "signature" => string(kind, "(", join([string(sign > 0 ? "+" : "-", sym) for (sym, sign) in zip(mapped_symbols, mapped_signs)], ","), ")"),
+        "graph_schema_version" => kind == "axis" ? "axis_v0" : "orthant_v0",
+    )
+end
+
 function _change_spec_from_paths(model, change_paths, input_symbol::AbstractString)
     if change_paths isa SISOPaths
         return _normalize_change_spec(input_symbol, model)
@@ -2145,10 +2198,12 @@ function _build_input_graph_slice(change_paths, network_id::String, change_spec:
     )
 end
 
-function _build_slice_regime_transition_records(model, change_paths, network_id::String, slice_id::String, graph_slice_id::String, change_spec::AbstractDict, output_symbol::String)
+function _build_slice_regime_transition_records(model, change_paths, network_id::String, slice_id::String, graph_slice_id::String, change_spec::AbstractDict, output_symbol::String;
+    record_change_spec::AbstractDict=change_spec,
+    record_output_symbol::String=output_symbol)
     observe_x_idx = locate_sym_x(model, Symbol(output_symbol))
-    input_symbol = _change_input_symbol(change_spec)
-    change_record = _change_spec_record(change_spec)
+    input_symbol = _change_input_symbol(record_change_spec)
+    change_record = _change_spec_record(record_change_spec)
     reachable_from_sources, can_reach_sinks = _graph_reachability_masks(get_SISO_graph(change_paths), get_sources(change_paths), get_sinks(change_paths))
     active_mask = reachable_from_sources .& can_reach_sinks
     active_vertices = sort!(_active_change_graph_vertices(change_paths; active_mask=active_mask))
@@ -2178,7 +2233,7 @@ function _build_slice_regime_transition_records(model, change_paths, network_id:
             "change_qk_symbols" => change_record["qk_symbols"],
             "change_qk_indices" => change_record["qk_indices"],
             "change_qk_signs" => change_record["qk_signs"],
-            "output_symbol" => output_symbol,
+            "output_symbol" => record_output_symbol,
             "vertex_idx" => vertex_idx,
             "role" => role,
             "is_source" => vertex_idx in get_sources(change_paths),
@@ -2222,7 +2277,7 @@ function _build_slice_regime_transition_records(model, change_paths, network_id:
             "change_qk_symbols" => change_record["qk_symbols"],
             "change_qk_indices" => change_record["qk_indices"],
             "change_qk_signs" => change_record["qk_signs"],
-            "output_symbol" => output_symbol,
+            "output_symbol" => record_output_symbol,
             "from_vertex_idx" => from_vertex,
             "to_vertex_idx" => to_vertex,
             "from_role" => from_record["role"],
@@ -2435,10 +2490,13 @@ function _record_skipped_existing!(records, raw_network, canonical_code::String,
     ))
 end
 
-function _build_behavior_slice(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig)
-    slice_id = _atlas_slice_id(network_id, change_spec, string(observe_x), config)
-    change_record = _change_spec_record(change_spec)
-    input_symbol = _change_input_symbol(change_spec)
+function _build_behavior_slice(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig;
+    record_change_spec::AbstractDict=change_spec,
+    record_observe_x::Symbol=observe_x)
+    record_output_symbol = string(record_observe_x)
+    slice_id = _atlas_slice_id(network_id, record_change_spec, record_output_symbol, config)
+    change_record = _change_spec_record(record_change_spec)
+    input_symbol = _change_input_symbol(record_change_spec)
     constraint_kwargs = _behavior_constraint_kwargs(model, config)
 
     try
@@ -2472,7 +2530,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
                 "change_qk_indices" => change_record["qk_indices"],
                 "change_qk_signs" => change_record["qk_signs"],
                 "change_spec" => change_record,
-                "output_symbol" => string(observe_x),
+                "output_symbol" => record_output_symbol,
                 "classifier_config" => atlas_behavior_config_to_dict(config),
                 "path_scope" => String(result.path_scope),
                 "min_volume_mean" => result.min_volume_mean,
@@ -2509,7 +2567,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
                 "change_qk_indices" => change_record["qk_indices"],
                 "change_qk_signs" => change_record["qk_signs"],
                 "change_spec" => change_record,
-                "output_symbol" => string(observe_x),
+                "output_symbol" => record_output_symbol,
                 "classifier_config" => atlas_behavior_config_to_dict(config),
                 "error" => failure["error"],
                 "build_state" => failure["build_state"],
@@ -2529,8 +2587,20 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
     end
 end
 
-function _materialize_behavior_slice_payload(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig)
-    slice_payload = _build_behavior_slice(model, network_id, graph_slice_id, change_spec, observe_x, change_paths, config)
+function _materialize_behavior_slice_payload(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig;
+    record_change_spec::AbstractDict=change_spec,
+    record_observe_x::Symbol=observe_x)
+    slice_payload = _build_behavior_slice(
+        model,
+        network_id,
+        graph_slice_id,
+        change_spec,
+        observe_x,
+        change_paths,
+        config;
+        record_change_spec=record_change_spec,
+        record_observe_x=record_observe_x,
+    )
     slice = slice_payload["slice"]
     result = slice_payload["result"]
 
@@ -2564,7 +2634,9 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
             slice["slice_id"],
             graph_slice_id,
             change_spec,
-            string(observe_x),
+            string(observe_x);
+            record_change_spec=record_change_spec,
+            record_output_symbol=string(record_observe_x),
         )
         append!(regime_records, slice_graph_payload["regime_records"])
         append!(transition_records, slice_graph_payload["transition_records"])
@@ -2647,7 +2719,8 @@ function _build_network_summary(slice_dicts)
     )
 end
 
-function _initial_network_entry(raw_network, network_idx::Integer, canonical_code::String, rules::Vector{String}, kd::Vector{Float64}, validation, search_profile::AtlasSearchProfile)
+function _initial_network_entry(raw_network, network_idx::Integer, canonical_identity, rules::Vector{String}, kd::Vector{Float64}, validation, search_profile::AtlasSearchProfile)
+    canonical_code = String(canonical_identity.code)
     label = String(_raw_get(raw_network, :label, "network_$(network_idx)"))
     metrics = validation["metrics"]
     return Dict(
@@ -2658,6 +2731,9 @@ function _initial_network_entry(raw_network, network_idx::Integer, canonical_cod
         "canonical_code" => canonical_code,
         "raw_rules" => rules,
         "kd" => collect(kd),
+        "species_symbol_map" => canonical_identity.species_symbol_map,
+        "total_symbol_map" => canonical_identity.total_symbol_map,
+        "base_symbol_map" => canonical_identity.base_symbol_map,
         "search_profile" => atlas_search_profile_to_dict(search_profile),
         "analysis_status" => validation["valid"] ? "pending" : "excluded_by_search_profile",
         "build_state" => validation["valid"] ? "pending" : "excluded_by_search_profile",
@@ -2675,19 +2751,25 @@ function _prepare_network_build_job(raw_network, network_idx::Integer, search_pr
     rules = String.(_raw_get(raw_network, :reactions, String[]))
     kd = _raw_haskey(raw_network, :kd) ? Float64.(_raw_get(raw_network, :kd, Float64[])) : ones(Float64, length(rules))
     validation = validate_rules_against_profile(rules, search_profile)
-    canonical_code = try
-        canonical_network_code(rules)
+    canonical_identity = try
+        canonical_network_identity(rules)
     catch
-        "uncanonicalized::" * join(sort(strip.(rules)), "|")
+        (
+            code="uncanonicalized::" * join(sort(strip.(rules)), "|"),
+            species_symbol_map=Dict{String, String}(),
+            total_symbol_map=Dict{String, String}(),
+            base_symbol_map=Dict{String, String}(),
+        )
     end
-    network_entry = _initial_network_entry(raw_network, network_idx, canonical_code, rules, kd, validation, search_profile)
+    network_entry = _initial_network_entry(raw_network, network_idx, canonical_identity, rules, kd, validation, search_profile)
     return (
         raw_network=raw_network,
         network_idx=network_idx,
         rules=rules,
         kd=kd,
         validation=validation,
-        canonical_code=canonical_code,
+        canonical_code=String(canonical_identity.code),
+        canonical_identity=canonical_identity,
         network_entry=network_entry,
     )
 end
@@ -2746,6 +2828,9 @@ function _build_single_network_atlas(job;
 )
     raw_network = job.raw_network
     canonical_code = job.canonical_code
+    canonical_identity = job.canonical_identity
+    species_symbol_map = canonical_identity.species_symbol_map
+    total_symbol_map = canonical_identity.total_symbol_map
     rules = job.rules
     kd = job.kd
     network_entry = Dict{String, Any}(_materialize(job.network_entry))
@@ -2766,8 +2851,8 @@ function _build_single_network_atlas(job;
     if skip_existing && !isempty(existing_slice_ids) &&
        _change_expansion_supports_requested_io_shortcut(change_expansion) &&
        _raw_haskey(raw_network, :input_symbols) && _raw_haskey(raw_network, :output_symbols)
-        requested_inputs = String.(_raw_get(raw_network, :input_symbols, String[]))
-        requested_outputs = String.(_raw_get(raw_network, :output_symbols, String[]))
+        requested_inputs = [_canonicalized_total_symbol(total_symbol_map, String(sym)) for sym in _raw_get(raw_network, :input_symbols, String[])]
+        requested_outputs = [_canonicalized_species_symbol(species_symbol_map, String(sym)) for sym in _raw_get(raw_network, :output_symbols, String[])]
         planned_slice_ids = String[
             _atlas_slice_id(canonical_code, input_symbol, output_symbol, behavior_config)
             for input_symbol in requested_inputs for output_symbol in requested_outputs
@@ -2787,7 +2872,12 @@ function _build_single_network_atlas(job;
         change_specs = _resolve_change_specs(raw_network, model, search_profile, change_expansion)
         output_symbols = _resolve_output_symbols(raw_network, model)
         planned_slice_ids = String[
-            _atlas_slice_id(canonical_code, change_spec, string(output_symbol), behavior_config)
+            _atlas_slice_id(
+                canonical_code,
+                _canonicalize_change_spec_for_storage(change_spec, total_symbol_map),
+                _canonicalized_species_symbol(species_symbol_map, string(output_symbol)),
+                behavior_config,
+            )
             for change_spec in change_specs for output_symbol in output_symbols
         ]
 
@@ -2804,15 +2894,17 @@ function _build_single_network_atlas(job;
         skipped_slice_ids = String[]
 
         for change_spec in change_specs
-            missing_outputs = Symbol[]
+            storage_change_spec = _canonicalize_change_spec_for_storage(change_spec, total_symbol_map)
+            missing_outputs = NamedTuple[]
             change_cache_key = _change_signature(change_spec)
             for output_symbol in output_symbols
-                slice_id = _atlas_slice_id(canonical_code, change_spec, string(output_symbol), behavior_config)
+                storage_output_symbol = _canonicalized_species_symbol(species_symbol_map, string(output_symbol))
+                slice_id = _atlas_slice_id(canonical_code, storage_change_spec, storage_output_symbol, behavior_config)
                 if skip_existing && slice_id in existing_slice_ids
                     push!(skipped_slice_ids, slice_id)
                     result["skipped_existing_slice_count"] = Int(result["skipped_existing_slice_count"]) + 1
                 else
-                    push!(missing_outputs, output_symbol)
+                    push!(missing_outputs, (compute=output_symbol, record=Symbol(storage_output_symbol)))
                 end
             end
 
@@ -2822,7 +2914,7 @@ function _build_single_network_atlas(job;
                 _build_change_paths(model, change_spec)
             end
             graph_slice = get!(graph_slice_cache, change_cache_key) do
-                payload = _build_input_graph_slice(change_paths, canonical_code, change_spec)
+                payload = _build_input_graph_slice(change_paths, canonical_code, storage_change_spec)
                 push!(result["input_graph_slices"], payload)
                 payload
             end
@@ -2834,8 +2926,18 @@ function _build_single_network_atlas(job;
                     get_polyhedra(change_paths)
                 end
             end
-            slice_payloads = _run_network_jobs_parallel(missing_outputs, effective_output_parallelism) do output_symbol
-                _materialize_behavior_slice_payload(model, canonical_code, graph_slice["graph_slice_id"], change_spec, output_symbol, change_paths, behavior_config)
+            slice_payloads = _run_network_jobs_parallel(missing_outputs, effective_output_parallelism) do output_pair
+                _materialize_behavior_slice_payload(
+                    model,
+                    canonical_code,
+                    graph_slice["graph_slice_id"],
+                    change_spec,
+                    output_pair.compute,
+                    change_paths,
+                    behavior_config;
+                    record_change_spec=storage_change_spec,
+                    record_observe_x=output_pair.record,
+                )
             end
             for slice_payload in slice_payloads
                 slice = slice_payload["slice"]

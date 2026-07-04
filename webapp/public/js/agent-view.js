@@ -22,6 +22,7 @@ const VIEW_KEY = 'bcx-node-view';
 const CHAT_API_KEY = 'bcx-chat-api';
 const DEFAULT_CHATW = 440;
 const DEFAULT_CHAT_API = 'http://127.0.0.1:8765/design-chat';
+const DESIGNABILITY_SPEC_VERSION = 'bne-designability/v1.0.0';
 
 // Backend chat endpoint (webapp/scripts/chat_api.py), resolved lazily each call so
 // the native macOS shell can pin the real port after the page has loaded:
@@ -55,13 +56,601 @@ let statusTextEl = null;
 let chatState = {};          // conversation spec state, echoed to the backend each turn
 let activeCandidate = null;  // the candidate currently shown on the right (export target)
 let exportBtnEl = null;      // "Export to Workspace" button (enabled once a candidate is active)
+let exportSpecBtnEl = null;  // exports the compiled DesignabilitySpec, when the backend returns one
 let convoLog = [];           // re-renderable turn log {role:'user',text} | {role:'agent',res} —
                              // persisted WITH the workspace document so each project carries its
                              // own Design-Agent conversation (one project = one workspace + one chat).
 
 function setActiveCandidate(card) {
   activeCandidate = card || null;
-  if (exportBtnEl) exportBtnEl.disabled = !(card && (card.rules || []).length);
+  if (exportBtnEl) exportBtnEl.disabled = !isExportableAgentCard(card);
+  if (exportSpecBtnEl) exportSpecBtnEl.disabled = !extractAgentDesignabilitySpec(card);
+}
+
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function nonnegativeFiniteNumber(value) {
+  const number = finiteNumber(value);
+  return number != null && number >= 0 ? number : null;
+}
+
+function hasOwn(obj, key) {
+  return obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function plainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function ownKeysAllowed(obj, allowed) {
+  if (!plainObject(obj)) return false;
+  const allowedSet = new Set(allowed);
+  return Object.keys(obj).every(key => allowedSet.has(key));
+}
+
+function finiteBounds(value) {
+  return Array.isArray(value) &&
+    value.length === 2 &&
+    value.every(item => finiteNumber(item) != null) &&
+    value[0] <= value[1];
+}
+
+function positiveInteger(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function nonnegativeInteger(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function samplePointsInteger(value) {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 11 &&
+    value <= 1001
+    ? value
+    : null;
+}
+
+const SOURCE_KINDS = new Set(['manual_config', 'agent_design', 'legacy_shorthand', 'imported_json', 'test_fixture', 'hand_authored']);
+const RANKING_PREFERENCES = new Set(['evidence_grade', 'certificate_grade', 'chebyshev_radius', 'tunable_volume', 'dynamic_range', 'transition_spacing', 'sampled_robustness', 'condition_number', 'complexity']);
+
+function wrappedOptionalString(obj, key) {
+  return !hasOwn(obj, key) || typeof obj[key] === 'string';
+}
+
+function wrappedOptionalBoolean(obj, key) {
+  return !hasOwn(obj, key) || typeof obj[key] === 'boolean';
+}
+
+function wrappedOptionalNonnegativeNumber(obj, key) {
+  return !hasOwn(obj, key) || nonnegativeFiniteNumber(obj[key]) != null;
+}
+
+function wrappedOptionalFraction(obj, key) {
+  const value = nonnegativeFiniteNumber(obj[key]);
+  return !hasOwn(obj, key) || (value != null && value <= 1);
+}
+
+function wrappedOptionalNonnegativeInt(obj, key) {
+  return !hasOwn(obj, key) || nonnegativeInteger(obj[key]) != null;
+}
+
+function wrappedOptionalPositiveInt(obj, key) {
+  return !hasOwn(obj, key) || positiveInteger(obj[key]) != null;
+}
+
+function lowerAgentBehaviorProgram(program) {
+  if (!Array.isArray(program) || program.length === 0) return null;
+  const out = [];
+  for (const step of program) {
+    if (!ownKeysAllowed(step, ['kind', 'value', 'operator', 'hard'])) return null;
+    if (step.kind !== 'reaction_order') return null;
+    const value = finiteNumber(step.value);
+    if (value == null) return null;
+    const operator = hasOwn(step, 'operator') ? step.operator : '=';
+    if (operator !== '=' && operator !== '==') return null;
+    if (!wrappedOptionalBoolean(step, 'hard')) return null;
+    out.push({ kind: 'reaction_order', operator, value });
+  }
+  return out;
+}
+
+function wrappedBehaviorStepValid(step) {
+  if (!ownKeysAllowed(step, ['kind', 'value', 'operator', 'hard'])) return false;
+  if (step.kind !== 'reaction_order') return false;
+  if (finiteNumber(step.value) == null) return false;
+  if (hasOwn(step, 'operator') && !['=', '=='].includes(step.operator)) return false;
+  return wrappedOptionalBoolean(step, 'hard');
+}
+
+function wrappedBehaviorProgramLength(behavior) {
+  const program = behavior?.program;
+  if (!Array.isArray(program) || program.length === 0) return null;
+  return program.every(wrappedBehaviorStepValid) ? program.length : null;
+}
+
+function wrappedInputWindowValid(inputWindow) {
+  if (!ownKeysAllowed(inputWindow, ['input_log10', 'hard', 'min_spacing_decades', 'operating_points_log10'])) return false;
+  if (hasOwn(inputWindow, 'input_log10') && !finiteBounds(inputWindow.input_log10)) return false;
+  if (!wrappedOptionalBoolean(inputWindow, 'hard')) return false;
+  if (!wrappedOptionalNonnegativeNumber(inputWindow, 'min_spacing_decades')) return false;
+  if (!hasOwn(inputWindow, 'input_log10') && hasOwn(inputWindow, 'min_spacing_decades')) return false;
+  if (hasOwn(inputWindow, 'operating_points_log10') &&
+      (!Array.isArray(inputWindow.operating_points_log10) ||
+       inputWindow.operating_points_log10.some(value => finiteNumber(value) == null))) {
+    return false;
+  }
+  if (!hasOwn(inputWindow, 'input_log10') && hasOwn(inputWindow, 'operating_points_log10')) return false;
+  return true;
+}
+
+function wrappedOperatingPointsValid(inputWindow, programLength, constraints) {
+  if (!hasOwn(inputWindow, 'operating_points_log10')) return true;
+  const points = inputWindow.operating_points_log10;
+  const bounds = inputWindow.input_log10;
+  if (!Array.isArray(points) || programLength == null || points.length !== programLength) return false;
+  if (!finiteBounds(bounds)) return false;
+  const [lo, hi] = bounds;
+  for (const point of points) {
+    if (finiteNumber(point) == null || point < lo || point > hi) return false;
+  }
+  const windowSpacing = hasOwn(inputWindow, 'min_spacing_decades')
+    ? nonnegativeFiniteNumber(inputWindow.min_spacing_decades)
+    : 0;
+  if (windowSpacing == null) return false;
+  const transitions = plainObject(constraints?.transitions) ? constraints.transitions : {};
+  const transitionSpacing = hasOwn(transitions, 'min_spacing_decades')
+    ? nonnegativeFiniteNumber(transitions.min_spacing_decades)
+    : 0;
+  if (transitionSpacing == null) return false;
+  const spacing = Math.max(windowSpacing, transitionSpacing);
+  for (let index = 0; index < points.length - 1; index += 1) {
+    if (points[index + 1] - points[index] + 1e-9 < spacing) return false;
+  }
+  return true;
+}
+
+function wrappedSourceValid(source) {
+  if (!ownKeysAllowed(source, ['kind', 'node_id', 'agent_message_id', 'provenance'])) return false;
+  if (!SOURCE_KINDS.has(source.kind)) return false;
+  if (!wrappedOptionalString(source, 'node_id')) return false;
+  if (!wrappedOptionalString(source, 'agent_message_id')) return false;
+  return !hasOwn(source, 'provenance') || plainObject(source.provenance);
+}
+
+function wrappedLegacyTargetValid(legacy) {
+  if (!ownKeysAllowed(legacy, ['target_kind', 'target'])) return false;
+  if (!['sign', 'exact', 'label'].includes(legacy.target_kind)) return false;
+  if (!hasOwn(legacy, 'target')) return false;
+  if (legacy.target_kind !== 'exact') return true;
+  return Array.isArray(legacy.target) &&
+    legacy.target.length > 0 &&
+    legacy.target.every(value => finiteNumber(value) != null);
+}
+
+function wrappedTemporalDynamicsValid(temporal) {
+  if (!ownKeysAllowed(temporal, ['stimulus', 'trace', 'peak_width_seconds', 'hard'])) return false;
+  if (hasOwn(temporal, 'stimulus') && !plainObject(temporal.stimulus)) return false;
+  if (hasOwn(temporal, 'trace') && !Array.isArray(temporal.trace)) return false;
+  if (hasOwn(temporal, 'peak_width_seconds')) {
+    const peak = temporal.peak_width_seconds;
+    if (!ownKeysAllowed(peak, ['min', 'max'])) return false;
+    if (!hasOwn(peak, 'min') && !hasOwn(peak, 'max')) return false;
+    if (!wrappedOptionalNonnegativeNumber(peak, 'min')) return false;
+    if (!wrappedOptionalNonnegativeNumber(peak, 'max')) return false;
+    const minPeak = hasOwn(peak, 'min') ? finiteNumber(peak.min) : null;
+    const maxPeak = hasOwn(peak, 'max') ? finiteNumber(peak.max) : null;
+    if (minPeak != null && maxPeak != null && minPeak > maxPeak) return false;
+  }
+  return wrappedOptionalBoolean(temporal, 'hard');
+}
+
+function wrappedParameterBoundsValid(bounds) {
+  if (!ownKeysAllowed(bounds, ['basis', 'kd_log10', 'total_log10', 'by_class'])) return false;
+  if (hasOwn(bounds, 'basis') && bounds.basis !== 'log10_qK') return false;
+  if (!hasOwn(bounds, 'kd_log10') && !hasOwn(bounds, 'total_log10') && !hasOwn(bounds, 'by_class')) return false;
+  if (hasOwn(bounds, 'kd_log10') && !finiteBounds(bounds.kd_log10)) return false;
+  if (hasOwn(bounds, 'total_log10') && !finiteBounds(bounds.total_log10)) return false;
+  if (hasOwn(bounds, 'by_class')) {
+    const byClass = bounds.by_class;
+    if (!ownKeysAllowed(byClass, ['kd', 'total'])) return false;
+    if (!hasOwn(byClass, 'kd') && !hasOwn(byClass, 'total')) return false;
+    if (hasOwn(byClass, 'kd') && !finiteBounds(byClass.kd)) return false;
+    if (hasOwn(byClass, 'total') && !finiteBounds(byClass.total)) return false;
+    if (hasOwn(bounds, 'kd_log10') && hasOwn(byClass, 'kd')) return false;
+    if (hasOwn(bounds, 'total_log10') && hasOwn(byClass, 'total')) return false;
+  }
+  return true;
+}
+
+function wrappedNetworkValid(network) {
+  if (!ownKeysAllowed(network, ['max_species', 'max_reactions', 'max_mu', 'allow_near_minimal'])) return false;
+  if (!wrappedOptionalPositiveInt(network, 'max_species')) return false;
+  if (!wrappedOptionalNonnegativeInt(network, 'max_reactions')) return false;
+  if (!wrappedOptionalPositiveInt(network, 'max_mu')) return false;
+  return wrappedOptionalBoolean(network, 'allow_near_minimal');
+}
+
+function wrappedRobustnessValid(robustness) {
+  if (!ownKeysAllowed(robustness, ['min_chebyshev_radius', 'min_tunable_volume_lower_bound', 'min_tunable_volume', 'condition_number_max', 'min_sampled_pass_fraction', 'hard'])) return false;
+  if (hasOwn(robustness, 'min_tunable_volume_lower_bound') && hasOwn(robustness, 'min_tunable_volume')) return false;
+  for (const key of ['min_chebyshev_radius', 'min_tunable_volume_lower_bound', 'min_tunable_volume', 'condition_number_max']) {
+    if (!wrappedOptionalNonnegativeNumber(robustness, key)) return false;
+  }
+  if (!wrappedOptionalFraction(robustness, 'min_sampled_pass_fraction')) return false;
+  return wrappedOptionalBoolean(robustness, 'hard');
+}
+
+function wrappedCandidateBudgetValid(candidateBudget) {
+  if (!ownKeysAllowed(candidateBudget, ['mode', 'max_extra_species', 'max_extra_reactions', 'max_extra_mu', 'max_screened', 'max_verified_recommendations', 'max_recommended', 'max_near_misses', 'max_exact_placements'])) return false;
+  if (hasOwn(candidateBudget, 'mode') && !['near_minimal', 'all_matches'].includes(candidateBudget.mode)) return false;
+  return ['max_extra_species', 'max_extra_reactions', 'max_extra_mu', 'max_screened', 'max_verified_recommendations', 'max_recommended', 'max_near_misses', 'max_exact_placements']
+    .every(key => wrappedOptionalNonnegativeInt(candidateBudget, key));
+}
+
+function wrappedRankingPolicyValid(rankingPolicy) {
+  if (!ownKeysAllowed(rankingPolicy, ['verified_only', 'prefer'])) return false;
+  if (hasOwn(rankingPolicy, 'verified_only') && rankingPolicy.verified_only !== true) return false;
+  return !hasOwn(rankingPolicy, 'prefer') ||
+    (Array.isArray(rankingPolicy.prefer) &&
+     rankingPolicy.prefer.every(value => typeof value === 'string' && RANKING_PREFERENCES.has(value)));
+}
+
+function wrappedRankingPreferencePrerequisitesValid(raw) {
+  const prefer = raw?.ranking_policy?.prefer;
+  if (!Array.isArray(prefer)) return true;
+  const constraints = plainObject(raw.constraints) ? raw.constraints : {};
+  const transitions = plainObject(constraints.transitions) ? constraints.transitions : {};
+  for (const preference of prefer) {
+    if (preference === 'dynamic_range' && !plainObject(constraints.dynamic_range)) return false;
+    if (preference === 'transition_spacing' && !hasOwn(transitions, 'min_spacing_decades')) return false;
+    if (preference === 'condition_number' || preference === 'sampled_robustness') return false;
+  }
+  return true;
+}
+
+function wrappedPositiveBudget(candidateBudget, key) {
+  return plainObject(candidateBudget) &&
+    hasOwn(candidateBudget, key) &&
+    Number.isInteger(candidateBudget[key]) &&
+    candidateBudget[key] > 0;
+}
+
+function wrappedParameterBoundsPrerequisitesValid(raw) {
+  const constraints = plainObject(raw.constraints) ? raw.constraints : {};
+  if (plainObject(constraints.parameter_bounds)) return true;
+
+  const candidateBudget = plainObject(raw.candidate_budget) ? raw.candidate_budget : {};
+  if (wrappedPositiveBudget(candidateBudget, 'max_exact_placements')) return false;
+  if (wrappedPositiveBudget(candidateBudget, 'max_verified_recommendations')) return false;
+
+  const rankingPolicy = plainObject(raw.ranking_policy) ? raw.ranking_policy : {};
+  if (rankingPolicy.verified_only === true) return false;
+  const prefer = rankingPolicy.prefer;
+  if (Array.isArray(prefer) &&
+      prefer.some(value => ['chebyshev_radius', 'tunable_volume', 'dynamic_range', 'transition_spacing'].includes(value))) {
+    return false;
+  }
+
+  const target = plainObject(raw.target) ? raw.target : {};
+  if (hasOwn(target, 'output_feature') || hasOwn(target, 'shape')) return false;
+  if (hasOwn(constraints, 'dynamic_range') || hasOwn(constraints, 'transitions')) return false;
+  const robustness = plainObject(constraints.robustness) ? constraints.robustness : {};
+  return !['min_chebyshev_radius', 'min_tunable_volume_lower_bound', 'min_tunable_volume']
+    .some(key => hasOwn(robustness, key));
+}
+
+function wrappedUnsupportedHardRobustnessValid(raw) {
+  const constraints = plainObject(raw.constraints) ? raw.constraints : {};
+  const robustness = plainObject(constraints.robustness) ? constraints.robustness : {};
+  const hard = robustness.hard !== false;
+  if (!hard) return true;
+  return !['condition_number_max', 'min_sampled_pass_fraction']
+    .some(key => hasOwn(robustness, key));
+}
+
+function wrappedUnsupportedHardTargetClausesValid(raw) {
+  const target = plainObject(raw.target) ? raw.target : {};
+  for (const key of ['input_window', 'temporal_dynamics']) {
+    if (!hasOwn(target, key)) continue;
+    const clause = target[key];
+    if (!plainObject(clause) || clause.hard !== false) return false;
+  }
+  return true;
+}
+
+function wrappedAuditPolicyValid(auditPolicy) {
+  if (!ownKeysAllowed(auditPolicy, ['unsupported', 'path_format', 'include_supported'])) return false;
+  if (hasOwn(auditPolicy, 'unsupported') && auditPolicy.unsupported !== 'block_if_hard') return false;
+  if (hasOwn(auditPolicy, 'path_format') && auditPolicy.path_format !== 'json_pointer') return false;
+  return wrappedOptionalBoolean(auditPolicy, 'include_supported');
+}
+
+function readAgentBehaviorSymbol(behavior, key, card, fallbackKeys) {
+  if (Object.prototype.hasOwnProperty.call(behavior, key)) {
+    const raw = behavior[key];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  }
+  for (const fallbackKey of fallbackKeys) {
+    const raw = card?.[fallbackKey];
+    if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+function lowerAgentBehaviorTarget(raw, card = null) {
+  const behavior = raw?.behavior_spec;
+  const program = behavior ? lowerAgentBehaviorProgram(behavior.program) : null;
+  if (behavior && program) {
+    if (!ownKeysAllowed(behavior, ['feature_space', 'input', 'output', 'program', 'input_window'])) return null;
+    const featureSpace = behavior.feature_space ?? 'reaction_order';
+    if (featureSpace !== 'reaction_order') return null;
+    const input = readAgentBehaviorSymbol(behavior, 'input', card, ['input_symbol', 'input']);
+    const output = readAgentBehaviorSymbol(behavior, 'output', card, ['observe_species', 'output_symbol', 'output']);
+    if (!input || !output) return null;
+    if (hasOwn(behavior, 'input_window') && !wrappedInputWindowValid(behavior.input_window)) return null;
+    return {
+      behavior_spec: {
+        feature_space: 'reaction_order',
+        input,
+        output,
+        program,
+        ...(hasOwn(behavior, 'input_window') ? { input_window: behavior.input_window } : {}),
+      },
+    };
+  }
+  return null;
+}
+
+function lowerAgentBehaviorConstraints(raw) {
+  const constraints = {};
+  const network = {};
+  const ncRaw = raw?.network_constraints;
+  if (hasOwn(raw, 'network_constraints') && (ncRaw == null || typeof ncRaw !== 'object' || Array.isArray(ncRaw))) return null;
+  const nc = ncRaw || {};
+  if (hasOwn(nc, 'max_reactions')) {
+    const maxReactions = positiveInteger(nc.max_reactions);
+    if (maxReactions == null) return null;
+    network.max_reactions = maxReactions;
+  }
+  if (hasOwn(nc, 'max_base_species')) {
+    const maxSpecies = positiveInteger(nc.max_base_species);
+    if (maxSpecies == null) return null;
+    network.max_species = maxSpecies;
+  }
+  if (Object.keys(network).length) constraints.network = network;
+
+  const kdProfileRaw = nc.kd_profile;
+  if (hasOwn(nc, 'kd_profile')) {
+    if (kdProfileRaw == null || typeof kdProfileRaw !== 'object' || Array.isArray(kdProfileRaw)) return null;
+    const hasMin = hasOwn(kdProfileRaw, 'log10_kd_min');
+    const hasMax = hasOwn(kdProfileRaw, 'log10_kd_max');
+    if (hasMin !== hasMax) return null;
+    const kdMin = finiteNumber(kdProfileRaw.log10_kd_min);
+    const kdMax = finiteNumber(kdProfileRaw.log10_kd_max);
+    if (kdMin == null || kdMax == null || kdMin > kdMax) return null;
+    constraints.parameter_bounds = { kd_log10: [kdMin, kdMax] };
+  }
+
+  const shapePreferencesRaw = raw?.shape_preferences;
+  if (hasOwn(raw, 'shape_preferences')) {
+    if (shapePreferencesRaw == null || typeof shapePreferencesRaw !== 'object' || Array.isArray(shapePreferencesRaw)) return null;
+    if (!ownKeysAllowed(shapePreferencesRaw, ['dynamic_range_log10'])) return null;
+    const dynamicRangeRaw = shapePreferencesRaw.dynamic_range_log10;
+    if (hasOwn(shapePreferencesRaw, 'dynamic_range_log10')) {
+      if (dynamicRangeRaw == null || typeof dynamicRangeRaw !== 'object' || Array.isArray(dynamicRangeRaw)) return null;
+      if (!ownKeysAllowed(dynamicRangeRaw, ['min', 'sample_points'])) return null;
+      if (!hasOwn(dynamicRangeRaw, 'min')) return null;
+      const dynamicMin = finiteNumber(dynamicRangeRaw.min);
+      if (dynamicMin == null) return null;
+      const samplePoints = samplePointsInteger(dynamicRangeRaw.sample_points);
+      if (samplePoints == null) return null;
+      constraints.dynamic_range = {
+        min_fold_change: Math.pow(10, dynamicMin),
+        sample_points: samplePoints,
+        hard: true,
+      };
+    }
+  }
+
+  return constraints;
+}
+
+function wrappedDesignabilitySpecValid(raw) {
+  if (!ownKeysAllowed(raw, ['schema_version', 'source', 'target', 'constraints', 'candidate_budget', 'ranking_policy', 'audit_policy'])) return false;
+  if (!wrappedSourceValid(raw.source)) return false;
+  const target = raw.target;
+  if (!ownKeysAllowed(target, ['legacy_target', 'behavior_spec', 'input_window', 'output_feature', 'temporal_dynamics', 'shape'])) return false;
+  if (hasOwn(target, 'legacy_target') && hasOwn(target, 'behavior_spec')) return false;
+  if (hasOwn(target, 'behavior_spec') && hasOwn(target, 'input_window')) return false;
+  if (!['legacy_target', 'behavior_spec', 'output_feature', 'temporal_dynamics', 'shape'].some(key => hasOwn(target, key))) return false;
+  if (hasOwn(target, 'legacy_target') && !wrappedLegacyTargetValid(target.legacy_target)) return false;
+  if (hasOwn(target, 'input_window') && !wrappedInputWindowValid(target.input_window)) return false;
+  if (hasOwn(target, 'temporal_dynamics') && !wrappedTemporalDynamicsValid(target.temporal_dynamics)) return false;
+  const hasBehaviorSpec = hasOwn(target, 'behavior_spec');
+  const behavior = target.behavior_spec;
+  let programLength = null;
+  if (hasBehaviorSpec) {
+    if (!ownKeysAllowed(behavior, ['input', 'output', 'program', 'feature_space', 'input_window'])) return false;
+    const featureSpace = behavior.feature_space ?? 'reaction_order';
+    if (featureSpace !== 'reaction_order') return false;
+    if (typeof behavior.input !== 'string' || !behavior.input.trim()) return false;
+    if (typeof behavior.output !== 'string' || !behavior.output.trim()) return false;
+    programLength = wrappedBehaviorProgramLength(behavior);
+    if (programLength == null) return false;
+  }
+  const inputBounds = behavior?.input_window?.input_log10;
+  const hasBehaviorInputWindow = finiteBounds(inputBounds);
+  const operatingPoints = behavior?.input_window?.operating_points_log10;
+  const constraintsForWindow = plainObject(raw.constraints) ? raw.constraints : {};
+  if (hasOwn(behavior || {}, 'input_window')) {
+    const inputWindow = behavior.input_window;
+    if (!wrappedInputWindowValid(inputWindow)) return false;
+  }
+  if (Array.isArray(operatingPoints) &&
+      (programLength == null || operatingPoints.length !== programLength)) {
+    return false;
+  }
+  if (operatingPoints !== undefined) {
+    if (!hasBehaviorInputWindow) return false;
+    if (!Array.isArray(operatingPoints) ||
+        operatingPoints.some(value => finiteNumber(value) == null)) {
+      return false;
+    }
+    if (!wrappedOperatingPointsValid(behavior.input_window, programLength, constraintsForWindow)) return false;
+  }
+
+  if (hasOwn(target, 'output_feature')) {
+    const outputFeature = target.output_feature;
+    if (!ownKeysAllowed(outputFeature, ['feature', 'operator', 'value', 'sample_points', 'tolerance_log10', 'hard'])) return false;
+    if (!['fold_change', 'level', 'threshold'].includes(outputFeature.feature)) return false;
+    const outputOperator = hasOwn(outputFeature, 'operator') ? outputFeature.operator : '=';
+    if (!['>=', '<=', '='].includes(outputOperator)) return false;
+    const value = finiteNumber(outputFeature.value);
+    if (value == null) return false;
+    if (outputFeature.feature === 'fold_change' && value <= 0) return false;
+    if (samplePointsInteger(outputFeature.sample_points) == null) return false;
+    if (nonnegativeFiniteNumber(outputFeature.tolerance_log10) == null) return false;
+    if (!wrappedOptionalBoolean(outputFeature, 'hard')) return false;
+    if (!hasBehaviorInputWindow) return false;
+  }
+
+  if (hasOwn(target, 'shape')) {
+    const shape = target.shape;
+    if (!ownKeysAllowed(shape, ['class', 'monotonicity', 'sample_points', 'tolerance_log10', 'min_prominence_log10', 'min_prominence_decades', 'hard'])) return false;
+    if (!['monotonic', 'bell_shaped'].includes(shape.class)) return false;
+    if (samplePointsInteger(shape.sample_points) == null) return false;
+    if (nonnegativeFiniteNumber(shape.tolerance_log10) == null) return false;
+    if (shape.class === 'monotonic' && !['increasing', 'decreasing', 'any'].includes(shape.monotonicity)) return false;
+    if (shape.class === 'monotonic' && (hasOwn(shape, 'min_prominence_log10') || hasOwn(shape, 'min_prominence_decades'))) return false;
+    if (shape.class === 'bell_shaped') {
+      if (hasOwn(shape, 'min_prominence_log10') && hasOwn(shape, 'min_prominence_decades')) return false;
+      const prominence = hasOwn(shape, 'min_prominence_log10')
+        ? nonnegativeFiniteNumber(shape.min_prominence_log10)
+        : nonnegativeFiniteNumber(shape.min_prominence_decades);
+      if (prominence == null) return false;
+    }
+    if (!wrappedOptionalBoolean(shape, 'hard')) return false;
+    if (!hasBehaviorInputWindow) return false;
+  }
+
+  if (hasOwn(raw, 'constraints')) {
+    const constraints = raw.constraints;
+    if (!ownKeysAllowed(constraints, ['network', 'parameter_bounds', 'robustness', 'dynamic_range', 'transitions'])) return false;
+    if (hasOwn(constraints, 'network') && !wrappedNetworkValid(constraints.network)) return false;
+    if (hasOwn(constraints, 'parameter_bounds') && !wrappedParameterBoundsValid(constraints.parameter_bounds)) return false;
+    if (hasOwn(constraints, 'robustness') && !wrappedRobustnessValid(constraints.robustness)) return false;
+    if (hasOwn(constraints, 'dynamic_range')) {
+      const dynamicRange = constraints.dynamic_range;
+      if (!ownKeysAllowed(dynamicRange, ['min_fold_change', 'sample_points', 'hard'])) return false;
+      if (nonnegativeFiniteNumber(dynamicRange.min_fold_change) == null) return false;
+      if (samplePointsInteger(dynamicRange.sample_points) == null) return false;
+      if (!wrappedOptionalBoolean(dynamicRange, 'hard')) return false;
+      if (!hasBehaviorInputWindow) return false;
+    }
+    const transitions = constraints.transitions;
+    if (hasOwn(constraints, 'transitions')) {
+      if (!ownKeysAllowed(transitions, ['min_spacing_decades', 'order', 'hard'])) return false;
+      if (!hasOwn(transitions, 'min_spacing_decades') && !hasOwn(transitions, 'order')) return false;
+      if (hasOwn(transitions, 'order')) {
+        const order = transitions.order;
+        if (!hasBehaviorInputWindow) return false;
+        if (!Array.isArray(order) || programLength == null || order.length !== programLength) return false;
+        if (order.some(value => !Number.isInteger(value) || value < 0 || value >= programLength)) return false;
+        if (new Set(order).size !== order.length) return false;
+      }
+      if (hasOwn(transitions, 'min_spacing_decades')) {
+        const spacing = nonnegativeFiniteNumber(transitions.min_spacing_decades);
+        if (spacing == null) return false;
+        if (!hasBehaviorInputWindow || programLength == null || programLength < 2) return false;
+      }
+      if (!wrappedOptionalBoolean(transitions, 'hard')) return false;
+    }
+  }
+  if (hasOwn(raw, 'candidate_budget') && !wrappedCandidateBudgetValid(raw.candidate_budget)) return false;
+  if (hasOwn(raw, 'ranking_policy') && !wrappedRankingPolicyValid(raw.ranking_policy)) return false;
+  if (!wrappedRankingPreferencePrerequisitesValid(raw)) return false;
+  if (!wrappedParameterBoundsPrerequisitesValid(raw)) return false;
+  if (!wrappedUnsupportedHardTargetClausesValid(raw)) return false;
+  if (!wrappedUnsupportedHardRobustnessValid(raw)) return false;
+  if (hasOwn(raw, 'audit_policy') && !wrappedAuditPolicyValid(raw.audit_policy)) return false;
+
+  return true;
+}
+
+export function normalizeAgentDesignabilitySpec(raw, card = null) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.schema_version === DESIGNABILITY_SPEC_VERSION) {
+    if (!wrappedDesignabilitySpecValid(raw)) return null;
+    const source = raw.source && typeof raw.source === 'object' && !Array.isArray(raw.source) ? raw.source : {};
+    return {
+      ...raw,
+      source: { ...source, kind: 'agent_design' },
+    };
+  }
+  const target = lowerAgentBehaviorTarget(raw, card);
+  if (!target) return null;
+  const constraints = lowerAgentBehaviorConstraints(raw);
+  if (!constraints) return null;
+  const spec = {
+    schema_version: DESIGNABILITY_SPEC_VERSION,
+    source: {
+      kind: 'agent_design',
+      provenance: { agent_behavior_spec: raw },
+    },
+    target,
+    constraints,
+    candidate_budget: {
+      mode: 'near_minimal',
+      max_extra_species: 1,
+      max_extra_reactions: 1,
+      max_extra_mu: 1,
+      max_recommended: 24,
+      max_verified_recommendations: 24,
+      max_screened: 24,
+      max_near_misses: 12,
+      max_exact_placements: 3,
+    },
+    ranking_policy: { verified_only: true },
+    audit_policy: {
+      unsupported: 'block_if_hard',
+      path_format: 'json_pointer',
+      include_supported: true,
+    },
+  };
+  return wrappedDesignabilitySpecValid(spec) ? spec : null;
+}
+
+function extractAgentDesignabilitySpec(card) {
+  if (!card) return null;
+  const payload = cardSpecPayload(card);
+  return payload.present ? normalizeAgentDesignabilitySpec(payload.value, card) : null;
+}
+
+function cardSpecPayload(card) {
+  if (!card || typeof card !== 'object') return { present: false, value: null };
+  if (hasOwn(card, 'designability_spec')) return { present: true, value: card.designability_spec };
+  if (hasOwn(card, 'designabilitySpec')) return { present: true, value: card.designabilitySpec };
+  if (hasOwn(card, 'compiled_spec')) return { present: true, value: card.compiled_spec };
+  if (hasOwn(card, 'behavior_spec')) return { present: true, value: card.behavior_spec };
+  if (hasOwn(card, 'agent_compiled_spec')) return { present: true, value: card.agent_compiled_spec };
+  return { present: false, value: null };
+}
+
+function isExportableAgentCard(card) {
+  if (!(card && (card.rules || []).length)) return false;
+  const payload = cardSpecPayload(card);
+  return !payload.present || !!normalizeAgentDesignabilitySpec(payload.value, card);
+}
+
+export function cardsWithAgentSpec(res) {
+  return (res?.cards || []).filter((card) => {
+    const payload = cardSpecPayload(card);
+    return !payload.present || !!normalizeAgentDesignabilitySpec(payload.value, card);
+  });
 }
 
 // (A,B) corner order (00,01,10,11), output high=1 — mirrors evaluators.jl / cards.py.
@@ -128,8 +717,17 @@ function buildResultsPanel() {
       window.exportNetworkToWorkspace(activeCandidate.rules, activeCandidate.kd);
     }
   });
+  exportSpecBtnEl = el('button', { class: 'export-ws-btn', type: 'button', text: 'Export Spec',
+    title: 'Open this request as a Design Spec Config connected to Design Target' });
+  exportSpecBtnEl.disabled = true;
+  exportSpecBtnEl.addEventListener('click', () => {
+    const spec = extractAgentDesignabilitySpec(activeCandidate);
+    if (spec && typeof window.exportDesignSpecToWorkspace === 'function') {
+      window.exportDesignSpecToWorkspace(spec);
+    }
+  });
   const rulesCard = el('div', { class: 'card rules-card' }, [
-    el('div', { class: 'card-head' }, [el('span', { class: 'card-title', text: 'Reaction rules' }), exportBtnEl]),
+    el('div', { class: 'card-head' }, [el('span', { class: 'card-title', text: 'Reaction rules' }), exportSpecBtnEl, exportBtnEl]),
     resultsRulesEl,
   ]);
 
@@ -414,7 +1012,7 @@ function buildReplyMessage(res) {
   }
   // Cards shown are ENGINE-VERIFIED candidates; CLICK one to drive the right-pane viz + rules.
   const fam = res.family || 'dose_shape';
-  const cards = res.cards || [];
+  const cards = cardsWithAgentSpec(res);
   const explored = (res.info && res.info.explored) || 0;
   if (cards.length > 1) {
     parts.push(el('div', { class: 'cand-hint', text: explored > cards.length
@@ -467,7 +1065,7 @@ function buildComposer() {
       threadEl.replaceChild(buildReplyMessage(res), pending);
       convoLog.push({ role: 'agent', res });
       if (convoLog.length > 60) convoLog = convoLog.slice(-60);
-      const first = (res.cards || [])[0];
+      const first = cardsWithAgentSpec(res)[0];
       if (first) { setActiveCandidate(first); showCandidateRules(first); showCandidateViz(first, first.family || res.family); }
       else { setActiveCandidate(null); }
       refreshBackendStatus();
@@ -583,7 +1181,7 @@ function setDesignAgentConversation(rec) {
       if (e.role === 'user') threadEl.appendChild(buildMessage({ role: 'user', text: e.text }));
       else if (e.role === 'agent' && e.res) {
         threadEl.appendChild(buildReplyMessage(e.res));
-        const f = (e.res.cards || [])[0];
+        const f = cardsWithAgentSpec(e.res)[0];
         if (f) { lastCard = f; lastFam = f.family || e.res.family; }
       }
     }

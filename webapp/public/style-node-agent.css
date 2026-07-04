@@ -129,16 +129,16 @@
 :root[data-node-view="agent"] .workspace-only { display: none !important; }
 
 /* =============================================================================
-   Layout — sits below the 50px glassy header (matches #editor). The flex row
+   Layout — sits below the glassy header (matches #editor). The flex row
    is applied by the [data-node-view="agent"] rule above; keeping `display`
    out of this block lets the default `display:none` win in Workspace view.
    ============================================================================= */
 #agent-view {
   position: absolute;
-  top: 50px;
+  top: var(--app-header-offset, 50px);
   left: 0;
   width: 100vw;
-  height: calc(100vh - 50px);
+  height: calc(100vh - var(--app-header-offset, 50px));
   background: var(--ax-bg);
   overflow: hidden;
   color: var(--ax-text);
@@ -460,7 +460,10 @@ html.biocircuits-native-shell #agent-view { top: 0; height: 100vh; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
-  #agent-view { top: 54px; height: calc(100vh - 54px); }
+  #agent-view {
+    top: var(--app-header-offset, 54px);
+    height: calc(100vh - var(--app-header-offset, 54px));
+  }
 }
 
 /* ---------- Live NL-chat candidate cards + per-family viz (brand-aligned) ---------- */

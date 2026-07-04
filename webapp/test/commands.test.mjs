@@ -173,6 +173,28 @@ test('dispatch(CreateNodeCommand): creates, undo removes, redo recreates', () =>
   assert.equal(editor.changeCount, 3);
 });
 
+test('CreateNodeCommand: redo preserves id so later redo commands still apply', () => {
+  const editor = makeStubEditor();
+  registerPerformers(editor.performers);
+  undoStack.clear();
+
+  const create = dispatch(new CreateNodeCommand({ nodeType: 'reaction-network', x: 80, y: 150 }));
+  const id = create.createdId;
+  editor.performers.moveNode(id, 180, 250);
+  record(new MoveNodeCommand({ nodeId: id, fromX: 80, fromY: 150, toX: 180, toY: 250 }));
+
+  undo(); // move
+  undo(); // create
+  assert.equal(editor.nodes.has(id), false);
+
+  redo(); // create
+  assert.equal(create.createdId, id);
+  assert.equal(editor.nodes.has(id), true);
+
+  redo(); // move still targets the original id
+  assert.deepEqual([editor.nodes.get(id).x, editor.nodes.get(id).y], [180, 250]);
+});
+
 test('record(MoveNodeCommand): undo restores the original position', () => {
   const editor = makeStubEditor();
   registerPerformers(editor.performers);

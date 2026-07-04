@@ -164,14 +164,30 @@ def _extract_json(text):
         raise ValueError("no JSON object in model output")
     return json.loads(text[i:j + 1])
 
+def _env_first(*keys):
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
 def llm_config_from_env():
-    prov = os.environ.get("BNE_LLM_PROVIDER", "openai")
-    key = os.environ.get("BNE_LLM_API_KEY")
+    anthropic_key = _env_first("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+    anthropic_base = os.environ.get("ANTHROPIC_BASE_URL")
+    anthropic_model = _env_first("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL")
+    prov = os.environ.get("BNE_LLM_PROVIDER")
+    if not prov:
+        prov = "anthropic" if (anthropic_key or anthropic_base or anthropic_model) else "openai"
+    key = os.environ.get("BNE_LLM_API_KEY") or (anthropic_key if prov == "anthropic" else None)
     kf = os.environ.get("BNE_LLM_KEY_FILE")
     if not key and kf and os.path.isfile(kf):
         key = open(kf).read().strip()
-    return {"provider": prov, "api_key": key, "base_url": os.environ.get("BNE_LLM_BASE_URL"),
-            "model": os.environ.get("BNE_LLM_MODEL", "gpt-5.4-mini" if prov == "openai" else "claude-sonnet-4-6")}
+    base_url = os.environ.get("BNE_LLM_BASE_URL") or (anthropic_base if prov == "anthropic" else None)
+    model = os.environ.get("BNE_LLM_MODEL") or (
+        anthropic_model if prov == "anthropic" and anthropic_model else
+        ("gpt-5.4-mini" if prov == "openai" else "claude-sonnet-4-6")
+    )
+    return {"provider": prov, "api_key": key, "base_url": base_url, "model": model}
 
 def compile_with_llm(nl, prior=None, *, provider="openai", api_key=None, base_url=None,
                      model="gpt-5.4-mini", max_retries=2):

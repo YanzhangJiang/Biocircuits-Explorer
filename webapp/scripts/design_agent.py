@@ -16,7 +16,7 @@
 # returned identical canned cards with the engine down.)
 #
 # Requires an LLM key (provider-agnostic: OpenAI-compatible incl. a local proxy, or Anthropic).
-import os, sys, json, collections, hashlib, time, uuid
+import os, sys, json, collections, hashlib, time, uuid, copy, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import design_search as ds
 import cards as C
@@ -38,6 +38,7 @@ CONTEXTUAL_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-contextual-v0",
 TRACE_SCHEMA_VERSION = "design-agent-trace/v0.1.0"
 COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.4.0"   # v0.4.0: multimodal (RO sign-oscillation) target
 TRACE_DIR = os.environ.get("BNE_TRACE_DIR", os.path.join(ROOT, "traces"))
+DESIGNABILITY_SPEC_VERSION = "bne-designability/v1.0.0"
 
 def _hash(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -94,6 +95,735 @@ def _write_trace(trace):
             fh.write(json.dumps(trace, default=str) + "\n")
     except Exception as e:
         sys.stderr.write(f"[trace] write failed (non-fatal): {e}\n")
+
+def _agent_finite_number(raw):
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    return value if math.isfinite(value) else None
+
+def _agent_nonnegative_finite_number(raw):
+    value = _agent_finite_number(raw)
+    return value if value is not None and value >= 0 else None
+
+def _agent_integral_number(raw):
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if not math.isfinite(value) or not value.is_integer():
+        return None
+    return int(value)
+
+def _agent_positive_int(raw):
+    value = _agent_integral_number(raw)
+    return value if value is not None and value > 0 else None
+
+def _agent_sample_points(raw):
+    value = _agent_integral_number(raw)
+    return value if value is not None and 11 <= value <= 1001 else None
+
+def _agent_nonnegative_int(raw):
+    value = _agent_integral_number(raw)
+    return value if value is not None and value >= 0 else None
+
+def _agent_plain_dict(raw):
+    return isinstance(raw, dict)
+
+def _agent_keys_allowed(raw, allowed):
+    return _agent_plain_dict(raw) and set(raw.keys()).issubset(set(allowed))
+
+def _agent_finite_bounds(raw):
+    return (
+        isinstance(raw, list) and
+        len(raw) == 2 and
+        _agent_finite_number(raw[0]) is not None and
+        _agent_finite_number(raw[1]) is not None and
+        raw[0] <= raw[1]
+    )
+
+def _agent_optional_string(obj, key):
+    return key not in obj or isinstance(obj.get(key), str)
+
+def _agent_optional_bool(obj, key):
+    return key not in obj or isinstance(obj.get(key), bool)
+
+def _agent_optional_nonnegative_number(obj, key):
+    return key not in obj or _agent_nonnegative_finite_number(obj.get(key)) is not None
+
+def _agent_optional_fraction(obj, key):
+    if key not in obj:
+        return True
+    value = _agent_nonnegative_finite_number(obj.get(key))
+    return value is not None and value <= 1
+
+def _agent_optional_nonnegative_int(obj, key):
+    return key not in obj or _agent_nonnegative_int(obj.get(key)) is not None
+
+def _agent_optional_finite(obj, key):
+    if key not in obj:
+        return True, None
+    value = _agent_finite_number(obj.get(key))
+    return value is not None, value
+
+def _agent_optional_positive_int(obj, key):
+    if key not in obj:
+        return True, None
+    value = _agent_positive_int(obj.get(key))
+    return value is not None, value
+
+def _agent_behavior_symbol(behavior, key, card, fallback_keys):
+    if key in behavior:
+        raw = behavior.get(key)
+        return raw.strip() if isinstance(raw, str) and raw.strip() else None
+    for fallback_key in fallback_keys:
+        raw = (card or {}).get(fallback_key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+def _agent_behavior_program(behavior):
+    program = behavior.get("program")
+    if not isinstance(program, list) or not program:
+        return None
+    out = []
+    for step in program:
+        if not _agent_keys_allowed(step, ("kind", "value", "operator", "hard")):
+            return None
+        if step.get("kind") != "reaction_order":
+            return None
+        value = _agent_finite_number(step.get("value"))
+        if value is None:
+            return None
+        op = step.get("operator") if "operator" in step else "="
+        if op not in ("=", "=="):
+            return None
+        if not _agent_optional_bool(step, "hard"):
+            return None
+        out.append({"kind": "reaction_order", "operator": op, "value": value})
+    return out
+
+_AGENT_SOURCE_KINDS = {
+    "manual_config", "agent_design", "legacy_shorthand", "imported_json", "test_fixture", "hand_authored",
+}
+_AGENT_RANKING_PREFERENCES = {
+    "evidence_grade", "certificate_grade", "chebyshev_radius", "tunable_volume",
+    "dynamic_range", "transition_spacing", "sampled_robustness", "condition_number", "complexity",
+}
+
+def _agent_wrapped_behavior_step_valid(step):
+    if not _agent_keys_allowed(step, ("kind", "value", "operator", "hard")):
+        return False
+    if step.get("kind") != "reaction_order":
+        return False
+    if _agent_finite_number(step.get("value")) is None:
+        return False
+    if step.get("operator", "=") not in ("=", "=="):
+        return False
+    return _agent_optional_bool(step, "hard")
+
+def _agent_wrapped_behavior_program_length(behavior):
+    program = behavior.get("program")
+    if not isinstance(program, list) or not program:
+        return None
+    return len(program) if all(_agent_wrapped_behavior_step_valid(step) for step in program) else None
+
+def _agent_wrapped_input_window_valid(input_window):
+    if not _agent_keys_allowed(input_window, ("input_log10", "hard", "min_spacing_decades", "operating_points_log10")):
+        return False
+    if "input_log10" in input_window and not _agent_finite_bounds(input_window.get("input_log10")):
+        return False
+    if not _agent_optional_bool(input_window, "hard"):
+        return False
+    if not _agent_optional_nonnegative_number(input_window, "min_spacing_decades"):
+        return False
+    if "input_log10" not in input_window and "min_spacing_decades" in input_window:
+        return False
+    if "operating_points_log10" in input_window:
+        points = input_window.get("operating_points_log10")
+        if not isinstance(points, list):
+            return False
+        if any(_agent_finite_number(value) is None for value in points):
+            return False
+        if "input_log10" not in input_window:
+            return False
+    return True
+
+def _agent_wrapped_operating_points_valid(input_window, program_length, constraints):
+    if "operating_points_log10" not in input_window:
+        return True
+    points = input_window.get("operating_points_log10")
+    bounds = input_window.get("input_log10")
+    if not isinstance(points, list) or program_length is None or len(points) != program_length:
+        return False
+    if not _agent_finite_bounds(bounds):
+        return False
+    lo = _agent_finite_number(bounds[0])
+    hi = _agent_finite_number(bounds[1])
+    if lo is None or hi is None:
+        return False
+    numeric_points = []
+    for raw_point in points:
+        point = _agent_finite_number(raw_point)
+        if point is None or point < lo or point > hi:
+            return False
+        numeric_points.append(point)
+    spacing = 0.0
+    if "min_spacing_decades" in input_window:
+        spacing = _agent_nonnegative_finite_number(input_window.get("min_spacing_decades"))
+        if spacing is None:
+            return False
+    transitions = constraints.get("transitions") if isinstance(constraints, dict) else {}
+    if isinstance(transitions, dict) and "min_spacing_decades" in transitions:
+        transition_spacing = _agent_nonnegative_finite_number(transitions.get("min_spacing_decades"))
+        if transition_spacing is None:
+            return False
+        spacing = max(spacing, transition_spacing)
+    for idx in range(len(numeric_points) - 1):
+        if numeric_points[idx + 1] - numeric_points[idx] + 1e-9 < spacing:
+            return False
+    return True
+
+def _agent_wrapped_source_valid(source):
+    if not _agent_keys_allowed(source, ("kind", "node_id", "agent_message_id", "provenance")):
+        return False
+    if source.get("kind") not in _AGENT_SOURCE_KINDS:
+        return False
+    if not _agent_optional_string(source, "node_id"):
+        return False
+    if not _agent_optional_string(source, "agent_message_id"):
+        return False
+    return "provenance" not in source or _agent_plain_dict(source.get("provenance"))
+
+def _agent_wrapped_legacy_target_valid(legacy):
+    if not _agent_plain_dict(legacy):
+        return False
+    if not _agent_keys_allowed(legacy, ("target_kind", "target")):
+        return False
+    if legacy.get("target_kind") not in ("sign", "exact", "label"):
+        return False
+    if "target" not in legacy:
+        return False
+    if legacy.get("target_kind") != "exact":
+        return True
+    target = legacy.get("target")
+    if isinstance(target, str) or not isinstance(target, (list, tuple)) or len(target) == 0:
+        return False
+    return all(
+        not isinstance(value, bool) and
+        isinstance(value, (int, float)) and
+        math.isfinite(float(value))
+        for value in target
+    )
+
+def _agent_wrapped_temporal_dynamics_valid(temporal):
+    if not _agent_keys_allowed(temporal, ("stimulus", "trace", "peak_width_seconds", "hard")):
+        return False
+    if "stimulus" in temporal and not _agent_plain_dict(temporal.get("stimulus")):
+        return False
+    if "trace" in temporal and not isinstance(temporal.get("trace"), list):
+        return False
+    if "peak_width_seconds" in temporal:
+        peak = temporal.get("peak_width_seconds")
+        if not _agent_keys_allowed(peak, ("min", "max")):
+            return False
+        if "min" not in peak and "max" not in peak:
+            return False
+        if not _agent_optional_nonnegative_number(peak, "min"):
+            return False
+        if not _agent_optional_nonnegative_number(peak, "max"):
+            return False
+        min_peak = _agent_finite_number(peak.get("min")) if "min" in peak else None
+        max_peak = _agent_finite_number(peak.get("max")) if "max" in peak else None
+        if min_peak is not None and max_peak is not None and min_peak > max_peak:
+            return False
+    return _agent_optional_bool(temporal, "hard")
+
+def _agent_wrapped_parameter_bounds_valid(bounds):
+    if not _agent_keys_allowed(bounds, ("basis", "kd_log10", "total_log10", "by_class")):
+        return False
+    if "basis" in bounds and bounds.get("basis") != "log10_qK":
+        return False
+    if "kd_log10" not in bounds and "total_log10" not in bounds and "by_class" not in bounds:
+        return False
+    if "kd_log10" in bounds and not _agent_finite_bounds(bounds.get("kd_log10")):
+        return False
+    if "total_log10" in bounds and not _agent_finite_bounds(bounds.get("total_log10")):
+        return False
+    if "by_class" in bounds:
+        by_class = bounds.get("by_class")
+        if not _agent_keys_allowed(by_class, ("kd", "total")):
+            return False
+        if "kd" not in by_class and "total" not in by_class:
+            return False
+        if "kd" in by_class and not _agent_finite_bounds(by_class.get("kd")):
+            return False
+        if "total" in by_class and not _agent_finite_bounds(by_class.get("total")):
+            return False
+        if "kd_log10" in bounds and "kd" in by_class:
+            return False
+        if "total_log10" in bounds and "total" in by_class:
+            return False
+    return True
+
+def _agent_wrapped_network_valid(network):
+    if not _agent_keys_allowed(network, ("max_species", "max_reactions", "max_mu", "allow_near_minimal")):
+        return False
+    if not _agent_optional_positive_int(network, "max_species")[0]:
+        return False
+    if not _agent_optional_nonnegative_int(network, "max_reactions"):
+        return False
+    if not _agent_optional_positive_int(network, "max_mu")[0]:
+        return False
+    return _agent_optional_bool(network, "allow_near_minimal")
+
+def _agent_wrapped_robustness_valid(robustness):
+    if not _agent_keys_allowed(robustness, (
+        "min_chebyshev_radius", "min_tunable_volume_lower_bound", "min_tunable_volume",
+        "condition_number_max", "min_sampled_pass_fraction", "hard",
+    )):
+        return False
+    if "min_tunable_volume_lower_bound" in robustness and "min_tunable_volume" in robustness:
+        return False
+    for key in ("min_chebyshev_radius", "min_tunable_volume_lower_bound", "min_tunable_volume", "condition_number_max"):
+        if not _agent_optional_nonnegative_number(robustness, key):
+            return False
+    if not _agent_optional_fraction(robustness, "min_sampled_pass_fraction"):
+        return False
+    return _agent_optional_bool(robustness, "hard")
+
+def _agent_wrapped_candidate_budget_valid(candidate_budget):
+    if not _agent_keys_allowed(candidate_budget, (
+        "mode", "max_extra_species", "max_extra_reactions", "max_extra_mu",
+        "max_screened", "max_verified_recommendations", "max_recommended",
+        "max_near_misses", "max_exact_placements",
+    )):
+        return False
+    if "mode" in candidate_budget and candidate_budget.get("mode") not in ("near_minimal", "all_matches"):
+        return False
+    return all(_agent_optional_nonnegative_int(candidate_budget, key) for key in (
+        "max_extra_species", "max_extra_reactions", "max_extra_mu", "max_screened",
+        "max_verified_recommendations", "max_recommended", "max_near_misses", "max_exact_placements",
+    ))
+
+def _agent_wrapped_ranking_policy_valid(ranking_policy, constraints=None):
+    if not _agent_keys_allowed(ranking_policy, ("verified_only", "prefer")):
+        return False
+    if "verified_only" in ranking_policy and ranking_policy.get("verified_only") is not True:
+        return False
+    if "prefer" in ranking_policy:
+        prefer = ranking_policy.get("prefer")
+        if not isinstance(prefer, list):
+            return False
+        if any(not isinstance(value, str) or value not in _AGENT_RANKING_PREFERENCES for value in prefer):
+            return False
+        constraints = constraints if isinstance(constraints, dict) else {}
+        transitions = constraints.get("transitions") if isinstance(constraints.get("transitions"), dict) else {}
+        for value in prefer:
+            if value == "dynamic_range" and not isinstance(constraints.get("dynamic_range"), dict):
+                return False
+            if value == "transition_spacing" and "min_spacing_decades" not in transitions:
+                return False
+            if value in ("condition_number", "sampled_robustness"):
+                return False
+    return True
+
+def _agent_wrapped_positive_budget(candidate_budget, key):
+    if not isinstance(candidate_budget, dict) or key not in candidate_budget:
+        return False
+    value = _agent_integral_number(candidate_budget.get(key))
+    return value is not None and value > 0
+
+def _agent_wrapped_parameter_bounds_prerequisites_valid(spec):
+    constraints = spec.get("constraints") if isinstance(spec.get("constraints"), dict) else {}
+    if isinstance(constraints.get("parameter_bounds"), dict):
+        return True
+
+    candidate_budget = spec.get("candidate_budget") if isinstance(spec.get("candidate_budget"), dict) else {}
+    if _agent_wrapped_positive_budget(candidate_budget, "max_exact_placements"):
+        return False
+    if _agent_wrapped_positive_budget(candidate_budget, "max_verified_recommendations"):
+        return False
+
+    ranking_policy = spec.get("ranking_policy") if isinstance(spec.get("ranking_policy"), dict) else {}
+    if ranking_policy.get("verified_only") is True:
+        return False
+    prefer = ranking_policy.get("prefer")
+    if isinstance(prefer, list) and any(
+        value in ("chebyshev_radius", "tunable_volume", "dynamic_range", "transition_spacing")
+        for value in prefer
+    ):
+        return False
+
+    target = spec.get("target") if isinstance(spec.get("target"), dict) else {}
+    if "output_feature" in target or "shape" in target:
+        return False
+    if "dynamic_range" in constraints or "transitions" in constraints:
+        return False
+    robustness = constraints.get("robustness") if isinstance(constraints.get("robustness"), dict) else {}
+    return not any(
+        key in robustness
+        for key in ("min_chebyshev_radius", "min_tunable_volume_lower_bound", "min_tunable_volume")
+    )
+
+def _agent_wrapped_unsupported_hard_robustness_valid(spec):
+    constraints = spec.get("constraints") if isinstance(spec.get("constraints"), dict) else {}
+    robustness = constraints.get("robustness") if isinstance(constraints.get("robustness"), dict) else {}
+    if robustness.get("hard") is False:
+        return True
+    return not any(
+        key in robustness
+        for key in ("condition_number_max", "min_sampled_pass_fraction")
+    )
+
+def _agent_wrapped_unsupported_hard_target_clauses_valid(spec):
+    target = spec.get("target") if isinstance(spec.get("target"), dict) else {}
+    for key in ("input_window", "temporal_dynamics"):
+        if key not in target:
+            continue
+        clause = target.get(key)
+        if not isinstance(clause, dict) or clause.get("hard") is not False:
+            return False
+    return True
+
+def _agent_wrapped_audit_policy_valid(audit_policy):
+    if not _agent_keys_allowed(audit_policy, ("unsupported", "path_format", "include_supported")):
+        return False
+    if "unsupported" in audit_policy and audit_policy.get("unsupported") != "block_if_hard":
+        return False
+    if "path_format" in audit_policy and audit_policy.get("path_format") != "json_pointer":
+        return False
+    return _agent_optional_bool(audit_policy, "include_supported")
+
+def _agent_designability_constraints_from_behavior_payload(raw):
+    constraints = {}
+    network = {}
+    if "network_constraints" in raw and not isinstance(raw.get("network_constraints"), dict):
+        return None
+    nc = raw.get("network_constraints") if isinstance(raw.get("network_constraints"), dict) else {}
+    ok, max_reactions = _agent_optional_positive_int(nc, "max_reactions")
+    if not ok:
+        return None
+    if max_reactions is not None:
+        network["max_reactions"] = max_reactions
+    ok, max_species = _agent_optional_positive_int(nc, "max_base_species")
+    if not ok:
+        return None
+    if max_species is not None:
+        network["max_species"] = max_species
+    if network:
+        constraints["network"] = network
+
+    if "kd_profile" in nc and not isinstance(nc.get("kd_profile"), dict):
+        return None
+    kd_profile = nc.get("kd_profile") if isinstance(nc.get("kd_profile"), dict) else {}
+    has_kd_min = "log10_kd_min" in kd_profile
+    has_kd_max = "log10_kd_max" in kd_profile
+    if "kd_profile" in nc and not has_kd_min and not has_kd_max:
+        return None
+    if has_kd_min or has_kd_max:
+        if has_kd_min != has_kd_max:
+            return None
+        ok_min, kd_min = _agent_optional_finite(kd_profile, "log10_kd_min")
+        ok_max, kd_max = _agent_optional_finite(kd_profile, "log10_kd_max")
+        if not ok_min or not ok_max or kd_min > kd_max:
+            return None
+        constraints["parameter_bounds"] = {"kd_log10": [kd_min, kd_max]}
+
+    if "shape_preferences" in raw and not isinstance(raw.get("shape_preferences"), dict):
+        return None
+    shape_preferences = raw.get("shape_preferences") if isinstance(raw.get("shape_preferences"), dict) else {}
+    if "shape_preferences" in raw and not _agent_keys_allowed(shape_preferences, ("dynamic_range_log10",)):
+        return None
+    if "dynamic_range_log10" in shape_preferences and not isinstance(shape_preferences.get("dynamic_range_log10"), dict):
+        return None
+    dynamic_range = shape_preferences.get("dynamic_range_log10") if isinstance(shape_preferences.get("dynamic_range_log10"), dict) else {}
+    if "min" in dynamic_range:
+        if not _agent_keys_allowed(dynamic_range, ("min", "sample_points")):
+            return None
+        ok, dynamic_min = _agent_optional_finite(dynamic_range, "min")
+        if not ok:
+            return None
+        sample_points = _agent_sample_points(dynamic_range.get("sample_points"))
+        if sample_points is None:
+            return None
+        try:
+            min_fold_change = 10 ** dynamic_min
+        except OverflowError:
+            return None
+        if not math.isfinite(min_fold_change):
+            return None
+        constraints["dynamic_range"] = {
+            "min_fold_change": min_fold_change,
+            "sample_points": sample_points,
+            "hard": True,
+        }
+    elif "dynamic_range_log10" in shape_preferences:
+        return None
+    return constraints
+
+def _agent_wrapped_designability_spec_valid(spec):
+    if not _agent_keys_allowed(spec, ("schema_version", "source", "target", "constraints", "candidate_budget", "ranking_policy", "audit_policy")):
+        return False
+    target = spec.get("target")
+    if not _agent_wrapped_source_valid(spec.get("source")):
+        return False
+    if not _agent_keys_allowed(target, ("legacy_target", "behavior_spec", "input_window", "output_feature", "temporal_dynamics", "shape")):
+        return False
+    if "legacy_target" in target and "behavior_spec" in target:
+        return False
+    if "behavior_spec" in target and "input_window" in target:
+        return False
+    if not any(key in target for key in ("legacy_target", "behavior_spec", "output_feature", "temporal_dynamics", "shape")):
+        return False
+    if "legacy_target" in target and not _agent_wrapped_legacy_target_valid(target.get("legacy_target")):
+        return False
+    if "input_window" in target and not _agent_wrapped_input_window_valid(target.get("input_window")):
+        return False
+    if "temporal_dynamics" in target and not _agent_wrapped_temporal_dynamics_valid(target.get("temporal_dynamics")):
+        return False
+    has_behavior_spec = "behavior_spec" in target
+    behavior = target.get("behavior_spec")
+    program_length = None
+    if has_behavior_spec:
+        if not _agent_keys_allowed(behavior, ("input", "output", "program", "feature_space", "input_window")):
+            return False
+        if behavior.get("feature_space", "reaction_order") != "reaction_order":
+            return False
+        if not isinstance(behavior.get("input"), str) or not behavior.get("input").strip():
+            return False
+        if not isinstance(behavior.get("output"), str) or not behavior.get("output").strip():
+            return False
+        program_length = _agent_wrapped_behavior_program_length(behavior)
+        if program_length is None:
+            return False
+    else:
+        behavior = {}
+    input_window = behavior.get("input_window") if "input_window" in behavior else {}
+    if "input_window" in behavior:
+        if not _agent_wrapped_input_window_valid(input_window):
+            return False
+    input_bounds = input_window.get("input_log10") if isinstance(input_window, dict) else None
+    has_behavior_input_window = _agent_finite_bounds(input_bounds)
+    operating_points = input_window.get("operating_points_log10") if isinstance(input_window, dict) else None
+    constraints_for_window = spec.get("constraints") if isinstance(spec.get("constraints"), dict) else {}
+    if isinstance(operating_points, list) and (
+        program_length is None or len(operating_points) != program_length
+    ):
+        return False
+    if operating_points is not None:
+        if not has_behavior_input_window:
+            return False
+        if not isinstance(operating_points, list):
+            return False
+        if any(_agent_finite_number(value) is None for value in operating_points):
+            return False
+        if not _agent_wrapped_operating_points_valid(input_window, program_length, constraints_for_window):
+            return False
+
+    if "output_feature" in target:
+        output_feature = target.get("output_feature")
+        if not _agent_keys_allowed(output_feature, ("feature", "operator", "value", "sample_points", "tolerance_log10", "hard")):
+            return False
+        feature = output_feature.get("feature")
+        if feature not in ("fold_change", "level", "threshold"):
+            return False
+        if output_feature.get("operator", "=") not in (">=", "<=", "="):
+            return False
+        value = _agent_finite_number(output_feature.get("value"))
+        if value is None:
+            return False
+        if feature == "fold_change" and value <= 0:
+            return False
+        if _agent_sample_points(output_feature.get("sample_points")) is None:
+            return False
+        if _agent_nonnegative_finite_number(output_feature.get("tolerance_log10")) is None:
+            return False
+        if not _agent_optional_bool(output_feature, "hard"):
+            return False
+        if not has_behavior_input_window:
+            return False
+
+    if "shape" in target:
+        shape = target.get("shape")
+        if not _agent_keys_allowed(shape, ("class", "monotonicity", "sample_points", "tolerance_log10", "min_prominence_log10", "min_prominence_decades", "hard")):
+            return False
+        cls = shape.get("class")
+        if cls not in ("monotonic", "bell_shaped"):
+            return False
+        if _agent_sample_points(shape.get("sample_points")) is None:
+            return False
+        if _agent_nonnegative_finite_number(shape.get("tolerance_log10")) is None:
+            return False
+        if cls == "monotonic" and shape.get("monotonicity") not in ("increasing", "decreasing", "any"):
+            return False
+        if cls == "monotonic" and ("min_prominence_log10" in shape or "min_prominence_decades" in shape):
+            return False
+        if cls == "bell_shaped":
+            if "min_prominence_log10" in shape and "min_prominence_decades" in shape:
+                return False
+            prominence = (
+                _agent_nonnegative_finite_number(shape.get("min_prominence_log10"))
+                if "min_prominence_log10" in shape else
+                _agent_nonnegative_finite_number(shape.get("min_prominence_decades"))
+            )
+            if prominence is None:
+                return False
+        if not _agent_optional_bool(shape, "hard"):
+            return False
+        if not has_behavior_input_window:
+            return False
+
+    if "constraints" in spec:
+        constraints = spec.get("constraints")
+        if not _agent_keys_allowed(constraints, ("network", "parameter_bounds", "robustness", "dynamic_range", "transitions")):
+            return False
+        if "network" in constraints and not _agent_wrapped_network_valid(constraints.get("network")):
+            return False
+        if "parameter_bounds" in constraints and not _agent_wrapped_parameter_bounds_valid(constraints.get("parameter_bounds")):
+            return False
+        if "robustness" in constraints and not _agent_wrapped_robustness_valid(constraints.get("robustness")):
+            return False
+        if "dynamic_range" in constraints:
+            dynamic_range = constraints.get("dynamic_range")
+            if not _agent_keys_allowed(dynamic_range, ("min_fold_change", "sample_points", "hard")):
+                return False
+            if _agent_nonnegative_finite_number(dynamic_range.get("min_fold_change")) is None:
+                return False
+            if _agent_sample_points(dynamic_range.get("sample_points")) is None:
+                return False
+            if not _agent_optional_bool(dynamic_range, "hard"):
+                return False
+            if not has_behavior_input_window:
+                return False
+        if "transitions" in constraints:
+            transitions = constraints.get("transitions")
+            if not _agent_keys_allowed(transitions, ("min_spacing_decades", "order", "hard")):
+                return False
+            if "min_spacing_decades" not in transitions and "order" not in transitions:
+                return False
+            if "order" in transitions:
+                order = transitions.get("order")
+                if not has_behavior_input_window:
+                    return False
+                if not isinstance(order, list) or program_length is None or len(order) != program_length:
+                    return False
+                seen = set()
+                for value in order:
+                    idx = _agent_integral_number(value)
+                    if idx is None:
+                        return False
+                    if idx < 0 or idx >= program_length or idx in seen:
+                        return False
+                    seen.add(idx)
+            if "min_spacing_decades" in transitions:
+                if _agent_nonnegative_finite_number(transitions.get("min_spacing_decades")) is None:
+                    return False
+                if not has_behavior_input_window or program_length is None or program_length < 2:
+                    return False
+            if not _agent_optional_bool(transitions, "hard"):
+                return False
+
+    if "candidate_budget" in spec and not _agent_wrapped_candidate_budget_valid(spec.get("candidate_budget")):
+        return False
+    if "ranking_policy" in spec and not _agent_wrapped_ranking_policy_valid(spec.get("ranking_policy"), spec.get("constraints")):
+        return False
+    if not _agent_wrapped_parameter_bounds_prerequisites_valid(spec):
+        return False
+    if not _agent_wrapped_unsupported_hard_target_clauses_valid(spec):
+        return False
+    if not _agent_wrapped_unsupported_hard_robustness_valid(spec):
+        return False
+    if "audit_policy" in spec and not _agent_wrapped_audit_policy_valid(spec.get("audit_policy")):
+        return False
+
+    return True
+
+def _agent_designability_spec_from_payload(raw, card=None):
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("schema_version") == DESIGNABILITY_SPEC_VERSION:
+        if not _agent_wrapped_designability_spec_valid(raw):
+            return None
+        spec = copy.deepcopy(raw)
+        source = spec.get("source") if isinstance(spec.get("source"), dict) else {}
+        source = copy.deepcopy(source)
+        source["kind"] = "agent_design"
+        spec["source"] = source
+        return spec
+
+    behavior = raw.get("behavior_spec")
+    if not isinstance(behavior, dict):
+        return None
+    if not _agent_keys_allowed(behavior, ("feature_space", "input", "output", "program", "input_window")):
+        return None
+    feature_space = behavior.get("feature_space", "reaction_order")
+    if feature_space != "reaction_order":
+        return None
+    program = _agent_behavior_program(behavior)
+    if program is None:
+        return None
+    input_symbol = _agent_behavior_symbol(behavior, "input", card, ("input_symbol", "input"))
+    output_symbol = _agent_behavior_symbol(behavior, "output", card, ("observe_species", "output_symbol", "output"))
+    if not input_symbol or not output_symbol:
+        return None
+
+    lowered_behavior = {
+        "feature_space": "reaction_order",
+        "input": input_symbol,
+        "output": output_symbol,
+        "program": program,
+    }
+    input_window = behavior.get("input_window")
+    if "input_window" in behavior:
+        if not _agent_wrapped_input_window_valid(input_window):
+            return None
+        lowered_behavior["input_window"] = copy.deepcopy(input_window)
+    constraints = _agent_designability_constraints_from_behavior_payload(raw)
+    if constraints is None:
+        return None
+    spec = {
+        "schema_version": DESIGNABILITY_SPEC_VERSION,
+        "source": {
+            "kind": "agent_design",
+            "provenance": {"agent_behavior_spec": copy.deepcopy(raw)},
+        },
+        "target": {"behavior_spec": lowered_behavior},
+        "constraints": constraints,
+        "candidate_budget": {
+            "mode": "near_minimal",
+            "max_extra_species": 1,
+            "max_extra_reactions": 1,
+            "max_extra_mu": 1,
+            "max_recommended": 24,
+            "max_verified_recommendations": 24,
+            "max_screened": 24,
+            "max_near_misses": 12,
+            "max_exact_placements": 3,
+        },
+        "ranking_policy": {"verified_only": True},
+        "audit_policy": {
+            "unsupported": "block_if_hard",
+            "path_format": "json_pointer",
+            "include_supported": True,
+        },
+    }
+    return spec if _agent_wrapped_designability_spec_valid(spec) else None
+
+_AGENT_SPEC_PAYLOAD_KEYS = (
+    "designability_spec",
+    "designabilitySpec",
+    "compiled_spec",
+    "behavior_spec",
+    "agent_compiled_spec",
+)
+
+def _agent_first_present_spec_payload(res):
+    if not isinstance(res, dict):
+        return False, None
+    for key in _AGENT_SPEC_PAYLOAD_KEYS:
+        if key in res:
+            return True, res.get(key)
+    return False, None
 
 # ── atlas corpora (the PRIOR / seed source — cached once per process) ──
 _CACHE = {}
@@ -681,13 +1411,31 @@ NEED_KEY_MSG = ("This design agent runs on an LLM that reasons and drives the co
                 "API key in the ⚙ panel (OpenAI-compatible incl. a local proxy, or Anthropic). "
                 "需要在 ⚙ 面板填入一个 LLM key 才能使用。")
 
+def _cfg_value(cfg, *keys):
+    for key in keys:
+        value = cfg.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+        if value:
+            return value
+    return None
+
 def _norm_cfg(llm_cfg):
     c = dict(llm_cfg or {})
-    out = {"provider": c.get("provider") or "openai", "api_key": c.get("api_key") or c.get("apiKey"),
-           "base_url": c.get("base_url") or c.get("baseUrl"), "model": c.get("model"),
-           "effort": c.get("effort") or c.get("reasoning_effort")}
+    env = L.llm_config_from_env()
+    out = {"provider": _cfg_value(c, "provider") or "openai",
+           "api_key": _cfg_value(c, "api_key", "apiKey"),
+           "base_url": _cfg_value(c, "base_url", "baseUrl"),
+           "model": _cfg_value(c, "model"),
+           "effort": _cfg_value(c, "effort", "reasoning_effort")}
     if not out["api_key"] and c.get("key_file") and os.path.isfile(c["key_file"]):
         out["api_key"] = open(c["key_file"]).read().strip()
+    if not out["api_key"] and env.get("api_key"):
+        return {"provider": env.get("provider") or "openai",
+                "api_key": env.get("api_key"),
+                "base_url": env.get("base_url"),
+                "model": env.get("model"),
+                "effort": out.get("effort") or env.get("effort")}
     if not out["model"]:
         out["model"] = "gpt-5.4-mini" if out["provider"] != "anthropic" else "claude-sonnet-4-6"
     return out
@@ -750,7 +1498,7 @@ def run_turn(state, message, llm_cfg=None, top=3):
         return {"kind": "need_key", "reply": NEED_KEY_MSG, "family": None, "cards": [], "info": {},
                 "state": state, "trace_id": trace["trace_id"]}
     history = [m for m in (state.get("history") or []) if isinstance(m, dict) and m.get("content")]
-    holder = {"verified": [], "family": None, "engine_offline": False, "info": {}}
+    holder = {"verified": [], "family": None, "engine_offline": False, "info": {}, "designability_spec": None}
     seen = set()
     debug = os.environ.get("BNE_AGENT_DEBUG")
     def dispatch(name, args):
@@ -776,7 +1524,16 @@ def run_turn(state, message, llm_cfg=None, top=3):
         if isinstance(res, dict):
             if res.get("engine_offline"):
                 holder["engine_offline"] = True
+            spec_payload_present, spec_payload = _agent_first_present_spec_payload(res)
             card = res.pop("_card", None) if name in ("simulate", "simulate_2d") else None
+            designability_spec = _agent_designability_spec_from_payload(spec_payload, card)
+            if designability_spec:
+                holder["designability_spec"] = holder["designability_spec"] or designability_spec
+                if card:
+                    card["designability_spec"] = designability_spec
+            elif card and spec_payload_present:
+                holder["info"]["invalid_designability_spec_cards"] = holder["info"].get("invalid_designability_spec_cards", 0) + 1
+                return res
             if card:
                 key = tuple(card.get("rules") or []) + (card.get("input_symbol") or "", card.get("realized_gate") or "")
                 if key not in seen:
@@ -827,8 +1584,11 @@ def run_turn(state, message, llm_cfg=None, top=3):
     if info.get("explored"):
         trace["explored"] = info["explored"]
     _write_trace(trace)
-    return {"kind": "agent", "reply": final, "family": holder["family"], "cards": cards,
-            "info": info, "state": {"history": history[-12:]}, "trace_id": trace["trace_id"]}
+    response = {"kind": "agent", "reply": final, "family": holder["family"], "cards": cards,
+                "info": info, "state": {"history": history[-12:]}, "trace_id": trace["trace_id"]}
+    if holder["designability_spec"]:
+        response["designability_spec"] = holder["designability_spec"]
+    return response
 
 if __name__ == "__main__":   # CLI smoke: BNE_LLM_* env configures the key; reads stdin lines
     cfg = L.llm_config_from_env()

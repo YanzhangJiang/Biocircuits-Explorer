@@ -7,7 +7,7 @@ import {
   WORKSPACE_DOCUMENT_VERSION, WORKSPACE_SHELL_CONTRACT_VERSION, themeState,
   ensureNodeData, nextNodeId,
 } from './state.js';
-import { dispatch, RestoreNodesCommand } from './commands.js';
+import { dispatch, RestoreNodesCommand, undoStack } from './commands.js';
 import { getSelection, setSelection } from './selection.js';
 import { remapSnapshots } from './clipboard-util.js';
 import { showToast, cloneSerializable, escapeHtml, syncSelectOptions } from './api.js';
@@ -15,9 +15,10 @@ import { applyThemeMode } from './theme.js';
 import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
+import { normalizeRestoredConnection } from './connection-validation.js';
 
 // Circular-dep imports (safe: only accessed inside function bodies at call time)
-import { createNode, removeNode, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
+import { createNode, removeNode, triggerAutoModelBuild, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
 import { addReactionRow, getReactionsFromNode } from './model.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, plotROPCloud } from './rop-cloud.js';
@@ -212,6 +213,14 @@ export function getNodeSerialData(nodeId, type) {
       return readAtlasSpecEditorState(nodeId);
     case 'atlas-query-config':
       return readAtlasQueryEditorState(nodeId);
+    case 'design-target': {
+      // Persist the selected candidate network (config.resolvedDefinition.raw_rules +
+      // selectedNid) so a save/reload doesn't drop it and downstream model-builders
+      // keep their reaction source. The search panel is transient (out of scope).
+      const info = nodeRegistry[nodeId];
+      const cfg = info?.data?.config;
+      return cfg ? { config: cloneSerializable(cfg) } : {};
+    }
     default:
       return {};
   }
@@ -374,6 +383,8 @@ export function loadState() {
 
 export function applyState(data) {
   data = validateWorkspaceDocument(data);
+  undoStack.clear();
+  setSelection([]);
 
   // 1. Clear existing canvas
   for (const id of Object.keys(nodeRegistry)) {
@@ -397,7 +408,9 @@ export function applyState(data) {
 
   // 3. Create nodes and build ID mapping
   const idMap = {}; // oldId -> newId
+  const savedTypeById = {};
   for (const saved of data.nodes) {
+    savedTypeById[saved.id] = saved.type;
     const newId = createNode(saved.type, saved.x, saved.y);
     if (!newId) continue;
     idMap[saved.id] = newId;
@@ -412,19 +425,17 @@ export function applyState(data) {
   }
 
   // 4. Restore connections (with remapped IDs)
+  let droppedConnections = 0;
   if (data.connections) {
     for (const conn of data.connections) {
-      const fromNode = idMap[conn.fromNode];
-      const toNode = idMap[conn.toNode];
-      if (fromNode && toNode) {
-        connections.push({
-          fromNode,
-          fromPort: conn.fromPort,
-          toNode,
-          toPort: conn.toPort,
-        });
-      }
+      const restored = normalizeRestoredConnection(conn, idMap, savedTypeById, NODE_TYPES);
+      if (restored) connections.push(restored);
+      else droppedConnections += 1;
     }
+  }
+  if (droppedConnections > 0) {
+    console.warn(`[workspace] Dropped ${droppedConnections} invalid connection(s) while loading workspace`);
+    showToast(`Dropped ${droppedConnections} invalid connection${droppedConnections === 1 ? '' : 's'} while loading`);
   }
 
   // 4b. Restore this project's Design-Agent conversation (or clear it for a fresh project).
@@ -478,6 +489,17 @@ export function restoreNodeData(nodeId, type, data) {
         nodeRegistry[nodeId].data.config = readAtlasNetworkDefinitionState(nodeId);
       }
       renderAtlasNetworkDefinitionPreview(nodeId);
+      break;
+    }
+    case 'design-target': {
+      // Restore the selected candidate network and re-emit it so a wired model-builder
+      // rebuilds. Guarded: only re-trigger when a network was actually selected, so
+      // we don't fire an empty rebuild on a fresh node.
+      if (data.config && nodeRegistry[nodeId]) {
+        nodeRegistry[nodeId].data = nodeRegistry[nodeId].data || {};
+        nodeRegistry[nodeId].data.config = data.config;
+        if (data.config?.resolvedDefinition?.raw_rules) triggerAutoModelBuild(nodeId);
+      }
       break;
     }
     case 'atlas-spec': {

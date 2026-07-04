@@ -13,6 +13,7 @@ import { commitWorkspaceSnapshot } from './workspace.js';
 import { connections, nodeRegistry } from './state.js';
 import { updateConnections } from './connections.js';
 import { showToast } from './api.js';
+import { writeClipboardText } from './native-clipboard.js';
 
 const SESSION_KEY_STORAGE = 'biocircuits.agent.apiKey';
 const SESSION_PROVIDER_STORAGE = 'biocircuits.agent.provider';
@@ -291,7 +292,7 @@ function renderRawError(nodeId, err) {
     </details>
   `;
   block.querySelector('.agent-node-copy-raw')?.addEventListener('click', () => {
-    navigator.clipboard?.writeText(text).then(
+    writeClipboardText(text).then(
       () => showToast('Raw model output copied'),
       () => showToast('Copy failed — select the text manually'),
     );

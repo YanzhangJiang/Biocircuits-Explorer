@@ -129,8 +129,8 @@ export async function loadPlacerMenu(nodeId) {
     const transOpts = transitions.map(t =>
       `<option value="${t.from}:${t.to}">${t.label}</option>`).join('');
     const threshBlock = transitions.length ? `
-      <div style="margin-top:8px;border-top:0.5px solid var(--color-border-tertiary,#3334);padding-top:6px;">
-        <div style="font-size:12px;color:var(--color-text-secondary,#888);margin-bottom:3px;">Place a threshold (set where a transition happens):</div>
+      <div style="margin-top:8px;border-top:0.5px solid var(--panel-border);padding-top:6px;">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:3px;">Place a threshold (set where a transition happens):</div>
         <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
           <select id="${nodeId}-trans">${transOpts}</select>
           <span style="font-size:12px;">at input</span>
@@ -139,9 +139,9 @@ export async function loadPlacerMenu(nodeId) {
         </div>
       </div>` : '';
     menuEl.innerHTML =
-      `<div style="font-size:12px;color:var(--color-text-secondary,#888);margin-bottom:3px;">Achievable reaction orders (click a rung to solve):</div>` +
+      `<div style="font-size:12px;color:var(--text-dim);margin-bottom:3px;">Achievable reaction orders (click a rung to solve):</div>` +
       `<div style="display:flex;gap:4px;flex-wrap:wrap;">${chips}</div>` +
-      (seq ? `<div style="font-size:12px;color:var(--color-text-secondary,#888);margin-top:5px;">Response regimes: ${seq}</div>` : '') +
+      (seq ? `<div style="font-size:12px;color:var(--text-dim);margin-top:5px;">Response regimes: ${seq}</div>` : '') +
       threshBlock;
     menuEl.querySelectorAll('.placer-chip').forEach(chip => {
       chip.addEventListener('click', () => solvePlacer(nodeId, parseFloat(chip.dataset.ro)));
@@ -280,8 +280,8 @@ function renderSolved(nodeId, contentEl, data, summaryHtml) {
   const bounds = st?.kdBounds || [-3, 3];
   const kdOpts = kd.map((_, i) => `<option value="${i}">Kd${i + 1}</option>`).join('');
   const sliderBlock = kd.length ? `
-    <div class="param-row" style="display:block;margin-top:8px;border-top:0.5px solid var(--color-border-tertiary,#3334);padding-top:6px;">
-      <div style="font-size:12px;color:var(--color-text-secondary,#888);margin-bottom:3px;">Live tune (drag to move the response along the ladder):</div>
+    <div class="param-row" style="display:block;margin-top:8px;border-top:0.5px solid var(--panel-border);padding-top:6px;">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:3px;">Live tune (drag to move the response along the ladder):</div>
       <div style="display:flex;gap:6px;align-items:center;">
         <select id="${nodeId}-kdsel">${kdOpts}</select>
         <input type="range" id="${nodeId}-kdslider" min="${bounds[0]}" max="${bounds[1]}" step="0.05" value="${Math.log10(kd[0] || 1)}" style="flex:1;">
@@ -290,15 +290,15 @@ function renderSolved(nodeId, contentEl, data, summaryHtml) {
     </div>` : '';
   const totalOpts = Object.keys(totals).map(t => `<option value="${t}">${t}</option>`).join('');
   const levelBlock = (kd.length && totalOpts) ? `
-    <div class="param-row" style="display:block;margin-top:8px;border-top:0.5px solid var(--color-border-tertiary,#3334);padding-top:6px;">
-      <div style="font-size:12px;color:var(--color-text-secondary,#888);margin-bottom:3px;">Set output level (numeric — the quantitative layer):</div>
+    <div class="param-row" style="display:block;margin-top:8px;border-top:0.5px solid var(--panel-border);padding-top:6px;">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:3px;">Set output level (numeric — the quantitative layer):</div>
       <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
         adjust <select id="${nodeId}-leveltotal">${totalOpts}</select>
         so [${escapeHtml(st?.config?.output_sym || '')}]=<input type="number" id="${nodeId}-leveltarget" value="1" step="any" style="width:72px;">
         at input <input type="number" id="${nodeId}-levelinput" value="100" step="any" style="width:72px;">
         <button class="btn" id="${nodeId}-levelbtn">Set</button>
       </div>
-      <div id="${nodeId}-levelnote" style="font-size:12px;color:var(--color-text-secondary,#888);margin-top:3px;"></div>
+      <div id="${nodeId}-levelnote" style="font-size:12px;color:var(--text-dim);margin-top:3px;"></div>
     </div>` : '';
 
   contentEl.innerHTML = `
@@ -358,7 +358,7 @@ async function placeLevel(nodeId) {
     if (data.totals) st.totals = data.totals;
     if (note) note.innerHTML = `${escapeHtml(data.adjusted_total)} = ${fmtSci(data.adjusted_value)} → ` +
       `[${escapeHtml(st.config.output_sym)}] ≈ ${fmtSci(data.achieved_level)}` +
-      (data.feasible ? '' : ' <span style="color:#c92a2a;">(not reachable in range)</span>');
+      (data.feasible ? '' : ' <span style="color:var(--status-error);">(not reachable in range)</span>');
     if (data.dose_response_curve) {
       plotParameterScan1D(data.dose_response_curve, `${nodeId}-plot`);
       setupPlotResize(nodeId, `${nodeId}-plot`);
@@ -395,8 +395,8 @@ async function livePlacerTune(nodeId) {
 }
 
 function passBadge(pass) {
-  return pass ? '<span style="color:#2f9e44;font-weight:600;">PASS ✓</span>'
-              : '<span style="color:#c92a2a;font-weight:600;">✗</span>';
+  return pass ? '<span style="color:var(--status-ok);font-weight:600;">PASS</span>'
+              : '<span style="color:var(--status-error);font-weight:600;">FAIL</span>';
 }
 function fmtSci(x) {
   const n = Number(x);

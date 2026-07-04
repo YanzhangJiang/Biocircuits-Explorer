@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bne-designability-spec",
+  "title": "DesignabilitySpec",
+  "description": "Structured design target contract shared by manual Design Spec Config nodes and Agent Design. A candidate can be recommended only against this explicit spec and its constraint audit.",
+  "type": "object",
+  "required": ["schema_version", "source", "target"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "bne-designability/v1.0.0" },
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["manual_config", "agent_design", "legacy_shorthand", "imported_json", "test_fixture", "hand_authored"]
+        },
+        "node_id": { "type": "string" },
+        "agent_message_id": { "type": "string" },
+        "provenance": { "type": "object" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "not": {
+        "required": ["legacy_target", "behavior_spec"]
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": ["behavior_spec", "input_window"]
+          }
+        }
+      ],
+      "anyOf": [
+        { "required": ["legacy_target"] },
+        { "required": ["behavior_spec"] },
+        { "required": ["output_feature"] },
+        { "required": ["temporal_dynamics"] },
+        { "required": ["shape"] }
+      ],
+      "properties": {
+        "legacy_target": {
+          "type": "object",
+          "required": ["target_kind", "target"],
+          "additionalProperties": false,
+          "properties": {
+            "target_kind": { "enum": ["sign", "exact", "label"] },
+            "target": {}
+          }
+        },
+        "behavior_spec": {
+          "type": "object",
+          "required": ["input", "output", "program"],
+          "additionalProperties": false,
+          "properties": {
+            "input": { "type": "string" },
+            "output": { "type": "string" },
+            "program": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/behavior_step" }
+            },
+            "feature_space": {
+              "enum": ["reaction_order"]
+            },
+            "input_window": { "$ref": "#/$defs/window" }
+          }
+        },
+        "input_window": { "$ref": "#/$defs/window" },
+        "output_feature": {
+          "type": "object",
+          "required": ["feature", "sample_points", "tolerance_log10"],
+          "additionalProperties": false,
+          "properties": {
+            "feature": {
+              "enum": ["threshold", "level", "fold_change"]
+            },
+            "operator": { "enum": ["=", ">=", "<="] },
+            "value": {},
+            "sample_points": { "type": "integer", "minimum": 11, "maximum": 1001 },
+            "tolerance_log10": { "type": "number", "minimum": 0 },
+            "hard": { "type": "boolean", "default": true }
+          }
+        },
+        "shape": {
+          "type": "object",
+          "required": ["class", "sample_points", "tolerance_log10"],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "required": ["class"],
+                "properties": { "class": { "const": "monotonic" } }
+              },
+              "then": {
+                "required": ["monotonicity"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["min_prominence_log10"] },
+                    { "required": ["min_prominence_decades"] }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "required": ["class"],
+                "properties": { "class": { "const": "bell_shaped" } }
+              },
+              "then": {
+                "oneOf": [
+                  { "required": ["min_prominence_log10"] },
+                  { "required": ["min_prominence_decades"] }
+                ]
+              }
+            }
+          ],
+          "properties": {
+            "class": { "enum": ["monotonic", "bell_shaped"] },
+            "monotonicity": { "enum": ["increasing", "decreasing", "any"] },
+            "sample_points": { "type": "integer", "minimum": 11, "maximum": 1001 },
+            "tolerance_log10": { "type": "number", "minimum": 0 },
+            "min_prominence_log10": { "type": "number", "minimum": 0 },
+            "min_prominence_decades": { "type": "number", "minimum": 0 },
+            "hard": { "type": "boolean", "default": true }
+          }
+        },
+        "temporal_dynamics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stimulus": { "type": "object" },
+            "trace": { "type": "array" },
+            "peak_width_seconds": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min": { "type": "number", "minimum": 0 },
+                "max": { "type": "number", "minimum": 0 }
+              },
+              "anyOf": [
+                { "required": ["min"] },
+                { "required": ["max"] }
+              ]
+            },
+            "hard": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_species": { "type": "integer", "minimum": 1 },
+            "max_reactions": { "type": "integer", "minimum": 0 },
+            "max_mu": { "type": "integer", "minimum": 1 },
+            "allow_near_minimal": { "type": "boolean" }
+          }
+        },
+        "parameter_bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "anyOf": [
+            { "required": ["kd_log10"] },
+            { "required": ["total_log10"] },
+            { "required": ["by_class"] }
+          ],
+          "allOf": [
+            {
+              "not": {
+                "required": ["kd_log10", "by_class"],
+                "properties": {
+                  "by_class": { "required": ["kd"] }
+                }
+              }
+            },
+            {
+              "not": {
+                "required": ["total_log10", "by_class"],
+                "properties": {
+                  "by_class": { "required": ["total"] }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "basis": { "enum": ["log10_qK"] },
+            "kd_log10": { "$ref": "#/$defs/bounds" },
+            "total_log10": { "$ref": "#/$defs/bounds" },
+            "by_class": {
+              "type": "object",
+              "additionalProperties": false,
+              "anyOf": [
+                { "required": ["kd"] },
+                { "required": ["total"] }
+              ],
+              "properties": {
+                "kd": { "$ref": "#/$defs/bounds" },
+                "total": { "$ref": "#/$defs/bounds" }
+              }
+            }
+          }
+        },
+        "robustness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_chebyshev_radius": { "type": "number", "minimum": 0 },
+            "min_tunable_volume_lower_bound": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Chebyshev-ball lower bound on tunable volume in log10_qK space; not an exact union volume."
+            },
+            "min_tunable_volume": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Compatibility alias for min_tunable_volume_lower_bound; interpreted as a Chebyshev-ball lower bound, not an exact union volume."
+            },
+            "condition_number_max": { "type": "number", "minimum": 0 },
+            "min_sampled_pass_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "hard": { "type": "boolean", "default": true }
+          }
+        },
+        "dynamic_range": {
+          "type": "object",
+          "required": ["min_fold_change", "sample_points"],
+          "additionalProperties": false,
+          "properties": {
+            "min_fold_change": { "type": "number", "minimum": 0 },
+            "sample_points": { "type": "integer", "minimum": 11, "maximum": 1001 },
+            "hard": { "type": "boolean", "default": true }
+          }
+        },
+        "transitions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_spacing_decades": { "type": "number", "minimum": 0 },
+            "order": {
+              "type": "array",
+              "description": "A full 0-based integer permutation of target.behavior_spec.program witness indices. The compiler enforces length equality with the program.",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 0 }
+            },
+            "hard": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    },
+    "candidate_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["near_minimal", "all_matches"] },
+        "max_extra_species": { "type": "integer", "minimum": 0 },
+        "max_extra_reactions": { "type": "integer", "minimum": 0 },
+        "max_extra_mu": { "type": "integer", "minimum": 0 },
+        "max_screened": { "type": "integer", "minimum": 0 },
+        "max_verified_recommendations": { "type": "integer", "minimum": 0 },
+        "max_recommended": { "type": "integer", "minimum": 0 },
+        "max_near_misses": { "type": "integer", "minimum": 0 },
+        "max_exact_placements": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ranking_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verified_only": {
+          "const": true,
+          "default": true,
+          "description": "Only verified recommendations are currently implemented; non-verified/exploratory recommendations are unsupported."
+        },
+        "prefer": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "evidence_grade",
+              "certificate_grade",
+              "chebyshev_radius",
+              "tunable_volume",
+              "dynamic_range",
+              "transition_spacing",
+              "sampled_robustness",
+              "condition_number",
+              "complexity"
+            ]
+          }
+        }
+      }
+    },
+    "audit_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unsupported": { "enum": ["block_if_hard"] },
+        "path_format": { "const": "json_pointer" },
+        "include_supported": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "bounds": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_log10": { "$ref": "#/$defs/bounds" },
+        "hard": { "type": "boolean", "default": true },
+        "min_spacing_decades": { "type": "number", "minimum": 0 },
+        "operating_points_log10": {
+          "type": "array",
+          "items": { "type": "number" }
+        }
+      }
+    },
+    "behavior_step": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["reaction_order"]
+        },
+        "value": {},
+        "operator": { "enum": ["=", "=="] },
+        "hard": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

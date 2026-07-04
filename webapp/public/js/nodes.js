@@ -219,9 +219,9 @@ export function deleteNodeWithHistory(nodeId) {
 }
 
 // Generic field setter used by ChangeAttrCommand on undo/redo. `key` is the
-// field element's DOM id. Fires a change event so any recompute listeners
-// react as if the user edited it — but note this does NOT re-enter the
-// focusout-based capture below, so no history loop.
+// field element's DOM id. Fires the same value event the field normally uses
+// so auto-update listeners react as if the user edited it — but note this does
+// NOT re-enter the focusout-based capture below, so no history loop.
 export function setNodeAttr(_nodeId, key, value) {
   const el = document.getElementById(key);
   if (!el) return;
@@ -230,7 +230,12 @@ export function setNodeAttr(_nodeId, key, value) {
   } else {
     el.value = value;
   }
-  el.dispatchEvent(new Event('change', { bubbles: true }));
+  const tag = String(el.tagName || '').toUpperCase();
+  const valueEvent = (tag === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+  el.dispatchEvent(new Event(valueEvent, { bubbles: true }));
+  if (valueEvent !== 'change') {
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 }
 
 // Capture config-field edits as ChangeAttrCommands. We listen on focusin

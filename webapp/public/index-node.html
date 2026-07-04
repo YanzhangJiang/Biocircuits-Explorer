@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Biocircuits Explorer - Node Edition</title>
+<link rel="icon" href="data:,">
 <style>
 html, body {
   background: #1c1c1c;
@@ -82,8 +83,11 @@ if (!window.JSZip) {
             <span class="menu-color color-input"></span> SBML Import
           </div>
           <div class="menu-section-title">Design</div>
+          <div class="menu-item" data-type="design-spec-config">
+            <span class="menu-color color-parameter"></span> Design Spec Config
+          </div>
           <div class="menu-item" data-type="design-target">
-            <span class="menu-color color-input"></span> Design Target (designable + minimal)
+            <span class="menu-color color-input"></span> Design Target
           </div>
           <div class="menu-section-title">Parameters</div>
           <div class="menu-item" data-type="siso-params">
@@ -154,8 +158,8 @@ if (!window.JSZip) {
           <div class="menu-item" data-type="atlas-query-result">
             <span class="menu-color color-result"></span> Atlas Search Result
           </div>
-          <div class="menu-item" data-type="atlas-inverse-result">
-            <span class="menu-color color-result"></span> Atlas Inverse Design
+          <div class="menu-item" data-type="atlas-inverse-result" title="Design Target = enumerated atlas (d≤4/r≤5/μ≤5, fast/exact). Atlas Inverse Design = build/query networks beyond the enumeration.">
+            <span class="menu-color color-result"></span> Atlas Inverse Design (advanced / unbounded)
           </div>
           <div class="menu-item" data-type="placer-result">
             <span class="menu-color color-result"></span> Parameter Placer Result
@@ -201,8 +205,8 @@ if (!window.JSZip) {
           <div class="menu-item" data-type="atlas-search">
             <span class="menu-color color-viewer"></span> Atlas Search
           </div>
-          <div class="menu-item" data-type="atlas-inverse-design">
-            <span class="menu-color color-viewer"></span> Atlas Inverse Design
+          <div class="menu-item" data-type="atlas-inverse-design" title="Design Target = enumerated atlas (d≤4/r≤5/μ≤5, fast/exact). Atlas Inverse Design = build/query networks beyond the enumeration.">
+            <span class="menu-color color-viewer"></span> Atlas Inverse Design (advanced / unbounded)
           </div>
         </div>
       </div>

@@ -8,6 +8,9 @@ body, html {
   overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Tahoma, sans-serif;
   background-color: var(--bg-color); color: var(--text-color);
 }
+:root {
+  --app-header-offset: 50px;
+}
 body {
   -webkit-user-select: none;
   user-select: none;
@@ -213,10 +216,10 @@ textarea,
 /* ===== Canvas ===== */
 #editor {
   position: absolute;
-  top: 50px;
+  top: var(--app-header-offset, 50px);
   left: 0;
   width: 100vw;
-  height: calc(100vh - 50px);
+  height: calc(100vh - var(--app-header-offset, 50px));
   cursor: default;
   overflow: hidden;
 }
@@ -454,10 +457,10 @@ body.debug-console-open #editor {
 /* ===== Debug Console ===== */
 #debug-console {
   position: fixed;
-  top: 50px;
+  top: var(--app-header-offset, 50px);
   right: 0;
   width: var(--debug-panel-width);
-  height: calc(100vh - 50px);
+  height: calc(100vh - var(--app-header-offset, 50px));
   background: var(--debug-bg);
   border-left: 1px solid var(--debug-border);
   box-shadow: none;
@@ -739,6 +742,7 @@ textarea {
 .tag-atlas-failed { background: #ff6b6b; color: #fff; }
 .tag-atlas-excluded { background: #ffd43b; color: #000; }
 .tag-atlas-neutral { background: #495057; color: #fff; }
+.tag-atlas-muted { background: #6c757d; color: #fff; }
 
 /* === Plot Container ===== */
 .plot-container {
@@ -775,7 +779,16 @@ textarea {
   color: var(--text-color); overflow-wrap: anywhere;
 }
 .design-net-io { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.design-net-grade { color: var(--text-dim); font-size: 10px; margin-top: 2px; }
+.design-net-metrics {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px;
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+.design-metric-chip { padding: 2px 5px; font-size: 10px; }
+.design-net-failures { color: var(--error-color); font-size: 10px; margin-top: 4px; }
 .design-net-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.design-screen-group { margin-top: 8px; }
+.design-cert-section { padding-left: 8px; border-left: 2px solid var(--panel-border); }
 /* .btn defaults to width:100%; margin-top:8px — demote the per-row action to compact inline. */
 .design-build-btn { width: auto; margin-top: 0; white-space: nowrap; }
 

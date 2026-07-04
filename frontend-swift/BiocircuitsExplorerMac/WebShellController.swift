@@ -284,6 +284,13 @@ final class WebShellController: NSObject, ObservableObject {
             }
             pushPendingProject()
 
+        case "copyText":
+            if let payload = body["payload"] as? String {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(payload, forType: .string)
+            }
+
         case "log":
             if let payload = body["payload"] as? String {
                 lastErrorMessage = payload
@@ -573,6 +580,10 @@ private extension WebShellController {
           } finally {
             shellState.suppressSync = false;
           }
+          return true;
+        },
+        copyText(text) {
+          postToNative('copyText', String(text ?? ''));
           return true;
         },
       };

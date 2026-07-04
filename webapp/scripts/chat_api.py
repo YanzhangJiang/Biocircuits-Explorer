@@ -67,16 +67,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"error": f"chat failed: {e}"})
     def log_message(self, *a):   # never log request bodies (they carry the API key)
-        sys.stderr.write(f"[chat_api] {self.command} {self.path.split('?')[0]}\n")
+        try:
+            sys.stderr.write(f"[chat_api] {self.command} {self.path.split('?')[0]}\n")
+        except OSError:
+            pass
+
+def _parent_is_gone(pid, getppid=os.getppid, kill=os.kill):
+    if getppid() == 1:
+        return True
+    try:
+        kill(pid, 0)
+        return False
+    except OSError:
+        return True
 
 def _watch_parent(pid):
     # When launched by the macOS shell (BNE_CHAT_PARENT_PID set), exit once the
     # parent app is gone so this helper can never orphan. No-op for CLI/web use.
     import time
     while True:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if _parent_is_gone(pid):
             sys.stderr.write("[chat_api] parent process gone — exiting\n")
             os._exit(0)
         time.sleep(2)
