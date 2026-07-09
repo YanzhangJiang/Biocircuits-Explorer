@@ -31,6 +31,20 @@ Base.@kwdef struct AtlasBehaviorConfig
     support_semantics::String = "included_exact_family_path_count_v1"
 end
 
+"""
+    atlas_behavior_config_with(config; overrides...) -> AtlasBehaviorConfig
+
+Clone an immutable `AtlasBehaviorConfig` while changing only the named fields.
+Keeping this operation centralized prevents new identity/classification fields
+from silently reverting to defaults when a caller needs a summary or
+materialization variant of an existing configuration.
+"""
+function atlas_behavior_config_with(config::AtlasBehaviorConfig; overrides...)
+    names = fieldnames(AtlasBehaviorConfig)
+    values = NamedTuple{names}(ntuple(i -> getfield(config, names[i]), length(names)))
+    return AtlasBehaviorConfig(; merge(values, (; overrides...))...)
+end
+
 Base.@kwdef struct AtlasEnumerationSpec
     mode::Symbol = :pairwise_binding
     base_species_counts::Vector{Int} = [2, 3]

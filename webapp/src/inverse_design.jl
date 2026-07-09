@@ -927,17 +927,21 @@ function _record_support_screen_cache!(corpus, support_signature::AbstractString
 end
 
 function _summary_behavior_config(config::AtlasBehaviorConfig)
-    return AtlasBehaviorConfig(
-        path_scope=config.path_scope,
-        min_volume_mean=config.min_volume_mean,
-        deduplicate=config.deduplicate,
-        keep_singular=config.keep_singular,
-        keep_nonasymptotic=config.keep_nonasymptotic,
+    return atlas_behavior_config_with(
+        config;
         compute_volume=false,
-        motif_zero_tol=config.motif_zero_tol,
         include_path_records=false,
-        logqk_min=config.logqk_min,
-        logqk_max=config.logqk_max,
+    )
+end
+
+function _materialization_behavior_config(config::AtlasBehaviorConfig;
+                                          path_scope::Symbol,
+                                          compute_volume::Bool)
+    return atlas_behavior_config_with(
+        config;
+        path_scope=path_scope,
+        compute_volume=compute_volume,
+        include_path_records=true,
     )
 end
 
@@ -1535,17 +1539,10 @@ function materialize_witnesses(corpus, bucket_id::AbstractString, gamma_q, budge
     volume_policy = String(_raw_get(policies, :volume_policy, query.require_witness_robust || query.min_witness_volume_mean !== nothing ? "estimated" : "none"))
     material_path_scope = query.require_witness_robust || query.min_witness_volume_mean !== nothing ? :robust : :feasible
 
-    material_config = AtlasBehaviorConfig(
+    material_config = _materialization_behavior_config(
+        classifier_config;
         path_scope=material_path_scope,
-        min_volume_mean=classifier_config.min_volume_mean,
-        deduplicate=classifier_config.deduplicate,
-        keep_singular=classifier_config.keep_singular,
-        keep_nonasymptotic=classifier_config.keep_nonasymptotic,
         compute_volume=volume_policy == "estimated",
-        motif_zero_tol=classifier_config.motif_zero_tol,
-        include_path_records=true,
-        logqk_min=classifier_config.logqk_min,
-        logqk_max=classifier_config.logqk_max,
     )
     model, _, _, _ = build_model(rules, ones(Float64, length(rules)))
     constraint_kwargs = _behavior_constraint_kwargs(model, material_config)
