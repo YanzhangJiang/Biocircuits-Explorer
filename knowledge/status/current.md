@@ -1,12 +1,13 @@
 # Current verified snapshot
 
 - Snapshot date: 2026-07-10
-- Code revision inspected: `f9c65a5`
-- Application version in `VERSION`: `0.1.0`
-- Knowledge status: P2 architecture passed; P3 paper-provenance CI gate established
+- Runtime baseline revision inspected: `f9c65a5`
+- Current-tree contract inventory: derived by `python3 scripts/verify_repository.py --check`
+- Application version and configured toolchains: [generated from their owners](../generated/reference.md#versions-and-configured-toolchains)
+- Knowledge status: P2 architecture and P3 paper provenance passed; P4 executable drift gate established
 - Scope of this page: repository state and evidence routing, not manuscript claims
 
-## What is present at this revision
+## What the baseline establishes
 
 The product has one Julia backend, a browser workspace, a Python conversational
 design layer, a macOS host, local/cloud job execution, atlas tooling, and a
@@ -43,9 +44,10 @@ revision. The parent maintenance task owns the final, cross-platform phase gate.
 
 ## Interface state
 
-- Canonical HTTP surface: `/api/v1`; bare `/api/*` routes are compatibility
-  aliases and return a deprecation header. The declared legacy sunset is
-  2027-05-25. Source: `webapp/src/routing.jl`.
+- The canonical HTTP surface and legacy sunset are projected from executable
+  route metadata into the [generated contract reference](../generated/reference.md#api-routes).
+  Bare `/api/*` routes remain compatibility aliases and return a deprecation
+  header until that declared sunset.
 - Liveness, readiness, and Prometheus endpoints exist at `/health`, `/ready`, and
   `/metrics`. Source and tests: `webapp/src/BiocircuitsExplorerBackend.jl` and
   `webapp/test/runtests.jl`.
@@ -104,9 +106,8 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 julia --project=webapp webapp/test/runtests.jl
 julia --project=webapp Bnc_julia/test/runtests.jl
 julia --project=webapp webapp/test/test_phenotype_pipeline.jl
-julia --project=webapp webapp/scripts/gen_schemas.jl
-git diff --exit-code -- schemas/
-python3 webapp/scripts/validate_artifacts.py
+python3 -m pip install -r scripts/requirements-verify.txt
+python3 scripts/verify_repository.py --check
 python3 webapp/scripts/reader/test_reader_nofabrication.py
 ```
 
@@ -114,9 +115,11 @@ CI is the executable owner of the standard subset: `.github/workflows/ci.yml`.
 This list is a routing aid; a successful narrow command does not prove an
 unrelated phase complete.
 
-## Next knowledge gate
+## Current knowledge gate
 
-Add deterministic generated references and a unified drift checker for routes,
-schema identities, versions, links, catalog paths, and public-safety rules. Keep
-the paper release gate red until its recorded provenance gaps are actually
-resolved; CI success is not permission to promote the working candidate.
+The deterministic contract reference and unified drift checker now cover routes,
+schema identities, version owners, links, catalog paths, public-safety rules,
+and declared artifact fixtures. The check snapshots the Git-visible worktree and
+fails on validator side effects. Keep the paper release gate red until its
+recorded provenance gaps are resolved; CI success is not permission to promote
+the working candidate.

@@ -80,6 +80,13 @@ Dates alone do not make prose current. A verified revision and evidence path do.
 - Do not copy a research number into product or manuscript prose without an
   artifact identity and an explicit claim owner.
 
+The unified gate applies a conservative lexical safety check to maintained
+public-facing files. Workstation roots such as `/home` and `/tmp`, SSH-style
+repository addresses, credential-bearing URLs, private-key headers, and common
+token shapes are rejected even when an example might be harmless. This bounded
+guard is not a full secret scanner; release workflows still need their normal
+repository and hosting checks.
+
 The legacy `doc/`, `wiki/`, and incident-specific agent notes can still explain
 why something was attempted. Unless a current page explicitly promotes a file
 with fresh evidence, those locations are non-authoritative.
@@ -93,8 +100,10 @@ For a code change that affects behavior:
 3. update its catalog entry and module card;
 4. add a decision only when the choice is durable and non-obvious;
 5. change summaries last;
-6. set `verified_against` to the revision actually inspected, or mark the change
-   provisional until that revision exists.
+6. for a snapshot document, set `verified_against` to the revision actually
+   inspected or mark it provisional; executable catalogs instead retain their
+   historical `baseline_evidence_revision` and must pass their declared
+   `verification_command` on the current tree.
 
 For a data or paper claim, also follow the repository hand-off in
 [`research/repositories.md`](research/repositories.md). Conflicting counts stay

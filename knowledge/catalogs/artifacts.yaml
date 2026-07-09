@@ -1,16 +1,26 @@
 schema_version: "bcx-artifact-catalog/v1.0.0"
-verified_against: "f9c65a5"
+baseline_evidence_revision: "f9c65a5"
+verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
 unknown_token: "unknown"
 artifacts:
+  - id: "generated-contract-reference"
+    kind: "generated-reference"
+    paths:
+      - "knowledge/generated/reference.md"
+    producer: "scripts/verify_repository.py --write"
+    validator: "scripts/verify_repository.py --check"
+    authority: "Executable API metadata, JSON Schemas, contract catalogs, version files, and CI configuration"
+    status: "deterministic-drift-gated"
+
   - id: "ir-json-schemas"
     kind: "generated-contract"
     paths:
       - "schemas/network-ir.schema.json"
       - "schemas/design-spec.schema.json"
     producer: "webapp/scripts/gen_schemas.jl"
-    validator: ".github/workflows/ci.yml"
+    validator: "scripts/verify_repository.py --check"
     authority: "Runtime structs and parser in webapp/src/ir.jl"
     status: "verified-drift-gated"
 
@@ -27,7 +37,7 @@ artifacts:
       - "schemas/result-artifact.schema.json"
       - "schemas/target-spec.schema.json"
     producer: "manual-with-runtime-owner"
-    validator: "knowledge/contracts/schemas.md"
+    validator: "scripts/verify_repository.py --check"
     authority: "Each schema plus the runtime owner named in the contract catalog"
     status: "mixed-coverage"
 
@@ -138,6 +148,7 @@ artifacts:
   - id: "runtime-atlas-datasets"
     kind: "optional-runtime-data"
     path_pattern: "datasets/*/manifest.json"
+    allow_empty: true
     producer: "multiple-runtime-builders"
     producer_sources:
       - "webapp/scripts/reader"

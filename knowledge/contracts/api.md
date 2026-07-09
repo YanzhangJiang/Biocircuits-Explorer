@@ -1,150 +1,90 @@
 # HTTP API contract
 
-Verified against `f9c65a5`. The executable owners are
-`webapp/src/routing.jl`, `webapp/src/BiocircuitsExplorerBackend.jl`, and
-`webapp/src/jobs.jl`. This page is a compatibility map; handler source and tests
-remain authoritative for complete request and response fields.
+This contract tells a client what it may rely on. The exact path, method, handler,
+and legacy-alias inventory is generated from executable route metadata in the
+[contract reference](../generated/reference.md#api-routes); do not maintain a
+second route list here.
 
-## Version boundary
+The evidence owners are `webapp/src/api_contract.jl`,
+`webapp/src/routing.jl`, `webapp/src/jobs.jl`, and the route contract tests in
+`webapp/test/runtests.jl`. Handler source and schemas remain authoritative for
+request and response fields.
+
+## Client-facing boundary
 
 The canonical current surface is `/api/v1`.
 
-- `/api/v1` and `/api/v1/` are discovery endpoints and return the build/version
-  payload.
-- `/api/v1/<endpoint>` is internally mapped to the existing handler for
-  `/api/<endpoint>`.
-- Bare `/api/<endpoint>` remains a deprecated compatibility alias. Known legacy
-  responses carry `X-API-Deprecation` with the declared sunset date 2027-05-25.
-- Health and metrics routes are not under `/api` and do not carry the API
-  deprecation header.
-- The discovery payload declares `api_version`, `api_supported`, and
-  `api_legacy_sunset`; application version and API protocol version are separate
-  identities.
+- New clients use `/api/v1`; bare `/api` paths are deprecated compatibility
+  aliases until the declared legacy sunset.
+- `/api/v1` and `/api/v1/` return application and protocol identity.
+- Application version and API protocol version are separate identities.
+- Health, readiness, and metrics are operational routes outside `/api`.
 
-New clients must use `/api/v1`. Removing or changing a v1 field requires either a
-compatible migration or a new API version; changing only the Julia function name
-does not create a new wire contract.
+Removing or changing a v1 field requires a compatible migration or a new API
+version. Renaming a Julia function alone does not create a new wire contract.
 
-## Methods and response basics
+## Shared behavior
 
-- Routes in `API_ROUTES` accept `POST`; another method returns 405.
-- `/health`, `/ready`, and `/metrics` accept `GET` and `HEAD`.
-- Version discovery and public auth configuration accept `GET` and `POST`.
-- `/api/v1/local-image` accepts `GET` only.
-- `OPTIONS` returns a CORS preflight response.
-- JSON responses use `Content-Type: application/json`. The shared error shape is
+- `OPTIONS` is a global CORS preflight behavior, not an endpoint in the route
+  inventory.
+- JSON responses use `Content-Type: application/json`; the shared error shape is
   `{"error": "..."}`.
 - Request-shape errors map to 400, quota exhaustion to 429, and unclassified
-  handler failures to a generic 500 response. Internal exception details belong
-  in logs, not the client body.
-- Every routed response receives `X-Request-Id`. A client value is retained only
-  when it is at most 128 characters and contains letters, digits, `-`, `_`, `:`,
-  or `.`; otherwise the backend generates one.
+  failures to a generic 500 response. Internal exception details stay in logs.
+- Every routed response receives `X-Request-Id`. A supplied value is retained
+  only when it is at most 128 characters and uses letters, digits, `-`, `_`,
+  `:`, or `.`; otherwise the backend generates one.
+- Known bare `/api` responses carry the deprecation header and declared sunset.
 
 The CORS policy currently permits any origin and exposes the deprecation header.
-That is deployed behavior, not a security recommendation for every future host.
+That records deployed behavior; it is not a security recommendation for every
+future host.
 
-## Route groups
+## Boundaries that route names do not prove
 
-All paths below use their canonical `/api/v1` form.
+Structured network and design payloads are described by the
+[schema contract](schemas.md). Selected handlers still accept legacy
+`{reactions, kd}` payloads as a bridge, not as the preferred interchange form.
 
-### Atlas construction and inverse search
+`design_screen` keeps proxy-screened candidates separate from verified
+recommendations. A client must not promote a proxy-only candidate to the
+verified list.
 
-- `POST /api/v1/build_atlas`
-- `POST /api/v1/query_atlas`
-- `POST /api/v1/build_atlas_library`
-- `POST /api/v1/merge_atlas_library`
-- `POST /api/v1/run_inverse_design`
-
-### Model, ROP, and phenotype computation
-
-- `POST /api/v1/build_model`
-- `POST /api/v1/find_vertices`
-- `POST /api/v1/build_graph`
-- `POST /api/v1/siso_paths`
-- `POST /api/v1/siso_polyhedra`
-- `POST /api/v1/siso_path_condition`
-- `POST /api/v1/siso_trajectory`
-- `POST /api/v1/behavior_families`
-- `POST /api/v1/phenotype_classify`
-- `POST /api/v1/rop_cloud`
-- `POST /api/v1/vertex_detail`
-- `POST /api/v1/fret_heatmap`
-- `POST /api/v1/parameter_scan_1d`
-- `POST /api/v1/parameter_scan_2d`
-
-### Parameter placement and designability
-
-- `POST /api/v1/place_parameters`
-- `POST /api/v1/placer_menu`
-- `POST /api/v1/placer_curve`
-- `POST /api/v1/placer_threshold`
-- `POST /api/v1/placer_realize_program`
-- `POST /api/v1/placer_level`
-- `POST /api/v1/design_search`
-- `POST /api/v1/design_screen`
-- `POST /api/v1/validate_designability_spec`
-- `POST /api/v1/design_labels`
-- `POST /api/v1/atlas_landscape_2d`
-- `POST /api/v1/rop_polyhedron`
-
-`design_screen` separates `screened_candidates` from
-`verified_recommendations`. Clients must not promote proxy-only screened cards to
-the verified list.
-
-### IR and exchange
-
-- `POST /api/v1/ir/network/validate`
-- `POST /api/v1/ir/design/validate`
-- `POST /api/v1/import/sbml`
-- `POST /api/v1/export/sbml`
-
-The structured contracts are indexed in `knowledge/contracts/schemas.md`.
-Legacy `{reactions, kd}` inputs remain accepted by selected handlers but are a
-bridge, not the preferred interchange form.
-
-### Jobs, auth, and diagnostics
-
-- `POST /api/v1/jobs` submits a job and returns 202 on accepted submission.
-- `GET|POST /api/v1/jobs/<id>` reads job state.
-- `GET|POST /api/v1/jobs/<id>/result` reads the result.
-- `GET|POST /api/v1/jobs/<id>/result-url` requests a result URL when supported.
-- `POST /api/v1/jobs/<id>/cancel` requests cancellation.
-- `GET|POST /api/v1/auth/config` exposes only public auth bootstrap settings.
-- `GET|POST /api/v1/version` returns build and protocol identity.
-- `POST /api/v1/debug_logs` uses the normal routed handler contract.
+Job submission returns 202 when accepted. Job terminal states are monotonic,
+and cancellation is cooperative for local work: a response reports the
+published state, not a promise that arbitrary foreign code was force-killed.
 
 With Cognito configured, job routes require a verified bearer token and derive
-ownership from its subject. Development mode can use `X-User-Sub` and otherwise
-falls back to the anonymous subject. This development fallback must not be
-described as production authentication.
+ownership from its subject. Development mode may use `X-User-Sub` and otherwise
+falls back to an anonymous subject; that fallback is not production
+authentication.
 
-Job terminal states are monotonic. Cancellation is cooperative for local work;
-the route returns the published job state rather than promising that arbitrary
-foreign code was force-killed.
+## Operations boundary
 
-## Operations routes
+- `/health` is a cheap liveness response with version, revision, and uptime.
+- `/ready` checks module initialization and the static asset directory; it
+  returns 503 when either check fails.
+- `/metrics` emits Prometheus text. Dynamic job IDs are collapsed to a
+  low-cardinality path label.
 
-- `GET|HEAD /health` is a cheap liveness response and reports version, revision,
-  and process uptime.
-- `GET|HEAD /ready` checks module initialization and the static asset directory;
-  it returns 503 when either check fails.
-- `GET|HEAD /metrics` emits Prometheus text. Path labels are deliberately
-  low-cardinality; job IDs are collapsed to `/api/jobs/:id`.
+Metrics may reveal API shape and should be restricted at the deployment edge
+when public metrics are not intended.
 
-The metrics route may reveal API shape and should be restricted at the deployment
-edge when public metrics are not intended.
+## Verification and change rule
 
-## Compatibility checks
+The unified read-only gate is:
 
-The primary regression owner is `webapp/test/runtests.jl`, including version
-mapping, deprecation headers, method rejection, request IDs, probes, metrics,
-SBML, and error behavior. Job races and terminal-state rules are additionally
-covered by:
+```bash
+python3 scripts/verify_repository.py --check
+```
 
-- `webapp/test/jobs_cancellation_contract.jl`
-- `webapp/test/cooperative_cancel_checkpoints_contract.jl`
+It exports executable route facts, rejects route/catalog/reference drift, checks
+the schemas and artifact fixtures, and verifies that generated files are
+current. `webapp/test/runtests.jl` additionally exercises version mapping,
+deprecation, method rejection, request IDs, probes, metrics, SBML, and error
+behavior. Job races and cancellation checkpoints have dedicated Julia contract
+tests.
 
-This repository does not yet expose an OpenAPI document. Do not invent an exact
-payload contract from a route name; cite a schema or handler and add a contract
-test when a client begins to rely on a field.
+This repository does not expose an OpenAPI document. Do not infer an exact
+payload from a route name; cite a schema or handler and add a contract test when
+a client begins to depend on a field.
