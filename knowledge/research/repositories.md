@@ -48,17 +48,21 @@ script and treated as product behavior.
 ## Current data reconciliation
 
 At Explorer revision `f9c65a5`, direct inspection found several differently
-labelled slice and network populations in the embedded snapshot, plus a separate
-unlocked population statement in the standalone manuscript working copy. The
-exact hashes, counts, observation date, and labels live only in
-`knowledge/catalogs/artifacts.yaml` under the embedded-slice,
-embedded-aggregate, and manuscript-working-count entries.
+labelled slice and network populations in the embedded snapshot. The standalone
+paper repository now owns its exact committed baseline and candidate comparison
+under `provenance/` at commit
+`bbe91d958df29a98b6462cbdf319002e7fdac8e6`. Explorer's machine catalog records
+only the cross-repository routing and status; it does not duplicate the paper's
+exact values.
 
 The authoritative publication count and the relationships among those
 populations are **unknown** until a release explains the lineage and semantics.
 Do not “fix” one number by guessing that another measures the same set, even when
 some arithmetic happens to agree. Preserve the source labels and reconcile them
-through the artifact lock and claim ledger.
+through the artifact lock and claim ledger. The paper's CI verifier currently
+passes the committed consumer snapshot, while its stricter release mode fails on
+the intentionally recorded producer-lineage, claim, count-semantics, and figure
+gaps.
 
 ## Working-copy discipline
 
@@ -72,6 +76,6 @@ through the artifact lock and claim ledger.
 - Keep public provenance sanitized: commit/release/hash identifiers are useful;
   private locations and access details are not.
 
-Until the release/lock/ledger chain exists and passes, Explorer research snapshots
-may support development and regression, but they must not be described as the
-canonical manuscript dataset.
+Until the paper's release gate passes, Explorer research snapshots may support
+development and regression, but they must not be described as the canonical
+manuscript dataset.
