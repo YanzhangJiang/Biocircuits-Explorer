@@ -1277,27 +1277,32 @@ end
 function _enumerate_complex_growth_network_specs(
     spec::AtlasEnumerationSpec,
     search_profile::AtlasSearchProfile,
+    ; cancel_check::Function=_no_cancel_check,
 )
     network_specs = Dict{Symbol, Any}[]
     generated_counts = Dict{String, Int}()
     emitted = 0
 
     for base_count in sort!(unique(copy(spec.base_species_counts)))
+        cancel_check()
         base_count <= search_profile.max_base_species || continue
         base_syms = _base_species_symbols(base_count)
         max_product_support = min(spec.max_template_order, search_profile.max_support)
         frontier = Any[_empty_growth_state(base_syms)]
 
         for reaction_count in 1:min(spec.max_reactions, search_profile.max_reactions)
+            cancel_check()
             next_frontier = Any[]
             seen_next = Set{String}()
 
             for state in frontier
+                cancel_check()
                 templates = _reaction_templates_from_available_supports(
                     state.supports;
                     max_product_support=max_product_support,
                 )
                 for template in templates
+                    cancel_check()
                     template.rule in state.rules && continue
                     template.product_symbol in keys(state.supports) && continue
 
@@ -1371,13 +1376,14 @@ end
 function enumerate_network_specs(
     spec::AtlasEnumerationSpec;
     search_profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0(),
+    cancel_check::Function=_no_cancel_check,
 )
     search_profile.slice_mode in (:siso, :change) || error("Atlas enumerator currently supports only slice_mode in (:siso, :change).")
     spec.mode in (:pairwise_binding, :subset_binding, :pairwise_plus_homomeric, :complex_growth_binding) || error("Unsupported atlas enumeration mode: $(spec.mode)")
     search_profile.allow_reversible_binding || error("The pairwise-binding enumerator requires allow_reversible_binding=true.")
 
     if spec.mode == :complex_growth_binding
-        return _enumerate_complex_growth_network_specs(spec, search_profile)
+        return _enumerate_complex_growth_network_specs(spec, search_profile; cancel_check=cancel_check)
     end
 
     network_specs = Dict{Symbol, Any}[]
@@ -1385,6 +1391,7 @@ function enumerate_network_specs(
     emitted = 0
 
     for base_count in sort!(unique(copy(spec.base_species_counts)))
+        cancel_check()
         base_count <= search_profile.max_base_species || continue
         base_syms = _base_species_symbols(base_count)
         if spec.mode == :subset_binding && !search_profile.allow_higher_order_templates
@@ -1434,7 +1441,9 @@ function enumerate_network_specs(
         min_reactions = min(spec.min_reactions, max_reactions)
 
         for reaction_count in min_reactions:max_reactions
+            cancel_check()
             for combo in _combinations(templates, reaction_count)
+                cancel_check()
                 spec.require_homomeric_template && !any(template.homomeric for template in combo) && continue
                 spec.require_product_support_at_least > 0 &&
                     maximum(template.order for template in combo) < spec.require_product_support_at_least &&
@@ -2506,7 +2515,8 @@ end
 
 function _build_behavior_slice(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig;
     record_change_spec::AbstractDict=change_spec,
-    record_observe_x::Symbol=observe_x)
+    record_observe_x::Symbol=observe_x,
+    cancel_check::Function=_no_cancel_check)
     record_output_symbol = string(record_observe_x)
     slice_id = _atlas_slice_id(network_id, record_change_spec, record_output_symbol, config)
     change_record = _change_spec_record(record_change_spec)
@@ -2514,6 +2524,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
     constraint_kwargs = _behavior_constraint_kwargs(model, config)
 
     try
+        cancel_check()
         result = get_behavior_families(
             change_paths;
             observe_x=observe_x,
@@ -2527,8 +2538,10 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
             include_path_labels=config.include_path_records,
             include_path_details=config.include_path_records,
             include_family_path_indices=config.include_path_records,
+            cancel_check=cancel_check,
             constraint_kwargs...,
         )
+        cancel_check()
 
         return Dict(
             "slice" => Dict(
@@ -2566,6 +2579,7 @@ function _build_behavior_slice(model, network_id::String, graph_slice_id::String
             "result" => result,
         )
     catch err
+        err isa LocalJobCancelled && rethrow()
         failure = _atlas_failure_metadata(err, "behavior_families")
         return Dict(
             "slice" => Dict(
@@ -2603,7 +2617,9 @@ end
 
 function _materialize_behavior_slice_payload(model, network_id::String, graph_slice_id::String, change_spec::AbstractDict, observe_x::Symbol, change_paths, config::AtlasBehaviorConfig;
     record_change_spec::AbstractDict=change_spec,
-    record_observe_x::Symbol=observe_x)
+    record_observe_x::Symbol=observe_x,
+    cancel_check::Function=_no_cancel_check)
+    cancel_check()
     slice_payload = _build_behavior_slice(
         model,
         network_id,
@@ -2614,6 +2630,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
         config;
         record_change_spec=record_change_spec,
         record_observe_x=record_observe_x,
+        cancel_check=cancel_check,
     )
     slice = slice_payload["slice"]
     result = slice_payload["result"]
@@ -2641,6 +2658,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
     end
 
     try
+        cancel_check()
         slice_graph_payload = _build_slice_regime_transition_records(
             model,
             change_paths,
@@ -2655,6 +2673,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
         append!(regime_records, slice_graph_payload["regime_records"])
         append!(transition_records, slice_graph_payload["transition_records"])
         _build_family_buckets!(family_buckets, result, slice["slice_id"], config, change_paths)
+        cancel_check()
         _build_path_records!(
             path_records,
             result,
@@ -2664,6 +2683,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
             slice_graph_payload["regime_by_vertex"],
             slice_graph_payload["transition_by_edge"],
         )
+        cancel_check()
         slice["regime_token_union"] = sort!(unique([String(rec["output_order_token"]) for rec in regime_records]))
         slice["transition_token_union"] = sort!(unique([String(rec["transition_token"]) for rec in transition_records]))
         slice["build_state"] = "complete"
@@ -2681,6 +2701,7 @@ function _materialize_behavior_slice_payload(model, network_id::String, graph_sl
             "path_records" => path_records,
         )
     catch err
+        err isa LocalJobCancelled && rethrow()
         merge!(slice, _atlas_failure_metadata(err, "slice_record_materialization"; partial_result_available=true))
         _annotate_behavior_slice!(slice, Dict(
             "regime_record_count" => 0,
@@ -2804,31 +2825,58 @@ function _resolve_output_parallelism(requested::Integer, output_count::Integer, 
     return max(1, min(output_count, requested, Threads.nthreads()))
 end
 
-function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallelism::Integer)
+function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallelism::Integer;
+                                    cancel_check::Function=_no_cancel_check)
     isempty(jobs) && return Any[]
 
     parallelism = _resolve_network_parallelism(requested_parallelism, length(jobs))
     results = Vector{Any}(undef, length(jobs))
     if parallelism <= 1
         for idx in eachindex(jobs)
+            cancel_check()
             results[idx] = build_fn(jobs[idx])
+            cancel_check()
         end
         return results
     end
 
     sem = Base.Semaphore(parallelism)
     tasks = Task[]
+    first_error = nothing
     for idx in eachindex(jobs)
-        Base.acquire(sem)
+        acquired = false
+        try
+            cancel_check()
+            Base.acquire(sem)
+            acquired = true
+            cancel_check()
+        catch err
+            acquired && Base.release(sem)
+            first_error = err
+            break
+        end
         push!(tasks, Threads.@spawn begin
             try
+                cancel_check()
                 results[idx] = build_fn(jobs[idx])
+                cancel_check()
             finally
                 Base.release(sem)
             end
         end)
     end
-    fetch.(tasks)
+    # Structured join: never let worker tasks outlive the parent job's cleanup.
+    for task in tasks
+        try
+            fetch(task)
+        catch err
+            root_error = err isa TaskFailedException ? err.task.exception : err
+            first_error === nothing &&
+                (first_error = root_error isa LocalJobCancelled ? root_error : err)
+        end
+    end
+    cancel_check()
+    first_error === nothing || throw(first_error)
     return results
 end
 
@@ -2839,7 +2887,9 @@ function _build_single_network_atlas(job;
     output_parallelism::Int,
     existing_slice_ids::Set{String},
     skip_existing::Bool,
+    cancel_check::Function=_no_cancel_check,
 )
+    cancel_check()
     raw_network = job.raw_network
     canonical_code = job.canonical_code
     canonical_identity = job.canonical_identity
@@ -2882,7 +2932,9 @@ function _build_single_network_atlas(job;
 
     slice_dicts = Dict{String, Any}[]
     try
+        cancel_check()
         model, _, _, _ = build_model(rules, kd)
+        cancel_check()
         change_specs = _resolve_change_specs(raw_network, model, search_profile, change_expansion)
         output_symbols = _resolve_output_symbols(raw_network, model)
         planned_slice_ids = String[
@@ -2908,10 +2960,12 @@ function _build_single_network_atlas(job;
         skipped_slice_ids = String[]
 
         for change_spec in change_specs
+            cancel_check()
             storage_change_spec = _canonicalize_change_spec_for_storage(change_spec, total_symbol_map)
             missing_outputs = NamedTuple[]
             change_cache_key = _change_signature(change_spec)
             for output_symbol in output_symbols
+                cancel_check()
                 storage_output_symbol = _canonicalized_species_symbol(species_symbol_map, string(output_symbol))
                 slice_id = _atlas_slice_id(canonical_code, storage_change_spec, storage_output_symbol, behavior_config)
                 if skip_existing && slice_id in existing_slice_ids
@@ -2925,8 +2979,10 @@ function _build_single_network_atlas(job;
             isempty(missing_outputs) && continue
 
             change_paths = get!(change_path_cache, change_cache_key) do
+                cancel_check()
                 _build_change_paths(model, change_spec)
             end
+            cancel_check()
             graph_slice = get!(graph_slice_cache, change_cache_key) do
                 payload = _build_input_graph_slice(change_paths, canonical_code, storage_change_spec)
                 push!(result["input_graph_slices"], payload)
@@ -2934,13 +2990,16 @@ function _build_single_network_atlas(job;
             end
             effective_output_parallelism = _resolve_output_parallelism(output_parallelism, length(missing_outputs), behavior_config)
             if effective_output_parallelism > 1
+                cancel_check()
                 if behavior_config.compute_volume
                     get_volumes(change_paths)
                 elseif !(change_paths isa ChangePaths && behavior_config.path_scope == :all)
                     get_polyhedra(change_paths)
                 end
+                cancel_check()
             end
-            slice_payloads = _run_network_jobs_parallel(missing_outputs, effective_output_parallelism) do output_pair
+            slice_payloads = _run_network_jobs_parallel(missing_outputs, effective_output_parallelism;
+                                                        cancel_check=cancel_check) do output_pair
                 _materialize_behavior_slice_payload(
                     model,
                     canonical_code,
@@ -2951,9 +3010,11 @@ function _build_single_network_atlas(job;
                     behavior_config;
                     record_change_spec=storage_change_spec,
                     record_observe_x=output_pair.record,
+                    cancel_check=cancel_check,
                 )
             end
             for slice_payload in slice_payloads
+                cancel_check()
                 slice = slice_payload["slice"]
                 push!(result["behavior_slices"], slice)
                 push!(slice_dicts, slice)
@@ -2983,6 +3044,7 @@ function _build_single_network_atlas(job;
         end
         network_entry["build_state"] = _network_build_state(summary)
     catch err
+        err isa LocalJobCancelled && rethrow()
         network_entry["analysis_status"] = "failed"
         network_entry["build_state"] = "failed"
         merge!(network_entry, _atlas_failure_metadata(err, "network_build"))
@@ -3001,7 +3063,9 @@ function build_behavior_atlas(network_specs;
     library=nothing,
     sqlite_path=nothing,
     skip_existing::Bool=false,
+    cancel_check::Function=_no_cancel_check,
 )
+    cancel_check()
     network_entries = Dict{String, Any}[]
     input_graph_slices = Dict{String, Any}[]
     behavior_slices = Dict{String, Any}[]
@@ -3022,6 +3086,7 @@ function build_behavior_atlas(network_specs;
     prepared_jobs = Any[]
     build_jobs = Any[]
     for (network_idx, raw_network) in enumerate(network_specs)
+        cancel_check()
         job = _prepare_network_build_job(raw_network, network_idx, search_profile)
 
         if Bool(job.validation["valid"]) && job.canonical_code in seen_networks
@@ -3053,7 +3118,8 @@ function build_behavior_atlas(network_specs;
         end
     end
 
-    built_job_results = _run_network_jobs_parallel(build_jobs, network_parallelism) do job
+    built_job_results = _run_network_jobs_parallel(build_jobs, network_parallelism;
+                                                   cancel_check=cancel_check) do job
         _build_single_network_atlas(job;
             search_profile=search_profile,
             behavior_config=behavior_config,
@@ -3061,11 +3127,13 @@ function build_behavior_atlas(network_specs;
             output_parallelism=max(1, Threads.nthreads() ÷ max(1, _resolve_network_parallelism(network_parallelism, length(build_jobs)))),
             existing_slice_ids=existing_slice_ids,
             skip_existing=skip_existing,
+            cancel_check=cancel_check,
         )
     end
     built_results_by_idx = Dict(job.network_idx => built_job_results[idx] for (idx, job) in enumerate(build_jobs))
 
     for prepared in prepared_jobs
+        cancel_check()
         if prepared.kind == :invalid
             push!(network_entries, prepared.network_entry)
             continue
@@ -3490,16 +3558,17 @@ function merge_atlas_library(library, atlas; source_label=nothing, source_metada
     return _refresh_atlas_library!(merged)
 end
 
-function _resolve_atlas_corpus_from_spec(spec)
+function _resolve_atlas_corpus_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    cancel_check()
     if _is_atlas_corpus(spec)
         return spec
     elseif _raw_haskey(spec, :atlas)
         return _raw_get(spec, :atlas, nothing)
     elseif _raw_haskey(spec, :atlas_spec)
         atlas_spec = _raw_get(spec, :atlas_spec, nothing)
-        return _is_atlas_corpus(atlas_spec) ? atlas_spec : build_behavior_atlas_from_spec(atlas_spec)
+        return _is_atlas_corpus(atlas_spec) ? atlas_spec : build_behavior_atlas_from_spec(atlas_spec; cancel_check=cancel_check)
     elseif _raw_haskey(spec, :networks) || _raw_haskey(spec, :enumeration)
-        return build_behavior_atlas_from_spec(spec)
+        return build_behavior_atlas_from_spec(spec; cancel_check=cancel_check)
     else
         error("Atlas library spec must include `atlas`, `atlas_spec`, or a direct atlas build spec.")
     end
@@ -3518,8 +3587,9 @@ function looks_like_atlas_corpus(raw)
            (_raw_haskey(raw, :family_buckets))
 end
 
-function build_atlas_library_from_spec(spec)
-    atlas = _resolve_atlas_corpus_from_spec(spec)
+function build_atlas_library_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    atlas = _resolve_atlas_corpus_from_spec(spec; cancel_check=cancel_check)
+    cancel_check()
     source_label = _raw_haskey(spec, :source_label) ? String(_raw_get(spec, :source_label, "")) : nothing
     source_metadata = _raw_haskey(spec, :source_metadata) ? _raw_get(spec, :source_metadata, nothing) : nothing
     library_label = _raw_haskey(spec, :library_label) ? String(_raw_get(spec, :library_label, "")) : nothing
@@ -3528,12 +3598,14 @@ function build_atlas_library_from_spec(spec)
         source_metadata=source_metadata,
         library_label=library_label,
     )
+    cancel_check()
     sqlite_path = _sqlite_path_from_raw(spec)
     sqlite_path === nothing || atlas_sqlite_save_library!(sqlite_path, library)
     return library
 end
 
-function merge_atlas_library_from_spec(spec)
+function merge_atlas_library_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    cancel_check()
     sqlite_path = _sqlite_path_from_raw(spec)
     if !_raw_haskey(spec, :library) && sqlite_path === nothing
         error("Atlas library merge spec must include `library` or `sqlite_path`.")
@@ -3566,7 +3638,7 @@ function merge_atlas_library_from_spec(spec)
             _raw_haskey(atlas_spec, :change_expansion) && (request["change_expansion"] = _raw_get(atlas_spec, :change_expansion, nothing))
             _raw_haskey(atlas_spec, :networks) && (request["networks"] = _raw_get(atlas_spec, :networks, Any[]))
             _raw_haskey(atlas_spec, :enumeration) && (request["enumeration"] = _raw_get(atlas_spec, :enumeration, nothing))
-            build_behavior_atlas_from_spec(request)
+            build_behavior_atlas_from_spec(request; cancel_check=cancel_check)
         end
     elseif _raw_haskey(spec, :networks) || _raw_haskey(spec, :enumeration)
         request = Dict{String, Any}(
@@ -3578,11 +3650,12 @@ function merge_atlas_library_from_spec(spec)
         _raw_haskey(spec, :change_expansion) && (request["change_expansion"] = _raw_get(spec, :change_expansion, nothing))
         _raw_haskey(spec, :networks) && (request["networks"] = _raw_get(spec, :networks, Any[]))
         _raw_haskey(spec, :enumeration) && (request["enumeration"] = _raw_get(spec, :enumeration, nothing))
-        build_behavior_atlas_from_spec(request)
+        build_behavior_atlas_from_spec(request; cancel_check=cancel_check)
     else
         error("Atlas library merge spec must include `atlas`, `atlas_spec`, or atlas build fields.")
     end
 
+    cancel_check()
     if _is_empty_atlas_delta(atlas) && Int(_raw_get(atlas, :skipped_existing_slice_count, 0)) > 0
         merged = _record_library_skip_only_event(library;
             source_label=source_label,
@@ -4024,7 +4097,8 @@ function query_behavior_atlas(atlas, query::AtlasQuerySpec=atlas_query_spec_defa
     return query_behavior_atlas_v2(atlas, query; strict=false)["result"]
 end
 
-function query_behavior_atlas_from_spec(spec)
+function query_behavior_atlas_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    cancel_check()
     _raw_haskey(spec, :query) || error("Atlas query request must include `query`.")
     query_raw = _raw_get(spec, :query, nothing)
     sqlite_prefilter = nothing
@@ -4037,11 +4111,13 @@ function query_behavior_atlas_from_spec(spec)
         sqlite_prefilter = _raw_get(corpus, :sqlite_prefilter, nothing)
         corpus
     elseif _raw_haskey(spec, :atlas_spec)
-        build_behavior_atlas_from_spec(_raw_get(spec, :atlas_spec, nothing))
+        build_behavior_atlas_from_spec(_raw_get(spec, :atlas_spec, nothing); cancel_check=cancel_check)
     else
         error("Atlas query request must include `atlas`, `library`, `sqlite_path`, or `atlas_spec`.")
     end
+    cancel_check()
     result = query_behavior_atlas_v2(atlas, query_raw; strict=true)["result"]
+    cancel_check()
     sqlite_prefilter === nothing || (result["sqlite_prefilter"] = _materialize(sqlite_prefilter))
     if query_raw isa AbstractDict && _raw_haskey(query_raw, :goal)
         result["query"] = Dict{String, Any}(_materialize(result["query"]))
@@ -4050,7 +4126,8 @@ function query_behavior_atlas_from_spec(spec)
     return result
 end
 
-function build_behavior_atlas_from_spec(spec)
+function build_behavior_atlas_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    cancel_check()
     search_profile = atlas_search_profile_from_raw(_raw_get(spec, :search_profile, nothing))
     behavior_config = atlas_behavior_config_from_raw(_raw_get(spec, :behavior_config, nothing))
     change_expansion = atlas_change_expansion_spec_from_raw(_raw_get(spec, :change_expansion, nothing))
@@ -4074,6 +4151,7 @@ function build_behavior_atlas_from_spec(spec)
         enum_spec = atlas_enumeration_spec_from_raw(_raw_get(spec, :enumeration, nothing))
         enumerated_networks, enumeration_summary = enumerate_network_specs(enum_spec;
             search_profile=search_profile,
+            cancel_check=cancel_check,
         )
         append!(network_specs, enumerated_networks)
     end
@@ -4088,10 +4166,12 @@ function build_behavior_atlas_from_spec(spec)
         library=library,
         sqlite_path=sqlite_path,
         skip_existing=skip_existing,
+        cancel_check=cancel_check,
     )
     enumeration_summary === nothing || (atlas["enumeration"] = enumeration_summary)
 
     if persist_sqlite && sqlite_path !== nothing
+        cancel_check()
         if _is_empty_atlas_delta(atlas) && Int(_raw_get(atlas, :skipped_existing_slice_count, 0)) > 0
             atlas_sqlite_record_skip_only_event!(sqlite_path;
                 source_label=source_label,
@@ -4113,6 +4193,7 @@ function build_behavior_atlas_from_spec(spec)
         atlas["sqlite_library_summary"] = atlas_sqlite_summary(sqlite_path)
     end
 
+    cancel_check()
     return atlas
 end
 
@@ -4534,6 +4615,6 @@ function run_inverse_design(;
     return run_inverse_design_from_spec(request)
 end
 
-function run_inverse_design_from_spec(spec)
-    return run_inverse_design_pipeline_from_spec(spec)
+function run_inverse_design_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    return run_inverse_design_pipeline_from_spec(spec; cancel_check=cancel_check)
 end

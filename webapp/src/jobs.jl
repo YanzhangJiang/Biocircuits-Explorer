@@ -1,6 +1,7 @@
 const JOBS = Dict{String, Dict{String, Any}}()
 const JOBS_LOCK = ReentrantLock()
 const JOB_TASKS = Dict{String, Task}()
+const LOCAL_JOB_CANCEL_TOKENS = Dict{String, LocalJobCancelToken}()
 const JOB_DESCRIBE_LAST_AT = Dict{String, Float64}()
 const LOCAL_JOB_STORE_DIR = Ref{Union{Nothing, String}}(nothing)
 
@@ -47,6 +48,8 @@ const LOCAL_JOB_KINDS = Set([
     "query_atlas",
     "run_inverse_design",
 ])
+
+const CANCEL_DISPATCH_CLAIM_TTL_SECONDS = 60.0
 
 struct QuotaExceeded <: Exception
     msg::String
@@ -171,9 +174,19 @@ _aws_cli() = Config.aws_cli_binary()
 
 function _write_job_json(path::AbstractString, payload)
     mkpath(dirname(path))
-    open(path, "w") do io
-        JSON3.pretty(io, json_safe_value(payload))
-        write(io, "\n")
+    isdir(path) && throw(ArgumentError("Job JSON path is a directory: $(path)"))
+    temp_path, temp_io = mktemp(dirname(path); cleanup=false)
+    try
+        JSON3.pretty(temp_io, json_safe_value(payload))
+        write(temp_io, "\n")
+        flush(temp_io)
+        ccall(:fsync, Cint, (Cint,), fd(temp_io)) == 0 || error("fsync failed for $(temp_path)")
+        close(temp_io)
+        mv(temp_path, path; force=true)
+    catch
+        isopen(temp_io) && close(temp_io)
+        isfile(temp_path) && rm(temp_path; force=true)
+        rethrow()
     end
     return path
 end
@@ -232,7 +245,7 @@ function _job_public_record(record::AbstractDict)
     haskey(record, "log_stream_name") && (out["log_stream_name"] = record["log_stream_name"])
 
     for key in ("started_at", "finished_at", "progress", "error", "cancel_requested_at")
-        haskey(record, key) && (out[key] = record[key])
+        haskey(record, key) && (out[key] = deepcopy(record[key]))
     end
 
     out["artifacts"]["input"] = "job://$(job_id)/input"
@@ -244,6 +257,8 @@ function _job_public_record(record::AbstractDict)
 
     return out
 end
+
+_job_snapshot(record::AbstractDict) = deepcopy(record)
 
 function _persist_job_record_unlocked(record::AbstractDict)
     _write_job_json(String(record["record_path"]), record)
@@ -262,6 +277,18 @@ function _persist_job_status_unlocked(record::AbstractDict)
         if String(status_uri) != String(record["status_path"])
             _write_json_uri(String(status_uri), status)
         end
+    end
+    return nothing
+end
+
+# `record.json` is the canonical durable state. `status.json` is a public,
+# rebuildable projection: a projection write must never roll back a transition
+# whose canonical record was committed successfully.
+function _persist_job_status_projection_unlocked(record::AbstractDict)
+    try
+        _persist_job_status_unlocked(record)
+    catch err
+        @warn "Failed to refresh derived job status projection" job_id=get(record, "job_id", nothing) exception=(err, catch_backtrace())
     end
     return nothing
 end
@@ -294,6 +321,11 @@ function _apply_job_transition_unlocked!(record::AbstractDict,
     target_status in JOB_STATUSES || throw(ArgumentError("Unknown target job status: $(target_status)"))
     _status_expected(current_status, expected) || return false
 
+    # Terminal snapshots are immutable, including same-status calls.  Nonterminal
+    # same-status updates remain useful for publishing cancellation dispatch
+    # metadata without weakening the terminal-state invariant.
+    current_status in JOB_TERMINAL_STATUSES && return false
+
     if current_status != target_status
         target_status in JOB_STATUS_TRANSITIONS[current_status] || return false
         record["status"] = target_status
@@ -306,6 +338,64 @@ function _apply_job_transition_unlocked!(record::AbstractDict,
     return true
 end
 
+function _commit_job_candidate_unlocked!(record::AbstractDict, candidate::AbstractDict)
+    # Persist the canonical candidate before exposing it through the shared
+    # in-memory dictionary. Atomic replacement in `_write_job_json` guarantees
+    # that a failed write leaves both views at the previous revision.
+    _persist_job_record_unlocked(candidate)
+    empty!(record)
+    merge!(record, candidate)
+    _persist_job_status_projection_unlocked(record)
+    return record
+end
+
+function _transition_job_record_unlocked!(record::AbstractDict,
+                                          target_status::AbstractString;
+                                          expected=nothing,
+                                          updates...)
+    candidate = deepcopy(record)
+    applied = _apply_job_transition_unlocked!(
+        candidate,
+        target_status;
+        expected=expected,
+        updates...,
+    )
+    applied && _commit_job_candidate_unlocked!(record, candidate)
+    return applied
+end
+
+function _cancel_dispatch_claim_active(record::AbstractDict; now_epoch::Real=time())
+    haskey(record, "cancel_dispatch_claim") || return false
+    claimed_at = try
+        Float64(get(record, "cancel_dispatch_claimed_at_epoch", 0.0))
+    catch
+        0.0
+    end
+    return claimed_at > 0 && Float64(now_epoch) - claimed_at < CANCEL_DISPATCH_CLAIM_TTL_SECONDS
+end
+
+function _finish_cancel_dispatch_claim!(job_id::AbstractString, claim_token::AbstractString; updates...)
+    lock(JOBS_LOCK) do
+        record = _job_record_unlocked(job_id)
+        record === nothing && return (applied=false, record=nothing)
+        String(get(record, "cancel_dispatch_claim", "")) == String(claim_token) ||
+            return (applied=false, record=_job_snapshot(record))
+        candidate = deepcopy(record)
+        applied = _apply_job_transition_unlocked!(
+            candidate,
+            "cancel_requested";
+            expected=("cancel_requested",),
+            updates...,
+        )
+        if applied
+            delete!(candidate, "cancel_dispatch_claim")
+            delete!(candidate, "cancel_dispatch_claimed_at_epoch")
+            _commit_job_candidate_unlocked!(record, candidate)
+        end
+        return (applied=applied, record=_job_snapshot(record))
+    end
+end
+
 function _job_transition!(job_id::AbstractString,
                           target_status::AbstractString;
                           expected=nothing,
@@ -314,17 +404,13 @@ function _job_transition!(job_id::AbstractString,
         record = _job_record_unlocked(job_id)
         record === nothing && return (applied=false, record=nothing, previous_status=nothing)
         previous_status = String(get(record, "status", ""))
-        applied = _apply_job_transition_unlocked!(
+        applied = _transition_job_record_unlocked!(
             record,
             target_status;
             expected=expected,
             updates...,
         )
-        if applied
-            _persist_job_record_unlocked(record)
-            _persist_job_status_unlocked(record)
-        end
-        return (applied=applied, record=copy(record), previous_status=previous_status)
+        return (applied=applied, record=_job_snapshot(record), previous_status=previous_status)
     end
 end
 
@@ -332,7 +418,7 @@ function _job_record(job_id::AbstractString)
     lock(JOBS_LOCK) do
         record = _job_record_unlocked(job_id)
         record === nothing && return nothing
-        return copy(record)
+        return _job_snapshot(record)
     end
 end
 
@@ -416,28 +502,30 @@ function _now_iso_timestamp_after(seconds::Integer)
     return Dates.format(Dates.now(Dates.UTC) + Dates.Second(seconds), dateformat"yyyy-mm-ddTHH:MM:SSZ")
 end
 
-function _execute_local_job(kind::AbstractString, spec)
+function _execute_local_job(kind::AbstractString, spec; cancel_check::Function=_no_cancel_check)
     # Wrap every local-job result in the bne-result envelope (as a sibling
     # `artifact` field) so the persisted result and its `result_ref` are
     # self-describing: algorithm + version, input network hashes, and a config
     # hash of the spec for reproducibility.
-    result = _dispatch_local_job(kind, spec)
+    cancel_check()
+    result = _dispatch_local_job(kind, spec; cancel_check=cancel_check)
+    cancel_check()
     return attach_artifact!(result, kind;
         input_hashes = Dict{String, Any}("network_ir_hashes" => artifact_network_hashes(spec)),
         config = spec)
 end
 
-function _dispatch_local_job(kind::AbstractString, spec)
+function _dispatch_local_job(kind::AbstractString, spec; cancel_check::Function=_no_cancel_check)
     if kind == "build_atlas"
-        return build_behavior_atlas_from_spec(spec)
+        return build_behavior_atlas_from_spec(spec; cancel_check=cancel_check)
     elseif kind == "build_atlas_library"
-        return build_atlas_library_from_spec(spec)
+        return build_atlas_library_from_spec(spec; cancel_check=cancel_check)
     elseif kind == "merge_atlas_library"
-        return merge_atlas_library_from_spec(spec)
+        return merge_atlas_library_from_spec(spec; cancel_check=cancel_check)
     elseif kind == "query_atlas"
-        return query_behavior_atlas_from_spec(spec)
+        return query_behavior_atlas_from_spec(spec; cancel_check=cancel_check)
     elseif kind == "run_inverse_design"
-        return run_inverse_design_from_spec(spec)
+        return run_inverse_design_from_spec(spec; cancel_check=cancel_check)
     else
         throw(ArgumentError("Unsupported local job kind: $(kind)"))
     end
@@ -547,24 +635,22 @@ function _finish_local_job!(job_id::AbstractString;
             )
             !succeeded && (updates[:error] = error === nothing ? "Local job failed" : String(error))
         else
-            return (applied=false, record=copy(record))
+            return (applied=false, record=_job_snapshot(record))
         end
 
-        applied = _apply_job_transition_unlocked!(
+        applied = _transition_job_record_unlocked!(
             record,
             target_status;
             expected=(current_status,),
             updates...,
         )
-        if applied
-            _persist_job_record_unlocked(record)
-            _persist_job_status_unlocked(record)
-        end
-        return (applied=applied, record=copy(record))
+        return (applied=applied, record=_job_snapshot(record))
     end
 end
 
-function _run_local_job!(job_id::String, kind::String, spec)
+function _run_local_job!(job_id::String, kind::String, spec,
+                         token::LocalJobCancelToken=LocalJobCancelToken(job_id))
+    cancel_check = () -> _check_cancelled(token)
     try
         started = _job_transition!(job_id, "running";
             expected=("queued",),
@@ -589,7 +675,7 @@ function _run_local_job!(job_id::String, kind::String, spec)
                 return nothing
             end
 
-            result = _execute_local_job(kind, spec)
+            result = _execute_local_job(kind, spec; cancel_check=cancel_check)
 
             # Do not publish a result once cancellation has been observed.  A
             # cancellation racing the following artifact write is handled by
@@ -610,14 +696,24 @@ function _run_local_job!(job_id::String, kind::String, spec)
             _write_json_uri(result_uri, result)
             _finish_local_job!(job_id; succeeded=true)
         catch err
-            _finish_local_job!(job_id;
-                succeeded=false,
-                error=sprint(showerror, err, catch_backtrace()),
-            )
+            if err isa LocalJobCancelled
+                _job_transition!(job_id, "cancelled";
+                    expected=("cancel_requested",),
+                    finished_at=_now_iso_timestamp(),
+                    result_available=false,
+                    progress=Dict("message" => "Cancelled during local execution"),
+                )
+            else
+                _finish_local_job!(job_id;
+                    succeeded=false,
+                    error=sprint(showerror, err, catch_backtrace()),
+                )
+            end
         end
     finally
         lock(JOBS_LOCK) do
             delete!(JOB_TASKS, job_id)
+            delete!(LOCAL_JOB_CANCEL_TOKENS, job_id)
         end
     end
 
@@ -818,18 +914,18 @@ function _refresh_aws_batch_job!(job_id::AbstractString)
         record = _job_record_unlocked(id)
         record === nothing && return (refresh=false, record=nothing)
         String(get(record, "executor", "")) == "aws_batch" ||
-            return (refresh=false, record=copy(record))
-        haskey(record, "batch_job_id") || return (refresh=false, record=copy(record))
+            return (refresh=false, record=_job_snapshot(record))
+        haskey(record, "batch_job_id") || return (refresh=false, record=_job_snapshot(record))
         String(get(record, "status", "")) in JOB_TERMINAL_STATUSES &&
-            return (refresh=false, record=copy(record))
+            return (refresh=false, record=_job_snapshot(record))
 
         now_epoch = time()
         last_at = get(JOB_DESCRIBE_LAST_AT, id, 0.0)
         if now_epoch - last_at < _aws_batch_describe_min_interval()
-            return (refresh=false, record=copy(record))
+            return (refresh=false, record=_job_snapshot(record))
         end
         JOB_DESCRIBE_LAST_AT[id] = now_epoch
-        return (refresh=true, record=copy(record))
+        return (refresh=true, record=_job_snapshot(record))
     end
     probe.refresh || return probe.record
 
@@ -861,7 +957,7 @@ function _refresh_aws_batch_job!(job_id::AbstractString)
         record = _job_record_unlocked(id)
         record === nothing && return nothing
         current_status = String(get(record, "status", ""))
-        current_status in JOB_TERMINAL_STATUSES && return copy(record)
+        current_status in JOB_TERMINAL_STATUSES && return _job_snapshot(record)
 
         # A pending cancellation is monotonic while AWS remains nonterminal.
         # AWS FAILED after cancel/terminate confirms cancellation; SUCCEEDED is
@@ -895,17 +991,13 @@ function _refresh_aws_batch_job!(job_id::AbstractString)
             updates[:error] = missing_result_error === nothing ? failure_reason : missing_result_error
         end
 
-        applied = _apply_job_transition_unlocked!(
+        applied = _transition_job_record_unlocked!(
             record,
             target_status;
             expected=(current_status,),
             updates...,
         )
-        if applied
-            _persist_job_record_unlocked(record)
-            _persist_job_status_unlocked(record)
-        end
-        return copy(record)
+        return _job_snapshot(record)
     end
 end
 
@@ -993,16 +1085,16 @@ function submit_biocircuits_job_from_spec(raw; user_sub::AbstractString=ANONYMOU
     ))
 
     lock(JOBS_LOCK) do
-        JOBS[job_id] = record
         _persist_job_record_unlocked(record)
-        _persist_job_status_unlocked(record)
+        JOBS[job_id] = record
+        _persist_job_status_projection_unlocked(record)
     end
 
     if executor == "aws_batch"
         submission = try
             # The snapshot prevents the remote helper from mutating shared
             # state while S3 or Batch is slow.
-            _aws_batch_submit(copy(record), execution)
+            _aws_batch_submit(_job_snapshot(record), execution)
         catch err
             submission_error = sprint(showerror, err, catch_backtrace())
             failed = _job_transition!(job_id, "failed";
@@ -1031,16 +1123,16 @@ function submit_biocircuits_job_from_spec(raw; user_sub::AbstractString=ANONYMOU
         cancel_after_submit = lock(JOBS_LOCK) do
             live_record = _job_record_unlocked(job_id)
             live_record === nothing && return nothing
+            candidate = deepcopy(live_record)
             for (key, value) in submission
                 # Preserve the cancellation message when cancellation won the
                 # race with the remote submit call.
-                key == "progress" && String(live_record["status"]) != "queued" && continue
-                live_record[key] = value
+                key == "progress" && String(candidate["status"]) != "queued" && continue
+                candidate[key] = value
             end
-            live_record["updated_at"] = _now_iso_timestamp()
-            _persist_job_record_unlocked(live_record)
-            _persist_job_status_unlocked(live_record)
-            return String(live_record["status"]) in ("cancel_requested", "cancelled") ? copy(live_record) : nothing
+            candidate["updated_at"] = _now_iso_timestamp()
+            _commit_job_candidate_unlocked!(live_record, candidate)
+            return String(live_record["status"]) in ("cancel_requested", "cancelled") ? _job_snapshot(live_record) : nothing
         end
         if cancel_after_submit !== nothing
             # A cancellation can race an in-flight submission before a Batch
@@ -1050,12 +1142,14 @@ function submit_biocircuits_job_from_spec(raw; user_sub::AbstractString=ANONYMOU
         end
     else
         start_gate = Channel{Nothing}(1)
+        token = LocalJobCancelToken(job_id)
         task = Threads.@spawn begin
             take!(start_gate)
-            _run_local_job!(job_id, kind, spec)
+            _run_local_job!(job_id, kind, spec, token)
         end
         lock(JOBS_LOCK) do
             JOB_TASKS[job_id] = task
+            LOCAL_JOB_CANCEL_TOKENS[job_id] = token
         end
         # Registration happens-before worker execution, so the worker's
         # `finally` deletion cannot race a late bookkeeping insertion.
@@ -1073,7 +1167,8 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
         _check_user_owns_record(record, user_sub, job_id)
         status = String(record["status"])
         if status in JOB_TERMINAL_STATUSES
-            return (public=_job_public_record(record), aws_record=nothing, observed_status=status)
+            return (public=_job_public_record(record), aws_record=nothing,
+                    observed_status=status, dispatch_claim=nothing)
         end
 
         executor = String(get(record, "executor", ""))
@@ -1083,7 +1178,21 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
         if status == "cancel_requested"
             # A successful dispatch is idempotent.  A failed dispatch deliberately
             # leaves this marker absent so the next API call retries the CLI.
-            should_retry = has_external_job && !haskey(record, "cancel_dispatched_at")
+            should_retry = has_external_job &&
+                !haskey(record, "cancel_dispatched_at") &&
+                !_cancel_dispatch_claim_active(record)
+            dispatch_claim = nothing
+            if should_retry
+                dispatch_claim = string(rand(UInt128), base=16, pad=32)
+                claimed = _transition_job_record_unlocked!(
+                    record,
+                    "cancel_requested";
+                    expected=("cancel_requested",),
+                    cancel_dispatch_claim=dispatch_claim,
+                    cancel_dispatch_claimed_at_epoch=time(),
+                )
+                claimed || (dispatch_claim = nothing)
+            end
             observed_status = String(get(
                 record,
                 "cancel_observed_status",
@@ -1091,8 +1200,9 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
             ))
             return (
                 public=_job_public_record(record),
-                aws_record=should_retry ? copy(record) : nothing,
+                aws_record=dispatch_claim === nothing ? nothing : _job_snapshot(record),
                 observed_status=observed_status,
+                dispatch_claim=dispatch_claim,
             )
         end
 
@@ -1101,22 +1211,33 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
         # external id exists yet; the submit path observes the intent once the
         # id arrives.  A simultaneous describe response cannot overwrite it.
         target_status = status == "queued" && executor != "aws_batch" ? "cancelled" : "cancel_requested"
-        _apply_job_transition_unlocked!(
+        dispatch_claim = has_external_job ? string(rand(UInt128), base=16, pad=32) : nothing
+        transition_updates = Dict{Symbol, Any}(
+            :cancel_requested_at => _now_iso_timestamp(),
+            :cancel_observed_status => status,
+            :result_available => false,
+            :progress => Dict("message" => target_status == "cancelled" ? "Cancelled" : "Cancel requested"),
+        )
+        if dispatch_claim !== nothing
+            transition_updates[:cancel_dispatch_claim] = dispatch_claim
+            transition_updates[:cancel_dispatch_claimed_at_epoch] = time()
+        end
+        applied = _transition_job_record_unlocked!(
             record,
             target_status;
             expected=(status,),
-            cancel_requested_at=_now_iso_timestamp(),
-            cancel_observed_status=status,
-            result_available=false,
-            progress=Dict("message" => target_status == "cancelled" ? "Cancelled" : "Cancel requested"),
+            transition_updates...,
         )
-        _persist_job_record_unlocked(record)
-        _persist_job_status_unlocked(record)
+        applied || return (public=_job_public_record(record), aws_record=nothing,
+                           observed_status=status, dispatch_claim=nothing)
+        token = get(LOCAL_JOB_CANCEL_TOKENS, job_id, nothing)
+        token === nothing || _request_cancel!(token)
         delete!(JOB_DESCRIBE_LAST_AT, job_id)
         return (
             public=_job_public_record(record),
-            aws_record=has_external_job ? copy(record) : nothing,
+            aws_record=has_external_job ? _job_snapshot(record) : nothing,
             observed_status=status,
+            dispatch_claim=dispatch_claim,
         )
     end
 
@@ -1127,8 +1248,7 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
     catch err
         # Keep the monotonic cancellation intent: a failed CLI invocation does
         # not make it safe for a late completion to overwrite the request.
-        failed_update = _job_transition!(job_id, "cancel_requested";
-            expected=("cancel_requested",),
+        failed_update = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
             cancel_error=sprint(showerror, err),
             progress=Dict("message" => "Cancel request failed"),
         )
@@ -1153,8 +1273,7 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
             try
                 _cancel_aws_batch_job!(decision.aws_record; observed_status="running")
             catch err
-                failed_update = _job_transition!(job_id, "cancel_requested";
-                    expected=("cancel_requested",),
+                failed_update = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
                     cancel_error=sprint(showerror, err),
                     progress=Dict("message" => "Cancel request failed"),
                 )
@@ -1167,8 +1286,7 @@ function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString
         end
     end
 
-    dispatched = _job_transition!(job_id, "cancel_requested";
-        expected=("cancel_requested",),
+    dispatched = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
         cancel_dispatched_at=_now_iso_timestamp(),
         cancel_error=nothing,
         cancel_aws_status=remote_status,
