@@ -4,9 +4,15 @@
 
 ## Purpose
 
-Wrap the web workspace in a native SwiftUI application, persist project JSON in
-the platform Application Support area, and supervise the local Julia backend
-and optional Python Design Agent helper.
+Provide a native SwiftUI shell that stores workspace documents and supervises
+the local Julia and optional Python helpers. The native runtime contract is
+local by design: Julia must bind to loopback, must return an explicit ready
+payload before use, and the chat helper receives the Julia port actually chosen
+by the app.
+
+Each chat-helper launch gets a fresh bearer secret. Browser requests must also
+come from the one exact loopback origin derived from the Julia port; possession
+of a stale secret or use of a different port is not enough.
 
 ## Non-goals
 
@@ -14,107 +20,162 @@ and optional Python Design Agent helper.
   evidence returned by the web and backend layers.
 - It is not the canonical owner of workspace-node fields; it preserves the JSON
   document and delegates workspace semantics to the web bridge.
-- A successful Xcode project parse or placeholder launch test is not proof of a
-  signed, notarized, distributable application.
+- Source-level tests and an ad-hoc signature are not proof of a signed,
+  notarized, distributable application.
 
 ## Owner paths
 
 - Application UI and lifecycle: `frontend-swift/BiocircuitsExplorerMac/`
 - Web bridge: `frontend-swift/BiocircuitsExplorerMac/WebShellController.swift`
-- Backend supervision:
-  `frontend-swift/BiocircuitsExplorerMac/BiocircuitsBackendController.swift` and
+- Julia supervision:
+  `frontend-swift/BiocircuitsExplorerMac/BiocircuitsBackendController.swift`
+- Chat supervision and native authentication:
   `frontend-swift/BiocircuitsExplorerMac/DesignChatBackendController.swift`
+- Controller and workspace contracts:
+  `frontend-swift/BiocircuitsExplorerMacTests/`
 - Project persistence: `frontend-swift/BiocircuitsExplorerMac/ProjectStore.swift`
   and `frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift`
-- Xcode target: `frontend-swift/BiocircuitsExplorerMac.xcodeproj/`
-- Packaging helpers: `frontend-swift/scripts/copy_backend_into_app.sh` and
-  `scripts/build_macos_dmg.sh`
+- macOS 14 target: `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj`
+- Bundle construction and resource allowlist: `packaging/`, especially
+  `packaging/design-runtime-files.txt`, plus `scripts/build_macos_dmg.sh` and
+  `frontend-swift/scripts/copy_backend_into_app.sh`
+- Chat-side enforcement: `webapp/scripts/chat_api.py` and
+  `webapp/scripts/test_chat_api.py`
 
 ## Inputs
 
-- A workspace JSON document from an existing project, import, or the web bridge.
-- A bundled compiled backend or a discoverable development checkout with Julia.
-- An optional Python interpreter and chat service script for the Design Agent.
-- Runtime environment overrides for ports, backend roots, repository discovery,
-  and backend preference.
+- A workspace JSON document from an existing project, import, or web-bridge
+  update.
+- A bundled backend or a development checkout with Julia.
+- The Julia port selected by `BiocircuitsBackendController`; the chat helper has
+  a separate service port.
+- An optional Python interpreter and the allowlisted Design Agent source/data
+  files included in the backend bundle.
+- An optional `deploy/aws-runtime.env`; only explicitly approved AWS, Cognito,
+  and quota keys are accepted from it.
 
 ## Outputs
 
 - A native app embedding `index-node.html` in `WKWebView`.
-- Atomically written project JSON files and imported/duplicated/renamed projects.
-- Locally supervised Julia and Python child processes plus bridge callbacks for
-  workspace changes, save/load, theme, cloud-compute preference, and execution.
+- Atomically written project JSON plus import, duplicate, rename, and delete
+  operations.
+- Supervised loopback Julia and Python processes with parent-watchdog values.
+- A per-chat-process bearer secret and an exact origin
+  `http://127.0.0.1:<actual Julia port>` supplied to both the helper and the web
+  shell.
+- A macOS 14 app/DMG build path containing the backend, public assets, version
+  file, and allowlisted Design Agent runtime files.
 
 ## Contract sources
 
-- JavaScript side: `webapp/public/js/workspace.js` and
-  `webapp/public/js/state.js`
-- Swift bridge version checks and callback surface:
-  `frontend-swift/BiocircuitsExplorerMac/WebShellController.swift`
-- Forward-compatible JSON preservation and version rejection:
-  `frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift`
-- Backend discovery, readiness probe, and parent-process contract: both backend
-  controller files and `webapp/src/config.jl`
-- Build embedding: Xcode project build phase and
-  `frontend-swift/scripts/copy_backend_into_app.sh`
+- Julia loopback launch, `/ready` parsing, environment filtering, and parent
+  supervision: `BiocircuitsBackendController.swift`
+- Actual engine-port propagation, fresh bearer generation, exact-origin
+  injection, authenticated helper probes, and token cleanup:
+  `DesignChatBackendController.swift` and `ContentView.swift`
+- Bearer/origin enforcement and loopback-only chat binding:
+  `webapp/scripts/chat_api.py`
+- JavaScript bridge surface and token handoff: `WebShellController.swift`,
+  `webapp/public/js/workspace.js`, and `webapp/public/js/agent-view.js`
+- Forward-compatible JSON preservation: `WorkspaceDocument.swift`
+- Minimum OS and release build settings: the Xcode project and
+  `scripts/build_macos_dmg.sh`
+- Packaged-resource allowlist: `packaging/design-runtime-files.txt`; this list,
+  rather than a broad repository copy, defines the Design Agent files shipped.
 
 ## Tests
 
-`frontend-swift/BiocircuitsExplorerMacTests/` checks required workspace-field
-normalization and preservation of unknown JSON through a round trip.
-`frontend-swift/BiocircuitsExplorerMacUITests/` contains only launch-template
-and launch-performance coverage; it does not exercise workspace or backend
-flows.
+- `BiocircuitsExplorerMacTests.swift` checks that readiness requires HTTP 200
+  with `status: ready`, the chat helper receives the real Julia port without
+  changing its own port, fresh bearer values differ, the exact Origin and
+  Authorization headers are propagated, and an AWS runtime file cannot replace
+  native host/port/assets/parent settings or enable local-image access.
+- The same Swift target covers packaged chat discovery and lossless workspace
+  normalization/round trips. UI tests remain launch-template coverage.
+- `webapp/scripts/test_chat_api.py` checks loopback binding, exact-origin
+  validation, bearer enforcement, preflight rules, and parent-watchdog behavior.
+- `packaging/test_design_runtime.jl` stages only the resource allowlist, checks
+  required chat/Reader/schema paths, removes Python bytecode caches, and probes
+  stdlib-only chat imports when Python is available.
+- `tests/version_resource_contract.jl` checks version lookup in the installed
+  backend resource layout.
 
 ## CI
 
-No workflow under `.github/workflows/` invokes `xcodebuild`, Swift unit tests,
-UI tests, backend bundling, code signing, notarization, or DMG creation. The
-macOS capability is therefore present in source but not CI-verified.
+`.github/workflows/ci.yml` runs the Python chat contracts, the packaged resource
+allowlist test, version-resource lookup, and repository checks that keep release
+identity and the macOS 14 target aligned.
+
+No checked-in job runs `xcodebuild`, Swift unit/UI tests, a macOS app build, DMG
+creation, Developer ID signing, notarization, or a packaged-app launch. The
+native process and WebView integration therefore remain local/source evidence,
+not CI-verified release behavior.
 
 ## Invariants
 
+- Native Julia launch sets both current and legacy host variables to
+  `127.0.0.1`, sets both port variables to the controller's port, and supplies
+  the app PID. It is not marked ready until `/ready` returns HTTP 200 JSON with
+  `status` exactly `ready`.
+- `ContentView` passes `backendController.port` into the chat controller. That
+  port drives the engine environment and exact allowed origin; the independent
+  chat port is not substituted for it.
+- Every newly launched native chat process gets a random 32-byte value rendered
+  as 64 hexadecimal characters. The token is cleared on stop or process exit
+  and is sent as `Authorization: Bearer ...` for native and WebView requests.
+- The chat service accepts only a literal loopback bind host and one canonical
+  HTTP(S) loopback origin without path/query/fragment. Native launch disables
+  the unauthenticated loopback development exception.
+- Values loaded from `aws-runtime.env` pass through an explicit key allowlist.
+  Native bootstrap values for HOME, loopback binding, actual port, public
+  assets, and parent PID always win; image selection, local-image opt-in, and
+  unrelated operator keys do not pass through.
 - Workspace documents reject unsupported future versions while preserving
-  unknown fields in supported documents.
-- The Swift and JavaScript shell contract versions must advance together.
-- Swift probes both child services through loopback before marking them ready.
-  The Python chat service explicitly binds loopback; the Julia server currently
-  binds all interfaces and is not a loopback-only invariant.
-- A child process started by the app is stopped with the app; parent-watchdog
-  environment values protect against orphan helpers.
-- Failure of the optional chat helper must not prevent the node workspace from
-  operating.
+  unknown fields in supported documents. Swift and JavaScript bridge versions
+  advance together.
+- The Xcode project and release helper target macOS 14.0. The packaged Design
+  Agent surface is limited to `packaging/design-runtime-files.txt`; optional
+  Reader host dependencies are not implied by that list.
+- Chat failure is non-fatal to the node workspace, and app-started helpers are
+  stopped with the app or exit through their parent watchdog.
 
 ## Known gaps
 
-- Backend controllers, bridge callbacks, project migration, and process-race
-  behavior lack focused Swift tests.
-- Bundled resource completeness, compiled-backend fallback, and Python helper
-  discovery are not exercised in CI.
-- Signing, notarization, update distribution, and a reproducible release lane
-  are not established by the checked-in workflows.
-- Some Swift comments describe older Design Agent behavior; runtime truth comes
-  from `webapp/scripts/design_agent.py` and its contracts, not those comments.
-- The native controller reaches Julia through loopback, but the Julia server
-  currently listens on `0.0.0.0`; host firewall/exposure and a configurable bind
-  address are not covered by Swift or CI contracts.
+- P2 — Swift controller tests exist but are not run by checked-in CI; actual
+  process startup, port contention, WebView traffic, termination races, and
+  fallback discovery are not exercised end to end.
+- P2 — No checked-in lane produces a Developer ID-signed and notarized DMG,
+  verifies Gatekeeper on a clean macOS 14 host, or distributes updates. The
+  release script's default signature is ad hoc.
+- P2 — The complete packaged app has not been launched and probed in CI, so
+  dylib relocation, Python availability, optional Reader dependencies, and
+  bundled-backend fallback remain release-time checks.
+- P2 — The resource allowlist proves which tracked files are staged; it does not
+  bundle or validate every optional dataset and third-party Python dependency.
 
 ## Change protocol
 
-1. Change the bridge only with a matching JavaScript contract change, version
-   decision, and tests on both sides.
-2. Keep project decoding lossless for unknown fields and add an explicit
-   migration before bumping the supported workspace version.
-3. Preserve chat loopback, readiness, and parent-watchdog behavior when changing
-   process launch or discovery order. Do not claim Julia is loopback-only without
-   adding a bind-address contract and test.
-4. Run a local `xcodebuild test` and a no-sign build before calling a Swift
-   change verified; run packaging smoke tests before release claims.
+1. Change the bridge only with a matching JavaScript contract/version decision
+   and tests on both sides.
+2. Preserve loopback binding, exact `/ready` parsing, the actual Julia port,
+   bearer rotation, exact-origin checks, and parent supervision when changing
+   process launch or discovery.
+3. Add a runtime environment key only after deciding that an operator file may
+   control it; keep network binding, assets, parent PID, and local-file exposure
+   under native ownership.
+4. Add a packaged Design Agent file through
+   `packaging/design-runtime-files.txt` and its staging test, not through a broad
+   directory copy.
+5. Run local Swift tests, a no-sign build, packaged backend probes, signing
+   verification, and clean-host Gatekeeper checks at the evidence level claimed
+   by a release.
 
 ## Verified against
 
-- Source commit: `f9c65a5`
-- Evidence inspected: Swift sources, Xcode target configuration, Swift test
-  files, bridge counterpart, packaging scripts, and absence of Xcode CI wiring.
-- Boundary: source review only; no Swift, UI, signing, notarization, or packaged
-  app execution is reported as verified.
+- Source commit: `01a01be`
+- Evidence inspected: Swift controllers/tests, chat enforcement/tests, WebView
+  handoff, Xcode target, runtime environment allowlist, packaging scripts,
+  packaged-resource allowlist/tests, and CI wiring.
+- Boundary: loopback/readiness/real-port/bearer/origin/environment contracts are
+  present and focused tests exist; no CI Swift run, packaged-app execution,
+  signed/notarized DMG, or clean-host installation is claimed verified.

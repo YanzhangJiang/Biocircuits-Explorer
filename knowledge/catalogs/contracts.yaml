@@ -1,5 +1,6 @@
 schema_version: "bcx-contract-catalog/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
+current_verified_revision: "01a01be"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -21,6 +22,31 @@ contracts:
       - "webapp/test/runtests.jl"
     compatibility: "The canonical versioned surface and legacy sunset come from executable route metadata; bare /api routes remain deprecated aliases until that sunset."
     coverage: "direct"
+
+  - id: "application-release-identity"
+    version_source: "VERSION"
+    kind: "release-identity"
+    owner: "deployment"
+    docs:
+      - "knowledge/modules/deployment.md"
+      - "knowledge/modules/macos-host.md"
+    sources:
+      - "VERSION"
+      - "scripts/set_version.sh"
+      - "webapp/src/version.jl"
+      - "deploy/build_image.sh"
+      - "packaging/build_backend_app.jl"
+      - "packaging/macos_release_metadata.sh"
+      - "scripts/build_macos_dmg.sh"
+    tests:
+      - ".github/workflows/docker.yml"
+      - "tests/test_build_image.py"
+      - "tests/test_macos_release_metadata.py"
+      - "tests/test_set_version.py"
+      - "tests/test_verify_repository.py"
+      - "tests/version_resource_contract.jl"
+    compatibility: "VERSION owns the full application SemVer synchronized into project, manifest, and npm metadata and exposed from packaged resources; Docker tags project '+' to '_', while Apple marketing versions use only the three-part numeric core and artifact names retain the full SemVer."
+    coverage: "synchronization-packaged-resource-and-configured-container-smoke"
 
   - id: "network-ir"
     version_source: "schema-const"
@@ -247,12 +273,14 @@ contracts:
     docs:
       - "knowledge/contracts/api.md"
     sources:
+      - "webapp/src/config.jl"
       - "webapp/src/jobs.jl"
       - "webapp/src/cancellation.jl"
     tests:
+      - "webapp/test/runtests.jl"
       - "webapp/test/jobs_cancellation_contract.jl"
       - "webapp/test/cooperative_cancel_checkpoints_contract.jl"
-    compatibility: "Terminal state is monotonic; local cancellation is cooperative; remote calls execute outside the shared job lock; a persisted claim serializes concurrent AWS cancel dispatch and is released for retry after failure."
+    compatibility: "Terminal state is monotonic; local cancellation is cooperative; remote calls execute outside the shared job lock; a persisted claim serializes concurrent AWS cancel dispatch and is released for retry after failure. AWS queue, definition, artifact, name, environment, CPU, and memory values supplied by a request override trusted runtime configuration only when BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG is explicitly enabled."
     coverage: "direct-race-contracts"
 
   - id: "periodic-table-result"

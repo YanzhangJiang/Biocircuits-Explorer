@@ -4,126 +4,176 @@
 
 ## Purpose
 
-Build a relocatable Julia backend bundle or a versioned container, optionally
-place the container behind Nginx, and expose liveness, readiness, version,
-metrics, authentication bootstrap, and job-broker routes.
+Define how a release becomes a runnable backend image or macOS bundle, and say
+exactly how far the evidence reaches. The checked-in Docker workflow is
+configured to start one backend image and test that it is ready, alive,
+versioned, serving its browser entry page, and able to write job state. The
+full Compose/Nginx/TLS rollout is defined in source but has not been run end to
+end.
+
+Here, rollback means restoring the previous local image and the configuration
+needed to start it. It is not a backup of operator environment files, TLS
+material, job data, or cloud resources.
 
 ## Non-goals
 
-- It does not define the numerical engine, atlas semantics, or asynchronous job
-  state machine.
-- A container image build is not evidence that a production deployment, TLS
-  configuration, cloud identity, or registry publication works.
-- Host provisioning scripts are operational helpers, not a declarative or
-  reversible infrastructure authority.
+- It does not define numerical semantics, atlas identity, or the asynchronous
+  job state machine.
+- A passing single-image check is not evidence that DNS, TLS, Nginx, cloud
+  identity, a registry, or a production host works.
+- Host and AWS setup scripts are operational helpers, not a declarative or
+  fully reversible infrastructure authority.
 
 ## Owner paths
 
 - Image and local stack: `deploy/Dockerfile`, `deploy/docker-compose.yml`,
   `deploy/nginx.conf`
-- Relocatable backend bundle: `packaging/`, especially
-  `packaging/build_backend_app.jl`
-- Build and host helpers: `deploy/build_image.sh`, `deploy/deploy.sh`
-- Optional AWS resource bootstrap: `deploy/setup_aws_batch.sh`,
+- Image identity and build: `deploy/build_image.sh`,
+  `deploy/image_reference.sh`, `VERSION`, `scripts/set_version.sh`
+- Host rollout and rollback: `deploy/deploy.sh`,
+  `deploy/rewrite_rollback_config.py`
+- AWS setup and state validation: `deploy/setup_aws_batch.sh`,
+  `deploy/validate_aws_batch_state.py`, `deploy/AWS_BATCH.md`,
   `deploy/aws-runtime.env.example`, `deploy/aws_setup_permissions_policy.json`
-- Backend entry/config/version/routes: `webapp/server.jl`,
+- macOS backend bundles: `packaging/`, `scripts/build_macos_dmg.sh`
+- Runtime probes, configuration, and build identity: `webapp/server.jl`,
   `webapp/src/config.jl`, `webapp/src/version.jl`,
-  `webapp/src/routing.jl`
-- Release version: `VERSION`, `scripts/set_version.sh`
-- Image CI: `.github/workflows/docker.yml`
+  `webapp/src/BiocircuitsExplorerBackend.jl`, `webapp/src/routing.jl`
+- Docker gate: `.github/workflows/docker.yml`
 
 ## Inputs
 
-- The tracked source tree, Julia manifests, local `Bnc_julia`, and `VERSION`.
-- For the native bundle, the packaging Julia environment and PackageCompiler.
-- Build metadata for version, revision, and creation time.
-- Runtime environment for ports, public assets, AWS, Cognito, quotas, job store,
-  and optional image selection.
-- TLS material and cloud credentials supplied outside Git.
+- The tracked source tree, Julia lock files, local `Bnc_julia`, and `VERSION`.
+- Version, revision, and build time for image labels and runtime discovery.
+- Runtime settings for ports, assets, job storage, AWS, Cognito, quotas, and an
+  optional release image reference.
+- For host rollout, readable TLS certificate/key files and any cloud
+  credentials supplied outside Git.
+- For a native bundle, the packaging Julia environment and either the portable
+  or PackageCompiler build path.
 
 ## Outputs
 
-- A non-root OCI image with build metadata labels and a Julia server command.
-- A relocatable compiled backend bundle for embedding in the macOS application.
-- A Compose stack with the Julia app, persistent job-store volume, and Nginx.
-- HTTP `/health`, `/ready`, `/metrics`, and version-discovery responses plus the
-  canonical versioned API surface.
-- Optional generated runtime environment for cloud resources; it is ignored by
-  Git and must not be treated as source configuration.
+- A non-root OCI image with release metadata, static assets, and a writable
+  job-store mount point.
+- A Compose definition for job-store initialization, the Julia app, and an
+  HTTPS Nginx proxy.
+- `/health` for cheap liveness, `/ready` for traffic admission,
+  `/api/v1/version` for application/API identity, and the static web surface.
+- A relocatable backend bundle for the macOS application.
+- An optional generated AWS runtime environment; it is ignored by Git and is
+  operator state, not source configuration.
 
 ## Contract sources
 
-- Image contents, user, command, port, and health check: `deploy/Dockerfile`
-- Compiled bundle contents and entrypoint:
-  `packaging/build_backend_app.jl` and `packaging/Project.toml`
-- Runtime environment parsing: `webapp/src/config.jl`
-- Liveness/readiness/build metadata and API protocol identity:
-  `webapp/src/BiocircuitsExplorerBackend.jl`, `webapp/src/version.jl`, and
-  `webapp/src/routing.jl`
-- Proxy and service wiring: `deploy/docker-compose.yml` and
-  `deploy/nginx.conf`
-- Version/tag derivation: `deploy/build_image.sh` and `VERSION`
+- Image contents, non-root user, command, port, and liveness check:
+  `deploy/Dockerfile`
+- Service ordering, job-store ownership, readiness, and proxy health:
+  `deploy/docker-compose.yml` and `deploy/nginx.conf`
+- Preflight, immutable-reference checks, rollout completion, and rollback:
+  `deploy/deploy.sh`, `deploy/image_reference.sh`, and
+  `deploy/rewrite_rollback_config.py`
+- Image tags and OCI metadata: `deploy/build_image.sh`, `VERSION`, and
+  `scripts/set_version.sh`
+- Backend readiness and version payloads:
+  `webapp/src/BiocircuitsExplorerBackend.jl` and `webapp/src/version.jl`
+- Bundle contents and entrypoints: `packaging/build_backend_app.jl`,
+  `packaging/design-runtime-files.txt`, and `scripts/build_macos_dmg.sh`
 
 ## Tests
 
-`webapp/test/runtests.jl` covers liveness, readiness, metrics labels, request
-IDs, version discovery, canonical API aliases, legacy deprecation behavior, and
-method rejection. The Docker workflow checks whether the image can be built.
+- `webapp/test/runtests.jl` covers liveness, fail-closed readiness, version
+  discovery, API identity, and writable job-store behavior.
+- `tests/test_deployment_contract.py` checks image/Compose probe separation,
+  non-root ownership, release identity, TLS preflight, rendered rollback,
+  legacy-static preservation, shell parsing, and Compose parsing when the
+  plugin is available.
+- `tests/test_build_image.py` checks clean-tree publication, semantic versions,
+  OCI revision metadata, tag safety, and ECR immutability setup.
+- `tests/test_rewrite_rollback_config.py`, `tests/test_setup_aws_batch.py`, and
+  `tests/test_validate_aws_batch_state.py` cover rollback path rewriting and
+  fail-closed AWS setup/state validation with mocked commands and fixtures.
+- These tests do not start the complete proxy/TLS stack or contact AWS.
 
 ## CI
 
-`.github/workflows/ci.yml` runs the backend route contracts.
-`.github/workflows/docker.yml` performs a BuildKit image build on relevant pull
-requests and branch/tag events. It deliberately does not load or run the image,
-probe its endpoints, publish it, start Compose, configure Nginx/TLS, or execute
-cloud provisioning. No checked-in workflow builds or launches the relocatable
-PackageCompiler bundle.
+`.github/workflows/docker.yml` is configured to build and load one Linux image,
+publish it only to the runner's local Docker daemon, and then:
+
+- waits for `/ready`;
+- checks `/health` and `/api/v1/version`;
+- fetches `/index.html`; and
+- writes a probe file in the container job store.
+
+`.github/workflows/ci.yml` runs the backend and Python deployment contracts.
+Neither workflow starts the complete Compose stack, mounts real certificates,
+tests Nginx over production TLS, publishes to a registry, performs a host
+rollout, or provisions live AWS. CI also does not launch a built macOS backend
+bundle.
 
 ## Invariants
 
-- The runtime user is non-root and the checked-in local engine package is the
-  package source used during image construction.
-- `/health` is cheap liveness; `/ready` fails closed when required runtime
-  checks fail. They are not interchangeable.
-- Application version and build revision are exposed independently from the API
-  protocol version.
-- Canonical callers use the versioned API; legacy bare `/api/` routes are only a
-  migration alias and advertise deprecation.
-- Credentials, generated runtime environments, job stores, and TLS keys remain
-  outside version control.
+- The image process runs as `rop`, not root, and its job-store path is writable
+  by that user. Compose performs a marker-guarded ownership migration for an
+  existing named volume before admitting the app.
+- `/health` answers whether the process is alive. `/ready` answers whether the
+  module, required static entrypoints, and writable job store can serve real
+  traffic. Image health uses the former; Compose traffic admission uses the
+  latter.
+- The Nginx service is healthy only after its configuration parses and its
+  HTTPS `/health` proxy succeeds. `deploy.sh` reports completion only after
+  Compose has waited for both backend readiness and proxy health.
+- Host mutation starts only after the requested environment file, server names,
+  release image reference, and TLS files have passed preflight. TLS must cover
+  every configured host, have more than 24 hours remaining, and match its key.
+- A deployment image is a digest or a version-plus-commit tag; `latest` is not
+  accepted. A tag is overwrite-resistant only when the registry enforces
+  immutability, so a digest remains the stronger remote identity.
+- Before an upgrade, rollback preserves the running image, a fully rendered
+  Compose file, and the referenced Nginx template. For a pre-migration stack it
+  also snapshots the legacy host-mounted static files and rewrites the rendered
+  file to use that snapshot.
+- Rollback deliberately excludes external environment files, certificates,
+  persistent job data, databases, object storage, and AWS resources.
+- Credentials, generated runtime environments, job stores, and private TLS
+  keys remain outside version control.
 
 ## Known gaps
 
-- CI does not execute a built image, so startup, container health, static asset
-  delivery, writable volumes, and graceful shutdown remain unproven there.
-- Dockerfile and Compose currently probe different endpoints; only source-level
-  route tests prove the distinction between liveness and readiness.
-- Nginx domain and certificate assumptions require deployment-specific
-  configuration and have no syntax or integration gate.
-- Registry login/push and production rollout are not part of the workflow.
-- Bundle relocation, resource completeness, startup, and compatibility with the
-  Swift embedding step have no automated gate.
-- Some clients still call legacy bare API paths, so the deprecation alias cannot
-  be removed until client migration is verified.
+- P2 — The complete Compose/Nginx/TLS path has not been run in CI or in this
+  audit; source checks and `docker compose config` are not an integration test.
+- P2 — `julia:1.12` and `nginx:alpine` are mutable base references, and the
+  image installs `awscli` without a pinned Python package version.
+- P2 — No checked-in lane publishes to a registry, signs an image, emits an
+  SBOM, verifies provenance, or performs a production rollout.
+- P2 — Rollback cannot restore external environment/TLS changes, job data, or
+  cloud-side mutations; those need separate backup and infrastructure plans.
+- P2 — AWS/Cognito setup is tested with mocks and source contracts only; no live
+  account, Batch worker, S3 transfer, quota table, or identity flow is verified.
+- P2 — Bundle resource lookup and staging have contracts, but CI does not build,
+  relocate, launch, and probe the complete macOS backend bundle.
 
 ## Change protocol
 
-1. Keep `VERSION`, image labels, server build metadata, and tag generation in
-   sync; use `scripts/set_version.sh` for intentional release changes.
-2. Add or change an environment variable in `config.jl`, the example file, and
-   Compose together without committing a real secret value.
-3. Change probe semantics with route tests, Dockerfile/Compose/Nginx alignment,
-   and an image runtime smoke test.
-4. Migrate all clients and retain compatibility tests before removing a legacy
-   API alias.
-5. For packaging changes, build the bundle in a clean location, copy it into a
-   throwaway app layout, launch it, and probe version/readiness before claiming
-   relocation support.
+1. Keep `VERSION`, image labels, runtime build metadata, and image tags in sync;
+   use `scripts/set_version.sh` for an intentional release change.
+2. Change probes only with backend route tests, Docker/Compose/Nginx alignment,
+   and the single-image runtime gate; run the full stack before making a TLS or
+   production claim.
+3. Change rollback only after listing both the state it restores and the state
+   it intentionally leaves external, then add a failure-path test.
+4. Add an environment variable to runtime parsing, examples, and Compose
+   together without committing a real secret.
+5. For packaging changes, build into a clean location, copy into a throwaway app
+   layout, launch it, and probe version/readiness before claiming relocation.
 
 ## Verified against
 
-- Source commit: `f9c65a5`
-- Evidence inspected: image/Compose/Nginx definitions, build and deploy helpers,
-  backend route/version contracts, tests, ignore policy, and CI workflows.
-- Boundary: image build wiring is verified; no running container, registry,
-  host, TLS, Cognito, or AWS stack is claimed verified.
+- Source commit: `01a01be`
+- Evidence inspected: Docker/Compose/Nginx definitions, image and host helpers,
+  rollback/AWS validators, backend probes, package resources, focused tests,
+  and both CI workflows.
+- Boundary: the checked-in single-image gate defines readiness, liveness,
+  version, static delivery, and a write probe. No external workflow run,
+  complete Compose/TLS stack, registry publication, host rollout, signed
+  artifact, or live AWS system is claimed verified.
