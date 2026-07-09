@@ -83,9 +83,11 @@ Pkg.activate(PACKAGING_DIR)
 Pkg.resolve()
 Pkg.instantiate()
 Pkg.activate(WEBAPP_DIR)
-Pkg.develop(Pkg.PackageSpec(path=joinpath(REPO_ROOT, "Bnc_julia")))
-Pkg.resolve()
-Pkg.instantiate()
+cd(WEBAPP_DIR) do
+    Pkg.develop(Pkg.PackageSpec(path=joinpath("..", "Bnc_julia")))
+    Pkg.resolve()
+    Pkg.instantiate()
+end
 Pkg.activate(PACKAGING_DIR)
 
 using PackageCompiler
@@ -110,6 +112,8 @@ create_app(
 
 mkpath(RESOURCE_DIR)
 cp(joinpath(WEBAPP_DIR, "public"), joinpath(RESOURCE_DIR, "public"); force = true)
+cp(joinpath(REPO_ROOT, "VERSION"), joinpath(RESOURCE_DIR, "VERSION"); force = true)
+copy_design_runtime!(RESOURCE_DIR)
 materialize_external_symlinks!(APP_DIR)
 repair_macos_bundle!(APP_DIR)
 ad_hoc_sign_macos_bundle!(APP_DIR)

@@ -4,6 +4,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -417,6 +419,111 @@ class GeneratedReferenceTests(unittest.TestCase):
             verify_repository.project_toml_string(text, "julia", section="compat"),
             "1.12",
         )
+
+    def test_manifest_self_version_requires_exact_package_identity(self):
+        package = "ExampleApplication"
+        uuid = "11111111-2222-3333-4444-555555555555"
+        text = (
+            "julia_version = \"1.12.6\"\n\n"
+            "[[deps.Dependency]]\n"
+            "uuid = \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\"\n"
+            "version = \"9.9.9\"\n\n"
+            "[[deps.ExampleApplication]]\n"
+            "path = \".\"\n"
+            f"uuid = \"{uuid}\"\n"
+            "version = \"1.2.3-rc.1+build.4\"\n"
+        )
+
+        self.assertEqual(
+            verify_repository.manifest_self_version(text, package, uuid),
+            "1.2.3-rc.1+build.4",
+        )
+        with self.assertRaisesRegex(ValueError, "uuid"):
+            verify_repository.manifest_self_version(text, package, "wrong")
+        with self.assertRaisesRegex(ValueError, "found 2"):
+            verify_repository.manifest_self_version(text + text[text.index("[[deps.Example") :], package, uuid)
+
+    def test_version_file_requires_one_strict_semver_line(self):
+        self.assertEqual(verify_repository.version_file_value("1.2.3+build.4\n"), "1.2.3+build.4")
+        for invalid in ("01.2.3\n", "1.2.3-01\n", "1.2.3\nextra\n", " 1.2.3\n"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    verify_repository.version_file_value(invalid)
+
+    def test_version_json_rejects_duplicate_keys_and_non_objects(self):
+        self.assertEqual(
+            verify_repository.unique_json_object('{"version":"1.2.3"}', "package"),
+            {"version": "1.2.3"},
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            verify_repository.unique_json_object(
+                '{"version":"1.2.3","version":"9.9.9"}',
+                "package",
+            )
+        with self.assertRaisesRegex(ValueError, "top-level JSON object"):
+            verify_repository.unique_json_object('["1.2.3"]', "package")
+
+    def test_manifest_version_drift_is_rejected_by_inventory(self):
+        owned_files = (
+            "VERSION",
+            "webapp/Project.toml",
+            "webapp/Manifest.toml",
+            "packaging/Project.toml",
+            "packaging/Manifest.toml",
+            "webapp_hpc/Project.toml",
+            "webapp_hpc/Manifest.toml",
+            "webapp/package.json",
+            "webapp/package-lock.json",
+            "deploy/Dockerfile",
+            "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj",
+            "scripts/build_macos_dmg.sh",
+            "packaging/macos_release_metadata.sh",
+        )
+        ci_document = {
+            "jobs": {
+                "lint-js": {
+                    "steps": [
+                        {"uses": "actions/setup-node@v4", "with": {"node-version": "20"}},
+                        {"uses": "actions/setup-python@v5", "with": {"python-version": "3.13"}},
+                    ]
+                },
+                "test-julia": {"strategy": {"matrix": {"julia": ["1.12"]}}},
+                "test-hpc-environment": {
+                    "strategy": {"matrix": {"julia": ["1.10", "1.12"]}}
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative in owned_files:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO_ROOT / relative, destination)
+
+            manifest_path = root / "webapp/Manifest.toml"
+            text = manifest_path.read_text(encoding="utf-8")
+            package = "BiocircuitsExplorerBackend"
+            section = re.search(
+                rf"(?ms)^\[\[deps\.{package}\]\].*?(?=^\[\[deps\.|\Z)",
+                text,
+            )
+            self.assertIsNotNone(section)
+            mutated = section.group(0).replace('version = "0.1.0"', 'version = "9.9.9"', 1)
+            manifest_path.write_text(
+                text[: section.start()] + mutated + text[section.end() :],
+                encoding="utf-8",
+            )
+
+            audit = verify_repository.Audit()
+            with mock.patch.object(verify_repository, "load_yaml", return_value=ci_document):
+                verify_repository.version_inventory(
+                    root,
+                    {"api_version": "v1", "legacy_sunset": "2027-05-25"},
+                    audit,
+                )
+
+        self.assertTrue(any("application version drift" in error for error in audit.errors))
+        self.assertTrue(any("webapp/Manifest.toml" in error for error in audit.errors))
 
     def test_write_inventories_schemas_after_generation(self):
         events: list[str] = []

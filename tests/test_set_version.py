@@ -15,11 +15,20 @@ SET_VERSION = REPO_ROOT / "scripts" / "set_version.sh"
 REQUIRED_FILES = (
     "VERSION",
     "webapp/Project.toml",
+    "webapp/Manifest.toml",
     "packaging/Project.toml",
+    "packaging/Manifest.toml",
     "webapp_hpc/Project.toml",
+    "webapp_hpc/Manifest.toml",
     "webapp/package.json",
     "webapp/package-lock.json",
 )
+MANIFEST_TARGETS = {
+    "webapp/Manifest.toml": "BiocircuitsExplorerBackend",
+    "packaging/Manifest.toml": "BiocircuitsExplorerPackaging",
+    "webapp_hpc/Manifest.toml": "BiocircuitsExplorerBackendHPC",
+}
+NON_OWNED_MANIFEST = "webapp/Manifest-v1.10.toml"
 
 
 class SetVersionTests(unittest.TestCase):
@@ -30,6 +39,8 @@ class SetVersionTests(unittest.TestCase):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO_ROOT / relative, destination)
+        legacy_manifest = self.root / NON_OWNED_MANIFEST
+        shutil.copy2(REPO_ROOT / NON_OWNED_MANIFEST, legacy_manifest)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -69,6 +80,19 @@ class SetVersionTests(unittest.TestCase):
             self.assertIsNotNone(match)
             self.assertEqual(match.group(1), expected)
 
+        for relative, package_name in MANIFEST_TARGETS.items():
+            text = (self.root / relative).read_text(encoding="utf-8")
+            section = re.search(
+                rf"(?ms)^\[\[deps\.{re.escape(package_name)}\]\].*?(?=^\[\[deps\.|\Z)",
+                text,
+            )
+            self.assertIsNotNone(section)
+            versions = re.findall(
+                r'(?m)^version[ \t]*=[ \t]*["\']([^"\']+)["\']',
+                section.group(0),
+            )
+            self.assertEqual(versions, [expected])
+
         package = json.loads((self.root / "webapp/package.json").read_text(encoding="utf-8"))
         package_lock = json.loads(
             (self.root / "webapp/package-lock.json").read_text(encoding="utf-8")
@@ -96,6 +120,7 @@ class SetVersionTests(unittest.TestCase):
         package_path.chmod(0o640)
         modes_before = {relative: (self.root / relative).stat().st_mode for relative in REQUIRED_FILES}
         inodes_before = {relative: (self.root / relative).stat().st_ino for relative in REQUIRED_FILES}
+        legacy_before = (self.root / NON_OWNED_MANIFEST).read_bytes()
 
         result = self.run_script("1.7.3-rc.2+build.5")
 
@@ -115,6 +140,7 @@ class SetVersionTests(unittest.TestCase):
         self.assertIn(b"\r\n", package_bytes)
         self.assertNotIn(b"\n", package_bytes.replace(b"\r\n", b""))
         self.assertTrue(package_bytes.endswith(b"\r\n"))
+        self.assertEqual((self.root / NON_OWNED_MANIFEST).read_bytes(), legacy_before)
 
     def test_invalid_semver_never_mutates_files(self):
         invalid_versions = ("1.2", "01.2.3", "1.2.3-01", "1.2.3-")
@@ -149,6 +175,41 @@ class SetVersionTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("packages[''].version", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_malformed_self_manifest_causes_no_partial_update(self):
+        manifest_path = self.root / "webapp_hpc/Manifest.toml"
+        manifest = manifest_path.read_text(encoding="utf-8")
+        manifest_path.write_text(
+            manifest.replace(
+                '[[deps.BiocircuitsExplorerBackendHPC]]',
+                '[[deps.BiocircuitsExplorerBackendHPC_BROKEN]]',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        before = self.snapshot()
+
+        result = self.run_script("2.0.0")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("BiocircuitsExplorerBackendHPC", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_duplicate_self_manifest_entry_causes_no_partial_update(self):
+        manifest_path = self.root / "packaging/Manifest.toml"
+        manifest = manifest_path.read_text(encoding="utf-8")
+        marker = "[[deps.BiocircuitsExplorerPackaging]]"
+        start = manifest.index(marker)
+        next_section = manifest.find("[[deps.", start + len(marker))
+        block = manifest[start : next_section if next_section >= 0 else len(manifest)]
+        manifest_path.write_text(manifest + "\n" + block, encoding="utf-8")
+        before = self.snapshot()
+
+        result = self.run_script("2.0.0")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("found 2", result.stderr)
         self.assertEqual(self.snapshot(), before)
 
     def test_repeating_the_same_version_is_byte_and_metadata_idempotent(self):
