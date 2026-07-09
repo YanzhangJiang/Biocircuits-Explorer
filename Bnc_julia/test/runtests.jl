@@ -114,6 +114,14 @@ end
 const RTOL = 1e-6
 approxeq(a, b; rtol=RTOL) = isapprox(a, b; rtol=rtol)
 
+@testset "Julia 1.10-compatible parallel cache scheduling" begin
+    completed = Threads.Atomic{Int}(0)
+    Threads.@threads :dynamic for _ in 1:64
+        Threads.atomic_add!(completed, 1)
+    end
+    @test completed[] == 64
+end
+
 # =============================================================================
 @testset "Bnc constructor input invariants" begin
     @test_throws ArgumentError Bnc()

@@ -441,7 +441,7 @@ function _prefill_affine_cache_core!(model::Bnc)
         end
     end
 
-    Threads.@threads :greedy for cid in eachindex(comps)
+    Threads.@threads :dynamic for cid in eachindex(comps)
         _try_claim_component!(state.component_owner, cid) || continue
         tid = Threads.threadid()
         append!(
