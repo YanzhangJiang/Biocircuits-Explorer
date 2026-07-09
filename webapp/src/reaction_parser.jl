@@ -7,7 +7,8 @@ const ARROW_RE = r"<->|<=>|↔"
 function parse_term(term::AbstractString)
     t = strip(term)
     isempty(t) && error("Empty term")
-    m = match(r"^([0-9]+)?\s*([A-Za-z][A-Za-z0-9_]*)$", t)
+    # Keep the grammar aligned with SBML SId: a leading underscore is valid.
+    m = match(r"^([0-9]+)?\s*([A-Za-z_][A-Za-z0-9_]*)$", t)
     m === nothing && error("Bad term: $term")
     coeff = m.captures[1] === nothing ? 1 : parse(Int, m.captures[1])
     sym = Symbol(m.captures[2])

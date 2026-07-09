@@ -27,7 +27,7 @@ const _ARROW_RE = r"<->|<=>|↔"
 
 function _parse_term(term::AbstractString)
     t = strip(term)
-    m = match(r"^([0-9]+)?\s*([A-Za-z][A-Za-z0-9_]*)$", t)
+    m = match(r"^([0-9]+)?\s*([A-Za-z_][A-Za-z0-9_]*)$", t)
     m === nothing && error("Bad term: $term")
     coeff = m.captures[1] === nothing ? 1 : parse(Int, m.captures[1])
     return Symbol(m.captures[2]), coeff
