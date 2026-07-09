@@ -1,5 +1,6 @@
 schema_version: "bcx-knowledge-manifest/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
+current_verified_revision: "01a01be"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -172,6 +173,14 @@ accepted_decisions: []
 active_context_packs:
   - "context-pack-paper-evidence-transfer"
 
+known_gaps:
+  - id: "workstation-campaign-scripts"
+    path_pattern: "workstation/**"
+    classification: "site-specific-historical"
+    current_owner: "unknown"
+    reason: "These campaign scripts retain assumptions from one workstation environment and are not part of the current batch-hpc owner, entrypoint, or provided-contract surface."
+    verification: "No portable workstation campaign or result-merge run is CI-verified."
+
 non_authoritative_by_default:
   - path_pattern: "doc/**"
     reason: "Mixed historical prose, generated outputs, and host-specific material"
@@ -183,6 +192,8 @@ non_authoritative_by_default:
     reason: "Embedded research snapshot, not standalone manuscript authority"
   - path_pattern: "webapp/scripts/_archive/**"
     reason: "Archived campaign scripts"
+  - path_pattern: "workstation/**"
+    reason: "Site-specific historical campaign scripts outside the current batch-hpc contract"
 
 public_safety:
   allow_private_repository_urls: false

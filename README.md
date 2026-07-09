@@ -1,38 +1,43 @@
 # Biocircuits Explorer
 
-Biocircuits Explorer helps researchers understand how equilibrium
-protein-binding networks respond when an input changes, then search for
-networks that can produce a desired response. It combines mathematical
-analysis, numerical checks, reusable results, and evidence-labelled designs.
+Biocircuits Explorer helps researchers see how protein-binding networks respond
+when an input changes and search for networks that could produce a desired
+response. A suggested network stays visibly separate from a result that the
+mathematics engine has recomputed.
 
-The repository contains a browser workspace, a Julia computation service, a
-Python Design Agent service, a native macOS shell, batch/HPC tooling, and the
-local `BindingAndCatalysis` mathematics engine.
+This page starts with the outcome: what can be run now, what has been checked,
+and what remains open. Two words carry a specific meaning throughout the
+repository. A **contract** states behavior that must hold. **Evidence** is the
+code, test result, or versioned artifact that supports a claim.
 
 ![Biocircuits Explorer workspace](main.png)
 
-## Start here
+## What is checked now
 
-For a short architectural orientation, read [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
-The maintained developer knowledge base begins at
-[knowledge/README.md](knowledge/README.md). Coding agents should follow
-[AGENTS.md](AGENTS.md).
+The P5 implementation evidence anchor is `01a01be`. Later documentation and
+maintenance commits may advance the branch without changing that inspected
+runtime. The earlier revision `f9c65a5` remains the historical evidence
+baseline for the knowledge catalog.
 
-The browser-facing user guide remains in
-[webapp/public/wiki.html](webapp/public/wiki.html), with a Chinese version at
-[webapp/public/wiki.zh.html](webapp/public/wiki.zh.html). It is product
-documentation, not the source of truth for developer contracts.
+- The main web application CI is configured for Julia 1.12. The checked-in
+  application container also uses Julia 1.12.
+- The separate headless HPC environment is configured in CI for Julia 1.10 and
+  1.12. Those jobs select the matching lock file, instantiate it, and load the
+  mathematics engine; they do not submit work to a scheduler.
+- Browser and Python checks use Node.js 20 and Python 3.13 in CI.
+- The Docker workflow is configured to build one application image, start it on
+  loopback, and checks health, readiness, version reporting, the browser entry
+  page, and a writable job store. It does not start the full Compose, Nginx, or
+  TLS stack.
+- The seven targeted macOS unit tests passed locally at this revision. No
+  checked-in CI job runs Xcode, so this is point-in-time local evidence rather
+  than a macOS CI claim.
 
-## Verified toolchain
+The configured versions and their owners are listed in the
+[generated reference](knowledge/generated/reference.md#versions-and-configured-toolchains).
+A configured workflow is not, by itself, proof that an external run passed.
 
-- Julia 1.12 is exercised by CI and used by the production Docker image.
-- Julia 1.10 is declared compatible in `Project.toml`, but is not currently in
-  the CI matrix; treat it as declared rather than verified support.
-- Node.js 20 and Python 3.13 are exercised by CI.
-- Xcode is needed only for the native macOS shell.
-- Docker and AWS tooling are optional deployment paths.
-
-## Quick start
+## Quick start: local and loopback-only
 
 Clone the repository and instantiate the Julia environment:
 
@@ -46,25 +51,40 @@ julia --project=webapp -e '
 '
 ```
 
-Start the Julia workspace service and the Python Design Agent service:
+Start the Julia workspace and Python Design Agent:
 
 ```bash
 cd webapp
 ./start.sh
 ```
 
-Open <http://127.0.0.1:8088>. The Julia service uses port `8088` by default;
-the Design Agent uses `8765`. It can start without credentials, but
-`/design-chat` returns `need_key` until a key is configured; Julia remains usable.
+Open <http://127.0.0.1:8088>. By default, the workspace listens at
+`127.0.0.1:8088` and Design Chat listens at `127.0.0.1:8765`. The Design Agent
+can start without a model provider key, but a chat request returns `need_key`
+until one is configured; the Julia workspace remains usable.
 
-To start only the Julia service or select a different port:
+`webapp/start.sh` is the one checked-in launcher that intentionally permits
+unauthenticated Design Chat for local development. It keeps the helper on
+loopback and accepts browser requests only from the exact loopback origin of
+the workspace. Do not expose this development path to a LAN or public network.
+
+Outside that explicit development mode, helper launches fail closed unless
+they have an exact loopback allowed origin and a bearer token of at least 32
+characters. The macOS shell generates a new 256-bit token for every helper
+launch and keeps it in process memory. Browser requests must present both that
+token and the exact origin; a token-authenticated native health probe may omit
+the browser origin. The model provider key and this local bearer token serve
+different purposes.
+
+To start only the Julia service on another loopback port:
 
 ```bash
+BIOCIRCUITS_EXPLORER_HOST=127.0.0.1 \
 BIOCIRCUITS_EXPLORER_PORT=8090 \
   julia -t auto --project=webapp webapp/server.jl
 ```
 
-Liveness, readiness, metrics, and API discovery are available at:
+Useful local endpoints are:
 
 ```bash
 curl http://127.0.0.1:8088/health
@@ -74,45 +94,24 @@ curl http://127.0.0.1:8088/api/v1
 ```
 
 `/api/v1/*` is the canonical API. Bare `/api/*` routes are compatibility
-aliases and return an `X-API-Deprecation` header. The executable version and
-declared sunset are listed in the
-[generated contract reference](knowledge/generated/reference.md#versions-and-configured-toolchains);
-see [knowledge/contracts/api.md](knowledge/contracts/api.md) for the behavioral
-boundary.
+aliases and return an `X-API-Deprecation` header. See
+[the API boundary](knowledge/contracts/api.md) and the
+[generated route list](knowledge/generated/reference.md#api-routes).
 
-## Repository map
+## Verify a checkout
 
-```text
-Bnc_julia/                 local BindingAndCatalysis math engine
-webapp/src/                Julia service, Atlas, IR, jobs, and API routing
-webapp/public/             browser workspace and product guide
-webapp/scripts/            Python Design Agent, Reader, synthesis, migrations
-schemas/                   versioned interchange schemas
-frontend-swift/            native macOS shell
-packaging/                 relocatable backend-bundle builder
-deploy/                    Docker, Nginx, and optional AWS Batch deployment
-src/periodic_table/        bounded periodic-table research primitives
-scripts/periodic_table/    periodic-table search and reproduction entrypoints
-atlas_specs/               checked-in Atlas build specifications
-tests/                     repository-level Python contracts
-knowledge/                 maintained, evidence-linked developer knowledge
-paper_rop_periodic_table/  embedded reproducibility snapshot, not manuscript authority
-```
-
-Module ownership, tests, and known gaps are indexed in
-[knowledge/catalogs/modules.yaml](knowledge/catalogs/modules.yaml).
-
-## Verification
-
-Run the two Julia suites from the repository root:
+Run the standard Julia checks from the repository root:
 
 ```bash
 JULIA_NUM_THREADS=auto julia --project=webapp webapp/test/runtests.jl
 JULIA_NUM_THREADS=auto julia --project=webapp Bnc_julia/test/runtests.jl
 julia --project=webapp webapp/test/test_phenotype_pipeline.jl
+julia tests/version_resource_contract.jl
+julia --project=packaging -e 'using Pkg; Pkg.instantiate()'
+julia --project=packaging packaging/test_design_runtime.jl
 ```
 
-Run frontend, Agent, and repository-level Python contracts:
+Run browser, Design Agent, repository, and drift checks:
 
 ```bash
 cd webapp
@@ -123,60 +122,85 @@ npm run test:py
 npm run check-i18n-sync
 cd ..
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-The Function-Space Reader regression needs NumPy but does not require the
-large Atlas:
-
-```bash
+python3 -m pip install -r scripts/requirements-verify.txt
+python3 scripts/verify_repository.py --check
 python3 -m pip install numpy
 python3 webapp/scripts/reader/test_reader_nofabrication.py
 ```
 
-CI also regenerates IR schemas and rejects a schema diff. The complete test
-matrix and change-specific gates are in [AGENTS.md](AGENTS.md).
+The HPC environment check must be run once with Julia 1.10 and once with Julia
+1.12. The macOS unit-test commands and the exact CI-aligned HPC command are in
+[AGENTS.md](AGENTS.md#verification-matrix). The single-image runtime smoke is
+defined in [.github/workflows/docker.yml](.github/workflows/docker.yml); passing
+it does not verify the full deployment stack.
 
-## Evidence boundaries
+## Repository map
 
-- A retrieved Atlas or Reader candidate is a prior, not a verified design.
-  Re-run it through the Julia engine before presenting it as computed evidence.
+```text
+Bnc_julia/                 local BindingAndCatalysis mathematics engine
+webapp/src/                Julia service, API, reusable results, and jobs
+webapp/public/             browser workspace and product guide
+webapp/scripts/            Python Design Agent, Reader, synthesis, migrations
+webapp_hpc/                headless Julia environment with 1.10/1.12 locks
+schemas/                   versioned interchange schemas
+frontend-swift/            native macOS shell
+packaging/                 relocatable backend-bundle builder
+deploy/                    container, proxy, and optional AWS deployment tools
+slurm/                     scheduler setup and submission helpers
+src/periodic_table/        bounded periodic-table research primitives
+scripts/periodic_table/    search and reproduction entry points
+atlas_specs/               checked-in Atlas build specifications
+tests/                     repository-level Python contracts
+knowledge/                 maintained, evidence-linked developer knowledge
+paper_rop_periodic_table/  embedded reproducibility snapshot, not manuscript authority
+```
+
+For a short architectural orientation, read
+[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md). The maintained developer knowledge
+base begins at [knowledge/README.md](knowledge/README.md), and coding agents
+must follow [AGENTS.md](AGENTS.md). Module ownership and gaps are indexed in
+[knowledge/catalogs/modules.yaml](knowledge/catalogs/modules.yaml).
+
+The browser-facing guides are
+[webapp/public/wiki.html](webapp/public/wiki.html) and
+[webapp/public/wiki.zh.html](webapp/public/wiki.zh.html). They are product
+guides, not the source of developer contracts.
+
+## Claims this checkout does not establish
+
+The repository does not yet provide current evidence for:
+
+- publishing to or pulling from a live image registry;
+- image signing, signature verification, or an SBOM release lane;
+- a live AWS rollout, including ECR, Batch, Cognito, S3, IAM, quota storage,
+  and rollback behavior;
+- submission to or completion on a real Slurm cluster;
+- a signed, notarized, stapled, and Gatekeeper-tested macOS DMG;
+- the complete Compose, Nginx, domain, TLS certificate, and renewal path; or
+- release-grade reconciliation of the conflicting periodic-table populations
+  and producer lineage recorded in the knowledge catalog.
+
+Scripts and static tests for several of these paths exist. They reduce known
+failure modes, but they are not substitutes for external runtime evidence.
+Deployment details and the remaining gaps are routed through
+[knowledge/modules/deployment.md](knowledge/modules/deployment.md).
+
+## Scientific evidence boundary
+
+- A retrieved candidate is a prior, not a verified design. Re-run it through
+  the Julia engine before presenting it as computed evidence.
 - Proxy scores, labels, and finite search results are not proofs of
   realizability, robustness, minimality, or impossibility.
 - Scientific numbers belong in versioned artifact manifests and claim ledgers,
-  not duplicated prose. Conflicting counts remain explicitly unresolved until
-  their population semantics and hashes are reconciled.
-- The current manuscript and this computation repository have different
-  owners. See [knowledge/research/repositories.md](knowledge/research/repositories.md).
-
-## Packaging and deployment
-
-Build a relocatable backend bundle:
-
-```bash
-julia --project=packaging packaging/build_backend_app.jl
-```
-
-Build the native macOS shell after the bundle exists:
-
-```bash
-xcodebuild -project frontend-swift/BiocircuitsExplorerMac.xcodeproj \
-  -scheme BiocircuitsExplorerMac -configuration Debug \
-  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
-```
-
-Build the source-based application image:
-
-```bash
-docker compose -f deploy/docker-compose.yml build julia-app
-```
-
-The full Nginx stack needs deployment-specific TLS and domain configuration.
-See [knowledge/modules/deployment.md](knowledge/modules/deployment.md) for its
-contracts and currently unverified surfaces.
+  not duplicated prose. Conflicting counts remain unresolved until their
+  population meaning and hashes are reconciled.
+- The computation repository and the current manuscript have different owners.
+  See [knowledge/research/repositories.md](knowledge/research/repositories.md).
 
 ## Version and license
 
 The application version is owned by `VERSION`. Update synchronized metadata
 with `scripts/set_version.sh <version>`. Runtime build information is returned
 by `/api/v1/version`.
+
 Biocircuits Explorer is released under the [MIT License](LICENSE).
