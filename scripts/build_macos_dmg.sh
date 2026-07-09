@@ -10,6 +10,10 @@ SCHEME="${SCHEME:-BiocircuitsExplorerMac}"
 CONFIGURATION="${CONFIGURATION:-Release}"
 MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-14.0}"
 VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
+"${REPO_ROOT}/scripts/set_version.sh" --dry-run "${VERSION}"
+source "${REPO_ROOT}/packaging/macos_release_metadata.sh"
+APPLE_MARKETING_VERSION="$(apple_marketing_version "${VERSION}")"
+TARGET_ARCH="$(macos_target_arch "${TARGET_ARCH:-}")"
 JULIA_BIN="${JULIA_BIN:-julia}"
 JULIA_CHANNEL="${JULIA_CHANNEL:-1.10}"
 BACKEND_MODE="${BACKEND_MODE:-portable}"
@@ -19,6 +23,7 @@ EXTRA_SOURCE_DEPOT="${EXTRA_SOURCE_DEPOT:-${HOME}/.julia}"
 
 PROJECT_PATH="${REPO_ROOT}/frontend-swift/BiocircuitsExplorerMac.xcodeproj"
 PACKAGING_SCRIPT="${REPO_ROOT}/packaging/build_backend_app.jl"
+DESIGN_RUNTIME_MANIFEST="${REPO_ROOT}/packaging/design-runtime-files.txt"
 DIST_DIR="${REPO_ROOT}/dist"
 BACKEND_ROOT="${DIST_DIR}/BiocircuitsExplorerBackend"
 BACKEND_RESOURCE_ROOT="${BACKEND_ROOT}/share/biocircuits-explorer"
@@ -28,7 +33,7 @@ DERIVED_DATA="${BUILD_ROOT}/DerivedData"
 DMG_ROOT="${BUILD_ROOT}/root"
 APP_SOURCE="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/${APP_PRODUCT_NAME}.app"
 APP_DEST="${DMG_ROOT}/${APP_DISPLAY_NAME}.app"
-DMG_PATH="${DIST_DIR}/${APP_DISPLAY_NAME}-${VERSION}-demo-arm64.dmg"
+DMG_PATH="${DIST_DIR}/${APP_DISPLAY_NAME}-${VERSION}-demo-${TARGET_ARCH}.dmg"
 SKIP_BACKEND="${SKIP_BACKEND:-0}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
@@ -76,10 +81,12 @@ build_portable_backend() {
   mkdir -p "${LOCAL_DEPOT}"
   JULIA_DEPOT_PATH="${LOCAL_DEPOT}:" "${julia_cmd[@]}" --project="${WEBAPP_DIR}" -e '
     import Pkg
-    repo = ARGS[1]
-    Pkg.develop(Pkg.PackageSpec(path=joinpath(repo, "Bnc_julia")))
-    Pkg.instantiate()
-  ' "${REPO_ROOT}"
+    webapp = ARGS[1]
+    cd(webapp) do
+      Pkg.develop(Pkg.PackageSpec(path=joinpath("..", "Bnc_julia")))
+      Pkg.instantiate()
+    end
+  ' "${WEBAPP_DIR}"
 
   local julia_root
   julia_root="$("${julia_cmd[@]}" -e 'print(dirname(Sys.BINDIR))')"
@@ -96,12 +103,32 @@ build_portable_backend() {
   /bin/cp "${WEBAPP_DIR}/Project.toml" "${BACKEND_RESOURCE_ROOT}/webapp/Project.toml"
   /bin/cp "${WEBAPP_DIR}/Manifest-v1.10.toml" "${BACKEND_RESOURCE_ROOT}/webapp/Manifest-v1.10.toml"
   /bin/cp "${WEBAPP_DIR}/server.jl" "${BACKEND_RESOURCE_ROOT}/webapp/server.jl"
+  /bin/cp "${REPO_ROOT}/VERSION" "${BACKEND_RESOURCE_ROOT}/VERSION"
 
-  local escaped_repo
-  escaped_repo="$(printf '%s\n' "${REPO_ROOT}" | /usr/bin/sed 's/[\/&]/\\&/g')"
-  /usr/bin/sed -i.bak "s|path = \"${escaped_repo}/Bnc_julia\"|path = \"../Bnc_julia\"|" \
-    "${BACKEND_RESOURCE_ROOT}/webapp/Manifest-v1.10.toml"
-  rm -f "${BACKEND_RESOURCE_ROOT}/webapp/Manifest-v1.10.toml.bak"
+  if [ ! -f "${DESIGN_RUNTIME_MANIFEST}" ]; then
+    echo "Missing Design Agent runtime manifest: ${DESIGN_RUNTIME_MANIFEST}" >&2
+    exit 1
+  fi
+  while IFS= read -r raw_path; do
+    relative_path="${raw_path%%#*}"
+    relative_path="$(printf '%s' "${relative_path}" | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "${relative_path}" ] || continue
+    case "/${relative_path}/" in
+      /*/../*|/*/./*|//* )
+        echo "Unsafe path in Design Agent runtime manifest: ${relative_path}" >&2
+        exit 1
+        ;;
+    esac
+    source_path="${REPO_ROOT}/${relative_path}"
+    destination_path="${BACKEND_RESOURCE_ROOT}/${relative_path}"
+    if [ ! -e "${source_path}" ]; then
+      echo "Missing Design Agent runtime path: ${source_path}" >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "${destination_path}")"
+    /usr/bin/ditto "${source_path}" "${destination_path}"
+  done < "${DESIGN_RUNTIME_MANIFEST}"
+  /usr/bin/find "${BACKEND_RESOURCE_ROOT}" -type d -name __pycache__ -prune -exec rm -rf {} +
 
   depot_sources=("${LOCAL_DEPOT}")
   if [ -n "${EXTRA_SOURCE_DEPOT}" ] && [ -d "${EXTRA_SOURCE_DEPOT}" ]; then
@@ -184,6 +211,8 @@ xcodebuild \
   -destination 'platform=macOS' \
   -derivedDataPath "${DERIVED_DATA}" \
   MACOSX_DEPLOYMENT_TARGET="${MIN_MACOS_VERSION}" \
+  MARKETING_VERSION="${APPLE_MARKETING_VERSION}" \
+  ARCHS="${TARGET_ARCH}" \
   ONLY_ACTIVE_ARCH=YES \
   CODE_SIGNING_ALLOWED=NO \
   BIOCIRCUITS_EXPLORER_REQUIRE_BUNDLED_BACKEND=1 \

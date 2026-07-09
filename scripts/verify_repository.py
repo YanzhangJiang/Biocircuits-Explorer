@@ -45,6 +45,26 @@ IDENTITY_FIELDS = (
     "manifest_schema_version",
     "trace_schema_version",
 )
+SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER = re.compile(
+    rf"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rf"(?:-{SEMVER_IDENTIFIER}(?:\.{SEMVER_IDENTIFIER})*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+APPLICATION_MANIFESTS = {
+    Path("webapp/Manifest.toml"): (
+        "BiocircuitsExplorerBackend",
+        "67d10611-6cfe-4cce-80b3-3428f29739d0",
+    ),
+    Path("packaging/Manifest.toml"): (
+        "BiocircuitsExplorerPackaging",
+        "2611948b-0538-4b60-b4c0-66cc43878c3b",
+    ),
+    Path("webapp_hpc/Manifest.toml"): (
+        "BiocircuitsExplorerBackendHPC",
+        "67d10611-6cfe-4cce-80b3-3428f29739d0",
+    ),
+}
 
 
 @dataclass
@@ -563,13 +583,21 @@ def extract_ci_toolchains(document: dict[str, Any]) -> dict[str, list[str]]:
                 python.add(str(config["python-version"]))
     try:
         julia_values = jobs["test-julia"]["strategy"]["matrix"]["julia"]
+        hpc_julia_values = jobs["test-hpc-environment"]["strategy"]["matrix"]["julia"]
     except (KeyError, TypeError) as exc:
-        raise ValueError("CI Julia matrix shape is unsupported") from exc
+        raise ValueError("CI webapp/HPC Julia matrix shape is unsupported") from exc
     if not isinstance(julia_values, list) or not julia_values:
-        raise ValueError("CI Julia matrix must be a nonempty list")
+        raise ValueError("CI webapp Julia matrix must be a nonempty list")
+    if not isinstance(hpc_julia_values, list) or not hpc_julia_values:
+        raise ValueError("CI HPC Julia matrix must be a nonempty list")
     if not node or not python:
         raise ValueError("CI Node/Python setup shape is unsupported")
-    return {"node": sorted(node), "python": sorted(python), "julia": sorted(map(str, julia_values))}
+    return {
+        "node": sorted(node),
+        "python": sorted(python),
+        "julia": sorted(map(str, julia_values)),
+        "julia_hpc": sorted(map(str, hpc_julia_values)),
+    }
 
 
 def major_minor_line(value: str) -> tuple[int, int] | None:
@@ -611,8 +639,76 @@ def project_toml_string(text: str, key: str, *, section: str | None = None) -> s
     return values[0]
 
 
+def manifest_self_version(text: str, package_name: str, expected_uuid: str) -> str:
+    section_pattern = re.compile(
+        r"(?m)^[ \t]*\[\[deps\.(?P<name>[^\]\r\n]+)\]\][ \t]*(?:#.*)?$"
+    )
+    sections = list(section_pattern.finditer(text))
+    matches = [match for match in sections if match.group("name").strip() == package_name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one [[deps.{package_name}]] self-package entry; found {len(matches)}"
+        )
+    selected = matches[0]
+    block_end = next(
+        (section.start() for section in sections if section.start() > selected.start()),
+        len(text),
+    )
+    block = text[selected.end() : block_end]
+
+    def field(name: str) -> str:
+        assignment = re.compile(
+            rf"(?m)^[ \t]*{re.escape(name)}[ \t]*=[ \t]*(['\"])([^'\"\r\n]+)\1[ \t]*(?:#.*)?$"
+        )
+        values = [match.group(2) for match in assignment.finditer(block)]
+        if len(values) != 1:
+            raise ValueError(f"self-package entry needs one quoted {name}; found {len(values)}")
+        return values[0]
+
+    path_value = field("path")
+    uuid_value = field("uuid")
+    version = field("version")
+    if path_value != ".":
+        raise ValueError(f"self-package path is {path_value!r}, expected '.'")
+    if uuid_value != expected_uuid:
+        raise ValueError(f"self-package uuid is {uuid_value!r}, expected {expected_uuid!r}")
+    return version
+
+
+def version_file_value(text: str) -> str:
+    match = re.fullmatch(r"([^\r\n]+)(?:\r\n|\n|\r)?", text)
+    if match is None:
+        raise ValueError("VERSION must contain exactly one semantic-version line")
+    value = match.group(1)
+    if SEMVER.fullmatch(value) is None:
+        raise ValueError(f"VERSION is not Semantic Versioning 2.0.0: {value!r}")
+    return value
+
+
+def unique_json_object(text: str, label: str) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} has duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(text, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is malformed JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"{label} must contain a top-level JSON object")
+    return document
+
+
 def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> list[dict[str, str]]:
-    application = (root / "VERSION").read_text(encoding="utf-8").strip()
+    try:
+        application = version_file_value((root / "VERSION").read_text(encoding="utf-8"))
+    except ValueError as exc:
+        audit.errors.append(str(exc))
+        application = "unknown"
     project_paths = [Path("webapp/Project.toml"), Path("packaging/Project.toml"), Path("webapp_hpc/Project.toml")]
     project_text = {
         path.as_posix(): (root / path).read_text(encoding="utf-8")
@@ -625,15 +721,50 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
         except ValueError as exc:
             audit.errors.append(f"cannot read application version from {path}: {exc}")
             project_versions[path] = "unknown"
-    package = json.loads((root / "webapp/package.json").read_text(encoding="utf-8"))
-    package_lock = json.loads((root / "webapp/package-lock.json").read_text(encoding="utf-8"))
+    manifest_versions: dict[str, str] = {}
+    for path, (package_name, expected_uuid) in APPLICATION_MANIFESTS.items():
+        path_text = path.as_posix()
+        try:
+            manifest_versions[path_text] = manifest_self_version(
+                (root / path).read_text(encoding="utf-8"),
+                package_name,
+                expected_uuid,
+            )
+        except ValueError as exc:
+            audit.errors.append(f"cannot read application version from {path_text}: {exc}")
+            manifest_versions[path_text] = "unknown"
+    try:
+        package = unique_json_object(
+            (root / "webapp/package.json").read_text(encoding="utf-8"),
+            "webapp/package.json",
+        )
+    except ValueError as exc:
+        audit.errors.append(str(exc))
+        package = {}
+    try:
+        package_lock = unique_json_object(
+            (root / "webapp/package-lock.json").read_text(encoding="utf-8"),
+            "webapp/package-lock.json",
+        )
+    except ValueError as exc:
+        audit.errors.append(str(exc))
+        package_lock = {}
+    lock_packages = package_lock.get("packages")
+    lock_root = lock_packages.get("") if isinstance(lock_packages, dict) else None
     versions = {
         "VERSION": application,
         **project_versions,
+        **manifest_versions,
         "webapp/package.json": str(package.get("version")),
         "webapp/package-lock.json (top-level)": str(package_lock.get("version")),
-        "webapp/package-lock.json": str(package_lock.get("packages", {}).get("", {}).get("version")),
+        "webapp/package-lock.json (root package)": str(
+            lock_root.get("version") if isinstance(lock_root, dict) else None
+        ),
     }
+    invalid_semver = {
+        owner: value for owner, value in versions.items() if SEMVER.fullmatch(value) is None
+    }
+    audit.require(not invalid_semver, f"application version is not valid SemVer: {invalid_semver}")
     audit.require(len(set(versions.values())) == 1, f"application version drift: {versions}")
 
     ci_document = load_yaml(root, Path(".github/workflows/ci.yml"), audit)
@@ -641,7 +772,7 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
         ci = extract_ci_toolchains(ci_document)
     except ValueError as exc:
         audit.errors.append(str(exc))
-        ci = {"node": [], "python": [], "julia": []}
+        ci = {"node": [], "python": [], "julia": [], "julia_hpc": []}
 
     docker = (root / "deploy/Dockerfile").read_text(encoding="utf-8")
     docker_match = re.search(r"(?m)^FROM\s+julia:([^\s]+)\s*$", docker)
@@ -657,10 +788,20 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
     )
 
     swift = (root / "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj").read_text(encoding="utf-8")
+    macos_build = (root / "scripts/build_macos_dmg.sh").read_text(encoding="utf-8")
+    macos_metadata = (root / "packaging/macos_release_metadata.sh").read_text(encoding="utf-8")
     swift_marketing = sorted(set(re.findall(r"MARKETING_VERSION = ([^;]+);", swift)))
     swift_build = sorted(set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", swift)))
+    swift_macos_target = sorted(set(re.findall(r"MACOSX_DEPLOYMENT_TARGET = ([^;]+);", swift)))
     audit.require(len(swift_marketing) == 1, f"Swift marketing versions disagree: {swift_marketing}")
     audit.require(len(swift_build) == 1, f"Swift build versions disagree: {swift_build}")
+    audit.require(len(swift_macos_target) == 1, f"Swift macOS deployment targets disagree: {swift_macos_target}")
+    audit.require(
+        'MARKETING_VERSION="${APPLE_MARKETING_VERSION}"' in macos_build
+        and 'apple_marketing_version "${VERSION}"' in macos_build
+        and 'numeric_core="${full_version%%[-+]*}"' in macos_metadata,
+        "macOS release marketing version is not derived from the application SemVer numeric core",
+    )
 
     try:
         julia_compat = project_toml_string(
@@ -674,12 +815,14 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
         {"fact": "API version", "value": str(api_facts.get("api_version", "unknown")), "evidence": "webapp/src/api_contract.jl"},
         {"fact": "Legacy API sunset", "value": str(api_facts.get("legacy_sunset", "unknown")), "evidence": "webapp/src/api_contract.jl"},
         {"fact": "Julia compatibility (declared)", "value": julia_compat, "evidence": "webapp/Project.toml"},
-        {"fact": "Julia configured in CI", "value": ", ".join(ci["julia"]), "evidence": ".github/workflows/ci.yml"},
+        {"fact": "Julia webapp configured in CI", "value": ", ".join(ci["julia"]), "evidence": ".github/workflows/ci.yml"},
+        {"fact": "Julia HPC configured in CI", "value": ", ".join(ci["julia_hpc"]), "evidence": ".github/workflows/ci.yml"},
         {"fact": "Julia container base", "value": docker_julia, "evidence": "deploy/Dockerfile"},
         {"fact": "Node configured in CI", "value": ", ".join(ci["node"]), "evidence": ".github/workflows/ci.yml"},
         {"fact": "Python configured in CI", "value": ", ".join(ci["python"]), "evidence": ".github/workflows/ci.yml"},
-        {"fact": "Swift marketing version (separate identity)", "value": ", ".join(swift_marketing), "evidence": "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj"},
+        {"fact": "Swift project marketing default", "value": ", ".join(swift_marketing), "evidence": "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj"},
         {"fact": "Swift build version (separate identity)", "value": ", ".join(swift_build), "evidence": "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj"},
+        {"fact": "macOS deployment target", "value": ", ".join(swift_macos_target), "evidence": "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj"},
     ]
 
 
@@ -895,8 +1038,9 @@ def render_reference(
         [
             "",
             "A version configured in CI is not, by itself, evidence that an external CI run passed.",
-            "Swift marketing/build versions are reported separately from the application version until",
-            "the release contract explicitly unifies them.",
+            "The Xcode project defaults are reported separately from the application version. The DMG",
+            "release script overrides MARKETING_VERSION with the application's three-part numeric core;",
+            "prerelease/build metadata remains in VERSION, backend responses, and artifact filenames.",
             "",
         ]
     )

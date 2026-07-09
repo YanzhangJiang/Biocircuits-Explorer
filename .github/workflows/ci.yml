@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master, main]
+    tags: ["v*"]
   pull_request:
     branches: [master, main]
 
@@ -117,6 +118,15 @@ jobs:
           JULIA_NUM_THREADS: auto
         run: julia --project=webapp --color=yes webapp/test/test_phenotype_pipeline.jl
 
+      - name: Packaged VERSION resource discovery contract
+        run: julia --color=yes tests/version_resource_contract.jl
+
+      - name: Instantiate packaging project
+        run: julia --project=packaging --color=yes -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Packaged Design Agent runtime contract
+        run: julia --project=packaging --color=yes packaging/test_design_runtime.jl
+
       - name: Repository contracts, generated references, and artifacts
         env:
           JULIA_NUM_THREADS: auto
@@ -126,3 +136,46 @@ jobs:
         run: |
           python3 -m pip install --quiet numpy || python3 -m pip install --quiet --break-system-packages numpy
           python3 webapp/scripts/reader/test_reader_nofabrication.py
+
+  test-hpc-environment:
+    name: HPC environment on Julia ${{ matrix.julia }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        julia: ["1.10", "1.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (libcdd for CDDLib)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcdd-dev
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia }}
+          arch: x64
+
+      - uses: julia-actions/cache@v2
+        with:
+          cache-name: julia-${{ matrix.julia }}-hpc
+
+      - name: Select the matching lock and load the headless engine
+        env:
+          JULIA_NUM_THREADS: auto
+        run: |
+          julia --project=webapp_hpc --color=yes -e '
+            using Pkg
+            expected = if VERSION < v"1.11"
+                joinpath(dirname(Base.active_project()), "Manifest-v1.10.toml")
+            else
+                joinpath(dirname(Base.active_project()), "Manifest.toml")
+            end
+            selected = Pkg.Types.Context().env.manifest_file
+            normpath(selected) == normpath(expected) ||
+                error("selected $(selected), expected $(expected)")
+            Pkg.instantiate()
+            using BindingAndCatalysis
+          '

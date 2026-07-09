@@ -1,12 +1,41 @@
 module BiocircuitsExplorerPackaging
 
-export ad_hoc_sign_macos_bundle!, repair_macos_bundle!
+export ad_hoc_sign_macos_bundle!, copy_design_runtime!, repair_macos_bundle!
 
 const SYSTEM_LIBRARY_PREFIXES = ("/System/Library", "/usr/lib")
 const HOMEBREW_PREFIXES = ("/opt/homebrew", "/usr/local")
+const PACKAGING_DIR = normpath(joinpath(@__DIR__, ".."))
+const REPO_ROOT = normpath(joinpath(PACKAGING_DIR, ".."))
+const DESIGN_RUNTIME_MANIFEST = joinpath(PACKAGING_DIR, "design-runtime-files.txt")
 
 is_system_library(path::AbstractString) = any(prefix -> startswith(path, prefix), SYSTEM_LIBRARY_PREFIXES)
 is_homebrew_library(path::AbstractString) = any(prefix -> startswith(path, prefix), HOMEBREW_PREFIXES)
+
+function copy_design_runtime!(resource_dir::AbstractString)
+    isfile(DESIGN_RUNTIME_MANIFEST) || error("Missing Design Agent runtime manifest: $(DESIGN_RUNTIME_MANIFEST)")
+
+    for raw_line in eachline(DESIGN_RUNTIME_MANIFEST)
+        relative_path = strip(first(split(raw_line, '#'; limit=2)))
+        isempty(relative_path) && continue
+        (isabspath(relative_path) || ".." in splitpath(relative_path)) &&
+            error("Unsafe path in Design Agent runtime manifest: $(relative_path)")
+
+        source = joinpath(REPO_ROOT, relative_path)
+        ispath(source) || error("Missing Design Agent runtime path: $(source)")
+        destination = joinpath(resource_dir, relative_path)
+        mkpath(dirname(destination))
+        cp(source, destination; force=true, follow_symlinks=true)
+    end
+
+    for (current_dir, dirs, _) in walkdir(resource_dir; topdown=false)
+        for dir in dirs
+            dir == "__pycache__" || continue
+            rm(joinpath(current_dir, dir); recursive=true, force=true)
+        end
+    end
+
+    return nothing
+end
 
 function is_macho_candidate(path::AbstractString)
     isfile(path) || return false

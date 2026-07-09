@@ -84,17 +84,20 @@ own a second copy of those values.
 
 | Fact | Value | Evidence |
 |---|---|---|
-| Application version | `0.1.0` | `VERSION, webapp/Project.toml, packaging/Project.toml, webapp_hpc/Project.toml, webapp/package.json, webapp/package-lock.json (top-level), webapp/package-lock.json` |
+| Application version | `0.1.0` | `VERSION, webapp/Project.toml, packaging/Project.toml, webapp_hpc/Project.toml, webapp/Manifest.toml, packaging/Manifest.toml, webapp_hpc/Manifest.toml, webapp/package.json, webapp/package-lock.json (top-level), webapp/package-lock.json (root package)` |
 | API version | `v1` | `webapp/src/api_contract.jl` |
 | Legacy API sunset | `2027-05-25` | `webapp/src/api_contract.jl` |
 | Julia compatibility (declared) | `1.10` | `webapp/Project.toml` |
-| Julia configured in CI | `1.12` | `.github/workflows/ci.yml` |
+| Julia webapp configured in CI | `1.12` | `.github/workflows/ci.yml` |
+| Julia HPC configured in CI | `1.10, 1.12` | `.github/workflows/ci.yml` |
 | Julia container base | `1.12` | `deploy/Dockerfile` |
 | Node configured in CI | `20` | `.github/workflows/ci.yml` |
 | Python configured in CI | `3.13` | `.github/workflows/ci.yml` |
-| Swift marketing version (separate identity) | `1.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
+| Swift project marketing default | `1.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
 | Swift build version (separate identity) | `1` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
+| macOS deployment target | `14.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
 
 A version configured in CI is not, by itself, evidence that an external CI run passed.
-Swift marketing/build versions are reported separately from the application version until
-the release contract explicitly unifies them.
+The Xcode project defaults are reported separately from the application version. The DMG
+release script overrides MARKETING_VERSION with the application's three-part numeric core;
+prerelease/build metadata remains in VERSION, backend responses, and artifact filenames.

@@ -58,8 +58,11 @@ import tempfile
 REQUIRED_FILES = (
     "VERSION",
     "webapp/Project.toml",
+    "webapp/Manifest.toml",
     "packaging/Project.toml",
+    "packaging/Manifest.toml",
     "webapp_hpc/Project.toml",
+    "webapp_hpc/Manifest.toml",
     "webapp/package.json",
     "webapp/package-lock.json",
 )
@@ -139,6 +142,80 @@ def update_project_toml(relative: str, content: bytes, new_version: str) -> byte
     return updated.encode("utf-8")
 
 
+MANIFEST_TARGETS = {
+    "webapp/Manifest.toml": (
+        "BiocircuitsExplorerBackend",
+        "67d10611-6cfe-4cce-80b3-3428f29739d0",
+    ),
+    "packaging/Manifest.toml": (
+        "BiocircuitsExplorerPackaging",
+        "2611948b-0538-4b60-b4c0-66cc43878c3b",
+    ),
+    "webapp_hpc/Manifest.toml": (
+        "BiocircuitsExplorerBackendHPC",
+        "67d10611-6cfe-4cce-80b3-3428f29739d0",
+    ),
+}
+MANIFEST_SECTION = re.compile(
+    r"(?m)^[ \t]*\[\[deps\.(?P<name>[^\]\r\n]+)\]\][ \t]*(?:#.*)?$"
+)
+
+
+def manifest_string_field(relative: str, block: str, field: str) -> str:
+    assignment = re.compile(
+        rf"(?m)^[ \t]*{re.escape(field)}[ \t]*=[ \t]*(['\"])([^'\"\r\n]+)\1[ \t]*(?:#.*)?$"
+    )
+    values = [match.group(2) for match in assignment.finditer(block)]
+    if len(values) != 1:
+        raise VersionWorkflowError(
+            f"{relative} self-package entry must have exactly one quoted {field} field; found {len(values)}"
+        )
+    return values[0]
+
+
+def update_manifest_toml(relative: str, content: bytes, new_version: str) -> bytes:
+    text = decode_utf8(relative, content)
+    package_name, expected_uuid = MANIFEST_TARGETS[relative]
+    sections = list(MANIFEST_SECTION.finditer(text))
+    matches = [match for match in sections if match.group("name").strip() == package_name]
+    if len(matches) != 1:
+        raise VersionWorkflowError(
+            f"{relative} must have exactly one [[deps.{package_name}]] self-package entry; found {len(matches)}"
+        )
+
+    selected = matches[0]
+    block_start = selected.end()
+    block_end = next(
+        (section.start() for section in sections if section.start() > selected.start()),
+        len(text),
+    )
+    block = text[block_start:block_end]
+    path_value = manifest_string_field(relative, block, "path")
+    uuid_value = manifest_string_field(relative, block, "uuid")
+    if path_value != ".":
+        raise VersionWorkflowError(
+            f"{relative} [[deps.{package_name}]] path must be '.', got {path_value!r}"
+        )
+    if uuid_value != expected_uuid:
+        raise VersionWorkflowError(
+            f"{relative} [[deps.{package_name}]] uuid must be {expected_uuid}, got {uuid_value!r}"
+        )
+
+    version_matches = list(TOML_VERSION.finditer(text, block_start, block_end))
+    if len(version_matches) != 1:
+        raise VersionWorkflowError(
+            f"{relative} self-package entry must have exactly one quoted version field; found {len(version_matches)}"
+        )
+    version_match = version_matches[0]
+    require_semver(version_match.group("value"), f"{relative} self-package version")
+    updated = (
+        text[: version_match.start("value")]
+        + new_version
+        + text[version_match.end("value") :]
+    )
+    return updated.encode("utf-8")
+
+
 def reject_duplicate_keys(pairs):
     result = {}
     for key, value in pairs:
@@ -197,8 +274,11 @@ def update_package_lock(relative: str, content: bytes, new_version: str) -> byte
 UPDATERS = {
     "VERSION": update_version_file,
     "webapp/Project.toml": update_project_toml,
+    "webapp/Manifest.toml": update_manifest_toml,
     "packaging/Project.toml": update_project_toml,
+    "packaging/Manifest.toml": update_manifest_toml,
     "webapp_hpc/Project.toml": update_project_toml,
+    "webapp_hpc/Manifest.toml": update_manifest_toml,
     "webapp/package.json": update_package_json,
     "webapp/package-lock.json": update_package_lock,
 }

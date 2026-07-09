@@ -1,0 +1,12 @@
+# Paths are relative to the repository root. Keep this list limited to the
+# stdlib-only chat entry path, optional Reader modules, and data contracts.
+# Reader features still require their documented host Python dependencies.
+webapp/scripts/chat_api.py
+webapp/scripts/design_agent.py
+webapp/scripts/design_search.py
+webapp/scripts/cards.py
+webapp/scripts/llm_compile.py
+webapp/scripts/engine_client.py
+webapp/scripts/validate_artifacts.py
+webapp/scripts/reader
+schemas
