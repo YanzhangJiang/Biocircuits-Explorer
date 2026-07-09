@@ -71,13 +71,32 @@ class Reader:
             return y
         return np.asarray(target, float)            # raw curve on u_grid
 
+    @staticmethod
+    def _nan_rmse(values, target, axis):
+        """RMSE over finite samples, leaving wholly invalid rows as NaN."""
+        squared = (values - target) ** 2
+        finite = np.isfinite(squared)
+        count = np.sum(finite, axis=axis)
+        total = np.sum(np.where(finite, squared, 0.0), axis=axis)
+        mean = np.divide(
+            total,
+            count,
+            out=np.full(count.shape, np.nan, dtype=float),
+            where=count > 0,
+        )
+        return np.sqrt(mean)
+
     def _scores(self, target_vec, intent, thr=0.22):
         tn = normalize(target_vec, "minmax")
         if intent == "typical":
-            return np.sqrt(np.nanmean((self.MED - tn) ** 2, axis=1))           # lower=better (distance)
-        d = np.sqrt(np.nanmean((self.D - tn) ** 2, axis=2))                     # (N,K)
+            return self._nan_rmse(self.MED, tn, axis=1)                         # lower=better (distance)
+        d = self._nan_rmse(self.D, tn, axis=2)                                  # (N,K)
         if intent == "existential":
-            return np.nan_to_num(np.nanmin(d, axis=1), nan=9.9)
+            # ``nanmin`` warns on a legal all-invalid record.  Treat missing
+            # draws as +Inf while reducing, then map an entirely missing row
+            # to the established worst-distance sentinel.
+            best = np.min(np.where(np.isfinite(d), d, np.inf), axis=1)
+            return np.where(np.isfinite(best), best, 9.9)
         valid = np.sum(~np.isnan(d), axis=1)
         return -(np.nansum(d <= thr, axis=1) / np.maximum(valid, 1))            # lower=better (-fraction)
 
