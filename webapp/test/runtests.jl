@@ -2370,21 +2370,16 @@ end
         ),
     ))
 
-    # SEPARATE REGRESSION (NOT the change_qK ChangePaths one fixed in Task I1): the
-    # FAILING slice here is the AXIS `tA` SISOPaths slice, which throws
-    #   "Requested path [...] is missing from the shared path-condition backend."
-    # from the migrated SISOPaths backend (_store_pair_polyhedra! / SISO.jl). Confirmed
-    # reproducible via SISOPaths(model, :tA) |> get_behavior_families with NO ChangePaths
-    # involvement, so the I1 multi-axis RO/polyhedra port does not (and should not) fix
-    # it. Left @test_broken pending a separate fix to the migrated SISOPaths path-
-    # condition backend for this 232-path complex-growth network.
-    @test_broken atlas["successful_network_count"] == 1    # 0: SISOPaths backend bug (not change_qK)
-    @test_broken atlas["failed_network_count"] == 0        # 1: SISOPaths backend bug (not change_qK)
+    # Regression for the migrated SISOPaths path-condition backend. This
+    # 232-path complex-growth network used to fail while materializing its
+    # `tA` axis slice; keep the successful build as a permanent assertion.
+    @test atlas["successful_network_count"] == 1
+    @test atlas["failed_network_count"] == 0
 
     network = only(atlas["network_entries"])
-    @test_broken network["analysis_status"] == "ok"        # "failed": SISOPaths backend bug
-    @test_broken network["build_state"] == "complete"      # "failed": SISOPaths backend bug
-    @test_broken network["failure_classes"] == String[]    # ["build_error"]: SISOPaths backend bug
+    @test network["analysis_status"] == "ok"
+    @test network["build_state"] == "complete"
+    @test network["failure_classes"] == String[]
     end # _atlas_test
 end
 
@@ -3064,9 +3059,11 @@ end
     @test length(all_screen["screened_candidates"]) <= 3
     spec_screen = BEB.design_screen("sign", "+-+";
         designability_spec=Dict("target_kind" => "sign", "target" => "+-+",
-                                "temporal_dynamics" => Dict("peak_width" => "wide")))
+                                "temporal_dynamics" => Dict(
+                                    "peak_width_seconds" => Dict("min" => 1.0, "max" => 2.0))))
     @test isempty(spec_screen["verified_recommendations"])
-    @test any(item -> item["path"] == "/target/temporal_dynamics" &&
+    @test any(item -> item["path"] == "/target/temporal_dynamics/peak_width_seconds" &&
+                      item["kind"] == "temporal_dynamics" &&
                       item["support_level"] == "unsupported",
               spec_screen["constraint_audit"])
     rec = first(screen["screened_candidates"])
