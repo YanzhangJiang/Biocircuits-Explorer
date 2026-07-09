@@ -248,7 +248,9 @@ function main()
     install_debug_logger!()
     port = resolve_port()
     expected_parent_pid = configured_parent_pid()
-    @info "ROP Web Server starting on http://localhost:$port"
+    host = resolve_host(expected_parent_pid)
+    display_host = occursin(':', host) ? "[$(host)]" : host
+    @info "ROP Web Server starting" url="http://$(display_host):$(port)" bind_host=host port
     @info "Static files from: $(static_dir())"
     @info "Session TTL: $(SESSION_TTL)s, cleanup interval: $(SESSION_CLEANUP_INTERVAL)s"
 
@@ -257,7 +259,7 @@ function main()
         @async parent_watchdog_loop(expected_parent_pid)
     end
 
-    HTTP.serve(router, "0.0.0.0", port)
+    HTTP.serve(router, host, port)
 end
 
 function julia_main()::Cint

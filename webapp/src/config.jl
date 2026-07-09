@@ -27,6 +27,7 @@ _bool_flag(raw::AbstractString) =
 
 # server / process
 port() = _parse_int_or(8088, _first_nonempty("BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"))
+host_override() = _first_nonempty("BIOCIRCUITS_EXPLORER_HOST", "ROP_HOST")
 parent_pid_raw() = _first_nonempty("BIOCIRCUITS_EXPLORER_PARENT_PID", "ROP_PARENT_PID")
 public_dir_override() = _first_nonempty("BIOCIRCUITS_EXPLORER_PUBLIC_DIR", "ROP_PUBLIC_DIR")
 

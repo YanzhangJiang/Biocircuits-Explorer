@@ -147,6 +147,17 @@ function local_job_store_dir()
     return LOCAL_JOB_STORE_DIR[]
 end
 
+function local_job_store_ready()
+    path = local_job_store_dir()
+    try
+        mkpath(path)
+        return isdir(path) && iswritable(path)
+    catch err
+        @warn "Job store readiness check failed" path exception=(err, catch_backtrace())
+        return false
+    end
+end
+
 function _job_dir(job_id::AbstractString)
     return joinpath(local_job_store_dir(), String(job_id))
 end
@@ -779,6 +790,16 @@ function _aws_batch_config_value(execution, key::Symbol, env_name::AbstractStrin
     return Config.aws_batch_env_value(env_name)
 end
 
+function _aws_batch_job_name_prefix(execution)
+    requested = _aws_batch_config_value(
+        execution,
+        :job_name_prefix,
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX",
+    )
+    prefix = requested === nothing ? "" : strip(String(requested))
+    return isempty(prefix) ? Config.aws_batch_job_name_prefix() : prefix
+end
+
 function _aws_batch_artifact_uri(prefix::AbstractString, user_sub::AbstractString, job_id::AbstractString, filename::AbstractString)
     cleaned = replace(String(prefix), r"/+$" => "")
     return "$(cleaned)/users/$(user_sub)/jobs/$(job_id)/$(filename)"
@@ -811,10 +832,10 @@ function _aws_batch_container_overrides(input_uri::AbstractString, status_uri::A
     isempty(environment) || (overrides["environment"] = environment)
 
     resources = Dict{String, String}[]
-    if _raw_haskey(execution, :vcpus)
+    if _allow_aws_batch_request_config() && _raw_haskey(execution, :vcpus)
         push!(resources, Dict("type" => "VCPU", "value" => string(_raw_get(execution, :vcpus, ""))))
     end
-    if _raw_haskey(execution, :memory_mib)
+    if _allow_aws_batch_request_config() && _raw_haskey(execution, :memory_mib)
         push!(resources, Dict("type" => "MEMORY", "value" => string(_raw_get(execution, :memory_mib, ""))))
     end
     isempty(resources) || (overrides["resourceRequirements"] = resources)
@@ -874,7 +895,7 @@ function _aws_batch_submit(record::AbstractDict, execution)
     )
     _write_json_uri(input_uri, payload)
 
-    job_name_prefix = strip(String(_raw_get(execution, :job_name_prefix, Config.aws_batch_job_name_prefix())))
+    job_name_prefix = _aws_batch_job_name_prefix(execution)
     short_job_id = job_id[1:min(lastindex(job_id), 24)]
     job_name = "$(isempty(job_name_prefix) ? "biocircuits" : job_name_prefix)-$(short_job_id)"
     container_overrides = _aws_batch_container_overrides(input_uri, status_uri, result_uri, execution)
