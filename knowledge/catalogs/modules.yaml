@@ -1,0 +1,252 @@
+schema_version: "bcx-module-catalog/v1.0.0"
+verified_against: "f9c65a5"
+path_base: "repository-root"
+path_policy: "posix-relative"
+modules:
+  - id: "engine-rop"
+    name: "Equilibrium and ROP engine"
+    purpose: "Construct binding/catalysis models and compute regimes, paths, response orders, polyhedra, trajectories, and parameter-space measures."
+    doc: "knowledge/modules/engine-rop.md"
+    owner_paths:
+      - "Bnc_julia/src"
+      - "Bnc_julia/Project.toml"
+    entrypoints:
+      - "Bnc_julia/src/BindingAndCatalysis.jl"
+    tests:
+      - "Bnc_julia/test/runtests.jl"
+      - "tools/migration_parity"
+    depends_on: []
+    provides:
+      - "equilibrium-model"
+      - "rop-regimes-and-paths"
+      - "parameter-space-measures"
+    maturity: "core"
+    evidence_boundary: "Numerical output is scoped to the supplied model, solver policy, and assumptions; it is not a biological experiment."
+
+  - id: "backend-runtime"
+    name: "Julia backend runtime"
+    purpose: "Expose model, atlas, design, exchange, observability, and job capabilities through one HTTP process."
+    doc: "knowledge/modules/backend-runtime.md"
+    owner_paths:
+      - "webapp/src"
+      - "webapp/server.jl"
+      - "webapp/Project.toml"
+    entrypoints:
+      - "webapp/src/BiocircuitsExplorerBackend.jl"
+      - "webapp/src/routing.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+    depends_on:
+      - "engine-rop"
+      - "atlas"
+      - "designability"
+    provides:
+      - "http-api-v1"
+      - "network-ir-runtime"
+      - "job-runtime"
+    maturity: "core"
+    evidence_boundary: "Handler success proves the declared request, not global scientific completeness."
+
+  - id: "atlas"
+    name: "Atlas construction and storage"
+    purpose: "Enumerate network behavior slices, preserve classifier identity, and store/query atlas snapshots and libraries."
+    doc: "knowledge/modules/atlas.md"
+    owner_paths:
+      - "webapp/src/atlas.jl"
+      - "webapp/src/atlas_sqlite.jl"
+      - "webapp/src/behavior_program_codec.jl"
+      - "atlas_specs"
+    entrypoints:
+      - "webapp/build_atlas.jl"
+      - "webapp/build_atlas_sqlite.jl"
+      - "webapp/query_atlas.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+      - "webapp/test/d1_atlas_contract.jl"
+      - "webapp/test/inverse_config_contract.jl"
+    depends_on:
+      - "engine-rop"
+    provides:
+      - "atlas-snapshots"
+      - "behavior-program-identity"
+      - "retrieval-priors"
+    maturity: "core"
+    evidence_boundary: "An atlas is conditional on its grammar, bounds, classifier config, and persisted snapshot."
+
+  - id: "designability"
+    name: "Designability screening and parameter placement"
+    purpose: "Normalize strict design targets, screen candidates, enforce constraints, and separate proxy candidates from verified recommendations."
+    doc: "knowledge/modules/designability.md"
+    owner_paths:
+      - "webapp/src/designability.jl"
+      - "webapp/src/designability_feasible_regions.jl"
+      - "schemas/designability-spec.schema.json"
+      - "schemas/designability-screen.schema.json"
+    entrypoints:
+      - "webapp/src/designability.jl"
+    tests:
+      - "webapp/test/designability_spec_contract.jl"
+      - "webapp/test/design_screen_contract.jl"
+      - "webapp/test/design-spec-node-contract.test.mjs"
+    depends_on:
+      - "engine-rop"
+      - "atlas"
+    provides:
+      - "designability-spec"
+      - "designability-screen"
+      - "verified-recommendations"
+    maturity: "core"
+    evidence_boundary: "Screened proxy cards are exploratory and never proof; retain evidence and certificate grades."
+
+  - id: "design-agent"
+    name: "Conversational Design Agent and Reader"
+    purpose: "Translate a user request into bounded tool calls, retrieve seed priors, invoke the live backend, and return evidence-labelled cards."
+    doc: "knowledge/modules/design-agent.md"
+    owner_paths:
+      - "webapp/scripts/design_agent.py"
+      - "webapp/scripts/chat_api.py"
+      - "webapp/scripts/engine_client.py"
+      - "webapp/scripts/reader"
+    entrypoints:
+      - "webapp/scripts/chat_api.py"
+      - "webapp/scripts/design_agent.py"
+    tests:
+      - "webapp/scripts/test_chat_api.py"
+      - "webapp/scripts/test_design_agent_contract.py"
+      - "webapp/scripts/reader/test_reader_nofabrication.py"
+    depends_on:
+      - "backend-runtime"
+      - "designability"
+      - "atlas"
+    provides:
+      - "design-chat"
+      - "reader-priors"
+      - "design-agent-traces"
+    maturity: "active"
+    evidence_boundary: "Retrieval is a prior; only fresh compute results may enter the verified-card path."
+
+  - id: "web-workspace"
+    name: "Browser workspace"
+    purpose: "Provide the node-based editor, model exchange, plotting, design UI, localization, and API client."
+    doc: "knowledge/modules/web-workspace.md"
+    owner_paths:
+      - "webapp/public"
+      - "webapp/package.json"
+    entrypoints:
+      - "webapp/public/index.html"
+      - "webapp/public/js/main.js"
+    tests:
+      - "webapp/test"
+    depends_on:
+      - "backend-runtime"
+      - "design-agent"
+      - "designability"
+    provides:
+      - "node-workspace-ui"
+      - "browser-api-client"
+      - "sbml-browser-exchange"
+    maturity: "active"
+    evidence_boundary: "Frontend labels render backend evidence; they do not upgrade its scientific grade."
+
+  - id: "macos-host"
+    name: "macOS host"
+    purpose: "Embed the web workspace, manage local projects/documents, and supervise local backend and chat helper processes."
+    doc: "knowledge/modules/macos-host.md"
+    owner_paths:
+      - "frontend-swift"
+    entrypoints:
+      - "frontend-swift/BiocircuitsExplorerMac/BiocircuitsExplorerMacApp.swift"
+      - "frontend-swift/BiocircuitsExplorerMac/WebShellController.swift"
+    tests:
+      - "frontend-swift/BiocircuitsExplorerMacTests"
+      - "frontend-swift/BiocircuitsExplorerMacUITests"
+    depends_on:
+      - "web-workspace"
+      - "backend-runtime"
+      - "design-agent"
+    provides:
+      - "macos-application-shell"
+      - "local-process-supervision"
+    maturity: "active"
+    evidence_boundary: "Source tests do not establish signed/notarized package or multi-process integration behavior."
+
+  - id: "deployment"
+    name: "Packaging and deployment"
+    purpose: "Build and operate the containerized backend/static app, optional proxy, version metadata, and cloud bootstrap helpers."
+    doc: "knowledge/modules/deployment.md"
+    owner_paths:
+      - "deploy"
+      - "packaging"
+      - "VERSION"
+      - "scripts/set_version.sh"
+    entrypoints:
+      - "deploy/Dockerfile"
+      - "deploy/docker-compose.yml"
+      - "packaging/build_backend_app.jl"
+    tests:
+      - ".github/workflows/docker.yml"
+      - "webapp/test/runtests.jl"
+    depends_on:
+      - "backend-runtime"
+      - "web-workspace"
+    provides:
+      - "container-image-definition"
+      - "backend-app-bundle"
+      - "deployment-configuration"
+    maturity: "active"
+    evidence_boundary: "CI builds an image but does not prove a running production stack, registry publication, TLS, or cloud identity."
+
+  - id: "batch-hpc"
+    name: "Batch, workstation, and HPC execution"
+    purpose: "Manage local/AWS asynchronous job lifecycle and run large atlas or phenotype workloads through Slurm, workstation chains, or the headless backend project."
+    doc: "knowledge/modules/batch-hpc.md"
+    owner_paths:
+      - "webapp/src/jobs.jl"
+      - "webapp/src/cancellation.jl"
+      - "webapp/scripts/run_batch_job.jl"
+      - "schemas/result-artifact.schema.json"
+      - "webapp_hpc"
+      - "Bnc_julia_headless"
+      - "slurm"
+      - "workstation"
+    entrypoints:
+      - "webapp/scripts/run_batch_job.jl"
+      - "slurm/atlas_build.sbatch"
+      - "workstation/run_all.sh"
+    tests:
+      - "webapp/test/jobs_cancellation_contract.jl"
+      - "webapp/test/cooperative_cancel_checkpoints_contract.jl"
+    depends_on:
+      - "engine-rop"
+      - "atlas"
+    provides:
+      - "headless-backend"
+      - "local-and-aws-job-lifecycle"
+      - "slurm-workflows"
+      - "workstation-workflows"
+    maturity: "mixed"
+    evidence_boundary: "Local job races and cooperative cancellation are contract-tested; no live AWS, scheduler, workstation campaign, or result merge is CI-verified."
+
+  - id: "periodic-table-research"
+    name: "Periodic-table research layer"
+    purpose: "Define a bounded binding grammar, search for witnesses, encode results/certificates, and export research snapshots."
+    doc: "knowledge/modules/periodic-table-research.md"
+    owner_paths:
+      - "src/periodic_table"
+      - "scripts/periodic_table"
+      - "paper_rop_periodic_table"
+      - "webapp/scripts/rop_periodic_table"
+    entrypoints:
+      - "scripts/periodic_table/run_periodic_search.py"
+      - "src/periodic_table/complete_definition.py"
+    tests:
+      - "tests/test_periodic_table.py"
+    depends_on:
+      - "engine-rop"
+      - "atlas"
+    provides:
+      - "periodic-table-search"
+      - "witness-and-certificate-records"
+      - "embedded-research-snapshot"
+    maturity: "research"
+    evidence_boundary: "Bounded search supports witnesses but not general absence; the embedded snapshot is not manuscript authority."
