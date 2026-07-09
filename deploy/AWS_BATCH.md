@@ -23,10 +23,20 @@ such as `ec2:DescribeVpcs`, `s3:CreateBucket`, and
 After the image has been pushed to ECR:
 
 ```bash
+AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+VERSION_TAG="$(< VERSION)"
+scripts/set_version.sh --dry-run "$VERSION_TAG"
+VERSION_TAG="${VERSION_TAG//+/_}"
+IMAGE_TAG="${VERSION_TAG}-$(git rev-parse --short=12 HEAD)"
+IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:${IMAGE_TAG}"
+
 deploy/setup_aws_batch.sh \
   --region us-west-2 \
-  --image 234270344246.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:latest
+  --image "$IMAGE_URI"
 ```
+
+Use the immutable version-revision tag emitted by `deploy/build_image.sh`; do
+not point a Batch job definition at a mutable `latest` tag.
 
 By default this creates an EC2-backed managed Batch compute environment with
 `minvCpus=0`, so it should not launch compute instances until jobs are queued.
@@ -43,7 +53,7 @@ for you:
 ```bash
 deploy/setup_aws_batch.sh \
   --region us-west-2 \
-  --image 234270344246.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:latest \
+  --image "$IMAGE_URI" \
   --attach-to-role biocircuits-explorer-web-instance-role
 ```
 
@@ -54,11 +64,11 @@ For a public-facing deployment add Cognito + DynamoDB to the same setup call:
 ```bash
 deploy/setup_aws_batch.sh \
   --region us-west-2 \
-  --image 234270344246.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:latest \
+  --image "$IMAGE_URI" \
   --attach-to-role biocircuits-explorer-web-instance-role \
   --with-cognito \
-  --cognito-callback-urls 'https://app.yourdomain.com/auth/callback,biocircuitsexplorer://auth/callback' \
-  --cognito-logout-urls   'https://app.yourdomain.com/auth/logout' \
+  --cognito-callback-urls 'https://app.yourdomain.com/auth-callback.html,http://127.0.0.1:18088/auth-callback.html' \
+  --cognito-logout-urls   'https://app.yourdomain.com,http://127.0.0.1:18088' \
   --cognito-domain-prefix biocircuits-explorer \
   --with-quota-table
 ```
@@ -112,6 +122,16 @@ Cognito accepts comma-separated values:
 --cognito-callback-urls 'https://app.yourdomain.com/auth-callback.html,http://127.0.0.1:18088/auth-callback.html,http://localhost:8088/auth-callback.html'
 ```
 
+The frontend sends `window.location.origin` as its Cognito logout target, so
+register those exact origins separately (without a path):
+
+```bash
+--cognito-logout-urls 'https://app.yourdomain.com,http://127.0.0.1:18088,http://localhost:8088'
+```
+
+The setup script requires both lists and will not silently reuse callback URLs
+as logout URLs.
+
 The Swift macOS app **does not** need any native code change for sign-in —
 the WebView runs `auth.js` exactly like the browser and stores tokens in its
 own `localStorage`. If later you want native ASWebAuthenticationSession +
@@ -152,10 +172,12 @@ aws ec2 modify-instance-metadata-options \
   --http-tokens required
 ```
 
-If you cannot raise the hop-limit, set `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` (or `AWS_PROFILE` plus a mounted
-`~/.aws`) in `deploy/aws-runtime.env` — `docker-compose.yml` already passes
-those variables into the `julia-app` container.
+If you cannot raise the hop-limit, export temporary `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`; Compose passes those variables
+into `julia-app`. The checked-in Compose file deliberately does not mount a host
+`~/.aws` directory. Add an explicit read-only override mount if a local profile
+is required. The instance-role path is preferred because it leaves no
+long-lived credentials on disk.
 
 **c) The runtime env is in place.** On the EC2 host:
 
@@ -163,12 +185,45 @@ those variables into the `julia-app` container.
 cd /opt/Biocircuits-Explorer/deploy
 cp aws-runtime.env.example aws-runtime.env
 # or copy the generated deploy/aws-runtime.env from the setup machine
+cat >> aws-runtime.env <<'EOF'
+BIOCIRCUITS_EXPLORER_SERVER_NAME=app.yourdomain.com
+BIOCIRCUITS_EXPLORER_PUBLIC_URL=https://app.yourdomain.com
+BIOCIRCUITS_EXPLORER_SECRETS_DIR=/opt/biocircuits-explorer-secrets
+EOF
+
+sudo install -d -m 700 /opt/biocircuits-explorer-secrets/certs
+# Provision a certificate whose SAN covers app.yourdomain.com and its matching
+# unencrypted private key as these exact files:
+sudo install -m 644 /secure/source/origin.crt /opt/biocircuits-explorer-secrets/certs/origin.crt
+sudo install -m 600 /secure/source/origin.key /opt/biocircuits-explorer-secrets/certs/origin.key
+
 sudo -E ./deploy.sh
 ```
 
+The checked-in Compose profile is TLS-first; it has no insecure bootstrap mode.
+Before changing packages, source, or containers, `deploy.sh` checks that both TLS
+files are readable, any configured release image has an accepted reference, and
+the primary server name is valid. After ensuring the OpenSSL prerequisite—but
+before source or container changes—it checks that the certificate remains valid
+for at least 24 hours, covers every configured server name, and matches the private key.
+Docker Compose waits for both backend readiness and an HTTPS Nginx health probe.
+An explicitly named but missing `BIOCIRCUITS_EXPLORER_ENV_FILE` is an error.
+
+`setup_aws_batch.sh` atomically replaces only the AWS/Cognito keys it owns and
+preserves unrelated operator keys such as the three deployment settings above.
+With `--skip-compute`, queue and job-definition values are left blank rather than
+claiming resources were created.
+
 If `BIOCIRCUITS_EXPLORER_IMAGE` is set, `deploy.sh` logs Docker into ECR, pulls
-that image, and starts the backend behind Nginx. If it is not set, it builds
-the image locally.
+that image, and starts the backend behind Nginx. The reference must be a full
+`sha256` digest or the version-plus-commit tag emitted by `build_image.sh`; the
+latter creates/updates ECR repositories with immutable tags when
+`--create-ecr-repo` is used. If no image is set, `deploy.sh` builds a locally
+versioned image instead of overwriting a shared `:local` tag. Before source
+update it preserves the currently running image plus a rendered copy of the
+Compose/Nginx contract, and attempts an automatic rollback to both if the new
+stack misses its readiness deadline. External certificates, environment files,
+and cloud resources remain outside that rollback boundary.
 
 To verify the chain end-to-end after `deploy.sh`:
 

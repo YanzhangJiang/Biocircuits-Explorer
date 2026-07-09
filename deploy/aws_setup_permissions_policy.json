@@ -24,7 +24,6 @@
       "Effect": "Allow",
       "Action": [
         "s3:CreateBucket",
-        "s3:HeadBucket",
         "s3:GetBucketLocation",
         "s3:PutEncryptionConfiguration",
         "s3:PutBucketPublicAccessBlock",
