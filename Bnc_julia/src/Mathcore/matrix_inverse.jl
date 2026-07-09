@@ -215,7 +215,7 @@ function _build_Nρ_cache_parallel!(
     touched_locals = [Vector{Int}(undef, max(length(perms[1]), 1)) for _ in 1:nt]
     keybuf_locals = [Vector{Int}(undef, n) for _ in 1:nt]
 
-    Threads.@threads :greedy for i in eachindex(perms)
+    Threads.@threads :dynamic for i in eachindex(perms)
         tid = Threads.threadid()
         seen = seen_locals[tid]
         touched = touched_locals[tid]
@@ -240,7 +240,7 @@ function _build_Nρ_cache_parallel!(
     end
 
     entries = Vector{NρCacheEntry}(undef, length(keys))
-    Threads.@threads :greedy for i in eachindex(keys)
+    Threads.@threads :dynamic for i in eachindex(keys)
         Nρ = sparse(N[:, keys[i]])
         entries[i] = _factor_Nρ(Nρ; atol=atol, rtol=rtol, drop_tol=drop_tol)
     end

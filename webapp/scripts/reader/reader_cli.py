@@ -23,8 +23,8 @@ def _find_schema():
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (os.environ.get("BNE_SCHEMA_DIR", ""),
               os.path.join(here, "..", "..", "..", "schemas"),   # repo layout
-              here,                                              # deployed alongside the reader
-              "<redacted-home>/atlas_ssd/schemas"):
+              os.path.join(here, "..", "..", "schemas"),         # bundled resource layout
+              here):                                             # deployed alongside the reader
         p = os.path.join(d, "reader-result.schema.json") if d else ""
         if p and os.path.isfile(p):
             return p

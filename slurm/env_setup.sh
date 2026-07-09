@@ -25,7 +25,11 @@ cd "$BNC_ROOT"
 echo "Julia: $("$JULIA_BIN" --version)   (need >= 1.10; cluster module is julia/1.10.9)"
 "$JULIA_BIN" --project="$JULIA_PROJECT_DIR" -e '
   using Pkg
-  Pkg.develop(Pkg.PackageSpec(path=joinpath(pwd(), "Bnc_julia_headless")))
+  expected_manifest = normpath(joinpath(dirname(Base.active_project()), "Manifest-v1.10.toml"))
+  selected_manifest = normpath(Pkg.Types.Context().env.manifest_file)
+  selected_manifest == expected_manifest || error(
+      "Julia 1.10 must select $(expected_manifest), selected $(selected_manifest)")
+  Pkg.develop(Pkg.PackageSpec(path="Bnc_julia_headless"))
   Pkg.instantiate()
   if get(ENV, "BNC_PRECOMPILE", "") in ("1", "true", "yes", "on")
       Pkg.precompile()

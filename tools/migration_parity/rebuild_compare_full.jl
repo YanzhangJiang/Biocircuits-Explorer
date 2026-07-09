@@ -4,23 +4,32 @@
 # RESUMABLE: appends one JSON line per finished network to results.jsonl; on restart, skips done networks.
 # Writes progress.txt periodically. Runs unattended (nohup); a separate make_report.jl aggregates anytime.
 #
-# Env: OUTDIR, THREADS(64), PATH_CAP(100000 skip path-enum above old path), BEHAV_CAP(20000 skip behavior
-#      recompute above old total_paths), HEARTBEAT(every N networks -> progress.txt).
+# Env: ATLAS_FULL_DB and ATLAS_D4_DB (required), plus OUTDIR,
+# PATH_CAP(100000 skip path-enum above old path), BEHAV_CAP(20000 skip behavior
+# recompute above old total_paths), HEARTBEAT(every N networks -> progress.txt).
 using BindingAndCatalysis
 using SQLite, DBInterface
 import Graphs, JSON3
 using Base.Threads
-include("<redacted-storage>/Biocircuits-Explorer-atlas-mu5/webapp/src/reaction_parser.jl")
+const REPO_ROOT = normpath(joinpath(@__DIR__, "..", ".."))
+include(joinpath(REPO_ROOT, "webapp", "src", "reaction_parser.jl"))
 using .ReactionParser: build_model
 
-const OUTDIR    = get(ENV, "OUTDIR", "<redacted-storage>/bcx-resync-rebuild")
+function required_path_env(name::AbstractString)
+    value = strip(get(ENV, String(name), ""))
+    isempty(value) && error("Set $(name) to the source atlas SQLite path")
+    isfile(value) || error("$(name) does not name a file: $(value)")
+    return abspath(value)
+end
+
+const OUTDIR    = abspath(get(ENV, "OUTDIR", joinpath(REPO_ROOT, "results", "migration_parity", "rebuild_compare")))
 const PATH_CAP  = parse(Int, get(ENV, "PATH_CAP", "100000"))
 const BEHAV_CAP = parse(Int, get(ENV, "BEHAV_CAP", "20000"))
 const HEARTBEAT = parse(Int, get(ENV, "HEARTBEAT", "50"))
 const DO_BEHAV  = get(ENV, "DO_BEHAV", "1") in ("1","true","yes","on")  # behavior tier hits a shared-backend bug under threads; 0 = structure-only
 const DBS = [
-    ("atlas_full", "<redacted-storage>/Biocircuits-Explorer-atlas-mu5/atlas_full/atlas.sqlite"),
-    ("atlas_d4",   "<redacted-storage>/Biocircuits-Explorer-atlas-mu5/atlas_d4/atlas.sqlite"),
+    ("atlas_full", required_path_env("ATLAS_FULL_DB")),
+    ("atlas_d4",   required_path_env("ATLAS_D4_DB")),
 ]
 mkpath(OUTDIR)
 const RESULTS = joinpath(OUTDIR, "results.jsonl")

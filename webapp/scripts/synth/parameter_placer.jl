@@ -24,7 +24,8 @@ import Pkg
 # Activate the engine project so `using BindingAndCatalysis` resolves the
 # pinned Project+Manifest. The caller passes --project, but activate defensively
 # in case the script is `include`d from another environment.
-const _ENGINE_PROJECT = "<redacted-home>/git/Biocircuits-Explorer/Bnc_julia"
+const _REPO_ROOT = normpath(joinpath(@__DIR__, "..", "..", ".."))
+const _ENGINE_PROJECT = normpath(get(ENV, "BNC_ENGINE_PROJECT", joinpath(_REPO_ROOT, "Bnc_julia")))
 if Base.active_project() === nothing ||
    !occursin("Bnc_julia", Base.active_project())
     try
@@ -40,7 +41,7 @@ using BindingAndCatalysis
 import Polyhedra
 
 # The human-form reaction parser ("A + A <-> AA" -> Bnc).
-include("<redacted-home>/git/Biocircuits-Explorer/webapp/src/reaction_parser.jl")
+include(joinpath(_REPO_ROOT, "webapp", "src", "reaction_parser.jl"))
 using .ReactionParser: build_model
 
 # -----------------------------------------------------------------------------

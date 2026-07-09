@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -10,13 +11,22 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path("<redacted-home>/git/Biocircuits-Explorer")
-SRC_DB = ROOT / "webapp/atlas_store/legacy/sqlite/atlas.sqlite"
-TRANSITION_SRC_DB = ROOT / "webapp/atlas_store/legacy/sqlite/atlas.sqlite"
+ROOT = Path(__file__).resolve().parents[2]
+SRC_DB = Path(
+    os.environ.get(
+        "BIOCIRCUITS_EXPLORER_LEGACY_ATLAS_DB",
+        ROOT / "webapp/atlas_store/legacy/sqlite/atlas.sqlite",
+    )
+)
+TRANSITION_SRC_DB = SRC_DB
 SCRIPT = ROOT / "webapp/scripts/migrate_atlas_sqlite_v2_lossless.py"
 VERIFY_SCRIPT = ROOT / "webapp/scripts/verify_atlas_sqlite_v2_sample_lossless.py"
 
 
+@unittest.skipUnless(
+    SRC_DB.is_file(),
+    "set BIOCIRCUITS_EXPLORER_LEGACY_ATLAS_DB to run legacy-atlas migration fixtures",
+)
 class V2MigrationSmokeTests(unittest.TestCase):
     def test_subset_migration_creates_readable_views(self) -> None:
         with tempfile.TemporaryDirectory() as td:
