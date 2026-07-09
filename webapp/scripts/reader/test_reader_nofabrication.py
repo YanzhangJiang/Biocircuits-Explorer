@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import tempfile
+import warnings
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -118,13 +119,25 @@ def main():
     check("tier T3b (support>=.8, vol<.05)", evidence_tier(0.9, 0.02, 4) == "T3b")
     check("tier T2 (paths>0/vol>0, support<.8)", evidence_tier(0.4, 0.03, 2) == "T2")
     check("tier T1 (no ROP, low support)", evidence_tier(0.3, 0.0, 0) == "T1")
-    res = rd.search(bump_target, intent="typical", behavior_label="biphasic_peak", k=4)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        res = rd.search(bump_target, intent="typical", behavior_label="biphasic_peak", k=4)
     over = []
     for c in res["candidates"]:
         e = c["evidence"]
         if evidence_tier(e["shape_support"], e["volume_mean"], e["robust_path_count"]) != e["evidence_tier"]:
             over.append(c["record_id"])
     check("no candidate over-claims its evidence_tier", not over, f"mismatched={over}")
+
+    # A packet with zero valid draws is legal.  Existential scoring must rank
+    # it last without emitting NumPy's all-NaN reduction warning.
+    saved_draws = rd.D[-1].copy()
+    rd.D[-1] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        invalid_scores = rd._scores(bump_target, "existential")
+    rd.D[-1] = saved_draws
+    check("all-invalid existential record is warning-free and ranked last", invalid_scores[-1] == 9.9)
 
     # 4. ReaderResult schema-valid
     schema = json.load(open(reader_cli._find_schema())) if reader_cli._find_schema() else None

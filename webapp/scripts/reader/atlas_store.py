@@ -7,12 +7,22 @@ from __future__ import annotations
 import json
 import os
 import numpy as np
-import pyarrow.parquet as pq
-import zarr
 
 
 class AtlasStore:
     def __init__(self, root: str):
+        # Keep the packet-corpus fallback usable with only NumPy.  Parquet and
+        # Zarr are optional, industrial-atlas dependencies and must not be
+        # imported merely to dispatch ``open_store`` to ``PacketStore``.
+        try:
+            import pyarrow.parquet as pq
+            import zarr
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "opening an atlas_root requires the optional Reader dependencies "
+                "'pyarrow' and 'zarr'"
+            ) from exc
+
         self.root = root
         self.manifest = json.load(open(os.path.join(root, "manifests", "atlas_manifest.json")))
         self.K = int(self.manifest["K"]); self.n_points = int(self.manifest["n_points"])
