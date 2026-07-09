@@ -122,14 +122,27 @@ function legacy_designability_spec(target_kind, target; candidate_budget=Dict{St
         bounds["by_class"] = by_class
         constraints["parameter_bounds"] = bounds
     end
-    return Dict(
+    # Keep every container JSON-faithful and open to heterogeneous values.
+    # An inferred Dict here used to make `target` a
+    # Dict{String,Dict{String,String}} for string legacy targets, so merging a
+    # structured extension such as temporal_dynamics failed before validation.
+    return Dict{String, Any}(
         "schema_version" => DESIGNABILITY_SPEC_VERSION,
-        "source" => Dict("kind" => "legacy_shorthand"),
-        "target" => Dict("legacy_target" => Dict("target_kind" => String(target_kind), "target" => target)),
+        "source" => Dict{String, Any}("kind" => "legacy_shorthand"),
+        "target" => Dict{String, Any}(
+            "legacy_target" => Dict{String, Any}(
+                "target_kind" => String(target_kind),
+                "target" => target,
+            ),
+        ),
         "constraints" => constraints,
-        "candidate_budget" => Dict(String(k) => v for (k, v) in pairs(candidate_budget)),
-        "ranking_policy" => Dict(String(k) => v for (k, v) in pairs(ranking_policy)),
-        "audit_policy" => Dict("unsupported" => "block_if_hard", "path_format" => "json_pointer", "include_supported" => true),
+        "candidate_budget" => Dict{String, Any}(String(k) => v for (k, v) in pairs(candidate_budget)),
+        "ranking_policy" => Dict{String, Any}(String(k) => v for (k, v) in pairs(ranking_policy)),
+        "audit_policy" => Dict{String, Any}(
+            "unsupported" => "block_if_hard",
+            "path_format" => "json_pointer",
+            "include_supported" => true,
+        ),
     )
 end
 

@@ -1260,7 +1260,8 @@ def reader_panel(prototype="bump", intent="typical", behavior_class=None, nl=Non
            "pipeline": res.get("pipeline"), "panel_diversity": res.get("panel_diversity"), "candidates": cands,
            "note": "intent-routed function-space atlas panel (PRIOR ranked by curve-match + ROP evidence; "
                    "see coverage_status). VERIFY each pick with `simulate` (its reactions+input_symbol+"
-                   "observe_species) before presenting; if coverage_status is rare-or-absent, say so honestly."}
+                   "observe_species) before presenting; never fabricate a verified match, and if "
+                   "coverage_status is rare-or-absent, say so honestly."}
     if res.get("compiled_spec"):
         out["compiled_spec"] = res["compiled_spec"]
     return out
