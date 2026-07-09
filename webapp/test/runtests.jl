@@ -11,6 +11,7 @@ using Base64
 # below.
 include("designability_spec_contract.jl")
 include("design_screen_contract.jl")
+include("inverse_config_contract.jl")
 
 # REGRESSION PROBE (Task-15b): atlas.jl accesses SISOPaths.qK_grh/.sources/.sinks
 # as direct struct fields — upstream b30087f moved the graph into SISOProblem.dag.graph
