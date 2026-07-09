@@ -51,7 +51,7 @@ const _ARROW_RE = r"<->|<=>|↔"
 
 function _parse_term(term::AbstractString)
     t = strip(term)
-    m = match(r"^([0-9]+)?\s*([A-Za-z][A-Za-z0-9_]*)$", t)
+    m = match(r"^([0-9]+)?\s*([A-Za-z_][A-Za-z0-9_]*)$", t)
     m === nothing && error("Bad term: $term")
     coeff = m.captures[1] === nothing ? 1 : parse(Int, m.captures[1])
     return Symbol(m.captures[2]), coeff
@@ -113,6 +113,50 @@ end
 # Small helpers for golden assertions.
 const RTOL = 1e-6
 approxeq(a, b; rtol=RTOL) = isapprox(a, b; rtol=rtol)
+
+# =============================================================================
+@testset "Bnc constructor input invariants" begin
+    @test_throws ArgumentError Bnc()
+
+    dependent_N = [1 1 -1; 2 2 -2]
+    err = try
+        Bnc(N=dependent_N)
+        nothing
+    catch caught
+        caught
+    end
+    @test err isa ArgumentError
+    @test occursin("full row rank", sprint(showerror, err))
+
+    N = reshape([1, 1, -1], 1, 3)
+    L = [1 0 1; 0 1 1]
+    model = Bnc(N=N, L=L)
+    @test model.N == N
+    @test model.L == L
+    @test Bnc(L=L).N == N
+
+    incompatible_L = [1 0 0; 0 1 0]
+    @test_throws ArgumentError Bnc(N=N, L=incompatible_L)
+end
+
+# =============================================================================
+@testset "calc_volume return and normalization contract" begin
+    # On [0, 4], x >= 1 occupies 3/4 of the box.  The dimensional interval
+    # length is 3, but calc_volume deliberately returns the normalized 0.75
+    # fraction and a Volume object for the single-polyhedron overload.
+    C = reshape([1.0], 1, 1)
+    vol = calc_volume(C, [-1.0];
+        sampler=:uniform_box,
+        log_lower=0.0,
+        log_upper=4.0,
+        batch_size=20_000,
+        rel_tol=1.0,
+        time_limit=5.0)
+    @test vol isa BindingAndCatalysis.Volume
+    @test 0.0 <= vol.mean <= 1.0
+    @test isapprox(vol.mean, 0.75; atol=0.03)
+    @test vol.var >= 0.0
+end
 
 # =============================================================================
 @testset "BindingAndCatalysis golden-value suite" begin

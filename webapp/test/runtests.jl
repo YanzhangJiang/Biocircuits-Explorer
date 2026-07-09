@@ -1308,6 +1308,83 @@ end
     @test exp2.status == 200
     @test occursin("ir_form", JSON3.read(exp2.body)["sbml"])
 
+    # SBML ids are computational identifiers; display names are metadata.  In
+    # particular, names may contain spaces while ids (including a valid leading
+    # underscore) are what reaction formulas and speciesReference attributes
+    # must use.
+    named_xml = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+      <model id="_model_1" name="Readable model">
+        <listOfCompartments>
+          <compartment id="default" constant="true"/>
+        </listOfCompartments>
+        <listOfParameters>
+          <parameter id="Kd_r1" value="0.75" constant="true"/>
+        </listOfParameters>
+        <listOfSpecies>
+          <species id="_free_A" name="Free A" compartment="default" constant="false"/>
+          <species id="B" name="Binding partner" compartment="default" constant="false"/>
+          <species id="_complex_AB" name="Bound complex" compartment="default" constant="false"/>
+        </listOfSpecies>
+        <listOfReactions>
+          <reaction id="_binding_step" name="Primary binding" reversible="true">
+            <listOfReactants>
+              <speciesReference species="_free_A" stoichiometry="1" constant="true"/>
+              <speciesReference species="B" stoichiometry="1" constant="true"/>
+            </listOfReactants>
+            <listOfProducts>
+              <speciesReference species="_complex_AB" stoichiometry="1" constant="true"/>
+            </listOfProducts>
+            <kineticLaw>
+              <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>Kd_r1</ci></math>
+            </kineticLaw>
+          </reaction>
+        </listOfReactions>
+      </model>
+    </sbml>
+    """
+    named_import = router(HTTP.Request("POST", "/api/v1/import/sbml",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("sbml" => named_xml))))
+    @test named_import.status == 200
+    named_body = JSON3.read(named_import.body)
+    named_ir = named_body["network_ir"]
+    @test isempty(named_body["warnings"])
+    @test named_ir["label"] == "Readable model"
+    @test named_ir["extensions"]["sbml"]["id"] == "_model_1"
+    @test named_ir["extensions"]["sbml"]["name"] == "Readable model"
+
+    named_species = Dict(String(sp["name"]) => sp for sp in named_ir["species"])
+    @test Set(keys(named_species)) == Set(["_free_A", "B", "_complex_AB"])
+    @test named_species["_free_A"]["metadata"]["sbml"]["name"] == "Free A"
+    @test named_species["_complex_AB"]["metadata"]["sbml"]["id"] == "_complex_AB"
+    @test named_ir["reactions"][1]["formula"] == "_free_A + B <-> _complex_AB"
+    @test named_ir["reactions"][1]["metadata"]["sbml"]["id"] == "_binding_step"
+    @test named_ir["reactions"][1]["metadata"]["sbml"]["name"] == "Primary binding"
+
+    # The imported IR is directly buildable and export restores both identity
+    # and display metadata instead of substituting the display names in formulas.
+    named_build = router(HTTP.Request("POST", "/api/v1/build_model",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("network" => named_ir))))
+    @test named_build.status == 200
+
+    named_export = router(HTTP.Request("POST", "/api/v1/export/sbml",
+        ["Content-Type" => "application/json"], JSON3.write(Dict("network" => named_ir))))
+    @test named_export.status == 200
+    named_sbml = String(JSON3.read(named_export.body)["sbml"])
+    @test occursin("<model id=\"_model_1\" name=\"Readable model\">", named_sbml)
+    @test occursin("<species id=\"_free_A\" name=\"Free A\"", named_sbml)
+    @test occursin("<reaction id=\"_binding_step\" name=\"Primary binding\"", named_sbml)
+    @test occursin("speciesReference species=\"_complex_AB\"", named_sbml)
+
+    named_reimport = router(HTTP.Request("POST", "/api/v1/import/sbml",
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict("sbml" => named_sbml))))
+    @test named_reimport.status == 200
+    named_ir2 = JSON3.read(named_reimport.body)["network_ir"]
+    @test named_ir2["reactions"][1]["formula"] == "_free_A + B <-> _complex_AB"
+    @test named_ir2["reactions"][1]["metadata"]["sbml"]["name"] == "Primary binding"
+
     # Legacy alias carries the deprecation header; v1 does not.
     @test HTTP.hasheader(router(HTTP.Request("POST", "/api/export/sbml",
         ["Content-Type" => "application/json"],

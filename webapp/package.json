@@ -8,7 +8,7 @@
     "build": "esbuild public/js/main.js --bundle --format=esm --sourcemap --target=es2022 --outfile=public/js/dist/main.js",
     "watch": "npm run build -- --watch",
     "lint": "eslint --config eslint.config.mjs public/js",
-    "test:js": "node test/commands.test.mjs && node test/geometry.test.mjs && node test/port-types.test.mjs && node test/action-events.test.mjs && node test/connection-validation.test.mjs && node test/model-request.test.mjs && node test/native-clipboard.test.mjs && node test/design-target-render.test.mjs && node test/design-spec-node-contract.test.mjs",
+    "test:js": "node test/commands.test.mjs && node test/geometry.test.mjs && node test/port-types.test.mjs && node test/action-events.test.mjs && node test/connection-validation.test.mjs && node test/model-request.test.mjs && node test/reaction-species.test.mjs && node test/native-clipboard.test.mjs && node test/design-target-render.test.mjs && node test/design-spec-node-contract.test.mjs",
     "test:py": "python3 scripts/test_chat_api.py && python3 scripts/test_design_agent_contract.py",
     "sync-i18n": "cp public/index.html public/index.zh.html",
     "check-i18n-sync": "diff -q public/index.html public/index.zh.html"

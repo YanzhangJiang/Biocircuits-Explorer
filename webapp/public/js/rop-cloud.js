@@ -12,7 +12,8 @@ export function parseSpeciesFromReactionSide(side) {
   side.split('+').forEach(term => {
     const t = term.trim();
     if (!t) return;
-    const m = t.match(/^([0-9]+)?\s*([A-Za-z][A-Za-z0-9_]*)$/);
+    // SBML SId permits a leading underscore; mirror the Julia parser.
+    const m = t.match(/^([0-9]+)?\s*([A-Za-z_][A-Za-z0-9_]*)$/);
     if (m) species.push(m[2]);
   });
   return species;

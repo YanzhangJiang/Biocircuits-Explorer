@@ -4,7 +4,8 @@
 
 Construct a binding network model from stoichiometry (`N`) or conservation (`L`)
 matrices and optional symbol metadata. Catalysis data can be attached through
-`Γ`, `Π`, and `k`.
+`Γ`, `Π`, and `k`. Reaction rows in `N` must be linearly independent;
+the constructor rejects dependent rows rather than silently deleting reactions.
 
 # Keyword Arguments
 - `N`: Stoichiometry matrix (reactions × species).
@@ -19,30 +20,61 @@ matrices and optional symbol metadata. Catalysis data can be attached through
 
 # Returns
 - A `Bnc` model with derived matrices and caches initialized.
+
+# Throws
+- `ArgumentError` when neither matrix is supplied or when `N`/`L` violate the
+  binding-network rank, dimension, or conservation invariants.
 """
 function Bnc(;N=nothing,L=nothing,
     x_sym=nothing,q_sym=nothing,K_sym=nothing,
     kwargs...
 )::Bnc
-    # if N is not provided, derive it from L, if provided, check its linear indenpendency
-    
-    N = isnothing(N) ? N_from_L(L) : N
-    row_idx = independent_row_idx(N)
-    r = length(row_idx)
+    isnothing(N) && isnothing(L) && throw(ArgumentError(
+        "Bnc requires a stoichiometry matrix `N` or a conservation matrix `L`."))
+
+    # The regime algorithms treat every row of N as a distinct reaction and
+    # require [L; N] to be a square, nonsingular coordinate transform.  Older
+    # code silently removed dependent rows here.  That also removed reactions
+    # (and their Kd symbols) without the caller's consent, so reject such input
+    # instead of constructing a model with changed semantics.
+    if isnothing(N)
+        L = Matrix{Int}(L)
+        size(L, 1) <= size(L, 2) || throw(ArgumentError(
+            "L has more conservation rows than species columns."))
+        N = N_from_L(L)
+    else
+        N = Matrix{Int}(N)
+    end
+
+    r_input, n_input = size(N)
+    r_input <= n_input || throw(ArgumentError(
+        "N has $r_input reaction rows but only $n_input species columns."))
+    rank(N) == r_input || throw(ArgumentError(
+        "N must have full row rank; linearly dependent reactions cannot be removed automatically."))
 
     if isnothing(L)
-        if r != size(N,1) @warn("N has been reduced from $r to $r_new rows, for linear dependent.") : nothing
-            N = N[row_idx, :] # reduce N to independent rows
-            if !isnothing(K_sym) && length(K_sym) == r
-                K_sym = K_sym[row_idx] # reduce K_sym to independent rows 
-            end
+        L = try
+            L_from_N(N)
+        catch err
+            throw(ArgumentError(
+                "Could not derive L from N using the required binding-network block structure: " *
+                sprint(showerror, err)))
         end
-        L = L_from_N(N)
-    else # L is provided
-        if r!= size(N,1) && size(N,1) +size(L,1) ==size(N,2)
-            @warn "N is not full row rank and can't be reduced, numerical issures could happen"
-        end
+    else
+        L = Matrix{Int}(L)
     end
+
+    d_input, n_L = size(L)
+    n_L == n_input || throw(ArgumentError(
+        "L and N must have the same number of species columns."))
+    d_input + r_input == n_input || throw(ArgumentError(
+        "Binding-network dimensions must satisfy d + r = n."))
+    rank(L) == d_input || throw(ArgumentError(
+        "L must have full row rank."))
+    iszero(N * transpose(L)) || throw(ArgumentError(
+        "L must be a conservation matrix for N (N * L' must equal zero)."))
+    rank(vcat(L, N)) == n_input || throw(ArgumentError(
+        "The stacked [L; N] coordinate matrix must be nonsingular."))
 
     r,n = size(N)
     d = size(L,1)

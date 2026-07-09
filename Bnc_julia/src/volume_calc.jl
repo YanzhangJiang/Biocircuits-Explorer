@@ -3,10 +3,13 @@ export calc_volume
 """
     calc_volume(Cs, C0s; kwargs...) -> Vector{Volume}
 
-Monte Carlo 估计：默认使用 N 维高斯抽样 `x ~ 𝒩(μ, σ²I)` 估计各 polyhedron 的概率质量；
-若 `sampler=:uniform_box` 则估计盒上均匀抽样下的体积（概率×盒体积）。
-
-polyhedron 约束：A*x + b >= -tol
+Estimate the normalized measure of each polyhedron `A*x + b >= -tol` by
+Monte Carlo sampling. With `sampler=:gaussian`, `Volume.mean` is Gaussian
+probability mass. With `sampler=:uniform_box`, it is the occupied fraction of
+the configured box and therefore remains in `[0, 1]`; it is **not** multiplied
+by the box hypervolume. Multiply by `(log_upper - log_lower)^n` explicitly if
+dimensional box volume is required. `Volume.var` is the squared Wilson-interval
+half-width on the same normalized scale.
 """
 function calc_volume(
     Cs::AbstractVector{<:AbstractMatrix{<:Real}},
@@ -107,7 +110,8 @@ function calc_volume(
         for _ in 1:n_slots
     ]
 
-    # Scaling: uniform_box -> volume fraction in the box; gaussian -> probability mass (scale=1)
+    # Both samplers return normalized measures: uniform-box occupied fraction
+    # or Gaussian probability mass.  No box-hypervolume scaling is applied.
     box_width = log_upper - log_lower
 
     # optional progress (keep minimal overhead when off)
@@ -203,7 +207,8 @@ end
 
 Compute volume for a single polyhedron.
 """
-calc_volume(C::AbstractMatrix{<:Real}, C0::AbstractVector{<:Real}; kwargs...)::Tuple{Float64,Float64} = calc_volume([C], [C0]; kwargs...)[1]
+calc_volume(C::AbstractMatrix{<:Real}, C0::AbstractVector{<:Real}; kwargs...)::Volume =
+    calc_volume([C], [C0]; kwargs...)[1]
 
 # calc_vertex_volume(Bnc::Bnc, perm;kwargs...) = calc_vertices_volume(Bnc,[perm]; kwargs...)[1]
 
