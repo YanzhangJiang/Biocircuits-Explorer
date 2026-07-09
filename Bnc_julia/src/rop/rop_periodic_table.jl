@@ -24,9 +24,24 @@ end
 # then project, then calc_volume. Same halfspace orientation (-C x <= C0) and
 # nullity handling (linset = 1:nullity) as upstream get_polyhedron(C, C0, nullity).
 
-# Faithful copy of the old `_clean_polyhedron_if_possible`: detect linearity +
-# remove redundancy on real polyhedra, pass through empty-set sentinels untouched.
-_clean_polyhedron_if_possible(p) = p isa Polyhedron ? (detecthlinearity!(p); removehredundancy!(p); p) : p
+# Detect linearity and remove genuine half-space redundancy on real polyhedra,
+# while passing through empty-set sentinels.  CDDLib's redundancy pass is both
+# unnecessary and pathological for a pure affine set (for example, the d=1
+# homomer transition is represented by two opposite half-spaces which collapse
+# to one hyperplane).  It can allocate tens of gigabytes on that tiny input.
+# Likewise, a lone nonzero half-space and an all-zero tautology cannot contain
+# pairwise redundancy, so avoid entering the external solver for those cases.
+function _clean_polyhedron_if_possible(p)
+    p isa Polyhedron || return p
+    detecthlinearity!(p)
+    representation = hrep(p)
+    constraints = collect(halfspaces(representation))
+    isempty(constraints) && return p
+    all(constraint -> all(iszero, constraint.a), constraints) && return p
+    length(constraints) == 1 && !hashyperplanes(representation) && return p
+    removehredundancy!(p)
+    return p
+end
 
 # Faithful copy of the old `_constraint_polyhedron`: build the extra-constraint
 # polyhedron {x : C x <= C0} (with `nullity` leading equality rows) via the upstream
@@ -54,7 +69,9 @@ function _calc_constrained_polyhedra_for_path(
     constraint_C,
     constraint_C0,
     constraint_nullity::Int,
+    cancel_check::Function=()->nothing,
 )::Vector{Any}
+    cancel_check()
     el_dim = BitSet(Int[idx for idx in change_qK_indices])
     projected_cleanup = length(change_qK_indices) == 1
     additional_poly = _constraint_polyhedron(constraint_C, constraint_C0, constraint_nullity)
@@ -64,6 +81,7 @@ function _calc_constrained_polyhedra_for_path(
         unique_rgms = unique(vcat(paths...))
         dic = Dict{Int,Any}()
         for r in unique_rgms
+            cancel_check()
             pr = get_polyhedron(model, r)
             if additional_poly !== nothing
                 pr = intersect(pr, additional_poly)
@@ -83,6 +101,7 @@ function _calc_constrained_polyhedra_for_path(
         edges = Tuple{Int,Int}[]
         edge_dict = Dict{Tuple{Int,Int},Int}()
         for path in paths
+            cancel_check()
             n = length(path)
             @inbounds for i in 1:(n-1)
                 u = Int(path[i]); v = Int(path[i+1])
@@ -101,6 +120,7 @@ function _calc_constrained_polyhedra_for_path(
     edge_poly = let
         edge_poly = Vector{Any}(undef, length(edge_dict))
         for i in eachindex(edges)
+            cancel_check()
             (u, v) = edges[i]
             p = intersect(node_polyhedra[u], node_polyhedra[v])
             if isempty(p)
@@ -131,6 +151,7 @@ function _calc_constrained_polyhedra_for_path(
     # 4) path poly = intersect of its edge polys
     out = Vector{Any}(undef, length(edge_paths))
     for i in eachindex(edge_paths)
+        cancel_check()
         path_edge_polys = edge_poly[edge_paths[i]]
         empty_idx = findfirst(isempty, path_edge_polys)
         if !isnothing(empty_idx)
@@ -156,6 +177,7 @@ function _constrained_polyhedra(
     constraint_C,
     constraint_C0,
     constraint_nullity::Int,
+    cancel_check::Function=()->nothing,
 )::Vector{Any}
     return _calc_constrained_polyhedra_for_path(
         get_binding_network(grh),
@@ -164,6 +186,7 @@ function _constrained_polyhedra(
         constraint_C=constraint_C,
         constraint_C0=constraint_C0,
         constraint_nullity=constraint_nullity,
+        cancel_check=cancel_check,
     )
 end
 
@@ -459,8 +482,10 @@ function get_behavior_families(
     constraint_C=nothing,
     constraint_C0=nothing,
     constraint_nullity::Int=0,
+    cancel_check::Function=()->nothing,
     volume_kwargs...,
 )
+    cancel_check()
     path_scope = _normalize_behavior_scope(path_scope)
     path_scope == :robust && !compute_volume && error("path_scope=:robust requires compute_volume=true")
     has_constraint = _has_extra_constraint(constraint_C, constraint_C0)
@@ -474,6 +499,7 @@ function get_behavior_families(
         keep_singular=keep_singular,
         keep_nonasymptotic=keep_nonasymptotic,
     )
+    cancel_check()
 
     # When an extra constraint is present, upstream get_polyhedra/get_volumes no longer
     # accept it, so the overlay computes constraint-aware path polyhedra (and their
@@ -504,10 +530,12 @@ function get_behavior_families(
                 constraint_C=constraint_C,
                 constraint_C0=constraint_C0,
                 constraint_nullity=constraint_nullity,
+                cancel_check=cancel_check,
             )
             map(poly -> !isempty(poly), constrained_polys)
         else
             polys = get_polyhedra(grh)
+            cancel_check()
             map(poly -> !isempty(poly), polys)
         end
     end
@@ -516,6 +544,7 @@ function get_behavior_families(
     volumes_by_path = Vector{Union{Nothing,Volume}}(undef, total_paths)
     fill!(volumes_by_path, nothing)
     if compute_volume && !isempty(feasible_ids)
+        cancel_check()
         # fix(resync): use the overlay volume pass whenever the overlay polyhedra were
         # computed above (has_constraint OR unconstrained SISOPaths). This consumes the
         # already-built `constrained_polys` (empty-poly-safe; proven volume-parity on the
@@ -551,6 +580,7 @@ function get_behavior_families(
             )
         end
         for (path_idx, vol) in zip(feasible_ids, vols)
+            cancel_check()
             volumes_by_path[path_idx] = vol
         end
     end
@@ -568,6 +598,7 @@ function get_behavior_families(
     motif_group_to_exact_groups = Vector{Vector{Int}}()
 
     for path_idx in 1:total_paths
+        cancel_check()
         ord_profile = ord_paths[path_idx]
         motif_profile = _motif_profile(ord_profile; zero_tol=motif_zero_tol)
         feasible = feasible_mask[path_idx]
@@ -625,6 +656,7 @@ function get_behavior_families(
 
     exact_family_stats = NamedTuple[]
     for exact_group_idx in eachindex(exact_group_paths)
+        cancel_check()
         path_ids = exact_group_paths[exact_group_idx]
         profile = exact_profiles[exact_group_idx]
         motif_profile = motif_profiles[exact_group_to_motif[exact_group_idx]]
@@ -658,6 +690,7 @@ function get_behavior_families(
     exact_families = NamedTuple[]
     sizehint!(exact_families, length(exact_family_stats))
     for (family_idx, family) in enumerate(exact_family_stats)
+        cancel_check()
         exact_family_idx_by_group[family.exact_group_idx] = family_idx
         push!(exact_families, (
             family_idx=family_idx,
