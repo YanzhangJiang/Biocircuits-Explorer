@@ -1354,29 +1354,30 @@ end
 function handle_jobs_route(req, path::AbstractString)
     parts = split(strip(String(path), '/'), '/')
     user_sub = _request_user_sub(req)
+    route = _match_api_route(path)
+
+    if route !== nothing && route.handler === :handle_jobs_route &&
+       !_api_route_allows_method(route, req.method)
+        return error_response("Method not allowed"; status=405)
+    end
 
     if parts == ["api", "jobs"]
-        req.method == "POST" || return error_response("Method not allowed"; status=405)
         return json_response(submit_biocircuits_job_from_spec(read_json(req); user_sub=user_sub); status=202)
     end
 
     if length(parts) == 3 && parts[1] == "api" && parts[2] == "jobs"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
         return json_response(get_biocircuits_job(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
         return json_response(get_biocircuits_job_result(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result-url"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
         return json_response(get_biocircuits_job_result_url(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "cancel"
-        req.method == "POST" || return error_response("Method not allowed"; status=405)
         return json_response(cancel_biocircuits_job(parts[3]; user_sub=user_sub))
     end
 

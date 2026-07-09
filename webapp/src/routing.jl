@@ -2,43 +2,11 @@
 # all `handle_*` functions, `QuotaExceeded`, and `handle_jobs_route` are
 # already defined in this module's namespace).
 
+include(joinpath(@__DIR__, "api_contract.jl"))
+
 const API_ROUTES = Dict{String, Function}(
-    "/api/build_atlas"          => handle_build_atlas,
-    "/api/query_atlas"          => handle_query_atlas,
-    "/api/build_atlas_library"  => handle_build_atlas_library,
-    "/api/merge_atlas_library"  => handle_merge_atlas_library,
-    "/api/run_inverse_design"   => handle_run_inverse_design,
-    "/api/build_model"          => handle_build_model,
-    "/api/find_vertices"        => handle_find_vertices,
-    "/api/build_graph"          => handle_build_graph,
-    "/api/siso_paths"           => handle_siso_paths,
-    "/api/siso_polyhedra"       => handle_siso_polyhedra,
-    "/api/siso_path_condition"  => handle_siso_path_condition,
-    "/api/siso_trajectory"      => handle_siso_trajectory,
-    "/api/behavior_families"    => handle_behavior_families,
-    "/api/phenotype_classify"   => handle_phenotype_classify,
-    "/api/rop_cloud"            => handle_rop_cloud,
-    "/api/vertex_detail"        => handle_vertex_detail,
-    "/api/fret_heatmap"         => handle_fret_heatmap,
-    "/api/parameter_scan_1d"    => handle_parameter_scan_1d,
-    "/api/parameter_scan_2d"    => handle_parameter_scan_2d,
-    "/api/place_parameters"     => handle_place_parameters,
-    "/api/placer_menu"          => handle_placer_menu,
-    "/api/placer_curve"         => handle_placer_curve,
-    "/api/placer_threshold"     => handle_placer_threshold,
-    "/api/placer_realize_program" => handle_placer_realize_program,
-    "/api/placer_level"         => handle_placer_level,
-    "/api/design_search"        => handle_design_search,
-    "/api/design_screen"        => handle_design_screen,
-    "/api/validate_designability_spec" => handle_validate_designability_spec,
-    "/api/design_labels"        => handle_design_labels,
-    "/api/atlas_landscape_2d"   => handle_atlas_landscape_2d,
-    "/api/rop_polyhedron"       => handle_rop_polyhedron,
-    "/api/ir/network/validate"  => handle_ir_network_validate,
-    "/api/ir/design/validate"   => handle_ir_design_validate,
-    "/api/import/sbml"          => handle_import_sbml,
-    "/api/export/sbml"          => handle_export_sbml,
-    "/api/debug_logs"           => handle_debug_logs,
+    route.internal_path => _resolve_api_route_handler(route)
+    for route in API_ROUTE_CONTRACTS if _is_ordinary_post_route(route)
 )
 
 const _CORS_HEADERS = [
@@ -52,19 +20,6 @@ const _CORS_HEADERS = [
     "Access-Control-Expose-Headers" => "X-API-Deprecation",
     "Access-Control-Max-Age"       => "600",
 ]
-
-# ─── API versioning ───
-# `v1` is the canonical current API surface. The bare `/api/<endpoint>` form
-# is kept as a deprecated alias so existing browser clients and the SwiftUI
-# shell keep working without a coordinated rollout. Both forms route to the
-# same handlers via `_canonicalize_api_path`; legacy calls additionally get an
-# `X-API-Deprecation` response header so callers can detect they are on a
-# sunsetting path during the migration window.
-const API_CURRENT_VERSION = "v1"
-const API_V1_PREFIX = "/api/v1"
-const API_LEGACY_SUNSET = "2027-05-25"
-const API_LEGACY_DEPRECATION_HEADER =
-    "version=\"v0-legacy\"; sunset=\"$API_LEGACY_SUNSET\"; link=\"$API_V1_PREFIX/\""
 
 # Returns (canonical_path, called_as_legacy).
 #  - "/api/v1/foo"     -> ("/api/foo",     false)   canonical v1 caller
@@ -86,10 +41,9 @@ end
 # Quick check whether a canonical path is one we actually route. Used to
 # decide whether to attach the deprecation header to a legacy response.
 function _is_known_api_path(path::AbstractString)
-    haskey(API_ROUTES, path) && return true
-    path == "/api/version"     && return true
-    path == "/api/auth/config" && return true
-    path == "/api/local-image" && return true
+    _match_api_route(path) !== nothing && return true
+    # Preserve the legacy behavior for malformed paths in the jobs namespace:
+    # they are still handled as API 404s and receive a deprecation header.
     (path == "/api/jobs" || startswith(path, "/api/jobs/")) && return true
     return false
 end
@@ -137,16 +91,10 @@ end
 # label cardinality.
 function _metric_path_label(raw_path::AbstractString)
     canonical, _ = _canonicalize_api_path(raw_path)
-    canonical == "/health"          && return "/health"
-    canonical == "/ready"           && return "/ready"
-    canonical == "/metrics"         && return "/metrics"
-    canonical == API_V1_PREFIX      && return API_V1_PREFIX
-    canonical == "/api/version"     && return "/api/version"
-    canonical == "/api/auth/config" && return "/api/auth/config"
-    canonical == "/api/local-image" && return "/api/local-image"
     (canonical == "/api/jobs" || startswith(canonical, "/api/jobs/")) &&
         return "/api/jobs/:id"
-    haskey(API_ROUTES, canonical) && return canonical
+    route = _match_api_route(canonical)
+    route !== nothing && return route.internal_path
     return "static"
 end
 
@@ -254,61 +202,41 @@ end
 # asset serving. Splitting this out keeps `_router_impl` focused on the
 # v1-versus-legacy bookkeeping.
 function _dispatch_api(req, path::AbstractString)::Union{HTTP.Response, Nothing}
-    # Liveness / readiness probes live at the root (not under /api/) so
-    # container orchestrators and load balancers can hit them without
-    # knowing the API surface. HEAD is allowed because some health-check
-    # tools issue HEAD by default to avoid wasting bandwidth on bodies.
-    if path == "/health"
-        req.method in ("GET", "HEAD") || return error_response("Method not allowed"; status=405)
-        return handle_health(req)
-    end
-    if path == "/ready"
-        req.method in ("GET", "HEAD") || return error_response("Method not allowed"; status=405)
-        return handle_ready(req)
-    end
-    if path == "/metrics"
-        req.method in ("GET", "HEAD") || return error_response("Method not allowed"; status=405)
-        return handle_metrics(req)
-    end
+    route = _match_api_route(path)
 
-    if haskey(API_ROUTES, path) && req.method != "POST"
+    # Jobs retain their established authentication-before-method-check order;
+    # handle_jobs_route performs the same metadata-derived check after identity
+    # resolution. Every other known route can reject here.
+    if route !== nothing && route.handler !== :handle_jobs_route &&
+       !_api_route_allows_method(route, req.method)
         return error_response("Method not allowed"; status=405)
     end
 
-    # `/api/v1` (with or without trailing slash) is a discovery endpoint:
-    # it returns the same payload as /api/version so a client can probe
-    # which API versions the backend speaks before issuing real requests.
-    if path == API_V1_PREFIX
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return handle_version(req)
-    end
-
-    if path == "/api/version"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return handle_version(req)
-    end
-
-    if path == "/api/auth/config"
-        req.method in ("GET", "POST") || return error_response("Method not allowed"; status=405)
-        return handle_auth_config(req)
-    end
-
-    if path == "/api/local-image"
-        req.method == "GET" || return error_response("Method not allowed"; status=405)
-        return handle_local_image(req)
-    end
-
-    if path == "/api/jobs" || startswith(path, "/api/jobs/")
+    if route !== nothing && route.handler === :handle_jobs_route
         client_id = debug_client_id_from_request(req)
         return with_debug_client_scope(client_id) do
             _api_response_with_error_mapping(() -> handle_jobs_route(req, path), path)
         end
     end
 
-    if haskey(API_ROUTES, path)
+    if route !== nothing && haskey(API_ROUTES, route.internal_path)
         client_id = debug_client_id_from_request(req)
         return with_debug_client_scope(client_id) do
-            _api_response_with_error_mapping(() -> API_ROUTES[path](req), path)
+            _api_response_with_error_mapping(() -> API_ROUTES[route.internal_path](req), path)
+        end
+    end
+
+    if route !== nothing
+        return _resolve_api_route_handler(route)(req)
+    end
+
+    # Preserve the existing jobs-namespace catch-all: malformed job paths are
+    # authenticated and returned as JSON 404s rather than falling through to
+    # static-file routing.
+    if path == "/api/jobs" || startswith(path, "/api/jobs/")
+        client_id = debug_client_id_from_request(req)
+        return with_debug_client_scope(client_id) do
+            _api_response_with_error_mapping(() -> handle_jobs_route(req, path), path)
         end
     end
 

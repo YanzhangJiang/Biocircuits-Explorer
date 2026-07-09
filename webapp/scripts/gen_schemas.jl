@@ -5,11 +5,13 @@
 # the module's `_IR_*` constants, and version strings from the schema-version
 # constants.
 #
-#   julia --project=webapp webapp/scripts/gen_schemas.jl
+#   julia --project=webapp webapp/scripts/gen_schemas.jl --check
+#   julia --project=webapp webapp/scripts/gen_schemas.jl --write
 #
-# Writes schemas/network-ir.schema.json and schemas/design-spec.schema.json with
-# deterministic (sorted, pretty) output so CI can `git diff --exit-code schemas/`
-# to catch drift between the structs and the committed schemas.
+# Renders schemas/network-ir.schema.json and schemas/design-spec.schema.json with
+# deterministic (sorted, pretty) output. `--check` compares bytes without writing;
+# `--write` updates changed files atomically. With no mode flag the historical
+# write behavior is preserved.
 
 using BiocircuitsExplorerBackend
 const BNE = BiocircuitsExplorerBackend
@@ -17,6 +19,7 @@ using JSON3
 
 const SCHEMA_DIR = normpath(joinpath(@__DIR__, "..", "..", "schemas"))
 const BASE_ID = "https://biocircuits-explorer.com/schemas"
+const GENERATED_SCHEMA_NAMES = ("design-spec.schema.json", "network-ir.schema.json")
 
 # (struct, field) → allowed enum value set, sourced from the module internals so
 # adding an allowed value flows through automatically.
@@ -147,19 +150,217 @@ function emit_json(io, v, ind = 0)
     end
 end
 
-function write_schema(name, schema)
-    mkpath(SCHEMA_DIR)
-    path = joinpath(SCHEMA_DIR, name)
-    open(path, "w") do io
-        emit_json(io, schema)
-        println(io)
+function render_schema(schema)
+    io = IOBuffer()
+    emit_json(io, schema)
+    write(io, '\n')
+    return String(take!(io))
+end
+
+"Return every generated schema as deterministic, in-memory UTF-8 bytes."
+function rendered_schemas()
+    rendered = Dict(
+        "network-ir.schema.json" => render_schema(network_ir_schema()),
+        "design-spec.schema.json" => render_schema(design_spec_schema()),
+    )
+    @assert Tuple(sort!(collect(keys(rendered)))) == GENERATED_SCHEMA_NAMES
+    return rendered
+end
+
+function schema_names(schema_dir::AbstractString, overrides = Dict{String, String}())
+    names = Set{String}()
+    if isdir(schema_dir)
+        union!(names, filter(name -> endswith(name, ".schema.json"), readdir(schema_dir)))
     end
-    println("wrote $(path)")
+    union!(names, keys(overrides))
+    return sort!(collect(names))
 end
 
-function main()
-    write_schema("network-ir.schema.json", network_ir_schema())
-    write_schema("design-spec.schema.json", design_spec_schema())
+"Validate that every schema has one nonempty, repository-unique `\$id`."
+function schema_id_errors(schema_dir::AbstractString;
+                          overrides::AbstractDict{String, String} = Dict{String, String}())
+    errors = String[]
+    owners = Dict{String, String}()
+    for name in schema_names(schema_dir, overrides)
+        path = joinpath(schema_dir, name)
+        source = if haskey(overrides, name)
+            overrides[name]
+        elseif isfile(path)
+            read(path, String)
+        else
+            push!(errors, "$(path): schema file is missing")
+            continue
+        end
+
+        parsed = try
+            JSON3.read(source)
+        catch err
+            push!(errors, "$(path): invalid JSON ($(sprint(showerror, err)))")
+            continue
+        end
+        id = get(parsed, "\$id", nothing)
+        if !(id isa AbstractString) || isempty(strip(id))
+            push!(errors, "$(path): missing or empty \$id")
+            continue
+        end
+        id = String(id)
+        if haskey(owners, id)
+            push!(errors, "$(path): duplicate \$id $(repr(id)); already used by $(joinpath(schema_dir, owners[id]))")
+        else
+            owners[id] = name
+        end
+    end
+    return errors
 end
 
-main()
+function first_difference(actual::String, expected::String)
+    actual_lines = split(actual, '\n'; keepempty = true)
+    expected_lines = split(expected, '\n'; keepempty = true)
+    n = max(length(actual_lines), length(expected_lines))
+    for line in 1:n
+        a = line <= length(actual_lines) ? actual_lines[line] : "<end of file>"
+        e = line <= length(expected_lines) ? expected_lines[line] : "<end of file>"
+        a == e || return (line, a, e)
+    end
+    return nothing
+end
+
+"Read-only byte comparison of committed files against deterministic renders."
+function check_schemas(schema_dir::AbstractString; out::IO = stdout, err::IO = stderr)
+    rendered = rendered_schemas()
+    ok = true
+
+    for problem in schema_id_errors(schema_dir)
+        println(err, "schema identity error: ", problem)
+        ok = false
+    end
+
+    for name in sort!(collect(keys(rendered)))
+        path = joinpath(schema_dir, name)
+        if !isfile(path)
+            println(err, "schema drift: missing $(path)")
+            ok = false
+            continue
+        end
+        actual = read(path, String)
+        expected = rendered[name]
+        actual == expected && continue
+        difference = first_difference(actual, expected)
+        println(err, "schema drift: $(path) differs from the deterministic generator")
+        if difference !== nothing
+            line, committed, generated = difference
+            println(err, "  first difference at line $(line)")
+            println(err, "  - committed: ", repr(committed))
+            println(err, "  + generated: ", repr(generated))
+        end
+        ok = false
+    end
+
+    if ok
+        println(out, "schema check passed: $(length(rendered)) generated files match; all schema \$id values are nonempty and unique")
+    else
+        println(err, "regenerate with: julia --project=webapp webapp/scripts/gen_schemas.jl --write")
+    end
+    return ok
+end
+
+function atomic_write(path::AbstractString, contents::String)
+    mkpath(dirname(path))
+    temp_path, io = mktemp(dirname(path); cleanup = false)
+    try
+        write(io, contents)
+        flush(io)
+        close(io)
+        mode = isfile(path) ? stat(path).mode & 0o777 : 0o644
+        chmod(temp_path, mode)
+        # Same-directory rename is an atomic replacement on supported platforms.
+        Base.Filesystem.rename(temp_path, path)
+    catch
+        isopen(io) && close(io)
+        ispath(temp_path) && rm(temp_path; force = true)
+        rethrow()
+    end
+    return path
+end
+
+function write_schemas(schema_dir::AbstractString; out::IO = stdout, err::IO = stderr)
+    rendered = rendered_schemas()
+    identity_errors = schema_id_errors(schema_dir; overrides = rendered)
+    if !isempty(identity_errors)
+        foreach(problem -> println(err, "schema identity error: ", problem), identity_errors)
+        println(err, "no files written")
+        return false
+    end
+
+    changed = 0
+    for name in sort!(collect(keys(rendered)))
+        path = joinpath(schema_dir, name)
+        if isfile(path) && read(path, String) == rendered[name]
+            println(out, "unchanged $(path)")
+            continue
+        end
+        atomic_write(path, rendered[name])
+        println(out, "wrote $(path)")
+        changed += 1
+    end
+    println(out, "schema write complete: $(changed) changed, $(length(rendered) - changed) unchanged")
+    return true
+end
+
+function usage(io::IO = stdout)
+    println(io, "Usage: julia --project=webapp webapp/scripts/gen_schemas.jl [--check|--write] [--schema-dir PATH]")
+    println(io, "  --check       compare generated bytes without modifying files")
+    println(io, "  --write       atomically update changed generated files (default)")
+    println(io, "  --schema-dir  override the schema directory (primarily for tests)")
+end
+
+function parse_cli(args)
+    mode = nothing
+    schema_dir = SCHEMA_DIR
+    help = false
+    i = 1
+    while i <= length(args)
+        arg = args[i]
+        if arg == "--check" || arg == "--write"
+            next_mode = arg == "--check" ? :check : :write
+            mode === nothing || mode == next_mode || throw(ArgumentError("--check and --write are mutually exclusive"))
+            mode = next_mode
+        elseif arg == "--schema-dir"
+            i == length(args) && throw(ArgumentError("--schema-dir requires a path"))
+            i += 1
+            schema_dir = normpath(abspath(args[i]))
+        elseif startswith(arg, "--schema-dir=")
+            value = split(arg, '='; limit = 2)[2]
+            isempty(value) && throw(ArgumentError("--schema-dir requires a path"))
+            schema_dir = normpath(abspath(value))
+        elseif arg == "--help" || arg == "-h"
+            help = true
+        else
+            throw(ArgumentError("unknown argument: $(arg)"))
+        end
+        i += 1
+    end
+    return (mode = something(mode, :write), schema_dir = schema_dir, help = help)
+end
+
+function main(args = ARGS; out::IO = stdout, err::IO = stderr)
+    options = try
+        parse_cli(args)
+    catch ex
+        println(err, "schema generator argument error: ", sprint(showerror, ex))
+        usage(err)
+        return 2
+    end
+    if options.help
+        usage(out)
+        return 0
+    end
+    ok = options.mode == :check ?
+         check_schemas(options.schema_dir; out = out, err = err) :
+         write_schemas(options.schema_dir; out = out, err = err)
+    return ok ? 0 : 1
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    exit(main())
+end
