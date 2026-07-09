@@ -1,0 +1,159 @@
+schema_version: "bcx-artifact-catalog/v1.0.0"
+verified_against: "f9c65a5"
+path_base: "repository-root"
+path_policy: "posix-relative"
+unknown_token: "unknown"
+artifacts:
+  - id: "ir-json-schemas"
+    kind: "generated-contract"
+    paths:
+      - "schemas/network-ir.schema.json"
+      - "schemas/design-spec.schema.json"
+    producer: "webapp/scripts/gen_schemas.jl"
+    validator: ".github/workflows/ci.yml"
+    authority: "Runtime structs and parser in webapp/src/ir.jl"
+    status: "verified-drift-gated"
+
+  - id: "hand-authored-json-schemas"
+    kind: "contract"
+    paths:
+      - "schemas/behavior-spec.schema.json"
+      - "schemas/design-agent-trace.schema.json"
+      - "schemas/designability-screen.schema.json"
+      - "schemas/designability-spec.schema.json"
+      - "schemas/latent-atlas-manifest.schema.json"
+      - "schemas/reader-query.schema.json"
+      - "schemas/reader-result.schema.json"
+      - "schemas/result-artifact.schema.json"
+      - "schemas/target-spec.schema.json"
+    producer: "manual-with-runtime-owner"
+    validator: "knowledge/contracts/schemas.md"
+    authority: "Each schema plus the runtime owner named in the contract catalog"
+    status: "mixed-coverage"
+
+  - id: "behavior-benchmark-specs"
+    kind: "benchmark-input"
+    path_pattern: "benchmarks/specs/*.behavior.json"
+    producer: "manual-fixtures"
+    validator: "webapp/scripts/validate_artifacts.py"
+    schema: "schemas/behavior-spec.schema.json"
+    authority: "Tracked benchmark fixtures"
+    status: "verified-in-ci"
+
+  - id: "design-agent-benchmark-tasks"
+    kind: "benchmark-input"
+    path_pattern: "benchmarks/tasks/[0-9][0-9]_*.json"
+    producer: "benchmarks/tasks/gen_tasks_v0.jl"
+    validator: "unknown"
+    authority: "Tracked benchmark fixtures"
+    status: "schema-coverage-unknown"
+
+  - id: "atlas-build-specs"
+    kind: "compute-config"
+    path_pattern: "atlas_specs/*.spec.json"
+    producer: "manual-versioned-config"
+    validator: "unknown"
+    authority: "Tracked build specifications interpreted by webapp/src/atlas.jl"
+    status: "runtime-parser-exists-dedicated-validation-unknown"
+
+  - id: "migration-parity-goldens"
+    kind: "regression-golden"
+    path_pattern: "tools/migration_parity/goldens/*.json"
+    producer: "tools/migration_parity/capture_goldens.jl"
+    validator: "tools/migration_parity/assert_parity.jl"
+    authority: "Tracked golden index and payloads"
+    status: "regression-fixture"
+
+  - id: "periodic-table-slices-embedded"
+    kind: "research-data-snapshot"
+    paths:
+      - "paper_rop_periodic_table/data/slices.jsonl.gz"
+    producer: "paper_rop_periodic_table/extraction/rpt_build.py"
+    validator: "manual-audit-at-f9c65a5"
+    authority: "Explorer-embedded snapshot only; not manuscript authority"
+    status: "conflict-unresolved"
+    observed:
+      sha256: "38d05fc7a219e3b0ef85c15777311713fd6916da6a9e8b592660e88a9824708f"
+      parseable_nonempty_json_lines: 147081
+      distinct_non_null_nid: 5234
+      nearby_prose_slice_count: 146845
+      canonical_publication_slice_count: "unknown"
+      relationship_between_metadata_networks_and_distinct_nid: "unknown"
+
+  - id: "periodic-table-aggregates-embedded"
+    kind: "research-derived-snapshot"
+    paths:
+      - "paper_rop_periodic_table/data/periodic_table.json"
+      - "paper_rop_periodic_table/data/behavior_records.json"
+      - "paper_rop_periodic_table/data/motif_rep_prog.json"
+    producer: "paper_rop_periodic_table/extraction/rpt_build.py"
+    validator: "paper_rop_periodic_table/notebooks"
+    authority: "Explorer-embedded snapshot only; standalone paper repository owns manuscript use"
+    status: "lineage-lock-missing"
+    observed:
+      periodic_table_sha256: "fa9fb2f04bde13015ac5573c349c18e3908d8f7e4980805b08be4b6bb4b4e48e"
+      behavior_records_sha256: "fba6e362f2ec67f6d162783e72092585babdc7eac671ecb0272cdb9245766b9b"
+      motif_rep_prog_sha256: "ae766790d02b12aadd056e1c2844849ed0f399da5f1e46f7c497ebecf62f68e5"
+      metadata_n_slices: 147081
+      metadata_n_networks: 5240
+      canonical_publication_network_count: "unknown"
+
+  - id: "periodic-table-web-script-mirrors"
+    kind: "compatibility-copy"
+    paths:
+      - "webapp/scripts/rop_periodic_table/periodic_table.json"
+      - "webapp/scripts/rop_periodic_table/behavior_records.json"
+      - "webapp/scripts/rop_periodic_table/motif_rep_prog.json"
+    producer: "research-export-copy"
+    validator: "manual-byte-comparison-at-f9c65a5"
+    authority: "Non-canonical copy"
+    status: "byte-identical-to-embedded-aggregates-at-verified-revision"
+
+  - id: "periodic-table-manuscript-working-counts"
+    kind: "external-working-observation"
+    storage: "standalone-manuscript-working-copy"
+    producer: "unlocked manuscript prose inspected 2026-07-10"
+    validator: "unknown"
+    authority: "A future paper-side artifact lock and claim ledger; not this observation"
+    status: "unlocked-working-observation"
+    source_repository: "paper_rop_periodic_table"
+    source_file: "Biocircuits_ROP_Periodic_Table.tex"
+    source_head: "7f462e4fad5008203fb01d048a6b0b58947cb829"
+    source_file_sha256: "9081811be206854dd3f2bdce14f998a4263400299c7cfd15b47ddcc852bb7596"
+    source_state: "uncommitted-working-copy"
+    observed:
+      manuscript_enumerated_networks: 5240
+      manuscript_networks_with_analyzed_cell: 5227
+      manuscript_networks_without_admissible_single_species_slice: 13
+      relationship_to_embedded_distinct_nid: "unknown"
+
+  - id: "runtime-atlas-datasets"
+    kind: "optional-runtime-data"
+    path_pattern: "datasets/*/manifest.json"
+    producer: "multiple-runtime-builders"
+    producer_sources:
+      - "webapp/scripts/reader"
+      - "webapp/scripts"
+    validator: "webapp/scripts/validate_artifacts.py"
+    schema: "schemas/latent-atlas-manifest.schema.json"
+    authority: "A present, hash-pinned manifest; no tracked instance exists at this revision"
+    status: "absent-optional"
+
+  - id: "periodic-search-runs"
+    kind: "generated-run-output"
+    paths:
+      - "results/periodic_table/runs/.gitkeep"
+      - "results/periodic_table/checkpoints/.gitkeep"
+    producer: "scripts/periodic_table/run_periodic_search.py"
+    validator: "scripts/periodic_table/verify_results.py"
+    authority: "A run manifest and result records, not the placeholder directories"
+    status: "no-tracked-run"
+
+  - id: "api-result-envelopes"
+    kind: "runtime-output"
+    storage: "runtime-only"
+    producer: "webapp/src/result_artifact.jl"
+    validator: "webapp/test/runtests.jl"
+    schema: "schemas/result-artifact.schema.json"
+    authority: "The returned/stored envelope and its input hashes"
+    status: "contract-tested"

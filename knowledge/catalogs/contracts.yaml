@@ -1,0 +1,265 @@
+schema_version: "bcx-contract-catalog/v1.0.0"
+verified_against: "f9c65a5"
+path_base: "repository-root"
+path_policy: "posix-relative"
+contracts:
+  - id: "http-api-v1"
+    version: "v1"
+    kind: "wire"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/api.md"
+    sources:
+      - "webapp/src/routing.jl"
+      - "webapp/src/serialization.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+    compatibility: "Canonical /api/v1; bare /api routes are deprecated aliases with declared sunset 2027-05-25."
+    coverage: "direct"
+
+  - id: "network-ir"
+    version: "bne-ir/v1.0.0"
+    kind: "schema"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/schemas.md"
+    sources:
+      - "webapp/src/ir.jl"
+      - "schemas/network-ir.schema.json"
+      - "webapp/scripts/gen_schemas.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+    compatibility: "Generated schema; parser accepts the bne-ir family and selected legacy reaction payloads."
+    coverage: "generated-drift-and-runtime"
+
+  - id: "design-spec"
+    version: "bne-design/v1.0.0"
+    kind: "schema"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/schemas.md"
+    sources:
+      - "webapp/src/ir.jl"
+      - "schemas/design-spec.schema.json"
+      - "webapp/scripts/gen_schemas.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+    compatibility: "Generated schema with typed known constraints and an extension escape hatch."
+    coverage: "generated-drift-and-runtime"
+
+  - id: "result-artifact"
+    version: "bne-result/v1.0.0"
+    kind: "schema-and-provenance"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "webapp/src/result_artifact.jl"
+      - "schemas/result-artifact.schema.json"
+    tests:
+      - "webapp/test/runtests.jl"
+    compatibility: "Envelope can be attached as a sibling to legacy flat responses."
+    coverage: "runtime-shape-and-version"
+
+  - id: "designability-spec"
+    version: "bne-designability/v1.0.0"
+    kind: "schema"
+    owner: "designability"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "webapp/src/designability.jl"
+      - "schemas/designability-spec.schema.json"
+    tests:
+      - "webapp/test/designability_spec_contract.jl"
+      - "webapp/test/design-spec-node-contract.test.mjs"
+    compatibility: "Normalizer requires the exact current version."
+    coverage: "direct"
+
+  - id: "designability-screen"
+    version: "bne-design-screen/v0.2.0"
+    kind: "schema-and-evidence"
+    owner: "designability"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "webapp/src/designability.jl"
+      - "schemas/designability-screen.schema.json"
+    tests:
+      - "webapp/test/designability_spec_contract.jl"
+      - "webapp/test/design_screen_contract.jl"
+    compatibility: "recommended is a compatibility alias for verified_recommendations, never screened_candidates."
+    coverage: "direct"
+
+  - id: "behavior-spec"
+    version: "bne-behavior/v0.1.0"
+    kind: "schema"
+    owner: "designability"
+    docs:
+      - "knowledge/contracts/schemas.md"
+    sources:
+      - "schemas/behavior-spec.schema.json"
+      - "webapp/src/latent_atlas/evaluators.jl"
+      - "webapp/scripts/llm_compile.py"
+    tests:
+      - "webapp/scripts/validate_artifacts.py"
+      - "webapp/test/test_phenotype_pipeline.jl"
+    compatibility: "Tracked benchmark behavior specs are instance-validated in CI."
+    coverage: "tracked-instances"
+
+  - id: "latent-atlas-manifest"
+    version: "latent-atlas-manifest/v0.1.0"
+    kind: "schema-and-provenance"
+    owner: "atlas"
+    docs:
+      - "knowledge/contracts/schemas.md"
+    sources:
+      - "schemas/latent-atlas-manifest.schema.json"
+      - "webapp/scripts/validate_artifacts.py"
+    tests:
+      - "webapp/scripts/validate_artifacts.py"
+    compatibility: "Validator coverage is conditional on datasets/*/manifest.json being present."
+    coverage: "conditional-no-tracked-instance"
+
+  - id: "reader-query-result"
+    version: "bne-reader-query/v0.1.0 + bne-reader-result/v0.1.0"
+    kind: "schema-and-evidence"
+    owner: "design-agent"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "schemas/reader-query.schema.json"
+      - "schemas/reader-result.schema.json"
+      - "webapp/scripts/reader/reader.py"
+    tests:
+      - "webapp/scripts/reader/test_reader_nofabrication.py"
+    compatibility: "Reader evidence tiers describe a frozen-corpus prior and never current-session verification."
+    coverage: "semantic-boundary-partial-schema"
+
+  - id: "target-spec"
+    version: "bne-target-spec/v0.1.0"
+    kind: "schema"
+    owner: "design-agent"
+    docs:
+      - "knowledge/contracts/schemas.md"
+    sources:
+      - "schemas/target-spec.schema.json"
+      - "webapp/scripts/reader/nl_target_compiler.py"
+    tests:
+      - "webapp/scripts/reader/test_reader_nofabrication.py"
+    compatibility: "Full schema-wide producer conformance is unknown."
+    coverage: "partial"
+
+  - id: "design-agent-trace"
+    version: "design-agent-trace/v0.1.0"
+    kind: "schema-and-provenance"
+    owner: "design-agent"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "schemas/design-agent-trace.schema.json"
+      - "webapp/scripts/design_agent.py"
+    tests:
+      - "webapp/scripts/test_design_agent_contract.py"
+    compatibility: "Trace writes are best-effort and API keys are excluded; stored-instance schema validation is unknown."
+    coverage: "workflow-partial-schema"
+
+  - id: "network-identity"
+    version: "current-at-f9c65a5"
+    kind: "identity"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/glossary.md"
+    sources:
+      - "webapp/src/canonicalization.jl"
+      - "webapp/src/ir.jl"
+    tests:
+      - "webapp/test/runtests.jl"
+    compatibility: "Topology identity is reaction-order and base-species-rename invariant for supported binding grammar; full content hash retains parameter/observable values."
+    coverage: "direct"
+
+  - id: "atlas-behavior-identity"
+    version: "exact_profile_v1"
+    kind: "identity"
+    owner: "atlas"
+    docs:
+      - "knowledge/glossary.md"
+    sources:
+      - "webapp/src/behavior_program_codec.jl"
+      - "webapp/src/atlas.jl"
+      - "webapp/src/inverse_design.jl"
+    tests:
+      - "webapp/test/inverse_config_contract.jl"
+    compatibility: "Quantization digits/scale, program_identity, and support_semantics travel together."
+    coverage: "direct"
+
+  - id: "sbml-identity-roundtrip"
+    version: "current-at-f9c65a5"
+    kind: "exchange"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/api.md"
+    sources:
+      - "webapp/src/sbml.jl"
+      - "webapp/src/reaction_parser.jl"
+      - "webapp/public/js/sbml-io.js"
+    tests:
+      - "webapp/test/runtests.jl"
+      - "webapp/test/reaction-species.test.mjs"
+    compatibility: "Executable SId and display name remain distinct across import/build/export/reimport."
+    coverage: "direct"
+
+  - id: "job-lifecycle"
+    version: "current-at-f9c65a5"
+    kind: "state-machine"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/api.md"
+    sources:
+      - "webapp/src/jobs.jl"
+      - "webapp/src/cancellation.jl"
+    tests:
+      - "webapp/test/jobs_cancellation_contract.jl"
+      - "webapp/test/cooperative_cancel_checkpoints_contract.jl"
+    compatibility: "Terminal state is monotonic; local cancellation is cooperative; remote calls execute outside the shared job lock; a persisted claim serializes concurrent AWS cancel dispatch and is released for retry after failure."
+    coverage: "direct-race-contracts"
+
+  - id: "periodic-table-result"
+    version: "periodic_d_mu_v0/0.2.0"
+    kind: "research-result"
+    owner: "periodic-table-research"
+    docs:
+      - "knowledge/contracts/scientific-evidence.md"
+      - "knowledge/research/repositories.md"
+    sources:
+      - "src/periodic_table/complete_definition.py"
+      - "src/periodic_table/result_schema.py"
+      - "src/periodic_table/candidate_search.py"
+    tests:
+      - "tests/test_periodic_table.py"
+    compatibility: "Bounded candidate search may emit witnesses but does not certify non-trivial absence."
+    coverage: "direct-small-contracts"
+
+  - id: "scientific-evidence"
+    version: "bcx-evidence/v1.0.0"
+    kind: "policy"
+    owner: "cross-module"
+    docs:
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "webapp/scripts/design_agent.py"
+      - "webapp/scripts/reader/reader.py"
+      - "webapp/src/designability.jl"
+      - "src/periodic_table/candidate_search.py"
+    tests:
+      - "webapp/scripts/test_design_agent_contract.py"
+      - "webapp/scripts/reader/test_reader_nofabrication.py"
+      - "webapp/test/designability_spec_contract.jl"
+      - "tests/test_periodic_table.py"
+    compatibility: "Unknown, prior, current computation, verified recommendation, and theorem/enumeration evidence must not be silently upgraded."
+    coverage: "cross-module-boundary"

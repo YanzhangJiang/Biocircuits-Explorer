@@ -1,638 +1,179 @@
 # Biocircuits Explorer
 
-Biocircuits Explorer is an interactive tool for **Reaction Order Polyhedra (ROP)** analysis of equilibrium binding networks. It provides a browser UI for constructing binding networks, enumerating structural regimes, visualizing regime graphs, and exploring SISO paths and polyhedral geometry.
+Biocircuits Explorer helps researchers understand how equilibrium
+protein-binding networks respond when an input changes, then search for
+networks that can produce a desired response. It combines mathematical
+analysis, numerical checks, reusable results, and evidence-labelled designs.
 
-![Demo](main.png)
+The repository contains a browser workspace, a Julia computation service, a
+Python Design Agent service, a native macOS shell, batch/HPC tooling, and the
+local `BindingAndCatalysis` mathematics engine.
 
-## Repository Layout
+![Biocircuits Explorer workspace](main.png)
 
-```text
-Biocircuits-Explorer/
-├── Bnc_julia/    # Local copy of BindingAndCatalysis.jl
-├── webapp/       # Julia HTTP backend and frontend assets
-├── packaging/    # PackageCompiler build scripts for standalone backend bundles
-├── frontend-swift/ # Native macOS SwiftUI shell
-├── deploy/       # Docker + Nginx deployment files
-├── LICENSE
-└── README.md
-```
+## Start here
 
-## Project Wiki
+For a short architectural orientation, read [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
+The maintained developer knowledge base begins at
+[knowledge/README.md](knowledge/README.md). Coding agents should follow
+[AGENTS.md](AGENTS.md).
 
-The browser-facing ROP and canvas guide lives in [`webapp/public/wiki.html`](webapp/public/wiki.html) and [`webapp/public/wiki.zh.html`](webapp/public/wiki.zh.html).
-A repo-local developer wiki is available under [`wiki/`](wiki/README.md), including quick start, architecture, API notes, atlas workflows, packaging, deployment, and development guidance.
+The browser-facing user guide remains in
+[webapp/public/wiki.html](webapp/public/wiki.html), with a Chinese version at
+[webapp/public/wiki.zh.html](webapp/public/wiki.zh.html). It is product
+documentation, not the source of truth for developer contracts.
 
-## Requirements
+## Verified toolchain
 
-- Julia 1.10 or newer
-- A modern browser
-- Xcode / `xcodebuild` for the macOS SwiftUI app
-- Docker + Docker Compose for server deployment
+- Julia 1.12 is exercised by CI and used by the production Docker image.
+- Julia 1.10 is declared compatible in `Project.toml`, but is not currently in
+  the CI matrix; treat it as declared rather than verified support.
+- Node.js 20 and Python 3.13 are exercised by CI.
+- Xcode is needed only for the native macOS shell.
+- Docker and AWS tooling are optional deployment paths.
 
-## Local Development
+## Quick start
 
-Clone the repository:
+Clone the repository and instantiate the Julia environment:
 
 ```bash
 git clone https://github.com/YanzhangJiang/Biocircuits-Explorer.git
 cd Biocircuits-Explorer
+julia --project=webapp -e '
+  using Pkg
+  Pkg.develop(path="Bnc_julia")
+  Pkg.instantiate()
+'
 ```
 
-Install Julia dependencies from the repository root:
-
-```bash
-julia --project=webapp -e 'using Pkg; Pkg.develop(path="Bnc_julia"); Pkg.instantiate(); Pkg.precompile()'
-```
-
-Start the web app locally:
+Start the Julia workspace service and the Python Design Agent service:
 
 ```bash
 cd webapp
 ./start.sh
 ```
 
-The server listens on `http://127.0.0.1:8088` by default. To use another port:
+Open <http://127.0.0.1:8088>. The Julia service uses port `8088` by default;
+the Design Agent uses `8765`. It can start without credentials, but
+`/design-chat` returns `need_key` until a key is configured; Julia remains usable.
+
+To start only the Julia service or select a different port:
+
+```bash
+BIOCIRCUITS_EXPLORER_PORT=8090 \
+  julia -t auto --project=webapp webapp/server.jl
+```
+
+Liveness, readiness, metrics, and API discovery are available at:
+
+```bash
+curl http://127.0.0.1:8088/health
+curl http://127.0.0.1:8088/ready
+curl http://127.0.0.1:8088/metrics
+curl http://127.0.0.1:8088/api/v1
+```
+
+`/api/v1/*` is the canonical API. Bare `/api/*` routes are compatibility
+aliases and return an `X-API-Deprecation` header; their declared sunset is
+2027-05-25. See [knowledge/contracts/api.md](knowledge/contracts/api.md).
+
+## Repository map
+
+```text
+Bnc_julia/                 local BindingAndCatalysis math engine
+webapp/src/                Julia service, Atlas, IR, jobs, and API routing
+webapp/public/             browser workspace and product guide
+webapp/scripts/            Python Design Agent, Reader, synthesis, migrations
+schemas/                   versioned interchange schemas
+frontend-swift/            native macOS shell
+packaging/                 relocatable backend-bundle builder
+deploy/                    Docker, Nginx, and optional AWS Batch deployment
+src/periodic_table/        bounded periodic-table research primitives
+scripts/periodic_table/    periodic-table search and reproduction entrypoints
+atlas_specs/               checked-in Atlas build specifications
+tests/                     repository-level Python contracts
+knowledge/                 maintained, evidence-linked developer knowledge
+paper_rop_periodic_table/  embedded reproducibility snapshot, not manuscript authority
+```
+
+Module ownership, tests, and known gaps are indexed in
+[knowledge/catalogs/modules.yaml](knowledge/catalogs/modules.yaml).
+
+## Verification
+
+Run the two Julia suites from the repository root:
+
+```bash
+JULIA_NUM_THREADS=auto julia --project=webapp webapp/test/runtests.jl
+JULIA_NUM_THREADS=auto julia --project=webapp Bnc_julia/test/runtests.jl
+julia --project=webapp webapp/test/test_phenotype_pipeline.jl
+```
+
+Run frontend, Agent, and repository-level Python contracts:
 
 ```bash
 cd webapp
-BIOCIRCUITS_EXPLORER_PORT=8090 julia -t auto --project=. server.jl
+npm ci
+npm run lint
+npm run test:js
+npm run test:py
+npm run check-i18n-sync
+cd ..
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-## macOS SwiftUI Development
+The Function-Space Reader regression needs NumPy but does not require the
+large Atlas:
 
-First build the standalone backend bundle:
+```bash
+python3 -m pip install numpy
+python3 webapp/scripts/reader/test_reader_nofabrication.py
+```
+
+CI also regenerates IR schemas and rejects a schema diff. The complete test
+matrix and change-specific gates are in [AGENTS.md](AGENTS.md).
+
+## Evidence boundaries
+
+- A retrieved Atlas or Reader candidate is a prior, not a verified design.
+  Re-run it through the Julia engine before presenting it as computed evidence.
+- Proxy scores, labels, and finite search results are not proofs of
+  realizability, robustness, minimality, or impossibility.
+- Scientific numbers belong in versioned artifact manifests and claim ledgers,
+  not duplicated prose. Conflicting counts remain explicitly unresolved until
+  their population semantics and hashes are reconciled.
+- The current manuscript and this computation repository have different
+  owners. See [knowledge/research/repositories.md](knowledge/research/repositories.md).
+
+## Packaging and deployment
+
+Build a relocatable backend bundle:
 
 ```bash
 julia --project=packaging packaging/build_backend_app.jl
 ```
 
-This generates:
-
-```text
-dist/BiocircuitsExplorerBackend/
-dist/BiocircuitsExplorerBackend/bin/biocircuits-explorer-backend
-```
-
-Then build the native macOS app:
+Build the native macOS shell after the bundle exists:
 
 ```bash
-xcodebuild -project frontend-swift/BiocircuitsExplorerMac.xcodeproj -scheme BiocircuitsExplorerMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project frontend-swift/BiocircuitsExplorerMac.xcodeproj \
+  -scheme BiocircuitsExplorerMac -configuration Debug \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The SwiftUI app launches the bundled backend locally when available, and can fall back to source-mode startup during development.
-
-## Server Deployment
-
-The `deploy/` directory contains a source-based Docker deployment:
-
-- `deploy/Dockerfile` builds the Julia backend image
-- `deploy/docker-compose.yml` runs the Julia app behind Nginx
-- `deploy/nginx.conf` serves static assets and proxies API traffic
-- `deploy/build_image.sh` builds and optionally pushes versioned Docker images
-- `deploy/setup_aws_batch.sh` creates the optional S3/AWS Batch cloud-compute stack
-
-Build and start the server:
+Build the source-based application image:
 
 ```bash
-cd deploy
-docker compose build
-docker compose up -d
+docker compose -f deploy/docker-compose.yml build julia-app
 ```
 
-The backend runs on port `8088` inside the container, and Nginx exposes the service on ports `80` and `443`.
-Set `BIOCIRCUITS_EXPLORER_IMAGE` to run a prebuilt ECR image instead of building
-on the EC2 host.
-
-## Versioned Docker Images
-
-The application version lives in the repository-root `VERSION` file. Keep it in
-sync with Julia project metadata using:
-
-```bash
-scripts/set_version.sh 0.1.1
-```
-
-Build a local Linux/amd64 image tagged with the app version and current git
-revision:
-
-```bash
-deploy/build_image.sh
-```
-
-Build and push to Amazon ECR:
-
-```bash
-deploy/build_image.sh \
-  --push \
-  --create-ecr-repo \
-  --latest \
-  --repo <account>.dkr.ecr.<region>.amazonaws.com/biocircuits-explorer
-```
-
-Useful environment variables:
-
-- `IMAGE_REPOSITORY` or `ECR_REPOSITORY_URI` sets the image repository.
-- `PLATFORM` defaults to `linux/amd64`, which is the safest first target for AWS Batch EC2 compute.
-- `BIOCIRCUITS_EXPLORER_VERSION` overrides `VERSION` for a one-off build.
-
-The image is tagged as both `<version>` and `<version>-<git-sha>`. If the
-worktree is dirty, the git tag suffix becomes `<git-sha>-dirty`; pass
-`--require-clean` for release builds. Runtime build metadata is available from:
-
-```bash
-curl http://127.0.0.1:8088/api/version
-```
-
-## AWS Batch Cloud Compute
-
-Cloud compute uses ECR for the Docker image, S3 for job artifacts, and AWS Batch
-for worker execution. The S3 bucket stores only per-job JSON files, not Docker
-images.
-
-The setup helper creates the S3 bucket, IAM roles/policies, CloudWatch log
-group, Batch compute environment, queue, and job definition:
-
-```bash
-deploy/setup_aws_batch.sh \
-  --region us-west-2 \
-  --image <account>.dkr.ecr.us-west-2.amazonaws.com/biocircuits-explorer:latest
-```
-
-The setup caller needs the permissions in
-`deploy/aws_setup_permissions_policy.json`. After setup, copy or source the
-generated `deploy/aws-runtime.env` on the EC2 website host or macOS local
-backend. Full notes are in `deploy/AWS_BATCH.md`.
-
-## Build Release Artifacts
-
-### 1. Standalone Backend Bundle
-
-Build the relocatable backend bundle:
-
-```bash
-julia --project=packaging packaging/build_backend_app.jl
-```
-
-Output:
-
-```text
-dist/BiocircuitsExplorerBackend/
-```
-
-This bundle contains the Julia runtime, the compiled backend executable, and the frontend assets.
-
-### 2. macOS SwiftUI App
-
-Build the macOS app from the repository root:
-
-```bash
-julia --project=packaging packaging/build_backend_app.jl
-xcodebuild -project frontend-swift/BiocircuitsExplorerMac.xcodeproj -scheme BiocircuitsExplorerMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
-```
-
-The build output is managed by Xcode in its build products / DerivedData location.
-
-
-## How To Use A Published Release
-
-### macOS app release
-
-1. Download the packaged macOS app archive.
-2. Unzip the app bundle.
-3. Launch the app. It starts its local backend automatically and opens the UI.
-
-### Backend-only release
-
-1. Extract the backend bundle archive.
-2. Start the executable:
-
-```bash
-cd BiocircuitsExplorerBackend
-BIOCIRCUITS_EXPLORER_PORT=8088 ./bin/biocircuits-explorer-backend
-```
-
-3. Open `http://127.0.0.1:8088` in a browser.
-
-## API Overview
-
-The backend exposes JSON APIs under `/api/`, including:
-
-- `POST /api/build_atlas`
-- `POST /api/build_atlas_library`
-- `POST /api/merge_atlas_library`
-- `POST /api/query_atlas`
-- `POST /api/run_inverse_design`
-- `POST /api/build_model`
-- `POST /api/find_vertices`
-- `POST /api/build_graph`
-- `POST /api/siso_paths`
-- `POST /api/siso_polyhedra`
-- `POST /api/siso_trajectory`
-- `POST /api/rop_cloud`
-- `POST /api/vertex_detail`
-- `POST /api/fret_heatmap`
-
-Sessions expire after one hour of inactivity.
-
-### Async Job API
-
-Longer-running computations can also be submitted through the asynchronous job
-surface. Jobs can run locally in the Julia backend process or be submitted to
-AWS Batch. Local jobs store artifacts under `webapp/job_store/` by default.
-
-- `POST /api/jobs`
-- `GET /api/jobs/{job_id}`
-- `GET /api/jobs/{job_id}/result`
-- `POST /api/jobs/{job_id}/cancel`
-
-Local execution request:
-
-```json
-{
-  "kind": "build_atlas",
-  "execution": { "mode": "local_async" },
-  "spec": {}
-}
-```
-
-AWS Batch execution request:
-
-```json
-{
-  "kind": "build_atlas",
-  "execution": { "mode": "aws_batch" },
-  "spec": {}
-}
-```
-
-The Batch executor reads these server-side environment variables:
-
-- `BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE`
-- `BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION`
-- `BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX`, for example `s3://bucket/prefix`
-- `BIOCIRCUITS_EXPLORER_AWS_CLI`, optional path to the `aws` CLI
-
-For trusted internal deployments, request-level overrides for Batch queue,
-job definition, artifact prefix, and container environment can be enabled with
-`BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG=true`.
-
-The worker command used by the Batch container is:
-
-```bash
-julia -t auto --project=webapp webapp/scripts/run_batch_job.jl \
-  --input-uri s3://bucket/prefix/job/input.json \
-  --status-uri s3://bucket/prefix/job/status.json \
-  --result-uri s3://bucket/prefix/job/result.json
-```
-
-## Atlas Batch Prototype
-
-The repository now includes a first atlas-oriented batch builder that wraps the
-existing single-network behavior classifier.
-
-Build an atlas JSON from a network spec file:
-
-```bash
-julia --project=webapp webapp/build_atlas.jl path/to/spec.json path/to/atlas.json
-```
-
-The input spec should contain a `networks` array and may optionally override
-the default `search_profile` and `behavior_config`. For example:
-
-```json
-{
-  "behavior_config": {
-    "path_scope": "feasible",
-    "min_volume_mean": 0.0
-  },
-  "networks": [
-    {
-      "label": "monomer_dimer",
-      "reactions": ["A + B <-> AB"],
-      "input_symbols": ["tA"],
-      "output_symbols": ["AB"]
-    }
-  ]
-}
-```
-
-You can also let the backend enumerate a small v0 search space instead of
-listing `networks` explicitly:
-
-```json
-{
-  "behavior_config": {
-    "path_scope": "feasible",
-    "min_volume_mean": 0.0
-  },
-  "enumeration": {
-    "mode": "pairwise_binding",
-    "base_species_counts": [2, 3],
-    "min_reactions": 1,
-    "max_reactions": 2
-  }
-}
-```
-
-The resulting atlas is organized into:
-
-- `network_entries`
-- `input_graph_slices`
-- `behavior_slices`
-- `regime_records`
-- `transition_records`
-- `family_buckets`
-- `path_records`
-
-You may also include an existing atlas library as `library` together with
-`skip_existing=true` to build only the delta atlas that is not already covered
-by previously computed slices.
-
-If you provide `sqlite_path`, the builder can also prune directly against a
-persisted SQLite atlas store. Set `persist_sqlite=true` if you want the delta
-atlas to be merged back into that store immediately after the build.
-
-There is also a matching backend route:
-
-- `POST /api/build_atlas`
-
-## Atlas Library Prototype
-
-Atlas JSON files can now be promoted into a reusable atlas library that supports
-incremental imports and re-querying without rebuilding prior results.
-
-Build a new atlas library from an atlas spec or atlas JSON:
-
-```bash
-julia --project=webapp webapp/build_atlas_library.jl path/to/input.json path/to/library.json
-```
-
-Merge a new atlas or atlas spec into an existing library:
-
-```bash
-julia --project=webapp webapp/merge_atlas_library.jl path/to/library.json path/to/input.json path/to/merged_library.json
-```
-
-When the merge input is an atlas spec rather than a precomputed atlas JSON, the
-merge pipeline now prunes against the existing library before running behavior
-classification. Any slice already present in the library under the same
-`network_id + input + output + classifier_config` signature is skipped instead
-of being recomputed.
-
-The library keeps:
-
-- `atlas_manifests` for import provenance
-- merged `network_entries`
-- merged `behavior_slices`
-- merged `family_buckets`
-- merged `path_records`
-- `merge_events` for incremental import history
-
-Repeated imports of the same atlas corpus are skipped at the manifest level.
-Spec-driven merges that would add no new slices are recorded as
-`skipped_all_existing` merge events rather than creating an empty atlas import.
-
-Matching backend routes:
-
-- `POST /api/build_atlas_library`
-- `POST /api/merge_atlas_library`
-
-Current limitation: the built-in enumerator only supports the first
-`binding_small_v0`-style search mode, namely small reversible pairwise binding
-networks with all base species required to appear in at least one reaction.
-
-## SQLite Atlas Store
-
-The same atlas library can now be persisted in SQLite. The database keeps a
-full library snapshot plus indexed record tables for:
-
-- `network_entries`
-- `input_graph_slices`
-- `behavior_slices`
-- `regime_records`
-- `transition_records`
-- `family_buckets`
-- `path_records`
-
-This enables two things:
-
-- persistent atlas-library reuse across runs
-- direct `slice_id` lookups to skip already computed behavior slices before
-  re-running classification
-
-Build or merge an atlas spec directly into a SQLite store:
-
-```bash
-julia --project=webapp webapp/build_atlas_sqlite.jl path/to/input.json path/to/atlas.sqlite
-```
-
-Export the current SQLite store back to a JSON atlas library:
-
-```bash
-julia --project=webapp webapp/export_atlas_library_sqlite.jl path/to/atlas.sqlite path/to/library.json
-```
-
-Specs for `build_atlas`, `merge_atlas_library`, `query_atlas`, and
-`run_inverse_design` may also include `sqlite_path`. When present, the backend
-can load the persisted library, prune against existing `slice_id`s, and save
-the merged library back to disk.
-
-The Node Edition atlas workflow now exposes the same SQLite path directly in
-the UI:
-
-- `Atlas Spec` can reuse an existing SQLite store and optionally persist the
-  newly built delta atlas back into it
-- `Atlas Query Config` can query a SQLite store directly, or prefer the
-  persisted store attached to an upstream `Atlas Builder`
-
-## Atlas Query Prototype
-
-Once an atlas JSON has been generated, you can query it for candidate behavior
-slices:
-
-```bash
-julia --project=webapp webapp/query_atlas.jl path/to/atlas.json path/to/query.json path/to/result.json
-```
-
-The same command also accepts a SQLite atlas store as the first argument:
-
-```bash
-julia --project=webapp webapp/query_atlas.jl path/to/atlas.sqlite path/to/query.json path/to/result.json
-```
-
-Example query:
-
-```json
-{
-  "motif_labels": ["activation_with_saturation"],
-  "input_symbols": ["tA"],
-  "output_symbols": ["AB"],
-  "ranking_mode": "minimal_first",
-  "limit": 10
-}
-```
-
-There is also a compact goal-oriented form for common inverse-design queries:
-
-```json
-{
-  "goal": {
-    "io": "tA -> AB",
-    "motif": "activation_with_saturation",
-    "witness": "source:0 -> +1 -> sink:+1",
-    "forbid_regimes": ["singular"],
-    "robust": true,
-    "min_volume": 0.02
-  },
-  "ranking_mode": "minimal_first",
-  "collapse_by_network": true,
-  "limit": 10
-}
-```
-
-The backend expands this compact `goal` block into the lower-level
-`required_regimes / required_transitions / required_path_sequences /
-polytope_spec` fields used by the atlas query engine.
-
-Current query filters support:
-
-- motif-family labels
-- exact-family labels
-- input and output symbol constraints
-- structural upper bounds such as base species count, reaction count, and support
-- `minimal_first` or `robustness_first` ranking
-
-There is also a matching backend route:
-
-- `POST /api/query_atlas`
-
-The same query script also works on atlas library JSON files, since the library
-preserves the merged atlas object layers needed by the query engine.
-
-## Inverse Design Controller Prototype
-
-The repository now also includes a first inverse-design controller that chains:
-
-- atlas-library reuse
-- library-aware delta atlas construction
-- library merge
-- atlas query
-
-Run it from a single JSON request:
-
-```bash
-julia --project=webapp webapp/run_inverse_design.jl path/to/request.json path/to/result.json
-```
-
-Example request:
-
-```json
-{
-  "library": {
-    "atlas_library_schema_version": "0.1.0",
-    "atlas_schema_version": "0.1.0",
-    "atlas_manifests": [],
-    "merge_events": [],
-    "network_entries": [],
-    "behavior_slices": [],
-    "family_buckets": [],
-    "path_records": [],
-    "duplicate_inputs": []
-  },
-  "inverse_design": {
-    "source_label": "activation_search",
-    "skip_existing": true,
-    "build_library_if_missing": true
-  },
-  "enumeration": {
-    "mode": "pairwise_binding",
-    "base_species_counts": [2, 3],
-    "min_reactions": 1,
-    "max_reactions": 2
-  },
-  "behavior_config": {
-    "path_scope": "robust",
-    "min_volume_mean": 0.01
-  },
-  "query": {
-    "motif_labels": ["activation_with_saturation"],
-    "input_symbols": ["tA"],
-    "ranking_mode": "minimal_first",
-    "collapse_by_network": true,
-    "limit": 5
-  }
-}
-```
-
-The controller returns:
-
-- `delta_atlas_summary` for the newly computed atlas increment
-- `library_summary` for the post-merge atlas library
-- `query_result` for the requested behavior search
-
-The inverse-design controller now defaults to a versioned
-`support-first + summary-first + lazy witness` workflow:
-
-- raw requests are first compiled into a stable hashed `Gamma_Q`
-- candidate supports are screened before realized slice analysis
-- atlas delta builds default to summary-only records (no eager `path_records`)
-- witness paths are materialized only when a query or refinement step needs them
-- hard negatives and soft failures are stored separately and remain profile-relative
-
-You can also attach an optional `refinement` block to numerically post-process
-the top atlas candidates. The current controller first tries polytope-guided
-seeds from a materialized witness path and only falls back to random background
-scans when no reliable witness polyhedron is available.
-
-Example refinement block:
-
-```json
-{
-  "refinement": {
-    "enabled": true,
-    "top_k": 3,
-    "trials": 6,
-    "param_min": -6.0,
-    "param_max": 6.0,
-    "n_points": 200,
-    "background_min": -3.0,
-    "background_max": 3.0,
-    "include_traces": true,
-    "rerank_by_refinement": true
-  }
-}
-```
-
-When enabled, `run_inverse_design` will return an additional
-`refinement_result` block with per-candidate scan summaries, inferred numeric
-motif labels, and the best trial found for each candidate.
-
-If the request includes an existing library plus `skip_existing=true`, then any
-slice already present in that library under the same
-`network_id + input + output + classifier_config` signature is skipped before
-behavior classification runs.
-
-Matching backend route:
-
-- `POST /api/run_inverse_design`
-
-The Node Edition frontend now exposes the same workflow directly in the UI:
-
-- `Atlas Spec`
-- `Atlas Builder`
-- `Atlas Query Config`
-- `Atlas Query Result`
-- `Atlas Inverse Design`
-
-You can add them individually from `Add Node`, or use `Quick Add -> Atlas Workflow`
-to create a connected atlas build/query chain. `Quick Add -> Atlas Inverse Design`
-creates a spec/query/pipeline chain that runs `run_inverse_design` with the
-same support-first, summary-first, lazy-witness backend.
-
-## Acknowledgment
-
-The core computational engine is [BindingAndCatalysis.jl](https://github.com/Qinguo25/BindingAndCatalysis.jl) by Qinguo Liu. The `Bnc_julia/` directory in this repository is a local copy of that package. Credit for the underlying ROP theory implementation belongs to the original authors.
-
-## License
-
-This repository uses the license defined in the root `LICENSE` file. The vendored `BindingAndCatalysis.jl` copy in `Bnc_julia/` remains separately licensed under MIT by its original author.
+The full Nginx stack needs deployment-specific TLS and domain configuration.
+See [knowledge/modules/deployment.md](knowledge/modules/deployment.md) for its
+contracts and currently unverified surfaces.
+
+## Version and license
+
+The application version is owned by `VERSION`. Update synchronized metadata
+with `scripts/set_version.sh <version>`. Runtime build information is returned
+by `/api/v1/version`.
+Biocircuits Explorer is released under the [MIT License](LICENSE).

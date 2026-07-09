@@ -160,3 +160,6 @@ deps/build.log
 *.bak
 *.tmp
 *.orig
+
+# Local, disposable task handoffs (never a source of project truth)
+.agent/handoffs/
