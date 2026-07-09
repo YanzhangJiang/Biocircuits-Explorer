@@ -79,19 +79,76 @@ end
 """
     local_images_enabled(; has_parent_pid)
 
-`has_parent_pid` is true when the backend was launched by the native macOS
-shell (which sets a parent-PID env var). Deployed servers leave this false
-and must opt in via `BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES=1`; otherwise
-the local-image endpoint would expose arbitrary user files on a public port.
+`has_parent_pid` is true when the backend was launched by a local supervisor.
+That shortcut is safe only while the effective bind host remains loopback.
+Public binds must opt in via `BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES=1`;
+otherwise the local-image endpoint would expose arbitrary user files on a
+network-reachable port.
 """
 function local_images_enabled(; has_parent_pid::Bool = false)
-    has_parent_pid && return true
+    if has_parent_pid
+        configured_host = lowercase(strip(Config.host_override()))
+        (isempty(configured_host) || configured_host in ("127.0.0.1", "localhost", "::1")) &&
+            return true
+    end
     return Config.allow_local_images()
+end
+
+function _normalized_http_origin(uri::HTTP.URI)
+    scheme = lowercase(String(uri.scheme))
+    scheme in ("http", "https") || return nothing
+    isempty(uri.host) && return nothing
+    isempty(uri.userinfo) || return nothing
+    isempty(uri.path) || uri.path == "/" || return nothing
+    isempty(uri.query) || return nothing
+    isempty(uri.fragment) || return nothing
+
+    port = if isempty(uri.port)
+        scheme == "https" ? 443 : 80
+    else
+        tryparse(Int, String(uri.port))
+    end
+    port === nothing && return nothing
+    1 <= port <= 65535 || return nothing
+    return (scheme, lowercase(String(uri.host)), port)
+end
+
+_is_loopback_origin_host(host::AbstractString) =
+    lowercase(String(host)) in ("127.0.0.1", "localhost", "::1")
+
+function _local_image_origin_allowed(req; require_loopback_origin::Bool = false)
+    origin = strip(HTTP.header(req, "Origin", ""))
+    isempty(origin) && return true
+
+    host = strip(HTTP.header(req, "Host", ""))
+    isempty(host) && return false
+    forwarded_proto = strip(first(split(HTTP.header(req, "X-Forwarded-Proto", ""), ',')))
+    scheme = isempty(forwarded_proto) ? "http" : lowercase(forwarded_proto)
+    scheme in ("http", "https") || return false
+
+    origin_uri = try
+        HTTP.URI(origin)
+    catch
+        return false
+    end
+    request_uri = try
+        HTTP.URI("$(scheme)://$(host)")
+    catch
+        return false
+    end
+    normalized_origin = _normalized_http_origin(origin_uri)
+    normalized_request = _normalized_http_origin(request_uri)
+    normalized_origin !== nothing || return false
+    require_loopback_origin && !_is_loopback_origin_host(normalized_origin[2]) && return false
+    return normalized_origin == normalized_request
 end
 
 function handle_local_image(req; has_parent_pid::Bool = false)
     if !local_images_enabled(; has_parent_pid = has_parent_pid)
         return HTTP.Response(403, "Local image serving is disabled in this deployment")
+    end
+    if !_local_image_origin_allowed(req; require_loopback_origin=has_parent_pid)
+        return HTTP.Response(403, "Cross-origin local image access is forbidden")
     end
 
     uri = HTTP.URI(req.target)

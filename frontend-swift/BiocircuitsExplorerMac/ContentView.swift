@@ -121,7 +121,7 @@ struct ContentView: View {
     init() {
         let store = ProjectStore()
         let backendController = BiocircuitsBackendController()
-        let designChatController = DesignChatBackendController()
+        let designChatController = DesignChatBackendController(enginePort: backendController.port)
         let defaults = UserDefaults.standard
         if defaults.string(forKey: "biocircuitsExplorer.themeMode") == nil,
            let legacyThemeMode = defaults.string(forKey: "ropExplorer.themeMode")
@@ -187,7 +187,9 @@ struct ContentView: View {
                 // Sits just to the right of the sidebar toggle in the leading
                 // area, but in its OWN glass group — the spacer breaks the
                 // Liquid Glass grouping so the two controls aren't boxed together.
-                ToolbarSpacer(.fixed, placement: .navigation)
+                if #available(macOS 26.0, *) {
+                    ToolbarSpacer(.fixed, placement: .navigation)
+                }
 
                 ToolbarItem(placement: .navigation) {
                     // Native segmented control: macOS's built-in Liquid Glass
@@ -746,11 +748,18 @@ struct ContentView: View {
     }
 
     private func injectDesignChatEndpoint() {
-        guard webController.isReady, designChatController.isReady else {
+        guard
+            webController.isReady,
+            designChatController.isReady,
+            let bearerToken = designChatController.bearerToken
+        else {
             return
         }
 
-        webController.setDesignChatEndpoint(designChatController.endpointURL.absoluteString)
+        webController.setDesignChatEndpoint(
+            designChatController.endpointURL.absoluteString,
+            bearerToken: bearerToken
+        )
     }
 
     private func revealSelection() {

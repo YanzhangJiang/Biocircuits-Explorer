@@ -6,8 +6,9 @@ import Foundation
 /// talks to. It is intentionally a *sibling* of `BiocircuitsBackendController`
 /// (the Julia analysis server): the Design Agent posts to this process, the node
 /// workspace posts to the Julia one. The script is dependency-free (Python stdlib
-/// only) and runs the rule-based compiler when no LLM key is supplied, so the
-/// agent returns verified atlas candidates out of the box.
+/// only for its chat entry path. The service can start without an LLM key, but
+/// design requests then return `need_key`; optional Reader features also need
+/// their documented host Python packages and data.
 ///
 /// Failure here is non-fatal: if Python or the script/datasets are missing the
 /// node Workspace still works and the Design Agent surface reports "offline".
@@ -24,8 +25,10 @@ final class DesignChatBackendController: ObservableObject {
     @Published private(set) var isStarting = false
     @Published private(set) var statusMessage = "Design backend not started"
     @Published var lastErrorMessage: String?
+    private(set) var bearerToken: String?
 
     let port: Int
+    let enginePort: Int
 
     /// The endpoint the frontend POSTs each conversation turn to.
     var endpointURL: URL {
@@ -34,6 +37,10 @@ final class DesignChatBackendController: ObservableObject {
 
     private var healthURL: URL {
         URL(string: "http://127.0.0.1:\(port)/health")!
+    }
+
+    private var allowedOrigin: String {
+        Self.nativeAllowedOrigin(enginePort: enginePort)
     }
 
     private let startupTimeout: TimeInterval = 30
@@ -53,11 +60,13 @@ final class DesignChatBackendController: ObservableObject {
 
     init(
         port: Int? = nil,
+        enginePort: Int? = nil,
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.environment = environment
         self.port = port ?? Self.resolveConfiguredPort(from: environment)
+        self.enginePort = enginePort ?? Self.resolveConfiguredEnginePort(from: environment)
         self.fileManager = fileManager
     }
 
@@ -72,6 +81,62 @@ final class DesignChatBackendController: ObservableObject {
         }
 
         return port
+    }
+
+    nonisolated static func resolveConfiguredEnginePort(from environment: [String: String]) -> Int {
+        for key in ["BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"] {
+            guard
+                let rawPort = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                let port = Int(rawPort),
+                (1...65_535).contains(port)
+            else {
+                continue
+            }
+            return port
+        }
+        return 18_088
+    }
+
+    nonisolated static func enginePortEnvironment(_ enginePort: Int) -> [String: String] {
+        [
+            "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
+            "BIOCIRCUITS_EXPLORER_PORT": String(enginePort),
+            "ROP_HOST": "127.0.0.1",
+            "ROP_PORT": String(enginePort),
+        ]
+    }
+
+    nonisolated static func nativeAllowedOrigin(enginePort: Int) -> String {
+        "http://127.0.0.1:\(enginePort)"
+    }
+
+    nonisolated static func makeBearerToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<32)
+            .map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }
+            .joined()
+    }
+
+    nonisolated static func nativeSecurityEnvironment(
+        enginePort: Int,
+        bearerToken: String
+    ) -> [String: String] {
+        [
+            "BNE_CHAT_ALLOWED_ORIGIN": nativeAllowedOrigin(enginePort: enginePort),
+            "BNE_CHAT_BEARER_TOKEN": bearerToken,
+            "BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK": "0",
+        ]
+    }
+
+    nonisolated static func authenticatedRequest(
+        url: URL,
+        bearerToken: String,
+        allowedOrigin: String
+    ) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(allowedOrigin, forHTTPHeaderField: "Origin")
+        return request
     }
 
     /// Start the backend if it is not already running. Never throws: discovery or
@@ -98,15 +163,16 @@ final class DesignChatBackendController: ObservableObject {
             isStarting = false
         }
 
-        if await probeBackend() {
+        if process?.isRunning == true, bearerToken != nil, await probeBackend() {
             isReady = true
             statusMessage = "Connected to running design backend"
             return
         }
 
+        let nextBearerToken = Self.makeBearerToken()
         let launchSpec: LaunchSpec
         do {
-            launchSpec = try resolveLaunchSpec()
+            launchSpec = try resolveLaunchSpec(bearerToken: nextBearerToken)
         } catch {
             lastErrorMessage = error.localizedDescription
             statusMessage = "Design backend unavailable"
@@ -115,7 +181,9 @@ final class DesignChatBackendController: ObservableObject {
 
         do {
             try launchBackend(using: launchSpec)
+            bearerToken = nextBearerToken
         } catch {
+            bearerToken = nil
             lastErrorMessage = error.localizedDescription
             statusMessage = "Design backend failed to launch"
             return
@@ -160,13 +228,14 @@ final class DesignChatBackendController: ObservableObject {
             process.terminate()
         }
         self.process = nil
+        bearerToken = nil
         if startedByApp {
             statusMessage = "Design backend stopped"
         }
         startedByApp = false
     }
 
-    private func resolveLaunchSpec() throws -> LaunchSpec {
+    private func resolveLaunchSpec(bearerToken: String) throws -> LaunchSpec {
         guard let scriptURL = locateChatScript() else {
             throw DesignChatError.scriptMissing
         }
@@ -185,6 +254,24 @@ final class DesignChatBackendController: ObservableObject {
             "BNE_CHAT_PARENT_PID": parentProcessIdentifierString,
             "PYTHONUNBUFFERED": "1",
         ]
+        spawnEnv.merge(Self.enginePortEnvironment(enginePort)) { _, explicit in explicit }
+        spawnEnv.merge(Self.nativeSecurityEnvironment(
+            enginePort: enginePort,
+            bearerToken: bearerToken
+        )) { _, explicit in explicit }
+        if let configuredTraceDirectory = environment["BNE_TRACE_DIR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !configuredTraceDirectory.isEmpty {
+            spawnEnv["BNE_TRACE_DIR"] = configuredTraceDirectory
+        } else if let appSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            spawnEnv["BNE_TRACE_DIR"] = appSupport
+                .appendingPathComponent("Biocircuits Explorer", isDirectory: true)
+                .appendingPathComponent("DesignAgentTraces", isDirectory: true)
+                .path
+        }
         // Surface any LLM credentials configured in the app's environment so the
         // NL→spec compiler can use them; the UI key panel still overrides per-turn.
         for key in ["BNE_LLM_PROVIDER", "BNE_LLM_API_KEY", "BNE_LLM_KEY_FILE", "BNE_LLM_BASE_URL", "BNE_LLM_MODEL"] {
@@ -207,13 +294,7 @@ final class DesignChatBackendController: ObservableObject {
         var candidates = [URL]()
 
         if let resourceURL = Bundle.main.resourceURL {
-            candidates.append(resourceURL
-                .appendingPathComponent("scripts", isDirectory: true)
-                .appendingPathComponent("chat_api.py"))
-            candidates.append(resourceURL
-                .appendingPathComponent("webapp", isDirectory: true)
-                .appendingPathComponent("scripts", isDirectory: true)
-                .appendingPathComponent("chat_api.py"))
+            candidates.append(contentsOf: Self.bundledChatScriptCandidates(resourceURL: resourceURL))
         }
 
         for root in configuredRepoRoots() {
@@ -224,6 +305,26 @@ final class DesignChatBackendController: ObservableObject {
         }
 
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    nonisolated static func bundledChatScriptCandidates(resourceURL: URL) -> [URL] {
+        let scriptSuffix = ["webapp", "scripts", "chat_api.py"]
+        var candidates = [
+            resourceURL
+                .appendingPathComponent("scripts", isDirectory: true)
+                .appendingPathComponent("chat_api.py"),
+            scriptSuffix.reduce(resourceURL) { $0.appendingPathComponent($1) },
+        ]
+
+        for backendName in ["backend", "BiocircuitsExplorerBackend", "ROPExplorerBackend"] {
+            let backendResource = resourceURL
+                .appendingPathComponent(backendName, isDirectory: true)
+                .appendingPathComponent("share", isDirectory: true)
+                .appendingPathComponent("biocircuits-explorer", isDirectory: true)
+            candidates.append(scriptSuffix.reduce(backendResource) { $0.appendingPathComponent($1) })
+        }
+
+        return candidates
     }
 
     private func resolvePythonExecutable() throws -> URL {
@@ -359,10 +460,12 @@ final class DesignChatBackendController: ObservableObject {
         process.terminationHandler = { [weak self] terminatedProcess in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard self.process === terminatedProcess else { return }
 
                 self.isReady = false
                 self.clearPipeHandlers()
                 self.process = nil
+                self.bearerToken = nil
                 let expectedStop = self.stopRequested
                     || (terminatedProcess.terminationReason == .exit && terminatedProcess.terminationStatus == 0)
                 self.stopRequested = false
@@ -414,7 +517,14 @@ final class DesignChatBackendController: ObservableObject {
     }
 
     private func probeBackend() async -> Bool {
-        var request = URLRequest(url: healthURL)
+        guard let bearerToken else {
+            return false
+        }
+        var request = Self.authenticatedRequest(
+            url: healthURL,
+            bearerToken: bearerToken,
+            allowedOrigin: allowedOrigin
+        )
         request.timeoutInterval = 2
 
         do {

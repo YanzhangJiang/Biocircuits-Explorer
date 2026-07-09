@@ -104,7 +104,10 @@ function parse_optional_int(raw::AbstractString)
     end
 end
 
-configured_parent_pid() = parse_optional_int(Config.parent_pid_raw())
+function configured_parent_pid()
+    parsed = parse_optional_int(Config.parent_pid_raw())
+    return parsed !== nothing && parsed > 0 ? parsed : nothing
+end
 
 current_parent_pid() = Int(ccall(:getppid, Cint, ()))
 
@@ -136,6 +139,26 @@ function parent_watchdog_loop(expected_parent_pid::Int; interval_seconds::Real=2
 end
 
 resolve_port() = Config.port()
+
+function _validate_bind_host(raw::AbstractString)
+    host = strip(String(raw))
+    isempty(host) && throw(ArgumentError("Bind host must not be empty."))
+    ncodeunits(host) <= 253 || throw(ArgumentError("Bind host is too long."))
+    all(c -> isletter(c) || isdigit(c) || c in ('.', '-', '_', ':', '%'), host) ||
+        throw(ArgumentError("Invalid bind host: $(repr(host)). Pass a hostname or IP address without a scheme, path, or port."))
+    if count(==(':'), host) == 1
+        throw(ArgumentError("Invalid bind host: $(repr(host)). Pass the port separately."))
+    end
+    return host
+end
+
+function resolve_host(expected_parent_pid::Union{Nothing, Int}=configured_parent_pid())
+    configured = Config.host_override()
+    if !isempty(configured)
+        return _validate_bind_host(configured)
+    end
+    return expected_parent_pid === nothing ? "0.0.0.0" : "127.0.0.1"
+end
 
 # Session cleanup task — delegates expiry to SessionStore, then prunes the
 # debug-log buffers attached to long-idle clients.
@@ -717,12 +740,24 @@ end
 # unready but should not be restarted.
 function handle_ready(req)
     initialized = _STARTUP_TIME_NS[] != 0
-    static_ok = isdir(static_dir())
+    static_root = try
+        static_dir()
+    catch err
+        @warn "Readiness static asset resolution failed" exception=(err, catch_backtrace())
+        nothing
+    end
+    static_ok = static_root !== nothing && isdir(static_root)
+    browser_entrypoint_ok = static_ok && isfile(joinpath(static_root, "index.html"))
+    native_entrypoint_ok = static_ok && isfile(joinpath(static_root, "index-node.html"))
+    job_store_ok = local_job_store_ready()
     checks = Dict{String, Any}(
         "module_initialized" => initialized,
         "static_assets"      => static_ok,
+        "browser_entrypoint" => browser_entrypoint_ok,
+        "native_entrypoint"  => native_entrypoint_ok,
+        "job_store"          => job_store_ok,
     )
-    ready = initialized && static_ok
+    ready = initialized && static_ok && browser_entrypoint_ok && native_entrypoint_ok && job_store_ok
     return json_response(Dict{String, Any}(
         "status" => ready ? "ready" : "not_ready",
         "checks" => checks,

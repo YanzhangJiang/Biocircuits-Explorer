@@ -23,6 +23,10 @@ final class BiocircuitsBackendController: ObservableObject {
         URL(string: "http://127.0.0.1:\(port)/")!
     }
 
+    private var readinessURL: URL {
+        baseURL.appendingPathComponent("ready")
+    }
+
     private let environment: [String: String]
     private let fileManager: FileManager
     private var process: Process?
@@ -142,6 +146,46 @@ final class BiocircuitsBackendController: ObservableObject {
             }
         }
         return nil
+    }
+
+    // deploy/setup_aws_batch.sh writes a mixed operator environment file, but
+    // the native helper only needs cloud/auth settings from it. In particular,
+    // network binding, static assets, and parent supervision always belong to
+    // the native shell and must never be overridden by that file.
+    nonisolated static let awsRuntimeEnvironmentAllowlist: Set<String> = [
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL",
+        "BIOCIRCUITS_EXPLORER_AWS_CLI",
+        "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG",
+        "BIOCIRCUITS_EXPLORER_COGNITO_REGION",
+        "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID",
+        "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID",
+        "BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN",
+        "BIOCIRCUITS_EXPLORER_COGNITO_JWKS_URL_OVERRIDE",
+        "BIOCIRCUITS_EXPLORER_QUOTA_TABLE",
+        "BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT",
+    ]
+
+    nonisolated static func securedBackendEnvironment(
+        runtimeEnvironment: [String: String],
+        bootstrapEnvironment: [String: String]
+    ) -> [String: String] {
+        var secured = runtimeEnvironment.filter {
+            awsRuntimeEnvironmentAllowlist.contains($0.key)
+        }
+        secured.merge(bootstrapEnvironment) { _, bootstrapValue in bootstrapValue }
+        return secured
     }
 
     // Parse a deploy/aws-runtime.env style file: KEY=VALUE lines, # comments,
@@ -311,18 +355,21 @@ final class BiocircuitsBackendController: ObservableObject {
         // top of the bootstrap vars. Without this the local Julia process has
         // no Cognito / AWS Batch knowledge and the Sign-in button stays
         // hidden because /api/auth/config reports enabled: false.
-        var spawnEnv: [String: String] = [
+        let bootstrapEnvironment: [String: String] = [
             "HOME": NSHomeDirectory(),
+            "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
             "BIOCIRCUITS_EXPLORER_PORT": String(port),
             "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
             "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
+            "ROP_HOST": "127.0.0.1",
             "ROP_PORT": String(port),
             "ROP_PUBLIC_DIR": publicDir.path,
             "ROP_PARENT_PID": parentProcessIdentifierString,
         ]
-        for (key, value) in loadAwsRuntimeEnv(repoRoots: configuredRepoRoots()) {
-            spawnEnv[key] = value
-        }
+        let spawnEnv = Self.securedBackendEnvironment(
+            runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: configuredRepoRoots()),
+            bootstrapEnvironment: bootstrapEnvironment
+        )
 
         return LaunchSpec(
             executableURL: executableURL,
@@ -349,18 +396,21 @@ final class BiocircuitsBackendController: ObservableObject {
             }
 
             let juliaURL = try resolveJuliaExecutable()
-            var spawnEnv: [String: String] = [
+            let bootstrapEnvironment: [String: String] = [
                 "HOME": NSHomeDirectory(),
+                "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
                 "BIOCIRCUITS_EXPLORER_PORT": String(port),
                 "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": publicDir.path,
                 "BIOCIRCUITS_EXPLORER_PARENT_PID": parentProcessIdentifierString,
+                "ROP_HOST": "127.0.0.1",
                 "ROP_PORT": String(port),
                 "ROP_PUBLIC_DIR": publicDir.path,
                 "ROP_PARENT_PID": parentProcessIdentifierString,
             ]
-            for (key, value) in loadAwsRuntimeEnv(repoRoots: repoRoots) {
-                spawnEnv[key] = value
-            }
+            let spawnEnv = Self.securedBackendEnvironment(
+                runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: repoRoots),
+                bootstrapEnvironment: bootstrapEnvironment
+            )
 
             return LaunchSpec(
                 executableURL: juliaURL,
@@ -581,18 +631,30 @@ final class BiocircuitsBackendController: ObservableObject {
     }
 
     private func probeBackend() async -> Bool {
-        var request = URLRequest(url: baseURL)
+        var request = URLRequest(url: readinessURL)
         request.timeoutInterval = 2
 
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 return false
             }
-            return 200..<400 ~= http.statusCode
+            return Self.readinessProbeSucceeded(statusCode: http.statusCode, body: data)
         } catch {
             return false
         }
+    }
+
+    nonisolated static func readinessProbeSucceeded(statusCode: Int, body: Data) -> Bool {
+        guard
+            statusCode == 200,
+            let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+            payload["status"] as? String == "ready"
+        else {
+            return false
+        }
+
+        return true
     }
 }
 

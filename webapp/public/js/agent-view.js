@@ -23,6 +23,7 @@ const CHAT_API_KEY = 'bcx-chat-api';
 const DEFAULT_CHATW = 440;
 const DEFAULT_CHAT_API = 'http://127.0.0.1:8765/design-chat';
 const DESIGNABILITY_SPEC_VERSION = 'bne-designability/v1.0.0';
+let chatBearerToken = '';
 
 // Backend chat endpoint (webapp/scripts/chat_api.py), resolved lazily each call so
 // the native macOS shell can pin the real port after the page has loaded:
@@ -38,13 +39,23 @@ function healthUrl() {
 }
 
 // Let the native shell (or the dev console) point the agent at a specific backend.
-export function setDesignChatEndpoint(url) {
+// The per-launch native token is intentionally memory-only: persisting it in
+// localStorage would leave a stale secret behind after the helper exits.
+export function setDesignChatEndpoint(url, bearerToken = '') {
   if (!url) return;
   window.__BCX_CHAT_API__ = String(url);
+  chatBearerToken = bearerToken ? String(bearerToken) : '';
   try { localStorage.setItem(CHAT_API_KEY, String(url)); } catch (_) { /* ignore */ }
   refreshBackendStatus();   // re-probe so the status pill reflects the new target
 }
 if (typeof window !== 'undefined') window.setDesignChatEndpoint = setDesignChatEndpoint;
+
+export function designChatRequestHeaders({ json = false } = {}) {
+  const headers = {};
+  if (json) headers['Content-Type'] = 'application/json';
+  if (chatBearerToken) headers.Authorization = `Bearer ${chatBearerToken}`;
+  return headers;
+}
 
 let agentBuilt = false;
 let threadEl = null;
@@ -757,7 +768,10 @@ async function refreshBackendStatus() {
   statusDotEl.className = 'agent-status-dot checking';
   if (statusTextEl) statusTextEl.textContent = 'Checking backend…';
   try {
-    const res = await fetch(healthUrl(), { method: 'GET' });
+    const res = await fetch(healthUrl(), {
+      method: 'GET',
+      headers: designChatRequestHeaders(),
+    });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const h = await res.json();
     // The agent can only return VERIFIED designs when the live compute engine is up; surface
@@ -772,7 +786,7 @@ async function refreshBackendStatus() {
     }
   } catch (_) {
     statusDotEl.className = 'agent-status-dot offline';
-    if (statusTextEl) statusTextEl.textContent = 'Backend offline — start chat_api.py';
+    if (statusTextEl) statusTextEl.textContent = 'Backend offline — run “cd webapp && ./start.sh”, or set BNE_CHAT_ALLOWED_ORIGIN and BNE_CHAT_BEARER_TOKEN before chat_api.py';
   }
 }
 
@@ -1030,7 +1044,7 @@ function buildReplyMessage(res) {
 
 async function sendToBackend(text) {
   const res = await fetch(chatApiUrl(), {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: designChatRequestHeaders({ json: true }),
     body: JSON.stringify({ message: text, state: chatState, llm: getLLMConfig(), top: 3 }),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text()).slice(0, 140));
@@ -1074,7 +1088,7 @@ function buildComposer() {
       // backend/proxy response body, so render it as textContent — never innerHTML.
       const errMsg = el('div', { class: 'msg agent' }, [
         el('div', { class: 'who' }, [el('span', { class: 'dot' }), 'Design Agent']),
-        el('div', { class: 'agent-text', html: 'Backend unreachable — start it with <b>python3 webapp/scripts/chat_api.py</b> (default 127.0.0.1:8765). An LLM key (⚙ panel) is optional; keyword parsing works without one.' }),
+        el('div', { class: 'agent-text', html: 'Backend unreachable — run <b>cd webapp &amp;&amp; ./start.sh</b> for the secured local development pair. Direct chat_api.py launches must set an exact loopback origin and bearer token. An LLM key (⚙ panel) is optional.' }),
         el('div', { class: 'agent-text', text: String(e.message || e) }),
       ]);
       threadEl.replaceChild(errMsg, pending);

@@ -432,6 +432,60 @@ end
     end
 end
 
+@testset "AWS Batch Request Overrides Require Explicit Opt-In" begin
+    execution = Dict(
+        "job_queue" => "request-queue",
+        "job_name_prefix" => "request-prefix",
+        "environment" => Dict("REQUEST_VALUE" => "enabled"),
+        "vcpus" => 8,
+        "memory_mib" => 16384,
+    )
+
+    withenv(
+        "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG" => nothing,
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "trusted-queue",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX" => "trusted-prefix",
+    ) do
+        overrides = JSON3.read(BiocircuitsExplorerBackend._aws_batch_container_overrides(
+            "s3://bucket/input.json",
+            "s3://bucket/status.json",
+            "s3://bucket/result.json",
+            execution,
+        ))
+        @test BiocircuitsExplorerBackend._aws_batch_config_value(
+            execution,
+            :job_queue,
+            "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
+        ) == "trusted-queue"
+        @test BiocircuitsExplorerBackend._aws_batch_job_name_prefix(execution) == "trusted-prefix"
+        @test !haskey(overrides, :environment)
+        @test !haskey(overrides, :resourceRequirements)
+    end
+
+    withenv(
+        "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG" => "1",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "trusted-queue",
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX" => "trusted-prefix",
+    ) do
+        overrides = JSON3.read(BiocircuitsExplorerBackend._aws_batch_container_overrides(
+            "s3://bucket/input.json",
+            "s3://bucket/status.json",
+            "s3://bucket/result.json",
+            execution,
+        ))
+        @test BiocircuitsExplorerBackend._aws_batch_config_value(
+            execution,
+            :job_queue,
+            "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
+        ) == "request-queue"
+        @test BiocircuitsExplorerBackend._aws_batch_job_name_prefix(execution) == "request-prefix"
+        @test overrides[:environment][1][:name] == "REQUEST_VALUE"
+        @test overrides[:environment][1][:value] == "enabled"
+        resources = Dict(String(item[:type]) => String(item[:value]) for item in overrides[:resourceRequirements])
+        @test resources == Dict("VCPU" => "8", "MEMORY" => "16384")
+    end
+end
+
 @testset "AWS Batch Job Uses S3 Artifacts And Mock CLI" begin
     with_isolated_job_store() do _
         mktempdir() do mock_dir
@@ -454,6 +508,7 @@ end
                 "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://mock-bucket/jobs",
                 "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX" => "mock-prefix",
                 "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
+                "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG" => "1",
                 "AWS_MOCK_LOG" => aws_log,
                 "AWS_MOCK_S3_ROOT" => s3_root,
                 "AWS_MOCK_DESCRIBE_STATUS" => "SUBMITTED",
@@ -1033,6 +1088,128 @@ end
     withenv("BIOCIRCUITS_EXPLORER_PARENT_PID" => "bad", "ROP_PARENT_PID" => "") do
         @test BiocircuitsExplorerBackend.configured_parent_pid() === nothing
     end
+    withenv("BIOCIRCUITS_EXPLORER_PARENT_PID" => "0", "ROP_PARENT_PID" => "") do
+        @test BiocircuitsExplorerBackend.configured_parent_pid() === nothing
+    end
+    withenv("BIOCIRCUITS_EXPLORER_PARENT_PID" => "-42", "ROP_PARENT_PID" => "") do
+        @test BiocircuitsExplorerBackend.configured_parent_pid() === nothing
+    end
+end
+
+@testset "Server Bind Host Defaults Safely" begin
+    withenv(
+        "BIOCIRCUITS_EXPLORER_HOST" => nothing,
+        "ROP_HOST" => nothing,
+    ) do
+        @test BiocircuitsExplorerBackend.resolve_host(nothing) == "0.0.0.0"
+        @test BiocircuitsExplorerBackend.resolve_host(4321) == "127.0.0.1"
+    end
+
+    withenv(
+        "BIOCIRCUITS_EXPLORER_HOST" => "127.0.0.2",
+        "ROP_HOST" => "127.0.0.3",
+    ) do
+        @test BiocircuitsExplorerBackend.resolve_host(nothing) == "127.0.0.2"
+        @test BiocircuitsExplorerBackend.resolve_host(4321) == "127.0.0.2"
+    end
+
+    withenv(
+        "BIOCIRCUITS_EXPLORER_HOST" => nothing,
+        "ROP_HOST" => "::1",
+    ) do
+        @test BiocircuitsExplorerBackend.resolve_host(nothing) == "::1"
+    end
+
+    withenv("BIOCIRCUITS_EXPLORER_HOST" => "http://127.0.0.1") do
+        @test_throws ArgumentError BiocircuitsExplorerBackend.resolve_host(nothing)
+    end
+    withenv("BIOCIRCUITS_EXPLORER_HOST" => "127.0.0.1:8088") do
+        @test_throws ArgumentError BiocircuitsExplorerBackend.resolve_host(nothing)
+    end
+end
+
+@testset "Local Image Rejects Cross-Origin Browser Reads" begin
+    mktempdir() do dir
+        image_path = joinpath(dir, "local image.png")
+        write(image_path, UInt8[0x89, 0x50, 0x4e, 0x47])
+        target = "/api/v1/local-image?path=$(HTTP.escapeuri(image_path))"
+
+        no_origin = HTTP.Request("GET", target, ["Host" => "127.0.0.1:18088"])
+        @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+            no_origin;
+            has_parent_pid=true,
+        ).status == 200
+
+        same_origin = HTTP.Request("GET", target, [
+            "Host" => "127.0.0.1:18088",
+            "Origin" => "http://127.0.0.1:18088",
+        ])
+        @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+            same_origin;
+            has_parent_pid=true,
+        ).status == 200
+
+        cross_origin = HTTP.Request("GET", target, [
+            "Host" => "127.0.0.1:18088",
+            "Origin" => "https://attacker.example",
+        ])
+        @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+            cross_origin;
+            has_parent_pid=true,
+        ).status == 403
+
+        wrong_port = HTTP.Request("GET", target, [
+            "Host" => "127.0.0.1:18088",
+            "Origin" => "http://127.0.0.1:8088",
+        ])
+        @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+            wrong_port;
+            has_parent_pid=true,
+        ).status == 403
+
+        dns_rebinding_origin = HTTP.Request("GET", target, [
+            "Host" => "attacker.example",
+            "Origin" => "http://attacker.example",
+        ])
+        @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+            dns_rebinding_origin;
+            has_parent_pid=true,
+        ).status == 403
+
+        withenv("BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES" => "1") do
+            @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+                no_origin;
+                has_parent_pid=false,
+            ).status == 200
+            @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+                dns_rebinding_origin;
+                has_parent_pid=false,
+            ).status == 200
+        end
+
+        withenv(
+            "BIOCIRCUITS_EXPLORER_HOST" => "0.0.0.0",
+            "ROP_HOST" => nothing,
+            "BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES" => nothing,
+        ) do
+            @test !BiocircuitsExplorerBackend.StaticAssets.local_images_enabled(
+                has_parent_pid=true,
+            )
+            @test BiocircuitsExplorerBackend.StaticAssets.handle_local_image(
+                no_origin;
+                has_parent_pid=true,
+            ).status == 403
+        end
+
+        withenv(
+            "BIOCIRCUITS_EXPLORER_HOST" => "0.0.0.0",
+            "BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES" => "1",
+        ) do
+            @test BiocircuitsExplorerBackend.StaticAssets.local_images_enabled(
+                has_parent_pid=true,
+            )
+        end
+    end
 end
 
 @testset "Router Guards Static And API Errors" begin
@@ -1202,17 +1379,73 @@ end
     # Wrong method must be a clean 405, not a 500.
     @test router(HTTP.Request("POST", "/health")).status == 405
 
-    # /ready: when the module is initialized and static_dir exists, returns
-    # 200. We don't depend on the static directory in CI because the
-    # webapp/public tree is always present in the repo checkout.
+    # /ready requires both browser and native entrypoints before a deployment
+    # should admit traffic.
     ready = router(HTTP.Request("GET", "/ready"))
-    @test ready.status in (200, 503)   # accept either, but assert structure
+    @test ready.status == 200
     ready_body = JSON3.read(ready.body)
-    @test ready_body["status"] in ("ready", "not_ready")
+    @test ready_body["status"] == "ready"
     @test haskey(ready_body, "checks")
     @test haskey(ready_body["checks"], "module_initialized")
     @test haskey(ready_body["checks"], "static_assets")
+    @test haskey(ready_body["checks"], "browser_entrypoint")
+    @test haskey(ready_body["checks"], "native_entrypoint")
+    @test haskey(ready_body["checks"], "job_store")
     @test ready_body["checks"]["module_initialized"] == true
+    @test ready_body["checks"]["static_assets"] == true
+    @test ready_body["checks"]["browser_entrypoint"] == true
+    @test ready_body["checks"]["native_entrypoint"] == true
+    @test ready_body["checks"]["job_store"] == true
+
+    previous_static_dir = BiocircuitsExplorerBackend.StaticAssets.STATIC_DIR[]
+    mktempdir() do empty_static_dir
+        try
+            BiocircuitsExplorerBackend.StaticAssets.STATIC_DIR[] = empty_static_dir
+            unready = router(HTTP.Request("GET", "/ready"))
+            @test unready.status == 503
+            unready_body = JSON3.read(unready.body)
+            @test unready_body["status"] == "not_ready"
+            @test unready_body["checks"]["static_assets"] == true
+            @test unready_body["checks"]["browser_entrypoint"] == false
+            @test unready_body["checks"]["native_entrypoint"] == false
+            @test unready_body["checks"]["job_store"] == true
+        finally
+            BiocircuitsExplorerBackend.StaticAssets.STATIC_DIR[] = previous_static_dir
+        end
+    end
+
+    previous_store_dir = BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[]
+    mktempdir() do parent
+        blocked_store = joinpath(parent, "blocked-store")
+        mkdir(blocked_store)
+        chmod(blocked_store, 0o500)
+        try
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = blocked_store
+            unready = router(HTTP.Request("GET", "/ready"))
+            @test unready.status == 503
+            unready_body = JSON3.read(unready.body)
+            @test unready_body["checks"]["job_store"] == false
+            @test unready_body["checks"]["browser_entrypoint"] == true
+            @test unready_body["checks"]["native_entrypoint"] == true
+        finally
+            chmod(blocked_store, 0o700)
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
+        end
+    end
+
+    previous_store_dir = BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[]
+    mktempdir() do parent
+        non_directory = joinpath(parent, "not-a-directory")
+        write(non_directory, "block nested directory creation")
+        try
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = joinpath(non_directory, "job-store")
+            unready = router(HTTP.Request("GET", "/ready"))
+            @test unready.status == 503
+            @test JSON3.read(unready.body)["checks"]["job_store"] == false
+        finally
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
+        end
+    end
 
     # These paths must not collide with the API surface — verify the
     # canonicalizer leaves them alone (no spurious deprecation header etc.).
