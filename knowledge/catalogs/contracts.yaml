@@ -1,24 +1,31 @@
 schema_version: "bcx-contract-catalog/v1.0.0"
-verified_against: "f9c65a5"
+baseline_evidence_revision: "f9c65a5"
+verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
 contracts:
   - id: "http-api-v1"
-    version: "v1"
+    version_source: "api-contract"
     kind: "wire"
     owner: "backend-runtime"
     docs:
       - "knowledge/contracts/api.md"
     sources:
+      - "webapp/src/api_contract.jl"
       - "webapp/src/routing.jl"
+      - "webapp/src/jobs.jl"
       - "webapp/src/serialization.jl"
+      - "webapp/scripts/export_reference_facts.jl"
     tests:
+      - "webapp/test/api_contract.jl"
       - "webapp/test/runtests.jl"
-    compatibility: "Canonical /api/v1; bare /api routes are deprecated aliases with declared sunset 2027-05-25."
+    compatibility: "The canonical versioned surface and legacy sunset come from executable route metadata; bare /api routes remain deprecated aliases until that sunset."
     coverage: "direct"
 
   - id: "network-ir"
-    version: "bne-ir/v1.0.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/network-ir.schema.json"
     kind: "schema"
     owner: "backend-runtime"
     docs:
@@ -33,7 +40,9 @@ contracts:
     coverage: "generated-drift-and-runtime"
 
   - id: "design-spec"
-    version: "bne-design/v1.0.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/design-spec.schema.json"
     kind: "schema"
     owner: "backend-runtime"
     docs:
@@ -48,7 +57,9 @@ contracts:
     coverage: "generated-drift-and-runtime"
 
   - id: "result-artifact"
-    version: "bne-result/v1.0.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/result-artifact.schema.json"
     kind: "schema-and-provenance"
     owner: "backend-runtime"
     docs:
@@ -63,7 +74,9 @@ contracts:
     coverage: "runtime-shape-and-version"
 
   - id: "designability-spec"
-    version: "bne-designability/v1.0.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/designability-spec.schema.json"
     kind: "schema"
     owner: "designability"
     docs:
@@ -79,7 +92,9 @@ contracts:
     coverage: "direct"
 
   - id: "designability-screen"
-    version: "bne-design-screen/v0.2.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/designability-screen.schema.json"
     kind: "schema-and-evidence"
     owner: "designability"
     docs:
@@ -95,7 +110,9 @@ contracts:
     coverage: "direct"
 
   - id: "behavior-spec"
-    version: "bne-behavior/v0.1.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/behavior-spec.schema.json"
     kind: "schema"
     owner: "designability"
     docs:
@@ -111,7 +128,9 @@ contracts:
     coverage: "tracked-instances"
 
   - id: "latent-atlas-manifest"
-    version: "latent-atlas-manifest/v0.1.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/latent-atlas-manifest.schema.json"
     kind: "schema-and-provenance"
     owner: "atlas"
     docs:
@@ -125,7 +144,10 @@ contracts:
     coverage: "conditional-no-tracked-instance"
 
   - id: "reader-query-result"
-    version: "bne-reader-query/v0.1.0 + bne-reader-result/v0.1.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/reader-query.schema.json"
+      - "schemas/reader-result.schema.json"
     kind: "schema-and-evidence"
     owner: "design-agent"
     docs:
@@ -141,7 +163,9 @@ contracts:
     coverage: "semantic-boundary-partial-schema"
 
   - id: "target-spec"
-    version: "bne-target-spec/v0.1.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/target-spec.schema.json"
     kind: "schema"
     owner: "design-agent"
     docs:
@@ -155,7 +179,9 @@ contracts:
     coverage: "partial"
 
   - id: "design-agent-trace"
-    version: "design-agent-trace/v0.1.0"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/design-agent-trace.schema.json"
     kind: "schema-and-provenance"
     owner: "design-agent"
     docs:

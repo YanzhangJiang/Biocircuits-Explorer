@@ -42,9 +42,11 @@ support a candidate only at the strength declared by the producing code.
   human display names separately where the supported subset permits it.
 
 Generated IR schemas are derived from Julia structs by
-[`gen_schemas.jl`](../../webapp/scripts/gen_schemas.jl); CI regenerates them and
-fails on a diff. Hand-authored schemas remain separate contracts and therefore
-need explicit tests when their producers change.
+[`gen_schemas.jl`](../../webapp/scripts/gen_schemas.jl). CI compares the
+in-memory deterministic render to committed bytes without rewriting them, then
+the unified repository gate checks schema identity, ownership, artifacts, and
+the generated reference. Hand-authored schemas remain separate contracts and
+therefore need explicit tests when their producers change.
 
 ## Canonical identity
 

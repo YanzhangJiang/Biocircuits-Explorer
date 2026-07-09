@@ -74,8 +74,11 @@ curl http://127.0.0.1:8088/api/v1
 ```
 
 `/api/v1/*` is the canonical API. Bare `/api/*` routes are compatibility
-aliases and return an `X-API-Deprecation` header; their declared sunset is
-2027-05-25. See [knowledge/contracts/api.md](knowledge/contracts/api.md).
+aliases and return an `X-API-Deprecation` header. The executable version and
+declared sunset are listed in the
+[generated contract reference](knowledge/generated/reference.md#versions-and-configured-toolchains);
+see [knowledge/contracts/api.md](knowledge/contracts/api.md) for the behavioral
+boundary.
 
 ## Repository map
 
