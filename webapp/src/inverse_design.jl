@@ -945,7 +945,9 @@ function _materialization_behavior_config(config::AtlasBehaviorConfig;
     )
 end
 
-function _resolve_build_candidates_from_spec(spec, profile::AtlasSearchProfile)
+function _resolve_build_candidates_from_spec(spec, profile::AtlasSearchProfile;
+                                             cancel_check::Function=_no_cancel_check)
+    cancel_check()
     network_specs = Any[]
     enumeration_summary = nothing
 
@@ -954,14 +956,20 @@ function _resolve_build_candidates_from_spec(spec, profile::AtlasSearchProfile)
     end
     if _raw_haskey(spec, :enumeration)
         enum_spec = atlas_enumeration_spec_from_raw(_raw_get(spec, :enumeration, nothing))
-        enumerated_networks, enumeration_summary = enumerate_network_specs(enum_spec; search_profile=profile)
+        enumerated_networks, enumeration_summary = enumerate_network_specs(
+            enum_spec;
+            search_profile=profile,
+            cancel_check=cancel_check,
+        )
         append!(network_specs, enumerated_networks)
     end
 
     return network_specs, enumeration_summary
 end
 
-function plan_delta_build(raw_candidates, library, gamma_q, policies; profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0())
+function plan_delta_build(raw_candidates, library, gamma_q, policies;
+                          profile::AtlasSearchProfile=atlas_search_profile_binding_small_v0(),
+                          cancel_check::Function=_no_cancel_check)
     corpus = _ensure_inverse_design_fields!(_materialize(library === nothing ? atlas_library_default() : library))
     versions = _support_screen_versions(gamma_q, policies)
     build_candidates = Any[]
@@ -970,6 +978,7 @@ function plan_delta_build(raw_candidates, library, gamma_q, policies; profile::A
     cache_updates = Dict{String, Any}[]
 
     for (idx, raw_candidate) in enumerate(raw_candidates)
+        cancel_check()
         label = String(_raw_get(raw_candidate, :label, "candidate_$(idx)"))
         trace = Dict(
             "candidate_label" => label,
@@ -1198,7 +1207,10 @@ function _augment_summary_delta!(delta, profile::AtlasSearchProfile, plan, polic
     return delta
 end
 
-function build_summary_delta(candidates, profile::AtlasSearchProfile, classifier_cfg::AtlasBehaviorConfig, library; sqlite_path=nothing, skip_existing::Bool=true, plan=nothing, policies=Dict{String, Any}())
+function build_summary_delta(candidates, profile::AtlasSearchProfile, classifier_cfg::AtlasBehaviorConfig, library;
+                             sqlite_path=nothing, skip_existing::Bool=true, plan=nothing,
+                             policies=Dict{String, Any}(), cancel_check::Function=_no_cancel_check)
+    cancel_check()
     isempty(candidates) && return _empty_summary_delta(profile, classifier_cfg; plan=plan, policies=policies)
 
     delta = build_behavior_atlas(
@@ -1208,6 +1220,7 @@ function build_summary_delta(candidates, profile::AtlasSearchProfile, classifier
         library=library,
         sqlite_path=sqlite_path,
         skip_existing=skip_existing,
+        cancel_check=cancel_check,
     )
     return _augment_summary_delta!(delta, profile, plan, policies)
 end
@@ -2414,7 +2427,8 @@ function _resolve_precomputed_query_target(spec, sqlite_path)
     end
 end
 
-function run_inverse_design_pipeline_from_spec(spec)
+function run_inverse_design_pipeline_from_spec(spec; cancel_check::Function=_no_cancel_check)
+    cancel_check()
     _raw_haskey(spec, :query) || error("Inverse design request must include `query`.")
     query_raw = _raw_get(spec, :query, nothing)
 
@@ -2467,9 +2481,9 @@ function run_inverse_design_pipeline_from_spec(spec)
 
     if _raw_haskey(spec, :atlas_spec) && !_is_atlas_corpus(_raw_get(spec, :atlas_spec, nothing))
         build_spec = _raw_get(spec, :atlas_spec, nothing)
-        raw_candidates, enumeration_summary = _resolve_build_candidates_from_spec(build_spec, profile)
+        raw_candidates, enumeration_summary = _resolve_build_candidates_from_spec(build_spec, profile; cancel_check=cancel_check)
         build_requested = true
-        build_plan = plan_delta_build(raw_candidates, working_library === nothing ? atlas_library_default() : working_library, gamma_q, policies; profile=profile)
+        build_plan = plan_delta_build(raw_candidates, working_library === nothing ? atlas_library_default() : working_library, gamma_q, policies; profile=profile, cancel_check=cancel_check)
         delta_atlas = build_summary_delta(
             collect(_raw_get(build_plan, :build_candidates, Any[])),
             profile,
@@ -2479,13 +2493,14 @@ function run_inverse_design_pipeline_from_spec(spec)
             skip_existing=inverse.skip_existing,
             plan=build_plan,
             policies=policies,
+            cancel_check=cancel_check,
         )
         enumeration_summary === nothing || (delta_atlas["enumeration"] = enumeration_summary)
         build_performed = !isempty(collect(_raw_get(build_plan, :build_candidates, Any[])))
     elseif _raw_haskey(spec, :networks) || _raw_haskey(spec, :enumeration)
-        raw_candidates, enumeration_summary = _resolve_build_candidates_from_spec(spec, profile)
+        raw_candidates, enumeration_summary = _resolve_build_candidates_from_spec(spec, profile; cancel_check=cancel_check)
         build_requested = true
-        build_plan = plan_delta_build(raw_candidates, working_library === nothing ? atlas_library_default() : working_library, gamma_q, policies; profile=profile)
+        build_plan = plan_delta_build(raw_candidates, working_library === nothing ? atlas_library_default() : working_library, gamma_q, policies; profile=profile, cancel_check=cancel_check)
         delta_atlas = build_summary_delta(
             collect(_raw_get(build_plan, :build_candidates, Any[])),
             profile,
@@ -2495,6 +2510,7 @@ function run_inverse_design_pipeline_from_spec(spec)
             skip_existing=inverse.skip_existing,
             plan=build_plan,
             policies=policies,
+            cancel_check=cancel_check,
         )
         enumeration_summary === nothing || (delta_atlas["enumeration"] = enumeration_summary)
         build_performed = !isempty(collect(_raw_get(build_plan, :build_candidates, Any[])))
@@ -2504,6 +2520,7 @@ function run_inverse_design_pipeline_from_spec(spec)
         build_requested = true
     end
 
+    cancel_check()
     if delta_atlas !== nothing
         _ensure_inverse_design_fields!(delta_atlas)
         if working_library === nothing
@@ -2533,11 +2550,15 @@ function run_inverse_design_pipeline_from_spec(spec)
     query_target = working_library === nothing ? delta_atlas : working_library
     query_target === nothing && error("Inverse design request must include an atlas library, atlas, atlas spec, or atlas build fields.")
 
+    cancel_check()
     candidate_set = retrieve_candidates(gamma_q, query_target, profile; policies=policies)
+    cancel_check()
     query_result = candidate_set["result"]
     updated_target = candidate_set["updated_corpus"]
     query_result = _ensure_refinement_seed_witnesses!(query_result, updated_target, gamma_q, refinement; policies=policies)
+    cancel_check()
     refinement_result = refine_top_k(query_result, gamma_q, refinement)
+    cancel_check()
 
     if working_library !== nothing
         working_library = updated_target
@@ -2598,6 +2619,7 @@ function run_inverse_design_pipeline_from_spec(spec)
     inverse.return_library && working_library !== nothing && (result["library"] = working_library)
     library_label !== nothing && !isempty(library_label) && (result["library_label"] = library_label)
 
+    cancel_check()
     return result
 end
 

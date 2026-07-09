@@ -12,7 +12,9 @@ using Base64
 include("designability_spec_contract.jl")
 include("design_screen_contract.jl")
 include("jobs_cancellation_contract.jl")
+include("cooperative_cancel_checkpoints_contract.jl")
 include("inverse_config_contract.jl")
+include("d1_atlas_contract.jl")
 
 # REGRESSION PROBE (Task-15b): atlas.jl accesses SISOPaths.qK_grh/.sources/.sinks
 # as direct struct fields — upstream b30087f moved the graph into SISOProblem.dag.graph
@@ -156,6 +158,7 @@ function with_isolated_job_store(f::Function)
             lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
                 empty!(BiocircuitsExplorerBackend.JOBS)
                 empty!(BiocircuitsExplorerBackend.JOB_TASKS)
+                empty!(BiocircuitsExplorerBackend.LOCAL_JOB_CANCEL_TOKENS)
             end
             f(dir)
         finally
@@ -168,6 +171,7 @@ function with_isolated_job_store(f::Function)
             lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
                 empty!(BiocircuitsExplorerBackend.JOBS)
                 empty!(BiocircuitsExplorerBackend.JOB_TASKS)
+                empty!(BiocircuitsExplorerBackend.LOCAL_JOB_CANCEL_TOKENS)
             end
         end
     end

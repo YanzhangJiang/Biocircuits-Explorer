@@ -613,6 +613,7 @@ function behavior_result_to_dict(model, siso, result)
     )
 end
 
+include(joinpath(@__DIR__, "cancellation.jl"))
 include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))

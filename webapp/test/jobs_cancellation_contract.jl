@@ -16,6 +16,7 @@ function with_isolated_job_store(f::Function)
             lock(Backend.JOBS_LOCK) do
                 empty!(Backend.JOBS)
                 empty!(Backend.JOB_TASKS)
+                empty!(Backend.LOCAL_JOB_CANCEL_TOKENS)
                 empty!(Backend.JOB_DESCRIBE_LAST_AT)
             end
             f(dir)
@@ -29,6 +30,7 @@ function with_isolated_job_store(f::Function)
             lock(Backend.JOBS_LOCK) do
                 empty!(Backend.JOBS)
                 empty!(Backend.JOB_TASKS)
+                empty!(Backend.LOCAL_JOB_CANCEL_TOKENS)
                 empty!(Backend.JOB_DESCRIBE_LAST_AT)
             end
         end
@@ -179,6 +181,49 @@ end
             after_cancel = cancel_biocircuits_job(finish_first)
             @test after_cancel["status"] == "succeeded"
             @test after_cancel["result_available"] == true
+
+            # Public snapshots must not share nested mutable values with the
+            # canonical in-memory/disk record.
+            public_snapshot = get_biocircuits_job(finish_first)
+            public_snapshot["progress"]["message"] = "caller-mutated"
+            @test Backend._job_record(finish_first)["progress"]["message"] == "Completed"
+            @test Backend._read_job_json(Backend._job_record_path(finish_first))["progress"]["message"] == "Completed"
+        end
+    end
+
+    @testset "terminal snapshots reject same-status mutation" begin
+        with_isolated_job_store() do _
+            job_id = seed_job("succeeded")
+            before_record = deepcopy(Backend._job_record(job_id))
+            before_disk = read(Backend._job_record_path(job_id), String)
+
+            rejected = Backend._job_transition!(
+                job_id,
+                "succeeded";
+                result_available=false,
+                progress=Dict("message" => "late overwrite"),
+            )
+
+            @test !rejected.applied
+            @test Backend._job_record(job_id) == before_record
+            @test read(Backend._job_record_path(job_id), String) == before_disk
+            rejected.record["progress"]["message"] = "mutated rejected snapshot"
+            @test Backend._job_record(job_id) == before_record
+            @test read(Backend._job_record_path(job_id), String) == before_disk
+        end
+    end
+
+    @testset "running local cancellation signals the compute token" begin
+        with_isolated_job_store() do _
+            job_id = seed_job("running")
+            token = Backend.LocalJobCancelToken(job_id)
+            lock(Backend.JOBS_LOCK) do
+                Backend.LOCAL_JOB_CANCEL_TOKENS[job_id] = token
+            end
+
+            requested = cancel_biocircuits_job(job_id)
+            @test requested["status"] == "cancel_requested"
+            @test_throws Backend.LocalJobCancelled Backend._check_cancelled(token)
         end
     end
 
@@ -251,7 +296,8 @@ end
                 record !== nothing && String(record["status"]) in Backend.JOB_TERMINAL_STATUSES
             end, 30.0; pollint=0.02) == :ok
             @test timedwait(() -> lock(Backend.JOBS_LOCK) do
-                all(job_id -> !haskey(Backend.JOB_TASKS, job_id), job_ids)
+                all(job_id -> !haskey(Backend.JOB_TASKS, job_id) &&
+                              !haskey(Backend.LOCAL_JOB_CANCEL_TOKENS, job_id), job_ids)
             end, 2.0; pollint=0.01) == :ok
 
             # Even a failure while publishing the initial queued→running
@@ -275,6 +321,11 @@ end
             @test lock(Backend.JOBS_LOCK) do
                 !haskey(Backend.JOB_TASKS, failing_id)
             end
+            # The canonical record is committed before the shared in-memory
+            # snapshot. A failed atomic replace cannot leave a ghost-running
+            # job in memory or corrupt the previous public projection.
+            @test Backend._job_record(failing_id)["status"] == "queued"
+            @test Backend._read_job_json(Backend._job_status_path(failing_id))["status"] == "queued"
         end
     end
 
@@ -421,6 +472,9 @@ end
                     operation = @async cancel_biocircuits_job(job_id)
                     @test wait_for_file(started)
                     @test Backend._job_record(job_id)["status"] == "cancel_requested"
+                    duplicate = @async cancel_biocircuits_job(job_id)
+                    @test timedwait(() -> istaskdone(duplicate), 1.0; pollint=0.01) == :ok
+                    @test fetch(duplicate)["status"] == "cancel_requested"
                     try
                         assert_job_lock_available()
                     finally
