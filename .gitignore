@@ -73,6 +73,10 @@ tests/
 !webapp/test/**
 !Bnc_julia/test/
 !Bnc_julia/test/**
+!/tests/
+!/tests/**
+/tests/**/__pycache__/
+/tests/**/*.pyc
 
 *.tex
 *.doc

@@ -88,8 +88,6 @@ def generate_candidate_networks(
             return
         if require_multiple_base_species and d > 1 and len(_used_base_indices(reaction_tuple)) < 2:
             return
-        if require_multiple_base_species and d == 1:
-            return
         canonical = canonical_network_string(reaction_tuple, d)
         if canonical in seen:
             return
