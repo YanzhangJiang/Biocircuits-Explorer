@@ -155,9 +155,15 @@ documents:
     kind: "template"
     owner: "knowledge-core"
     status: "active"
+  - id: "context-pack-paper-evidence-transfer"
+    path: "knowledge/context-packs/paper-evidence-transfer.md"
+    kind: "context-pack"
+    owner: "cross-repository"
+    status: "active"
 
 accepted_decisions: []
-active_context_packs: []
+active_context_packs:
+  - "context-pack-paper-evidence-transfer"
 
 non_authoritative_by_default:
   - path_pattern: "doc/**"
