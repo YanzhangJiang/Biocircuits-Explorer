@@ -10,12 +10,14 @@ on:
   pull_request:
     branches: [master, main]
     paths:
+      - ".dockerignore"
       - "deploy/Dockerfile"
       - "deploy/build_image.sh"
-      - "webapp/Project.toml"
-      - "webapp/Manifest.toml"
-      - "Bnc_julia/Project.toml"
-      - "Bnc_julia/Manifest.toml"
+      # Dockerfile copies both source trees wholesale. Keep this trigger as
+      # broad as the build context contract so runtime-only changes cannot
+      # bypass image validation.
+      - "webapp/**"
+      - "Bnc_julia/**"
       - "VERSION"
       - ".github/workflows/docker.yml"
   workflow_dispatch:
@@ -26,7 +28,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build:
@@ -43,7 +44,14 @@ jobs:
       - name: Resolve build metadata
         id: meta
         run: |
-          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          version="$(cat VERSION)"
+          scripts/set_version.sh --dry-run "$version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v${version}" ]]; then
+            echo "Release tag $GITHUB_REF_NAME must equal v${version}" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_version=${version//+/_}" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
@@ -54,16 +62,62 @@ jobs:
           file: deploy/Dockerfile
           platforms: linux/amd64
           push: false
-          load: false
+          load: true
           tags: |
             biocircuits-explorer:ci-${{ steps.meta.outputs.sha }}
-            biocircuits-explorer:ci-${{ steps.meta.outputs.version }}
+            biocircuits-explorer:ci-${{ steps.meta.outputs.tag_version }}
           build-args: |
             BIOCIRCUITS_EXPLORER_VERSION=${{ steps.meta.outputs.version }}
             BIOCIRCUITS_EXPLORER_REVISION=${{ steps.meta.outputs.sha }}
             BIOCIRCUITS_EXPLORER_CREATED=${{ steps.meta.outputs.created }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Start image and verify runtime contracts
+        env:
+          IMAGE_TAG: biocircuits-explorer:ci-${{ steps.meta.outputs.sha }}
+          EXPECTED_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --detach --name biocircuits-explorer-ci \
+            --publish 127.0.0.1:18088:8088 \
+            "$IMAGE_TAG"
+          cleanup() {
+            docker logs biocircuits-explorer-ci || true
+            docker rm --force biocircuits-explorer-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 180); do
+            if curl --fail --silent http://127.0.0.1:18088/ready > /tmp/bcx-ready.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != "1" ]]; then
+            echo "Container never became ready" >&2
+            exit 1
+          fi
+
+          curl --fail --silent http://127.0.0.1:18088/health > /tmp/bcx-health.json
+          curl --fail --silent http://127.0.0.1:18088/api/v1/version > /tmp/bcx-version.json
+          curl --fail --silent http://127.0.0.1:18088/index.html > /dev/null
+          docker exec biocircuits-explorer-ci sh -c \
+            'test -w /home/rop/app/webapp/job_store && touch /home/rop/app/webapp/job_store/ci-write-probe'
+
+          python3 - <<'PY'
+          import json, os
+          health = json.load(open('/tmp/bcx-health.json', encoding='utf-8'))
+          ready = json.load(open('/tmp/bcx-ready.json', encoding='utf-8'))
+          version = json.load(open('/tmp/bcx-version.json', encoding='utf-8'))
+          expected = os.environ['EXPECTED_VERSION']
+          assert health['status'] == 'ok', health
+          assert ready['status'] == 'ready', ready
+          assert version['version'] == expected, (version, expected)
+          assert version['api_version'] in version['api_supported'], version
+          PY
 
       # Pushing to a registry is intentionally deferred until publish credentials
       # (ECR / GHCR) are wired in via repository secrets. When ready, add a

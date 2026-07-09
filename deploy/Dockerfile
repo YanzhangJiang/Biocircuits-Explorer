@@ -1,6 +1,6 @@
 FROM julia:1.12
 
-ARG BIOCIRCUITS_EXPLORER_VERSION=0.0.0-dev
+ARG BIOCIRCUITS_EXPLORER_VERSION=""
 ARG BIOCIRCUITS_EXPLORER_REVISION=unknown
 ARG BIOCIRCUITS_EXPLORER_CREATED=unknown
 
@@ -15,6 +15,7 @@ ENV JULIA_CPU_TARGET=generic
 ENV BIOCIRCUITS_EXPLORER_VERSION="${BIOCIRCUITS_EXPLORER_VERSION}"
 ENV BIOCIRCUITS_EXPLORER_REVISION="${BIOCIRCUITS_EXPLORER_REVISION}"
 ENV BIOCIRCUITS_EXPLORER_CREATED="${BIOCIRCUITS_EXPLORER_CREATED}"
+ENV JULIA_NUM_THREADS=auto
 
 # Install system dependencies. AWS CLI is used by the optional Batch worker
 # path for S3 artifact transfer and job submission/status calls.
@@ -35,8 +36,9 @@ COPY Bnc_julia/ Bnc_julia/
 COPY webapp/Project.toml webapp/Manifest.toml webapp/
 COPY webapp/ webapp/
 
-# Ensure the runtime depot exists and is writable by the app user.
-RUN mkdir -p /home/rop/.julia/compiled && \
+# Ensure the runtime depot and named-volume mountpoint inherit app-user
+# ownership when Docker initializes them from the image.
+RUN mkdir -p /home/rop/.julia/compiled /home/rop/app/webapp/job_store && \
     chown -R rop:rop /home/rop
 
 USER rop
@@ -52,6 +54,6 @@ RUN julia --project=webapp -e ' \
 EXPOSE 8088
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=600s \
-    CMD curl -fsS http://localhost:8088/health || exit 1
+    CMD curl -fsS http://127.0.0.1:8088/health || exit 1
 
-CMD ["julia", "-t", "auto", "--project=webapp", "webapp/server.jl"]
+CMD ["julia", "--project=webapp", "webapp/server.jl"]

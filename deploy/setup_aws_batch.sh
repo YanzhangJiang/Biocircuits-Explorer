@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=deploy/image_reference.sh
+source "$ROOT_DIR/deploy/image_reference.sh"
 
 NAME="${BIOCIRCUITS_EXPLORER_AWS_STACK_NAME:-biocircuits-explorer}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
@@ -45,7 +47,8 @@ Options:
   --region <region>          AWS region. Defaults to AWS_REGION/AWS_DEFAULT_REGION/aws config.
   --bucket <bucket>          S3 bucket. Default: <name>-<account>-<region>.
   --artifact-prefix <prefix> S3 key prefix. Default: jobs.
-  --image <uri:tag>          Worker image. Default: current account ECR :latest.
+  --image <uri:tag|digest>   Digest or version-commit worker image. Required
+                             unless --skip-compute.
   --max-vcpus <n>            Max AWS Batch EC2 vCPUs. Default: 16.
   --job-vcpus <n>            Default job vCPUs. Default: 4.
   --job-memory-mib <n>       Default job memory. Default: 8192.
@@ -66,7 +69,8 @@ Options:
                              plus biocircuitsexplorer:// for the macOS app).
                              Required with --with-cognito.
   --cognito-logout-urls <csv>
-                             Comma-separated OAuth logout URLs.
+                             Comma-separated OAuth logout origins. Required
+                             with --with-cognito; must match window.location.origin.
   --with-quota-table         Provision a DynamoDB on-demand table for
                              per-user submission quotas.
   --quota-table-name <name>  Override the quota table name.
@@ -115,6 +119,14 @@ require_cmd() {
     fi
 }
 
+require_option_value() {
+    if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+        echo "Option $1 requires a value." >&2
+        usage >&2
+        exit 2
+    fi
+}
+
 csv_to_json_array() {
     local csv="$1"
     local out="["
@@ -156,54 +168,67 @@ json_escape() {
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --name)
+            require_option_value "$@"
             NAME="$2"
             shift 2
             ;;
         --region)
+            require_option_value "$@"
             REGION="$2"
             shift 2
             ;;
         --bucket)
+            require_option_value "$@"
             BUCKET="$2"
             shift 2
             ;;
         --artifact-prefix)
+            require_option_value "$@"
             ARTIFACT_KEY_PREFIX="$2"
             shift 2
             ;;
         --image)
+            require_option_value "$@"
             IMAGE="$2"
             shift 2
             ;;
         --max-vcpus)
+            require_option_value "$@"
             MAX_VCPUS="$2"
             shift 2
             ;;
         --job-vcpus)
+            require_option_value "$@"
             JOB_VCPUS="$2"
             shift 2
             ;;
         --job-memory-mib)
+            require_option_value "$@"
             JOB_MEMORY_MIB="$2"
             shift 2
             ;;
         --subnets)
+            require_option_value "$@"
             SUBNETS="$2"
             shift 2
             ;;
         --security-groups)
+            require_option_value "$@"
             SECURITY_GROUPS="$2"
             shift 2
             ;;
         --instance-types)
+            require_option_value "$@"
             INSTANCE_TYPES="$2"
             shift 2
             ;;
         --output-env)
+            require_option_value "$@"
             OUTPUT_ENV_FILE="$2"
             shift 2
             ;;
         --attach-to-role)
+            require_option_value "$@"
             ATTACH_TO_ROLE="$2"
             shift 2
             ;;
@@ -212,14 +237,17 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --cognito-domain-prefix)
+            require_option_value "$@"
             COGNITO_DOMAIN_PREFIX="$2"
             shift 2
             ;;
         --cognito-callback-urls)
+            require_option_value "$@"
             COGNITO_CALLBACK_URLS="$2"
             shift 2
             ;;
         --cognito-logout-urls)
+            require_option_value "$@"
             COGNITO_LOGOUT_URLS="$2"
             shift 2
             ;;
@@ -228,6 +256,7 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --quota-table-name)
+            require_option_value "$@"
             QUOTA_TABLE_NAME="$2"
             shift 2
             ;;
@@ -256,6 +285,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_cmd aws
+require_cmd python3
 
 if [ -z "$REGION" ]; then
     REGION="$(aws configure get region || true)"
@@ -280,8 +310,12 @@ ARTIFACT_KEY_PREFIX="${ARTIFACT_KEY_PREFIX#/}"
 ARTIFACT_KEY_PREFIX="${ARTIFACT_KEY_PREFIX%/}"
 ARTIFACT_PREFIX="s3://${BUCKET}/${ARTIFACT_KEY_PREFIX}"
 
-if [ -z "$IMAGE" ]; then
-    IMAGE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/biocircuits-explorer:latest"
+if [ -z "$IMAGE" ] && [ "$SKIP_COMPUTE" -eq 0 ]; then
+    echo "--image <uri:version-commit|uri@sha256:digest> is required unless --skip-compute is set." >&2
+    exit 2
+fi
+if [ -n "$IMAGE" ]; then
+    require_release_image_reference "$IMAGE" "--image"
 fi
 
 JOB_QUEUE="${JOB_QUEUE:-${NAME}-queue}"
@@ -301,7 +335,7 @@ COGNITO_APP_CLIENT_ID=""
 
 echo "AWS region:        $REGION"
 echo "AWS account:       $ACCOUNT_ID"
-echo "Image:             $IMAGE"
+echo "Image:             ${IMAGE:-<not configured; compute skipped>}"
 echo "S3 artifact prefix:$ARTIFACT_PREFIX"
 echo "Batch queue:       $JOB_QUEUE"
 echo "Job definition:    $JOB_DEFINITION"
@@ -688,22 +722,42 @@ EOF
         return
     fi
 
+    local profile_arn
+    profile_arn="$(aws_text iam get-instance-profile \
+        --instance-profile-name "$ECS_INSTANCE_PROFILE" \
+        --query 'InstanceProfile.Arn')"
+
     local existing
     existing="$(aws_text batch describe-compute-environments \
         --region "$REGION" \
         --compute-environments "$COMPUTE_ENVIRONMENT" \
         --query 'computeEnvironments[0].computeEnvironmentArn' 2>/dev/null || true)"
     if [ -n "$existing" ] && [ "$existing" != "None" ]; then
-        echo "AWS Batch compute environment exists: $COMPUTE_ENVIRONMENT"
+        local existing_file
+        existing_file="$(mktemp)"
+        aws batch describe-compute-environments \
+            --region "$REGION" \
+            --compute-environments "$COMPUTE_ENVIRONMENT" \
+            --output json > "$existing_file"
+        if ! python3 "$ROOT_DIR/deploy/validate_aws_batch_state.py" compute "$existing_file" \
+            --environment-type MANAGED \
+            --compute-type EC2 \
+            --allocation-strategy BEST_FIT_PROGRESSIVE \
+            --min-vcpus 0 \
+            --max-vcpus "$MAX_VCPUS" \
+            --instance-role "$profile_arn" \
+            --subnets "$SUBNETS" \
+            --security-groups "$SECURITY_GROUPS" \
+            --instance-types "$INSTANCE_TYPES"; then
+            rm -f "$existing_file"
+            exit 1
+        fi
+        rm -f "$existing_file"
+        echo "AWS Batch compute environment exists and matches the requested contract: $COMPUTE_ENVIRONMENT"
         return
     fi
 
     run_cmd aws iam create-service-linked-role --aws-service-name batch.amazonaws.com || true
-
-    local profile_arn
-    profile_arn="$(aws_text iam get-instance-profile \
-        --instance-profile-name "$ECS_INSTANCE_PROFILE" \
-        --query 'InstanceProfile.Arn')"
 
     local compute_file
     compute_file="$(mktemp)"
@@ -757,7 +811,8 @@ wait_compute_environment() {
         fi
         sleep 10
     done
-    echo "Compute environment did not reach VALID within the wait window; continuing." >&2
+    echo "Compute environment did not reach VALID within the wait window." >&2
+    exit 1
 }
 
 ensure_job_queue() {
@@ -772,21 +827,34 @@ ensure_job_queue() {
         return
     fi
 
+    local ce_arn
+    ce_arn="$(aws_text batch describe-compute-environments \
+        --region "$REGION" \
+        --compute-environments "$COMPUTE_ENVIRONMENT" \
+        --query 'computeEnvironments[0].computeEnvironmentArn')"
+
     local existing
     existing="$(aws_text batch describe-job-queues \
         --region "$REGION" \
         --job-queues "$JOB_QUEUE" \
         --query 'jobQueues[0].jobQueueArn' 2>/dev/null || true)"
     if [ -n "$existing" ] && [ "$existing" != "None" ]; then
-        echo "AWS Batch job queue exists: $JOB_QUEUE"
+        local existing_file
+        existing_file="$(mktemp)"
+        aws batch describe-job-queues \
+            --region "$REGION" \
+            --job-queues "$JOB_QUEUE" \
+            --output json > "$existing_file"
+        if ! python3 "$ROOT_DIR/deploy/validate_aws_batch_state.py" queue "$existing_file" \
+            --priority 1 \
+            --compute-environment "$ce_arn"; then
+            rm -f "$existing_file"
+            exit 1
+        fi
+        rm -f "$existing_file"
+        echo "AWS Batch job queue exists and matches the requested contract: $JOB_QUEUE"
         return
     fi
-
-    local ce_arn
-    ce_arn="$(aws_text batch describe-compute-environments \
-        --region "$REGION" \
-        --compute-environments "$COMPUTE_ENVIRONMENT" \
-        --query 'computeEnvironments[0].computeEnvironmentArn')"
 
     run_cmd aws batch create-job-queue \
         --region "$REGION" \
@@ -794,6 +862,36 @@ ensure_job_queue() {
         --state ENABLED \
         --priority 1 \
         --compute-environment-order "order=1,computeEnvironment=$ce_arn"
+}
+
+wait_job_queue() {
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    [ "$WAIT" -eq 1 ] || return 0
+    [ "$SKIP_COMPUTE" -eq 0 ] || return 0
+    echo "Waiting for job queue to become VALID..."
+    local status
+    local reason
+    for _ in $(seq 1 60); do
+        status="$(aws_text batch describe-job-queues \
+            --region "$REGION" \
+            --job-queues "$JOB_QUEUE" \
+            --query 'jobQueues[0].status' 2>/dev/null || true)"
+        reason="$(aws_text batch describe-job-queues \
+            --region "$REGION" \
+            --job-queues "$JOB_QUEUE" \
+            --query 'jobQueues[0].statusReason' 2>/dev/null || true)"
+        if [ "$status" = "VALID" ]; then
+            echo "Job queue is VALID."
+            return
+        fi
+        if [ "$status" = "INVALID" ]; then
+            echo "Job queue is INVALID: $reason" >&2
+            exit 1
+        fi
+        sleep 10
+    done
+    echo "Job queue did not reach VALID within the wait window." >&2
+    exit 1
 }
 
 register_job_definition() {
@@ -845,6 +943,10 @@ ensure_cognito() {
         echo "--with-cognito requires --cognito-callback-urls <csv>" >&2
         exit 2
     fi
+    if [ -z "$COGNITO_LOGOUT_URLS" ]; then
+        echo "--with-cognito requires --cognito-logout-urls <csv> matching the frontend origins" >&2
+        exit 2
+    fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "Would create Cognito user pool: $COGNITO_USER_POOL_NAME"
@@ -883,7 +985,7 @@ ensure_cognito() {
         --query "UserPoolClients[?ClientName=='$COGNITO_CLIENT_NAME'].ClientId | [0]" 2>/dev/null || true)"
     local callbacks logouts
     callbacks="$(csv_to_json_array "$COGNITO_CALLBACK_URLS")"
-    logouts="$(csv_to_json_array "${COGNITO_LOGOUT_URLS:-$COGNITO_CALLBACK_URLS}")"
+    logouts="$(csv_to_json_array "$COGNITO_LOGOUT_URLS")"
     local supported_flows='["code"]'
     local supported_scopes='["openid","email","profile"]'
 
@@ -975,18 +1077,33 @@ write_runtime_env() {
         return
     fi
     mkdir -p "$(dirname "$OUTPUT_ENV_FILE")"
-    cat > "$OUTPUT_ENV_FILE" <<EOF
+    local runtime_job_queue="$JOB_QUEUE"
+    local runtime_job_definition="$JOB_DEFINITION"
+    if [ "$SKIP_COMPUTE" -eq 1 ]; then
+        runtime_job_queue=""
+        runtime_job_definition=""
+    fi
+    local temporary_env
+    temporary_env="$(mktemp "${OUTPUT_ENV_FILE}.tmp.XXXXXX")"
+    if [ -f "$OUTPUT_ENV_FILE" ]; then
+        # Preserve operator-owned settings (TLS paths, domains, limits, etc.)
+        # while replacing only the keys owned by this generator.
+        grep -Ev '^(# Generated by deploy/setup_aws_batch\.sh|AWS_REGION=|AWS_DEFAULT_REGION=|BIOCIRCUITS_EXPLORER_IMAGE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=|BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX=|BIOCIRCUITS_EXPLORER_COGNITO_REGION=|BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID=|BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID=|BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN=|BIOCIRCUITS_EXPLORER_QUOTA_TABLE=)' \
+            "$OUTPUT_ENV_FILE" > "$temporary_env" || true
+        printf '\n' >> "$temporary_env"
+    fi
+    cat >> "$temporary_env" <<EOF
 # Generated by deploy/setup_aws_batch.sh
 AWS_REGION=$REGION
 AWS_DEFAULT_REGION=$REGION
 BIOCIRCUITS_EXPLORER_IMAGE=$IMAGE
-BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$JOB_QUEUE
-BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$JOB_DEFINITION
+BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$runtime_job_queue
+BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$runtime_job_definition
 BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=$ARTIFACT_PREFIX
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX=biocircuits
 EOF
     if [ -n "$COGNITO_USER_POOL_ID" ]; then
-        cat >> "$OUTPUT_ENV_FILE" <<EOF
+        cat >> "$temporary_env" <<EOF
 BIOCIRCUITS_EXPLORER_COGNITO_REGION=$REGION
 BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID=$COGNITO_USER_POOL_ID
 BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID=$COGNITO_APP_CLIENT_ID
@@ -994,10 +1111,12 @@ BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN=${COGNITO_DOMAIN_PREFIX}.auth.${REGION}.amaz
 EOF
     fi
     if [ "$WITH_QUOTA_TABLE" -eq 1 ]; then
-        cat >> "$OUTPUT_ENV_FILE" <<EOF
+        cat >> "$temporary_env" <<EOF
 BIOCIRCUITS_EXPLORER_QUOTA_TABLE=$QUOTA_TABLE_NAME
 EOF
     fi
+    chmod 600 "$temporary_env"
+    mv -f "$temporary_env" "$OUTPUT_ENV_FILE"
     echo "Wrote runtime env file: $OUTPUT_ENV_FILE"
 }
 
@@ -1023,10 +1142,18 @@ if [ "$SKIP_COMPUTE" -eq 0 ]; then
     ensure_compute_environment
     wait_compute_environment
     ensure_job_queue
+    wait_job_queue
     register_job_definition
 fi
 
 write_runtime_env
+
+RUNTIME_JOB_QUEUE="$JOB_QUEUE"
+RUNTIME_JOB_DEFINITION="$JOB_DEFINITION"
+if [ "$SKIP_COMPUTE" -eq 1 ]; then
+    RUNTIME_JOB_QUEUE="<not configured: --skip-compute>"
+    RUNTIME_JOB_DEFINITION="<not configured: --skip-compute>"
+fi
 
 cat <<EOF
 
@@ -1043,7 +1170,7 @@ $( [ -n "$ATTACH_TO_ROLE" ] \
 (re-run with --attach-to-role <role> to do this automatically).' )
 
 The website and macOS local backend use these variables:
-  BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$JOB_QUEUE
-  BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$JOB_DEFINITION
+  BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$RUNTIME_JOB_QUEUE
+  BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$RUNTIME_JOB_DEFINITION
   BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=$ARTIFACT_PREFIX
 EOF
