@@ -68,7 +68,7 @@ owned by handlers and schemas; this table documents paths and methods only.
 | `schemas/behavior-spec.schema.json` | `https://biocircuits-explorer/schemas/behavior-spec.schema.json` | `schema_version` | `bne-behavior/v0.1.0` | `behavior-spec` / `designability` | tracked-instances |
 | `schemas/design-agent-trace.schema.json` | `https://biocircuits-explorer.com/schemas/design-agent-trace.schema.json` | `trace_schema_version` | `design-agent-trace/v0.1.0` | `design-agent-trace` / `design-agent` | workflow-partial-schema |
 | `schemas/design-spec.schema.json` | `https://biocircuits-explorer.com/schemas/design-spec.schema.json` | `ir_schema_version` | `bne-design/v1.0.0` | `design-spec` / `backend-runtime` | generated-drift-and-runtime |
-| `schemas/designability-screen.schema.json` | `bne-design-screen` | `schema_version` | `bne-design-screen/v0.2.0` | `designability-screen` / `designability` | direct |
+| `schemas/designability-screen.schema.json` | `bne-design-screen` | `schema_version` | `bne-design-screen/v0.3.0` | `designability-screen` / `designability` | direct |
 | `schemas/designability-spec.schema.json` | `bne-designability-spec` | `schema_version` | `bne-designability/v1.0.0` | `designability-spec` / `designability` | direct |
 | `schemas/latent-atlas-manifest.schema.json` | `https://biocircuits-explorer/schemas/latent-atlas-manifest.schema.json` | `manifest_schema_version` | `latent-atlas-manifest/v0.1.0` | `latent-atlas-manifest` / `atlas` | conditional-no-tracked-instance |
 | `schemas/network-ir.schema.json` | `https://biocircuits-explorer.com/schemas/network-ir.schema.json` | `ir_schema_version` | `bne-ir/v1.0.0` | `network-ir` / `backend-runtime` | generated-drift-and-runtime |

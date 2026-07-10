@@ -1,7 +1,7 @@
 ---
 title: System architecture
 status: verified
-verified_against: f9c65a5
+verified_against: 1177a3d
 ---
 
 # System architecture
@@ -21,6 +21,13 @@ Two terms carry most of the architecture:
 
 Everything else should be read in terms of where the request is validated and
 what evidence the response actually contains.
+
+At the current verified revision, ordinary HTTP computation is deliberately
+bounded. Known large or cancellable work belongs to the jobs surface. Static
+cost checks reject oversized synchronous requests before expensive work starts;
+path-expansion limits stop materialization before it crosses its allocation
+ceiling. Failed solver points remain explicit invalid/partial evidence and
+cannot be plotted or promoted as successful designs.
 
 ## Component map
 
@@ -73,15 +80,22 @@ and returns an explicit offline/error result when computation is unavailable.
    [`design_agent.py`](../../webapp/scripts/design_agent.py) and has only focused,
    mocked contract coverage rather than a live end-to-end proof.
 3. **Local process state is not artifact truth.** Sessions and compiled models
-   are caches. Job `record.json` is the canonical process-restart record; its
+   are bounded caches. Content identity selects a compiled model; session IDs
+   are aliases. Per-bundle locks protect lazy mutable engine state, while
+   single-flight construction prevents split bundles for one hash. Job
+   `record.json` is the canonical process-restart record; its
    public `status.json` is a best-effort projection. Atlas SQLite and S3 cross
    process boundaries and therefore require schema, identity, and ownership
    checks.
-4. **Cloud execution is a separate trust zone.** The broker verifies identity
+4. **Filesystem paths are operator authority.** Raw Atlas SQLite paths are
+   disabled on HTTP by default. Explicit client and server opt-in still limits
+   them to a configured store root; this is a trusted-operator mode, not a
+   multi-tenant path API.
+5. **Cloud execution is a separate trust zone.** The broker verifies identity
    when Cognito is configured, partitions jobs by user, and transfers explicit
    input/status/result artifacts. AWS command success alone is not proof of a
    result; the jobs code also checks for the result artifact.
-5. **Research prose is downstream.** A notebook, figure, or manuscript statement
+6. **Research prose is downstream.** A notebook, figure, or manuscript statement
    is not a runtime contract. It should cite the exact data artifact, generator,
    code revision, and verification command that support it.
 

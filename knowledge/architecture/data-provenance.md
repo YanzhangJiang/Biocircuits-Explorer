@@ -1,15 +1,16 @@
 ---
 title: Data provenance and evidence boundaries
 status: verified
-verified_against: f9c65a5
+verified_against: 1177a3d
 ---
 
 # Data provenance and evidence boundaries
 
 A file becomes trustworthy here through a chain, not through its filename:
-versioned input → canonical identity → named algorithm/config → result artifact
-→ verifier → downstream claim. Missing links must be reported as missing; a
-plausible notebook result or copied JSON is not a substitute.
+versioned input → bounded identity rule → named algorithm/config → result
+artifact with validity evidence → verifier → downstream claim. Missing links
+must be reported as missing; a plausible notebook result, partial curve, or
+copied JSON is not a substitute.
 
 ## Evidence ladder
 
@@ -28,9 +29,13 @@ support a candidate only at the strength declared by the producing code.
 ## Versioned inputs
 
 - [`NetworkIR`](../../webapp/src/ir.jl) is the model contract
-  (`bne-ir/v1.0.0`). Its hash excludes provenance metadata and uses canonical model
-  content, including a topology identity that is stable under supported
-  reaction order and base-species relabeling.
+  (`bne-ir/v1.0.0`). Its hash excludes provenance metadata and uses canonical
+  model content. Its topology component can use exact base-species relabeling
+  through seven free species; the full content hash still retains declared
+  species/observable content. Above seven, topology hashing falls back to
+  deterministic positional content. A renamed payload is therefore never
+  entitled to share a full NetworkIR hash merely because its graph is
+  isomorphic.
 - [`DesignSpec`](../../webapp/src/ir.jl) separates goal, constraints,
   objectives, and policies. Its legacy bridge feeds the existing inverse-design
   pipeline without creating a second source of truth.
@@ -56,6 +61,15 @@ It sorts object keys, normalizes integral numeric forms, rejects non-finite
 numbers for hashing, and is shared by IR, atlas, result artifacts, and compiled
 inverse queries.
 
+Exact topology relabeling enumerates base-species permutations only through
+seven free species. Direct exact atlas canonicalization rejects larger support;
+NetworkIR and inverse-support helpers instead record a stable positional
+fallback hash.
+That fallback prevents factorial work but weakens equivalence: two larger
+networks that differ only by symbol renaming may remain distinct cache/corpus
+entries. Provenance for such a result must retain the original symbols and
+ordering rather than claiming relabel-invariant identity.
+
 Do not introduce another “stable hash” implementation in a consumer. If two
 objects should compare equal, first define that equality in the canonical owner
 and cover it with cross-construction tests.
@@ -77,6 +91,14 @@ inspect the actual response contract rather than assume every historical or
 flat response already has a complete envelope. The schema is
 [`result-artifact.schema.json`](../../schemas/result-artifact.schema.json).
 
+Numerical payloads add validity evidence outside the generic envelope. A
+non-converged or non-finite point is an invalid gap, not a measurement. One-
+dimensional scans and qK-space ROP clouds carry `valid`; two-dimensional scans,
+atlas landscapes, and FRET heatmaps carry `validity_grid`; both forms carry
+`partial`. Placement and refinement may use a result as passing/ranking evidence
+only when every required point is valid. Persist both the values and the mask so
+a later consumer cannot reinterpret missing evidence as zero.
+
 ## Atlas provenance
 
 The in-memory atlas/library contract is owned by
@@ -88,7 +110,26 @@ records.
 
 [`atlas_sqlite.jl`](../../webapp/src/atlas_sqlite.jl) persists a normalized
 queryable projection plus a library snapshot. It uses an explicit SQLite schema
-version, transactions, lock retry handling, and canonical slice/program keys.
+version, transactions, nested savepoints, busy retry handling, and canonical
+slice/program keys. Full-snapshot read–merge–save and full-snapshot skip-event
+updates run in one transaction. A process-local keyed write lock serializes
+those read-modify-write operations for the same database while allowing
+different database paths to proceed independently. Append/lightweight writes
+and every cross-process writer still rely on SQLite/WAL and its busy timeout,
+not on that Julia lock.
+
+Synchronous HTTP query preflight opens an existing SQLite corpus read-only and
+caps it at 128 MiB including WAL, 100 networks, 100 behavior slices, and 10,000
+indexed records. It does not initialize, migrate, or write. HTTP `sqlite_path`
+is disabled by default; a production operator should set both
+`BIOCIRCUITS_EXPLORER_ALLOW_HTTP_SQLITE_PATHS=1` and a trusted
+`BIOCIRCUITS_EXPLORER_ATLAS_STORE_ROOT` (an empty root setting falls back to the
+built-in Atlas store). The stock UI independently requires
+`window.BIOCIRCUITS_EXPLORER_ALLOW_HTTP_SQLITE_PATHS=true`. This is an
+operator-only single-store compatibility mode, not per-tenant file
+authorization. SQLite-backed build, merge, inverse design, and persistence use
+jobs/offline workflows.
+
 The behavior configuration fields that influence identity must survive summary
 and witness-materialization clones; that invariant is covered by
 [`inverse_config_contract.jl`](../../webapp/test/inverse_config_contract.jl).
@@ -140,3 +181,11 @@ or notebook unless that artifact is explicitly included.
 
 Unknown provenance is a result: mark the artifact historical or unverified and
 rebuild it. Do not infer lineage from matching filenames or approximate counts.
+
+## Verified against
+
+- Current source commit: `1177a3d`.
+- Historical baseline: the provenance chain and artifact-owner audit at
+  `f9c65a5` remains useful historical evidence, but it predates the bounded
+  identity fallback, HTTP SQLite policy, transactional writer contract, and
+  explicit numerical validity fields above.

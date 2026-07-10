@@ -14,10 +14,10 @@ code, test result, or versioned artifact that supports a claim.
 
 ## What is checked now
 
-The P5 implementation evidence anchor is `01a01be`. Later documentation and
-maintenance commits may advance the branch without changing that inspected
-runtime. The earlier revision `f9c65a5` remains the historical evidence
-baseline for the knowledge catalog.
+The current implementation evidence anchor is `1177a3d`. Later documentation
+commits may advance the branch without changing that inspected runtime. The
+earlier revision `f9c65a5` remains the historical evidence baseline for the
+knowledge catalog.
 
 - The main web application CI is configured for Julia 1.12. The checked-in
   application container also uses Julia 1.12.
@@ -25,11 +25,22 @@ baseline for the knowledge catalog.
   1.12. Those jobs select the matching lock file, instantiate it, and load the
   mathematics engine; they do not submit work to a scheduler.
 - Browser and Python checks use Node.js 20 and Python 3.13 in CI.
+- Local P6 verification passed the complete Julia backend suite, the 126 engine
+  contracts, the JavaScript suite, generated-schema checks, and deployment
+  contracts. This is local evidence, not a claim that a remote workflow ran.
+- Synchronous heavy endpoints have a two-request process gate and explicit work
+  budgets. Requests that exceed a budget return structured `422` responses;
+  temporary capacity exhaustion returns `429` with `Retry-After`.
+- Shared compiled models use content identity, single-flight construction, and
+  per-bundle locking. Numerical scans expose convergence validity, and the UI
+  renders failed points as gaps instead of treating them as scientific values.
+- Raw Atlas SQLite paths over HTTP are operator-only and disabled by default;
+  explicit client and server opt-in still confines them to a configured root.
 - The Docker workflow is configured to build one application image, start it on
   loopback, and checks health, readiness, version reporting, the browser entry
   page, and a writable job store. It does not start the full Compose, Nginx, or
   TLS stack.
-- The seven targeted macOS unit tests passed locally at this revision. No
+- The seven targeted macOS unit tests passed locally at `01a01be`. No
   checked-in CI job runs Xcode, so this is point-in-time local evidence rather
   than a macOS CI claim.
 

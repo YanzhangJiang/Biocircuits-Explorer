@@ -1,7 +1,7 @@
 ---
 module: backend-runtime
 status: verified
-verified_against: 01a01be
+verified_against: 1177a3d
 ---
 
 # Backend runtime
@@ -9,20 +9,63 @@ verified_against: 01a01be
 ## Purpose
 
 Expose the engine, atlas, designability, import/export, and job workflows as a
-versioned HTTP service while keeping local and deployed trust boundaries
-distinct. A process being alive is not enough to receive traffic: readiness
-means the module initialized, the static directory and both browser/native entry
-pages exist, and the job store is writable.
+versioned HTTP service without allowing one expensive or concurrent request to
+corrupt a shared model or consume unbounded interactive resources. The current
+contract shares compiled work by content, serializes mutation only for the same
+model bundle, admits at most two heavy synchronous handlers per process, and
+reports size, budget, capacity, and numerical failures explicitly.
 
-The bind rule follows the launcher. A supervised native process defaults to
-loopback; an unsupervised server defaults to all interfaces for container/host
-deployment. An explicit validated host override wins in either mode.
+A process being alive is still not enough to receive traffic: readiness means
+the module initialized, the static directory and both browser/native entry pages
+exist, and the job store is writable. The bind rule follows the launcher. A
+supervised native process defaults to loopback; an unsupervised server defaults
+to all interfaces for container/host deployment. An explicit validated host
+override wins in either mode.
+
+## Current verified contract
+
+- `NetworkIR` content hash is the compiled-model identity. The cache publishes
+  one current canonical `ModelBundle` per hash; concurrent cold misses use a
+  refcounted same-hash single-flight lock, while each published bundle has its
+  own `ReentrantLock` for mutable model and lazy-handler state. A request that
+  already pinned an older bundle may finish safely after cache eviction.
+- Request resolution pins the selected bundle in task-local storage for the
+  handler call. Model handlers named by `model_runtime.jl` execute under the
+  bundle lock, so a request cannot lock one bundle and later resolve another.
+- Model-cache and session-alias access times live in separate locked tables.
+  Their LRU/TTL policies are independent; sessions remain convenience aliases,
+  and a full session table evicts its least-recently-used alias instead of
+  turning alias creation into a server error.
+- A process-wide gate admits exactly two named heavy synchronous handlers. The
+  next request fails immediately with HTTP 429,
+  `code=sync_capacity_exhausted`, `Retry-After: 1`, and `retryable=true`.
+- A structurally valid request above a declared synchronous limit fails before
+  the expensive allocation with HTTP 422, `code=sync_budget_exceeded`, and
+  `retryable=false`. JSON request bodies have a 1 MiB application limit; Nginx
+  applies the matching hard pre-proxy cap and both paths return a machine-readable
+  HTTP 413 contract.
+- Synchronous Web SISO/change-path construction is capped at 2,000 paths and
+  200,000 materialized path nodes. Parallel atlas network workers explicitly
+  propagate the synchronous context and typed budget errors. Local jobs and
+  direct/offline APIs do not inherit these two Web-only limits.
+- Numerical scans, FRET heatmaps, qK-sampled ROP clouds, and scan-based
+  placement/inverse-refinement responses expose validity/partial state and do
+  not rank a failed terminal solver value as successful evidence. Point-only
+  verification rejects an unsuccessful solve instead of returning it as valid.
+- Exact relabel-invariant topology hashing stops at seven free species. Larger
+  inputs fall back to the positional `NetworkIR` content hash; cache identity is
+  deterministic but no longer guaranteed invariant to renaming or ordering.
 
 ## Non-goals
 
 - Owning mathematical ROP semantics; those belong to `Bnc_julia`.
 - Treating sessions or in-memory job dictionaries as durable scientific data.
 - Making optional Python/LLM output authoritative.
+- Coordinating model locks, admission slots, or LRU state across Julia
+  processes or replicas.
+- Providing a fair queue, request deadlines, or cancellation for synchronous
+  handlers; those callers receive fail-fast capacity/budget responses.
+- Treating solver convergence as analytic or biological proof.
 - Providing TLS or network authentication for every deployment mode; those are
   explicit proxy/auth configuration responsibilities.
 - Guaranteeing that every historical endpoint already returns one uniform
@@ -30,19 +73,34 @@ deployment. An explicit validated host override wins in either mode.
 
 ## Owner paths
 
-- Module assembly, bind policy, probes, and handlers:
+- Module assembly:
   [`webapp/src/BiocircuitsExplorerBackend.jl`](../../webapp/src/BiocircuitsExplorerBackend.jl)
-- Routing and server start: [`webapp/src/routing.jl`](../../webapp/src/routing.jl),
+- Bind policy, lifecycle, routing, and server start:
+  [`webapp/src/runtime_lifecycle.jl`](../../webapp/src/runtime_lifecycle.jl),
+  [`webapp/src/routing.jl`](../../webapp/src/routing.jl),
   [`webapp/server.jl`](../../webapp/server.jl),
   [`webapp/start.sh`](../../webapp/start.sh)
 - Runtime configuration: [`webapp/src/config.jl`](../../webapp/src/config.jl)
+- Request parsing and machine error mapping:
+  [`webapp/src/request_support.jl`](../../webapp/src/request_support.jl),
+  [`webapp/src/serialization.jl`](../../webapp/src/serialization.jl),
+  [`webapp/src/routing.jl`](../../webapp/src/routing.jl)
+- Synchronous admission, endpoint costs, and SISO path policy:
+  [`webapp/src/sync_work_budget.jl`](../../webapp/src/sync_work_budget.jl),
+  [`webapp/src/path_work_budget.jl`](../../webapp/src/path_work_budget.jl)
+- Model resolution, request pinning, cache, and session aliases:
+  [`webapp/src/model_runtime.jl`](../../webapp/src/model_runtime.jl),
+  [`webapp/src/model_cache.jl`](../../webapp/src/model_cache.jl),
+  [`webapp/src/session_store.jl`](../../webapp/src/session_store.jl)
+- Service/model/scan/placement handlers:
+  [`webapp/src/service_handlers.jl`](../../webapp/src/service_handlers.jl),
+  [`webapp/src/model_handlers.jl`](../../webapp/src/model_handlers.jl),
+  [`webapp/src/parameter_scan_handlers.jl`](../../webapp/src/parameter_scan_handlers.jl),
+  [`webapp/src/parameter_placement.jl`](../../webapp/src/parameter_placement.jl)
 - Static and local-image boundary:
   [`webapp/src/static_assets.jl`](../../webapp/src/static_assets.jl)
 - Jobs and AWS request boundary: [`webapp/src/jobs.jl`](../../webapp/src/jobs.jl)
 - Authentication: [`webapp/src/auth.jl`](../../webapp/src/auth.jl)
-- Sessions and model cache:
-  [`webapp/src/session_store.jl`](../../webapp/src/session_store.jl),
-  [`webapp/src/model_cache.jl`](../../webapp/src/model_cache.jl)
 - Serialization and observability:
   [`webapp/src/serialization.jl`](../../webapp/src/serialization.jl),
   [`webapp/src/observability.jl`](../../webapp/src/observability.jl)
@@ -65,7 +123,10 @@ deployment. An explicit validated host override wins in either mode.
 
 ## Outputs
 
-- JSON responses and structured request errors.
+- JSON responses and structured request errors, including 413 body, 422 work
+  budget, and 429 temporary-capacity contracts.
+- Per-sample/per-cell validity and `partial` flags for numerical responses whose
+  solver can fail at only part of a requested grid or search.
 - Static web assets, liveness/readiness payloads, Prometheus metrics, and
   application/API version discovery.
 - Process-local sessions and model caches.
@@ -75,8 +136,8 @@ deployment. An explicit validated host override wins in either mode.
 ## Contract sources
 
 - Bind selection, parent watchdog, and readiness checks:
-  [`BiocircuitsExplorerBackend.jl`](../../webapp/src/BiocircuitsExplorerBackend.jl)
-  and [`routing.jl`](../../webapp/src/routing.jl)
+  [`runtime_lifecycle.jl`](../../webapp/src/runtime_lifecycle.jl) and
+  [`routing.jl`](../../webapp/src/routing.jl)
 - Host, parent, local-image, and AWS opt-in settings:
   [`config.jl`](../../webapp/src/config.jl)
 - Same-origin and loopback local-image rules:
@@ -93,6 +154,19 @@ deployment. An explicit validated host override wins in either mode.
 - Job lifecycle and result provenance: [`jobs.jl`](../../webapp/src/jobs.jl),
   [`result_artifact.jl`](../../webapp/src/result_artifact.jl), and
   [`result-artifact.schema.json`](../../schemas/result-artifact.schema.json)
+- Shared-model locking, content-hash build single-flight, and request bundle
+  pinning: [`model_runtime.jl`](../../webapp/src/model_runtime.jl)
+- Independent model/session LRU timestamps:
+  [`model_cache.jl`](../../webapp/src/model_cache.jl) and
+  [`session_store.jl`](../../webapp/src/session_store.jl)
+- Heavy admission, typed synchronous budgets, and path enumeration adapters:
+  [`sync_work_budget.jl`](../../webapp/src/sync_work_budget.jl) and
+  [`path_work_budget.jl`](../../webapp/src/path_work_budget.jl)
+- Body shape/size and numerical validity:
+  [`serialization.jl`](../../webapp/src/serialization.jl),
+  [`parameter_scan_handlers.jl`](../../webapp/src/parameter_scan_handlers.jl),
+  [`model_handlers.jl`](../../webapp/src/model_handlers.jl), and
+  [`inverse_design.jl`](../../webapp/src/inverse_design.jl)
 
 ## Tests
 
@@ -109,7 +183,17 @@ deployment. An explicit validated host override wins in either mode.
   constructs an installed bundle layout and proves that runtime version lookup
   finds its copied `VERSION` resource before unavailable source paths.
 - [`tests/test_deployment_contract.py`](../../tests/test_deployment_contract.py)
-  checks local-start loopback propagation and the single-image runtime gate.
+  checks local-start loopback propagation, the single-image runtime gate, and
+  the Nginx 1 MiB JSON 413 boundary.
+- [`webapp/test/concurrency_and_budget_contract.jl`](../../webapp/test/concurrency_and_budget_contract.jl)
+  covers per-bundle serialization, parallelism across bundles, same-hash
+  single-flight, independent LRU clocks, the two-slot gate, typed HTTP errors,
+  SISO context propagation, and large-network preflight/fallback behavior.
+- [`webapp/test/input_validation_contract.jl`](../../webapp/test/input_validation_contract.jl)
+  covers finite/type/shape validation, request-body limits, and path-policy
+  boundaries.
+- [`webapp/test/numerical_validity_contract.jl`](../../webapp/test/numerical_validity_contract.jl)
+  covers validity masks and partial-result propagation.
 - [`webapp/test/*.test.mjs`](../../webapp/test/) and the Python agent tests cover
   browser/helper request boundaries that consume this runtime.
 
@@ -152,6 +236,29 @@ stack or a real AWS worker.
 - Request IDs are bounded/sanitized and metrics use low-cardinality route
   labels. `NetworkIR` content identity, not a session ID, is the stable cache
   key.
+- One content hash has one current cache-published process-local bundle. A
+  same-hash cold miss is single-flight, and each model-bearing handler keeps one
+  pinned bundle under its per-bundle lock for the complete call. Different
+  bundles do not share that lock; an already-pinned evicted bundle remains valid
+  through the end of its request.
+- Model-cache and session-alias LRU timestamps are independent. Cache/session
+  callbacks run after their internal locks are released, and an alias collision
+  cannot silently replace a different live bundle.
+- The synchronous heavy gate has two process-local slots. Capacity failure is a
+  retryable 429 with `Retry-After: 1`; a static work-limit failure is a
+  non-retryable 422. Neither is mapped to 500.
+- Application JSON size is at most 1 MiB. The deployed Nginx route enforces the
+  same value before proxying; the application additionally bounds JSON nesting
+  and value count after parsing.
+- Synchronous Web path materialization stops at 2,000 paths or 200,000 total
+  path nodes, including atlas work delegated to spawned Julia tasks. Local jobs
+  and direct/offline engine calls remain unchanged by these Web-only counters.
+- Failed numerical samples remain invalid and make the containing response
+  partial. Invalid values are not eligible for curve transitions, design
+  refinement scores, or UI interpolation.
+- Exact relabel canonicalization is bounded at seven free species. Beyond that,
+  the deterministic positional content hash is accepted with weaker identity
+  semantics rather than starting factorial work.
 - Long computation and external AWS/S3 calls never hold `JOBS_LOCK`; terminal
   job state is monotonic and cross-user lookup does not disclose existence.
 - `record.json` is canonical restart state. A remote success without the
@@ -173,6 +280,25 @@ stack or a real AWS worker.
   URLs, so v1 migration remains incomplete.
 - P2 — Result-envelope adoption remains additive rather than uniform across all
   synchronous historical handlers.
+- P2 — Admission, build locks, bundle locks, and LRU tables are process-local;
+  they neither coordinate replicas nor impose a cluster-wide capacity limit.
+- P2 — The fixed two-slot gate has no fairness, waiting queue, deadline,
+  cancellation, or adaptive cost estimate. It is acquired before the bundle
+  lock, so same-bundle contention can occupy an admitted slot while waiting.
+- P2 — Whole-handler bundle locking is deliberately conservative. Read-mostly
+  requests for the same model serialize until the engine's mutable caches have
+  a finer-grained concurrency contract.
+- P2 — HTTP.jl has already assembled `req.body` when the application checks the
+  1 MiB limit. Only the Nginx path is proven to reject oversized bodies before
+  Julia buffers them.
+- P2 — Direct/offline and job path enumeration is not restricted by the two Web
+  counters. Large jobs require explicit partitioning, quota, and cooperative
+  cancellation.
+- P2 — Positional hashing above seven free species can split cache identity for
+  relabeled/reordered equivalents; scalable exact canonicalization is not yet
+  provided.
+- P2 — A validity flag reports the configured solver's convergence status, not
+  mathematical uniqueness, discretization completeness, or biological truth.
 - P2 — Local record publication fsyncs and renames the file but not its parent
   directory; sudden-power-loss durability and automatic repair of a failed
   `status.json` projection are not established.
@@ -191,7 +317,13 @@ stack or a real AWS worker.
 5. Preserve v1/legacy response parity until compatibility clients migrate; add
    race tests before changing jobs and never put network/cloud I/O under
    `JOBS_LOCK`.
-6. Copy and test `VERSION` in every new bundle layout; bump public API, artifact,
+6. For concurrency changes, prove same-hash single-flight, same-bundle
+   serialization, cross-bundle progress, exception cleanup, and typed 422/429
+   mapping. Explicitly propagate synchronous context through any new spawned
+   worker.
+7. For numerical handlers, preserve `valid`/`validity_grid` and `partial`; a
+   failed solve may not re-enter ranking or plotting through a fallback value.
+8. Copy and test `VERSION` in every new bundle layout; bump public API, artifact,
    or application versions when semantics, not merely implementation, change.
 
 See [runtime topology](../architecture/runtime.md) and
@@ -199,10 +331,15 @@ See [runtime topology](../architecture/runtime.md) and
 
 ## Verified against
 
-- Source commit: `01a01be`
-- Evidence inspected: bind/configuration, readiness, local-image policy, AWS
-  opt-in, version/resource lookup, routing, jobs, persistence, focused tests,
-  and both CI workflows.
+- Current source commit: `1177a3d`
+- Evidence inspected: module assembly; bind/configuration and readiness;
+  per-bundle and same-hash locking; independent cache/session LRU clocks; heavy
+  admission and typed budgets; path context propagation; body limits; numerical
+  validity; jobs/persistence; focused Julia/JavaScript/Python tests; and both CI
+  workflows.
+- Historical baseline: `f9c65a5` remains evidence for the pre-P6 service shape
+  and compatibility behavior. It does not describe the current shared-runtime,
+  synchronous-budget, or numerical-validity contract.
 - Boundary: source and local contract evidence plus the configured
   single-image runtime gate are recorded. No external workflow run, complete
   proxy/TLS stack, native packaged app, or live cloud integration is claimed
