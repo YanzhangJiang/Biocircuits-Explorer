@@ -182,8 +182,10 @@ they do not rewrite the catalog's baseline identifier or historical
    remains unverified.
 5. The complete Compose stack with Nginx, a real domain, TLS certificates,
    renewal, readiness admission, and rollback was not run end to end.
-6. No test exercises a live model provider or a full Design Agent conversation
-   with the Julia engine and release-locked retrieval corpora.
+6. The deterministic-provider integration contract exercises the production
+   Design Agent dispatch against a live local Julia engine through Design Screen
+   and Placer. No test contacts a live model provider or proves provider language
+   quality, multi-turn convergence, or release-locked retrieval-corpus behavior.
 7. Runtime Atlas datasets are optional and not tracked in this checkout. A
    missing dataset manifest means the generic artifact validator cannot prove
    that dataset is reproducibility-pinned.

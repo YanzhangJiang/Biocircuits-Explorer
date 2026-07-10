@@ -42,6 +42,7 @@ const BEB = BiocircuitsExplorerBackend
     @test get(rec["parameter_recommendation"]["theta_star"], "log_qK", Any[]) == Any[]
     @test get(rec["parameter_recommendation"]["theta_star"], "kd", Any[]) == Any[]
     @test isempty(get(rec["parameter_recommendation"]["theta_star"], "totals", Dict()))
+    @test !haskey(rec["agent_handoff"], "next_request")
 
     all_screen = BEB.design_screen("sign", "+-+";
         candidate_budget=Dict("mode" => "all_matches", "max_recommended" => 3, "max_screened" => 3))
@@ -86,6 +87,32 @@ const BEB = BiocircuitsExplorerBackend
     @test exact["screen_status"] == "verified_exact"
     @test !haskey(exact, "tunability_score")
     @test first(exact["certificate_stack"])["grade"] == "exact-union-siso-rop"
+    theta = exact["parameter_recommendation"]["theta_star"]
+    @test theta["placement_status"] == "success"
+    @test theta["verification_status"] == "verified_exact"
+    @test theta["source_endpoint"] == "/api/v1/design_screen"
+    handoff = exact["agent_handoff"]["next_request"]
+    @test handoff["endpoint"] == "/api/v1/placer_curve"
+    @test handoff["method"] == "POST"
+    @test handoff["body"]["rules"] == BEB._design_nid_to_rules(exact["nid"])
+    @test handoff["body"]["input_sym"] == exact["inp"]
+    @test handoff["body"]["output_sym"] == exact["out"]
+    @test handoff["body"]["kd"] == theta["kd"]
+    @test handoff["body"]["totals"] == theta["totals"]
+    replay_body = merge(handoff["body"], Dict(
+        "param_min" => -2.0,
+        "param_max" => 2.0,
+        "n_points" => 41,
+    ))
+    replay = BEB.router(HTTP.Request(
+        "POST", handoff["endpoint"], ["Content-Type" => "application/json"],
+        JSON3.write(replay_body)))
+    @test replay.status == 200
+    replay_json = JSON3.read(String(replay.body))
+    @test length(replay_json.param_values) == 41
+    @test length(replay_json.valid) == 41
+    @test all(replay_json.valid)
+    @test replay_json.partial == false
     @test exact_screen["screen_summary"]["verified_status"] == "verified_recommendations_available"
 
     no_match = BEB.design_screen_from_spec(Dict(

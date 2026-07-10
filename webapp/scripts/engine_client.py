@@ -105,6 +105,37 @@ def phenotype(session_id=None, *, network=None, change_qK, observe_x, path_scope
     if network is not None: payload["network"] = network
     return _post("/api/behavior_families", payload, timeout)
 
+def validate_designability_spec(spec, timeout=60):
+    """Validate the canonical Agent/Design Screen handoff against the live Julia owner.
+
+    This is deliberately a separate network call from ``design_screen`` so a malformed,
+    unsupported-hard, or over-budget request cannot be presented to the user as a design.
+    """
+    if not isinstance(spec, dict):
+        return {"error": "validate_designability_spec needs a JSON object"}
+    return _post("/api/v1/validate_designability_spec", spec, timeout)
+
+def design_screen(spec, timeout=900):
+    """Run a canonical DesignabilitySpec through the live exact Design Screen."""
+    if not isinstance(spec, dict):
+        return {"error": "design_screen needs a JSON object"}
+    return _post("/api/v1/design_screen", spec, timeout)
+
+def placer_curve(*, rules, input_sym, output_sym, kd, totals=None,
+                 param_min=-6.0, param_max=6.0, n_points=200, timeout=300):
+    """Replay selected Design Screen parameters through the Placer's forward curve owner."""
+    payload = {
+        "rules": list(rules or []),
+        "input_sym": input_sym,
+        "output_sym": output_sym,
+        "kd": [float(value) for value in (kd or [])],
+        "totals": dict(totals or {}),
+        "param_min": float(param_min),
+        "param_max": float(param_max),
+        "n_points": int(n_points),
+    }
+    return _post("/api/v1/placer_curve", payload, timeout)
+
 if __name__ == "__main__":   # smoke: build a 1-reaction net and sweep it (engine must be up)
     print("engine_base_url:", engine_base_url(), "ready:", engine_ready())
     m = build_model(reactions=["A + B <-> AB"], kd=[1.0])

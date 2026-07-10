@@ -36,9 +36,10 @@ CONTEXTUAL_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-contextual-v0",
 
 # ── DesignAgentTrace: one replayable record per turn (large arrays → artifacts/<hash>.json). ──
 TRACE_SCHEMA_VERSION = "design-agent-trace/v0.1.0"
-COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.4.0"   # v0.4.0: multimodal (RO sign-oscillation) target
+COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.5.0"   # v0.5.0: exact Design Screen + Placer handoff
 TRACE_DIR = os.environ.get("BNE_TRACE_DIR", os.path.join(ROOT, "traces"))
 DESIGNABILITY_SPEC_VERSION = "bne-designability/v1.0.0"
+DESIGN_SCREEN_SCHEMA_VERSION = "bne-design-screen/v0.3.0"
 
 def _hash(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -1266,13 +1267,412 @@ def reader_panel(prototype="bump", intent="typical", behavior_class=None, nl=Non
         out["compiled_spec"] = res["compiled_spec"]
     return out
 
+
+def _design_numeric_bounds(raw, default, name):
+    values = default if raw is None else raw
+    if not isinstance(values, (list, tuple)) or len(values) != 2:
+        raise ValueError(f"{name} must contain exactly [min, max]")
+    out = [_agent_finite_number(value) for value in values]
+    if any(value is None for value in out) or out[0] >= out[1]:
+        raise ValueError(f"{name} must be two finite increasing numbers")
+    return out
+
+
+def _design_interpolate(xs, ys, x):
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    lo, hi = 0, len(xs) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if xs[mid] <= x:
+            lo = mid
+        else:
+            hi = mid
+    width = xs[hi] - xs[lo]
+    if width <= 0:
+        return ys[lo]
+    weight = (x - xs[lo]) / width
+    return ys[lo] + weight * (ys[hi] - ys[lo])
+
+
+def _design_finite_slopes(xs, ys, witnesses):
+    if len(xs) < 3 or len(xs) != len(ys):
+        return []
+    step = max((xs[-1] - xs[0]) / max(len(xs) - 1, 1), 1e-6)
+    half_width = max(2.0 * step, 0.08)
+    slopes = []
+    for witness in witnesses:
+        left = max(xs[0], witness - half_width)
+        right = min(xs[-1], witness + half_width)
+        if right <= left:
+            return []
+        slopes.append((_design_interpolate(xs, ys, right) - _design_interpolate(xs, ys, left)) /
+                      (right - left))
+    return slopes
+
+
+def design_from_behavior(target_program, input_window_log10=None, operating_points_log10=None,
+                         kd_log10=None, total_log10=None, max_reactions=5,
+                         max_screened=64, max_verified_recommendations=6,
+                         max_exact_placements=6, n_points=161, **_):
+    """Compile an abstract response program into a real network, parameters, and fresh curve.
+
+    The target intentionally carries no input/output species.  The exact Design Screen searches
+    candidate records first and therefore owns the candidate-specific input/readout binding.  A
+    returned card is admitted only after the same selected network and Chebyshev/interior parameter
+    vector are replayed through a complete finite forward scan on the live Julia engine.
+    """
+    if not isinstance(target_program, (list, tuple)) or not target_program:
+        return {"error": "target_program must be a non-empty array of reaction-order values"}
+    if len(target_program) > 16:
+        return {"error": "target_program may contain at most 16 reaction-order values"}
+    program = [_agent_finite_number(value) for value in target_program]
+    if any(value is None or abs(value) > 8 for value in program):
+        return {"error": "target_program values must be finite numbers within [-8, 8]"}
+    try:
+        input_bounds = _design_numeric_bounds(input_window_log10, [-5.0, 5.0], "input_window_log10")
+        kd_bounds = _design_numeric_bounds(kd_log10, [-10.0, 10.0], "kd_log10")
+        total_bounds = _design_numeric_bounds(total_log10, [-5.0, 5.0], "total_log10")
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if operating_points_log10 is not None:
+        if not isinstance(operating_points_log10, (list, tuple)) or len(operating_points_log10) != len(program):
+            return {"error": "operating_points_log10 must have one finite value per target-program step"}
+        operating_points = [_agent_finite_number(value) for value in operating_points_log10]
+        if any(value is None or value < input_bounds[0] or value > input_bounds[1] for value in operating_points):
+            return {"error": "operating points must be finite and lie inside input_window_log10"}
+        if any(a >= b for a, b in zip(operating_points, operating_points[1:])):
+            return {"error": "operating_points_log10 must be strictly increasing"}
+    else:
+        operating_points = None
+    integer_inputs = (
+        max_reactions,
+        max_screened,
+        max_verified_recommendations,
+        max_exact_placements,
+        n_points,
+    )
+    integer_values = [_agent_integral_number(value) for value in integer_inputs]
+    if any(value is None for value in integer_values):
+        return {"error": "design budgets and n_points must be integers"}
+    (max_reactions, max_screened, max_verified_recommendations,
+     max_exact_placements, n_points) = integer_values
+    if not (1 <= max_reactions <= 5 and 1 <= max_screened <= 64 and
+            1 <= max_verified_recommendations <= 64 and 1 <= max_exact_placements <= 8 and
+            21 <= n_points <= 1000):
+        return {"error": "design budgets or n_points exceed the supported synchronous limits"}
+
+    input_window = {"input_log10": input_bounds, "hard": True}
+    if operating_points is not None:
+        input_window["operating_points_log10"] = operating_points
+    common_constraints = {
+        "network": {"max_reactions": max_reactions, "allow_near_minimal": True},
+        "parameter_bounds": {"by_class": {"kd": kd_bounds, "total": total_bounds}},
+    }
+    common_ranking = {
+        "verified_only": True,
+        "prefer": ["evidence_grade", "chebyshev_radius", "complexity"],
+    }
+    common_audit = {
+        "unsupported": "block_if_hard",
+        "path_format": "json_pointer",
+        "include_supported": True,
+    }
+
+    # Phase 1 discovers a candidate-specific input/readout pair without presenting
+    # a proxy card.  The final exact-window request is compiled only after this bind.
+    discovery_spec = {
+        "schema_version": DESIGNABILITY_SPEC_VERSION,
+        "source": {
+            "kind": "agent_design",
+            "provenance": {
+                "compiler": "design_from_behavior/v1",
+                "stage": "candidate_io_discovery",
+            },
+        },
+        "target": {"legacy_target": {"target_kind": "exact", "target": program}},
+        "constraints": common_constraints,
+        "candidate_budget": {
+            "mode": "all_matches",
+            "max_extra_species": 1,
+            "max_extra_reactions": 1,
+            "max_extra_mu": 1,
+            "max_screened": max_screened,
+            "max_verified_recommendations": 0,
+            "max_recommended": 0,
+            "max_near_misses": 0,
+            "max_exact_placements": 0,
+        },
+        "ranking_policy": common_ranking,
+        "audit_policy": common_audit,
+    }
+    discovery = E.design_screen(discovery_spec)
+    if not isinstance(discovery, dict):
+        return {"error": "candidate I/O discovery returned a malformed response"}
+    if discovery.get("engine_offline"):
+        return {"engine_offline": True, "error": discovery.get("error")}
+    if discovery.get("error"):
+        return {"error": f"candidate I/O discovery failed: {discovery.get('error')}"}
+    if discovery.get("schema_version") != DESIGN_SCREEN_SCHEMA_VERSION:
+        return {"error": "candidate I/O discovery returned an unsupported Design Screen schema_version"}
+    discovery_cards = discovery.get("screened_candidates") or []
+    if not isinstance(discovery_cards, list) or any(not isinstance(card, dict) for card in discovery_cards):
+        return {"error": "candidate I/O discovery returned malformed screened_candidates"}
+    if not discovery_cards:
+        return {"error": "candidate I/O discovery found no bounded catalogue match",
+                "eligible_count": discovery.get("eligible_count"),
+                "evaluated_count": discovery.get("evaluated_count"),
+                "truncated": discovery.get("truncated")}
+    spec = screen = None
+    verified = []
+    io_attempts = []
+    seen_io = set()
+    for discovered in discovery_cards:
+        discovered_input, discovered_output = discovered.get("inp"), discovered.get("out")
+        io_key = (discovered_input, discovered_output)
+        if not discovered_input or not discovered_output or io_key in seen_io:
+            continue
+        seen_io.add(io_key)
+        candidate_spec = {
+            "schema_version": DESIGNABILITY_SPEC_VERSION,
+            "source": {
+                "kind": "agent_design",
+                "provenance": {
+                    "compiler": "design_from_behavior/v1",
+                    "io_binding": "design_screen_discovery",
+                    "discovery_card_id": discovered.get("card_id"),
+                    "discovery_nid": discovered.get("nid"),
+                },
+            },
+            "target": {"behavior_spec": {
+                "feature_space": "reaction_order",
+                "input": discovered_input,
+                "output": discovered_output,
+                "program": [
+                    {"kind": "reaction_order", "operator": "=", "value": value}
+                    for value in program
+                ],
+                "input_window": input_window,
+            }},
+            "constraints": common_constraints,
+            "candidate_budget": {
+                "mode": "all_matches",
+                "max_extra_species": 1,
+                "max_extra_reactions": 1,
+                "max_extra_mu": 1,
+                "max_screened": max_screened,
+                "max_verified_recommendations": max_verified_recommendations,
+                "max_recommended": max_verified_recommendations,
+                "max_near_misses": min(12, max_screened),
+                "max_exact_placements": max_exact_placements,
+            },
+            "ranking_policy": common_ranking,
+            "audit_policy": common_audit,
+        }
+        validation = E.validate_designability_spec(candidate_spec)
+        if not isinstance(validation, dict):
+            return {"error": "DesignabilitySpec validation returned a malformed response"}
+        if validation.get("engine_offline"):
+            return {"engine_offline": True, "error": validation.get("error")}
+        if (validation.get("error") or validation.get("ok") is not True or
+                validation.get("blocked_by_unsupported_hard_clause") is True):
+            io_attempts.append({"input": discovered_input, "output": discovered_output,
+                                "reason": validation.get("error") or "blocked spec"})
+            continue
+        candidate_screen = E.design_screen(candidate_spec)
+        if not isinstance(candidate_screen, dict):
+            return {"error": "final Design Screen returned a malformed response"}
+        if candidate_screen.get("engine_offline"):
+            return {"engine_offline": True, "error": candidate_screen.get("error")}
+        if candidate_screen.get("error"):
+            io_attempts.append({"input": discovered_input, "output": discovered_output,
+                                "reason": candidate_screen.get("error")})
+            continue
+        if candidate_screen.get("schema_version") != DESIGN_SCREEN_SCHEMA_VERSION:
+            return {"error": "final Design Screen returned an unsupported schema_version"}
+        candidate_verified = candidate_screen.get("verified_recommendations") or []
+        if (not isinstance(candidate_verified, list) or
+                any(not isinstance(card, dict) for card in candidate_verified)):
+            return {"error": "final Design Screen returned malformed verified_recommendations"}
+        if not candidate_verified:
+            io_attempts.append({"input": discovered_input, "output": discovered_output,
+                                "reason": "no verified recommendation"})
+            continue
+        spec, screen, verified = candidate_spec, candidate_screen, candidate_verified
+        break
+    if not verified:
+        return {"error": "no discovered candidate I/O pair produced a verified exact-window design",
+                "io_attempts": io_attempts,
+                "eligible_count": discovery.get("eligible_count"),
+                "evaluated_count": discovery.get("evaluated_count"),
+                "truncated": discovery.get("truncated")}
+
+    selected = theta = rules = inp = out = xs = ys = series = observed_slopes = witnesses = None
+    replay_failures = []
+    slope_tolerance = 0.40
+    for candidate in verified:
+        candidate_theta = ((candidate.get("parameter_recommendation") or {}).get("theta_star") or {})
+        candidate_kd = candidate_theta.get("kd") or []
+        if not (candidate.get("pass") is True and
+                candidate.get("screen_status") in ("verified_exact", "verified_sampled") and
+                candidate_theta.get("status") == "computed" and
+                candidate_theta.get("source_type") == "exact_solver" and
+                candidate_theta.get("bounds_verified") is True and candidate_kd):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "incomplete exact-card contract"})
+            continue
+        handoff = ((candidate.get("agent_handoff") or {}).get("next_request") or {})
+        handoff_body = handoff.get("body") if isinstance(handoff, dict) else None
+        if not (handoff.get("endpoint") == "/api/v1/placer_curve" and handoff.get("method") == "POST" and
+                isinstance(handoff_body, dict)):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "missing executable Placer handoff"})
+            continue
+        candidate_rules = handoff_body.get("rules") or []
+        candidate_input, candidate_output = handoff_body.get("input_sym"), handoff_body.get("output_sym")
+        handoff_kd = handoff_body.get("kd") or []
+        handoff_totals = handoff_body.get("totals") or {}
+        if not (candidate_rules and candidate_input == candidate.get("inp") and
+                candidate_output == candidate.get("out") and handoff_kd == candidate_kd and
+                handoff_totals == (candidate_theta.get("totals") or {})):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "Placer handoff disagrees with exact card"})
+            continue
+        candidate_curve = E.placer_curve(
+            rules=candidate_rules, input_sym=candidate_input, output_sym=candidate_output,
+            kd=handoff_kd, totals=handoff_totals,
+            param_min=input_bounds[0], param_max=input_bounds[1], n_points=n_points,
+        )
+        if not isinstance(candidate_curve, dict):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "malformed curve response"})
+            continue
+        if candidate_curve.get("engine_offline"):
+            return {"engine_offline": True, "error": candidate_curve.get("error")}
+        if candidate_curve.get("error"):
+            replay_failures.append({"nid": candidate.get("nid"),
+                                    "reason": f"fresh curve failed: {candidate_curve.get('error')}"})
+            continue
+        candidate_xs = candidate_curve.get("param_values") or []
+        candidate_rows = candidate_curve.get("output_traj") or []
+        candidate_valid = candidate_curve.get("valid") or []
+        if not all(isinstance(values, list) for values in (candidate_xs, candidate_rows, candidate_valid)):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "malformed curve arrays"})
+            continue
+        candidate_ys = [(row[0] if isinstance(row, list) and row else row) for row in candidate_rows]
+        complete = (len(candidate_xs) == len(candidate_ys) == len(candidate_valid) == n_points and
+                    all(value is True for value in candidate_valid) and
+                    all(_agent_finite_number(value) is not None for value in candidate_xs + candidate_ys) and
+                    candidate_curve.get("partial") is False)
+        if not complete:
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "incomplete/non-finite curve"})
+            continue
+        candidate_witnesses = candidate_theta.get("witness_input_log10") or operating_points or []
+        candidate_slopes = _design_finite_slopes(candidate_xs, candidate_ys, candidate_witnesses)
+        slope_flags = (len(candidate_slopes) == len(program) and
+                       [abs(value - target) <= slope_tolerance for value, target in zip(candidate_slopes, program)])
+        if not slope_flags or not all(slope_flags):
+            replay_failures.append({"nid": candidate.get("nid"), "reason": "finite-slope replay mismatch",
+                                    "observed_slopes": candidate_slopes})
+            continue
+        selected, theta = candidate, candidate_theta
+        rules, inp, out = candidate_rules, candidate_input, candidate_output
+        xs, ys = candidate_xs, candidate_ys
+        observed_slopes, witnesses = candidate_slopes, candidate_witnesses
+        series = [{"x": round(float(x), 6), "y": round(float(y), 6)} for x, y in zip(xs, ys)]
+        break
+    if selected is None:
+        return {"error": "no exact recommendation passed the fresh finite-curve and local-slope replay",
+                "designability_spec": spec, "replay_failures": replay_failures,
+                "eligible_count": screen.get("eligible_count"),
+                "evaluated_count": screen.get("evaluated_count"),
+                "truncated": screen.get("truncated")}
+    kd = theta.get("kd") or []
+    evidence = {
+        "tier": "3a+1",
+        "label": "exact Design Screen + fresh finite forward verification",
+        "basis": (f"{selected.get('certificate_grade')} with {len(series)}/{len(series)} finite replay points; "
+                  f"all {len(program)} local slopes within ±{slope_tolerance:g}"),
+    }
+    card = {
+        "family": "dose_shape",
+        "verdict": "verified_design",
+        "rules": rules,
+        "kd": [float(value) for value in kd],
+        "totals": theta.get("totals") or {},
+        "input_symbol": inp,
+        "output_symbol": out,
+        "n_reactions": len(rules),
+        "computed_series": series,
+        "target_program": program,
+        "operating_points_log10": operating_points,
+        "witness_input_log10": witnesses,
+        "observed_finite_slopes": [round(value, 6) for value in observed_slopes],
+        "finite_slope_tolerance": slope_tolerance,
+        "finite_slope_pass": True,
+        "certificate_grade": selected.get("certificate_grade"),
+        "evidence_grade": selected.get("evidence_grade"),
+        "chebyshev_radius": (selected.get("metrics") or {}).get("chebyshev_radius"),
+        "screen_coverage": {
+            "eligible_count": screen.get("eligible_count"),
+            "evaluated_count": screen.get("evaluated_count"),
+            "truncated": screen.get("truncated"),
+        },
+        "designability_spec": spec,
+        "designability_card": selected,
+        "evidence": evidence,
+        "evidence_tier": evidence["label"],
+    }
+    step = max(1, len(series) // 20)
+    return {
+        "family": "dose_shape",
+        "designability_spec": spec,
+        "selected_network": rules,
+        "selected_input": inp,
+        "selected_output": out,
+        "selected_kd": card["kd"],
+        "selected_totals": card["totals"],
+        "certificate_grade": card["certificate_grade"],
+        "chebyshev_radius": card["chebyshev_radius"],
+        "eligible_count": screen.get("eligible_count"),
+        "evaluated_count": screen.get("evaluated_count"),
+        "truncated": screen.get("truncated"),
+        "forward_points": len(series),
+        "witness_input_log10": witnesses,
+        "observed_finite_slopes": card["observed_finite_slopes"],
+        "finite_slope_pass": True,
+        "curve_sample_log10": [[point["x"], point["y"]] for point in series[::step]],
+        "evidence_tier": evidence["label"],
+        "_card": card,
+    }
+
 TOOLS_DISPATCH = {"corpus_overview": corpus_overview, "retrieve_atlas_seed": retrieve_atlas_seed,
                   "retrieve_logic_seed": retrieve_logic_seed, "retrieve_analog_seed": retrieve_analog_seed,
                   "retrieve_multimodal_seed": retrieve_multimodal_seed, "reader_panel": reader_panel,
+                  "design_from_behavior": design_from_behavior,
                   "simulate": simulate, "simulate_2d": simulate_2d, "ro_behavior": ro_behavior}
 
 _DOSE_CLASSES = sorted(set(ds.CLASS_MAP))
 TOOLSPEC = [
+    {"name": "design_from_behavior",
+     "description": "END-TO-END 1-input inverse design on the LIVE Julia engine. Translate the user's requested qualitative curve into an ordered reaction-order program (local log-log slopes such as [1,0,-1,0,1,0,-1]), without naming an input or output species. The tool validates a canonical DesignabilitySpec, searches candidate networks, binds candidate-specific I/O only after selection, computes an exact feasible-region Chebyshev/interior parameter vector, rebuilds that selected network, and returns a fresh finite forward curve. Use this first for a requested dose-response pattern or a refinement of its working-point locations. Returned cards are real designs; if no verified recommendation is found, report that bounded result honestly.",
+     "parameters": {"type": "object", "properties": {
+         "target_program": {"type": "array", "minItems": 1, "maxItems": 16,
+                            "items": {"type": "number", "minimum": -8, "maximum": 8},
+                            "description": "ordered desired local reaction orders; 0=flat, +1=rising, -1=falling"},
+         "input_window_log10": {"type": "array", "minItems": 2, "maxItems": 2,
+                                "items": {"type": "number"},
+                                "description": "allowed log10 input window; default [-5,5]"},
+         "operating_points_log10": {"type": "array", "items": {"type": "number"},
+                                    "description": "optional strictly increasing check locations, one per program step; omit to let the backend distribute them"},
+         "kd_log10": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"},
+                      "description": "allowed log10 Kd range; default [-10,10]"},
+         "total_log10": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"},
+                         "description": "allowed log10 background-total range; default [-5,5]"},
+         "max_reactions": {"type": "integer", "minimum": 1, "maximum": 5},
+         "max_screened": {"type": "integer", "minimum": 1, "maximum": 64},
+         "max_verified_recommendations": {"type": "integer", "minimum": 1, "maximum": 64},
+         "max_exact_placements": {"type": "integer", "minimum": 1, "maximum": 8},
+         "n_points": {"type": "integer", "minimum": 21, "maximum": 1000}},
+         "required": ["target_program"], "additionalProperties": False}},
     {"name": "corpus_overview",
      "description": "Atlas PRIOR: how prevalent each behaviour is in the precomputed μ≤5 survey (robust networks per dose class, per logic gate). Use to gauge feasibility before proposing. Not an answer.",
      "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
@@ -1338,10 +1738,24 @@ SYSTEM = """You are the Biocircuits Design Agent. You design equilibrium protein
 networks by REASONING and by CALLING A LIVE COMPUTE ENGINE — not by reciting a database. The atlas
 is a PRIOR (a map of what's known to exist and good starting points); the ENGINE (which solves the
 binding equilibrium / ODE and phenotypes the result) is the source of truth. Every candidate you
-present to the user MUST be backed by a fresh `simulate` result from THIS session.
+present to the user MUST be backed by fresh compute from THIS session.
+
+PRIMARY INVERSE-DESIGN PATH for a 1-input curve pattern:
+- Translate the user's requested rises, falls, and flat regions into an ordered reaction-order
+  program, then call `design_from_behavior`. Do not invent input/output molecule names: that tool
+  searches networks first and binds candidate-specific I/O afterward.
+- A cat face / cat forehead / two ears with a flat forehead / 猫猫 or M-shaped response means
+  the ordered program [1, 0, -1, 0, 1, 0, -1] across a finite input window.
+- If the user moves a transition or working point, preserve the program and change only
+  `operating_points_log10`. If they change the qualitative pattern, change the program.
+- A successful `design_from_behavior` result already includes exact Design Screen evidence plus a
+  fresh finite forward curve. Present its selected network, I/O, Kd/totals, certificate, and curve.
+- Never claim success from a compiled request alone. If validation, screening, or the fresh replay
+  fails, explain the returned bounded failure and do not fabricate a design.
 
 THE LOOP for any design request:
-1. (optional) corpus_overview / retrieve_atlas_seed (1-input) / retrieve_logic_seed (2-input) to get a
+1. For a 1-input requested pattern, use `design_from_behavior`. For exploratory/manual proposals or
+   unsupported families, optionally use corpus_overview / retrieve_atlas_seed / retrieve_logic_seed to get a
    starting topology and gauge feasibility. For a multimodal / oscillating target use
    `retrieve_multimodal_seed` (known-good topologies); `ro_behavior` checks whether a given topology
    can structurally produce a sign pattern before sweeping kd.
@@ -1357,7 +1771,7 @@ THE LOOP for any design request:
      the realized Boolean gate read from the corners + the on/off margin).
 4. VERIFY against the request. If it doesn't match (wrong shape/gate, low robustness/margin), REFINE —
    change kd, add/alter a reaction, pick a different input/observable — and re-simulate. Iterate.
-5. Present only engine-simulated candidates, citing their computed shape/gate + robustness/margin, and
+5. Present only engine-computed candidates, citing their computed shape/gate + robustness/margin, and
    reply in the user's language. KD MATTERS: state the kd you used (every candidate carries its kd).
 
 The system's STANDARD dose (1-input) class labels are exactly: monotone_activation,
@@ -1526,7 +1940,7 @@ def run_turn(state, message, llm_cfg=None, top=3):
             if res.get("engine_offline"):
                 holder["engine_offline"] = True
             spec_payload_present, spec_payload = _agent_first_present_spec_payload(res)
-            card = res.pop("_card", None) if name in ("simulate", "simulate_2d") else None
+            card = res.pop("_card", None) if name in ("simulate", "simulate_2d", "design_from_behavior") else None
             designability_spec = _agent_designability_spec_from_payload(spec_payload, card)
             if designability_spec:
                 holder["designability_spec"] = holder["designability_spec"] or designability_spec

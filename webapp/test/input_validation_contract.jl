@@ -277,6 +277,20 @@ end
         curve_base, Dict("kd" => Any[true]))).status == 400
     @test post("/api/v1/placer_curve", merge(
         curve_base, Dict("kd" => Any[1.0], "totals" => Dict("tB" => true)))).status == 400
+    routed_curve = post("/api/v1/placer_curve", merge(
+        curve_base, Dict(
+            "kd" => Any[1.0],
+            "totals" => Dict("tB" => 1.0),
+            "param_min" => -2.0,
+            "param_max" => 2.0,
+            "n_points" => 21,
+        )))
+    @test routed_curve.status == 200
+    routed_curve_body = JSON3.read(String(routed_curve.body))
+    @test length(routed_curve_body.param_values) == 21
+    @test length(routed_curve_body.valid) == 21
+    @test all(routed_curve_body.valid)
+    @test routed_curve_body.partial == false
 
     threshold_base = Dict(
         "rules" => rules,

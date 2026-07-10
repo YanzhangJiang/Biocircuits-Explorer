@@ -357,7 +357,28 @@
             "endpoint": { "const": "/api/design_screen" },
             "role": { "type": "string" },
             "next_actions": { "type": "array", "items": { "type": "string" } },
-            "agent_should_not": { "type": "array", "items": { "type": "string" } }
+            "agent_should_not": { "type": "array", "items": { "type": "string" } },
+            "next_request": {
+              "type": "object",
+              "required": ["endpoint", "method", "body"],
+              "additionalProperties": false,
+              "properties": {
+                "endpoint": { "const": "/api/v1/placer_curve" },
+                "method": { "const": "POST" },
+                "body": {
+                  "type": "object",
+                  "required": ["rules", "input_sym", "output_sym", "kd", "totals"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "rules": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                    "input_sym": { "type": "string" },
+                    "output_sym": { "type": "string" },
+                    "kd": { "type": "array", "minItems": 1, "items": { "type": "number", "exclusiveMinimum": 0 } },
+                    "totals": { "type": "object", "additionalProperties": { "type": "number", "exclusiveMinimum": 0 } }
+                  }
+                }
+              }
+            }
           }
         }
       }

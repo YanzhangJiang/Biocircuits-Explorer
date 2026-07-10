@@ -59,7 +59,10 @@ end
 resolve_port() = Config.port()
 
 function _validate_bind_host(raw::AbstractString)
-    host = strip(String(raw))
+    # `strip(::String)` may return a SubString on Julia 1.12.  HTTP.serve's host
+    # dispatch accepts a concrete String/IPAddr, so keep the validated boundary
+    # type stable instead of relying on equality tests that hide the distinction.
+    host = String(strip(String(raw)))
     isempty(host) && throw(ArgumentError("Bind host must not be empty."))
     ncodeunits(host) <= 253 || throw(ArgumentError("Bind host is too long."))
     all(c -> isletter(c) || isdigit(c) || c in ('.', '-', '_', ':', '%'), host) ||

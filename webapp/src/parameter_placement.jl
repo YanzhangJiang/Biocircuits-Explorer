@@ -414,8 +414,14 @@ function handle_placer_curve(req)
         _raw_get(body, :kd, nothing), "kd";
         expected_length=length(rules), positive=true)
     totals = _placer_totals_dict(_raw_get(body, :totals, nothing))
+    param_min, param_max = sync_finite_range(
+        _raw_get(body, :param_min, -6.0), _raw_get(body, :param_max, 6.0), "param";
+        abs_max=20.0)
+    n_points = sync_bounded_int(
+        _raw_get(body, :n_points, 200), "n_points"; min=10, max=1000)
     curve = try
-        placer_dose_response(rules, kd, totals, input_sym, output_sym)
+        placer_dose_response(rules, kd, totals, input_sym, output_sym;
+            param_min=param_min, param_max=param_max, n_points=n_points)
     catch e
         e isa SyncBudgetExceeded && rethrow()
         return error_response("Dose-response curve failed: $(sprint(showerror, e))"; status = 400)

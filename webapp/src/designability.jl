@@ -2807,6 +2807,40 @@ function _design_shape_constraint(spec::NormalizedDesignabilitySpec)
     return Dict{String, Any}(_materialize(shape))
 end
 
+function _design_attach_exact_placer_handoff!(card; verification_status::AbstractString="verified_exact")
+    theta = card["parameter_recommendation"]["theta_star"]
+    theta["placement_status"] = "success"
+    theta["verification_status"] = String(verification_status)
+    theta["source_endpoint"] = "/api/v1/design_screen"
+    theta["note"] = "Computed Chebyshev/interior parameter recommendation from the exact feasible region; replay with the attached Placer curve request."
+    rules = _design_nid_to_rules(card["nid"])
+    card["placement_attempt"] = Dict(
+        "attempted" => true,
+        "status" => "success",
+        "endpoint" => "/api/v1/design_screen",
+        "mode" => "exact_feasible_region_chebyshev",
+        "pass" => true,
+    )
+    card["agent_handoff"] = Dict(
+        "endpoint" => "/api/design_screen",
+        "role" => "verified_design_result",
+        "next_actions" => ["rerun_fresh_forward_curve"],
+        "agent_should_not" => ["promote proxy-only candidates", "claim a finite curve without replay"],
+        "next_request" => Dict(
+            "endpoint" => "/api/v1/placer_curve",
+            "method" => "POST",
+            "body" => Dict(
+                "rules" => rules,
+                "input_sym" => card["inp"],
+                "output_sym" => card["out"],
+                "kd" => theta["kd"],
+                "totals" => theta["totals"],
+            ),
+        ),
+    )
+    return card
+end
+
 function _design_exact_union_card(card, region::FeasibleRegionResult, spec::NormalizedDesignabilitySpec)
     best = first(region.cells)
     min_radius = _design_min_chebyshev_radius(spec)
@@ -2856,6 +2890,7 @@ function _design_exact_union_card(card, region::FeasibleRegionResult, spec::Norm
         "source" => "feasible_region_single_ro",
         "supports_exact_placement" => true,
     )]
+    _design_attach_exact_placer_handoff!(card)
     return card
 end
 
@@ -3110,6 +3145,8 @@ function _design_exact_program_card(card, region::FeasibleRegionResult, spec::No
         "source" => window_verified ? "feasible_region_reaction_order_program_window" : "feasible_region_reaction_order_program",
         "supports_exact_placement" => true,
     )]
+    _design_attach_exact_placer_handoff!(card;
+        verification_status = sampled_forward_verified ? "verified_exact+sampled_forward" : "verified_exact")
     return card
 end
 
@@ -3140,9 +3177,19 @@ function _design_verified_cards_from_spec(spec::NormalizedDesignabilitySpec, rec
         attempts >= max_exact && break
         attempts += 1
         use_program_solver = input_window !== nothing || target_ro === nothing
-        region = use_program_solver ?
-            feasible_region_reaction_order_program(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_program, bounds; input_window = input_window, transition_order = transition_order, dynamic_range = dynamic_range, output_feature = output_feature, shape = shape) :
-            feasible_region_single_ro(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_ro, bounds)
+        region = try
+            use_program_solver ?
+                feasible_region_reaction_order_program(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_program, bounds; input_window = input_window, transition_order = transition_order, dynamic_range = dynamic_range, output_feature = output_feature, shape = shape) :
+                feasible_region_single_ro(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_ro, bounds)
+        catch err
+            # One catalogue record may have more regime paths than the bounded Web
+            # runtime permits.  Exact evaluation is already capped to eight records;
+            # treat this record as unevaluated and continue rather than turning a
+            # candidate-local complexity limit into a false target-wide failure.
+            (err isa SyncBudgetExceeded &&
+             occursin("Regime-path materialization exceeds", sprint(showerror, err))) || rethrow(err)
+            continue
+        end
         region.feasible || continue
         eligible_cells = [
             cell for cell in region.cells
