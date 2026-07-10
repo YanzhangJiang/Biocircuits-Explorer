@@ -121,7 +121,7 @@ class PathAndMarkdownTests(unittest.TestCase):
 
     def test_private_key_and_major_token_shapes_are_detected(self):
         markers = verify_repository.find_private_markers(
-            "-----BEGIN TEST PRIVATE KEY-----\n"
+            "-----BEGIN RSA " + "PRIVATE KEY-----\n"
             + "ghp_" + "A" * 36 + "\n"
             + "sk-" + "proj-" + "b" * 32
         )
@@ -129,6 +129,37 @@ class PathAndMarkdownTests(unittest.TestCase):
         self.assertIn("GitHub token pattern", markers)
         self.assertIn("OpenAI token pattern", markers)
         self.assertEqual(verify_repository.find_private_markers("a sketch-project note"), [])
+
+    def test_ai_provider_token_shapes_are_detected(self):
+        markers = verify_repository.find_private_markers(
+            "sk-ant-" + "a" * 24 + "\n"
+            + "AIza" + "b" * 35 + "\n"
+            + "hf_" + "c" * 24 + "\n"
+            + "xai-" + "d" * 24 + "\n"
+            + "xoxb-" + "e" * 24
+        )
+        self.assertIn("Anthropic token pattern", markers)
+        self.assertIn("Google API key pattern", markers)
+        self.assertIn("Hugging Face token pattern", markers)
+        self.assertIn("xAI token pattern", markers)
+        self.assertIn("Slack token pattern", markers)
+
+    def test_public_path_policy_rejects_private_research_material(self):
+        violation = verify_repository.public_repository_path_violation
+        self.assertIsNone(violation(Path("src/periodic_table/result_schema.py")))
+        self.assertIsNotNone(violation(Path("paper_rop_periodic_table/data/slices.jsonl.gz")))
+        self.assertIsNotNone(violation(Path("manuscripts/draft.tex")))
+        self.assertIsNotNone(violation(Path("notes/reviewer_response.docx")))
+
+    def test_notebook_policy_requires_no_outputs_or_execution_counts(self):
+        audit = verify_repository.Audit()
+        verify_repository.check_notebook_is_clear(
+            Path("notebooks/example.ipynb"),
+            json.dumps({"cells": [{"cell_type": "code", "execution_count": 1, "outputs": [{"output_type": "stream"}]}]}),
+            audit,
+        )
+        self.assertTrue(any("contains output" in error for error in audit.errors))
+        self.assertTrue(any("execution_count" in error for error in audit.errors))
 
     def test_manifest_document_paths_must_be_unique(self):
         with tempfile.TemporaryDirectory() as temporary:

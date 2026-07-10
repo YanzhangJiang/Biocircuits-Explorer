@@ -190,10 +190,9 @@ they do not rewrite the catalog's baseline identifier or historical
 8. Several hand-authored JSON Schemas still lack instance-level coverage.
    Design Screen v0.3 has direct backend and rendering contracts; that does not
    upgrade unrelated schemas.
-9. Embedded and paper-side periodic-table observations still have unresolved
-   population meanings and producer lineage. Do not reconcile them by
-   arithmetic. The standalone paper repository remains the manuscript and
-   figure authority.
+9. Paper-side datasets, figures, drafts, and provenance records are deliberately
+   untracked. This repository cannot verify manuscript claims or their release
+   lineage.
 10. Work limits are operational safeguards, not proofs that bounded search is
     scientifically complete. A rejected synchronous request is not evidence
     that the requested circuit or behavior is impossible.

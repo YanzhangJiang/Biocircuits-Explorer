@@ -52,7 +52,7 @@
     "limit": 0
   },
   "source_metadata": {
-    "workstation_target": "9995WX/bmac",
+    "workstation_target": "operator-managed",
     "julia_threads": 64,
     "network_parallelism": 64,
     "blas_threads": 1,

@@ -140,17 +140,15 @@ network builds must remain distinguishable from complete exact records.
 
 ## Research and paper-facing artifacts
 
-There are two research pipelines in this repository:
+The research pipeline in this repository is
+[`src/periodic_table/`](../../src/periodic_table/) together with
+[`scripts/periodic_table/`](../../scripts/periodic_table/). It defines run
+configs, cell statuses, witnesses, certificates, atomic JSONL output, and a
+verifier. Paper-facing extracts, figures, notebooks with outputs, and private
+workstation instructions are kept outside this public checkout.
 
-- [`src/periodic_table/`](../../src/periodic_table/) and
-  [`scripts/periodic_table/`](../../scripts/periodic_table/) define run configs,
-  cell statuses, witnesses, certificates, atomic JSONL output, and a verifier;
-- [`paper_rop_periodic_table/`](../../paper_rop_periodic_table/) contains a
-  reduced atlas extract, extraction code, and offline notebooks used for
-  paper-facing analysis.
-
-Treat these as downstream of the engine and atlas. Historical README prose,
-embedded counts, workstation instructions, and copied result JSON can drift.
+Treat research products as downstream of the engine and atlas. Historical
+README prose and copied result JSON can drift.
 Before reusing a conclusion, verify the current artifact itself, its generator,
 its source identity, and the code revision. The conclusion-only verifier
 [`verify_results.py`](../../scripts/periodic_table/verify_results.py) checks run

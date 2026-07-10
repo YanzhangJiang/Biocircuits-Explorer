@@ -64,10 +64,9 @@ installer worked in its real environment.
 
 Source, schemas, tests, and versioned artifact manifests outrank prose. The
 maintained compression layer is `knowledge/`; ignored `doc/`, `docs/`, and old
-developer-wiki material are historical until re-verified. The computation
-repository produces artifacts, the standalone periodic-table paper repository
-owns current manuscript claims, and the private weekly-report archive is
-historical feedback.
+developer-wiki material are historical until re-verified. This public
+computation repository produces artifacts only; draft manuscripts, private
+feedback, and paper-side data are deliberately kept outside it.
 
 ## Evidence rules
 

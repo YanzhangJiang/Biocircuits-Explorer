@@ -62,7 +62,7 @@ and returns an explicit offline/error result when computation is unavailable.
 | Mathematical engine | binding-network regimes, ROP geometry, SISO paths, numerical solves | [`Bnc_julia/src/`](../../Bnc_julia/src/), [engine card](../modules/engine-rop.md) |
 | Reusable behavior knowledge | network enumeration, behavior slices, querying, inverse design | [`atlas.jl`](../../webapp/src/atlas.jl), [`atlas_sqlite.jl`](../../webapp/src/atlas_sqlite.jl), [atlas card](../modules/atlas.md) |
 | Recommendation evidence | explicit target audit, feasible regions, sampled forward checks | [`designability.jl`](../../webapp/src/designability.jl), [designability card](../modules/designability.md) |
-| Research products | periodic-table runs, reduced extracts, notebooks, paper-facing outputs | [`src/periodic_table/`](../../src/periodic_table/), [`scripts/periodic_table/`](../../scripts/periodic_table/), [`paper_rop_periodic_table/`](../../paper_rop_periodic_table/) |
+| Research products | periodic-table runs and reproducible search inputs | [`src/periodic_table/`](../../src/periodic_table/), [`scripts/periodic_table/`](../../scripts/periodic_table/) |
 
 ## Trust boundaries
 

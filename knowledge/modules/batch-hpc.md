@@ -138,9 +138,8 @@ unknown.
 - P2 — Scheduler comments and historical phase labels can drift from executable
   behavior; a run is evidence only when its revision, configuration, logs,
   outputs, and verification command are captured together.
-- P2 — `workstation/**` retains site-specific historical campaign assumptions.
-  It is non-authoritative by default and is not a current batch-HPC owner or
-  portable entry point.
+- P2 — Site-specific campaign scripts are intentionally untracked. Capture a
+  portable, reviewed entry point before promoting any workflow into this module.
 
 ## Change protocol
 

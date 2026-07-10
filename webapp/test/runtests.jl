@@ -13,6 +13,53 @@ include("concurrency_and_budget_contract.jl")
 include("input_validation_contract.jl")
 include("numerical_validity_contract.jl")
 
+function _configure_design_index_fixture!()
+    dir = mktempdir()
+    path = joinpath(dir, "design-index.jsonl")
+    # This deliberately tiny synthetic fixture keeps Designability contracts
+    # independent of any paper-side or workstation dataset.
+    records = [
+        Dict(
+            "nid" => "[1,1]+[2]<->[1,1,2]|[1]+[1]<->[1,1]|[2,3]+[2]<->[2,2,3]|[2]+[3]<->[2,3]",
+            "inp" => "tA", "out" => "C_A_A",
+            "d" => 3, "r" => 4, "mu" => 3,
+            "exact" => ["1"],
+            "base_motifs" => ["monotone_activation", "multistage_activation"],
+        ),
+        Dict(
+            "nid" => "[1]+[2]<->[1,2]", "inp" => "tA", "out" => "C_A_B",
+            "d" => 2, "r" => 2, "mu" => 3,
+            "exact" => ["1 → -1 → 1"],
+            "base_motifs" => ["biphasic_peak"],
+        ),
+        Dict(
+            "nid" => "[1]+[2]<->[1,2]", "inp" => "tA", "out" => "B",
+            "d" => 2, "r" => 1, "mu" => 2,
+            "exact" => ["0 → -1"],
+            "base_motifs" => ["thresholded_repression"],
+        ),
+        Dict(
+            "nid" => "[1]+[2]<->[1,2]", "inp" => "tA", "out" => "A",
+            "d" => 2, "r" => 1, "mu" => 2,
+            "exact" => ["1"],
+            "base_motifs" => ["monotone_activation"],
+        ),
+    ]
+    open(path, "w") do io
+        for record in records
+            write(io, JSON3.write(record), '\n')
+        end
+    end
+    gzip_path = path * ".gz"
+    run(pipeline(`gzip -c $path`, stdout=gzip_path))
+    ENV["BNE_DESIGN_INDEX"] = gzip_path
+    lock(BiocircuitsExplorerBackend._DESIGN_INDEX_LOCK) do
+        BiocircuitsExplorerBackend._DESIGN_INDEX_STATE[] = nothing
+    end
+end
+
+_configure_design_index_fixture!()
+
 # Keep the Designability/Design Screen API contracts runnable from the main test
 # entry as well as directly; these run before the older atlas @test_broken gate
 # below.
@@ -3351,12 +3398,16 @@ end
 
 # ── Design pipeline: DesignabilitySpec → screen → selected reaction network ──
 # spec 2026-06-29-tunable-design-workflow-completion-design.md, items 1 & 2:
-# label→RO input, the design index repointed to the tracked new-sign atlas, and
-# the old inverse-design route downgraded (not removed).
-@testset "Design Pipeline (label/sign search, new-sign index, design_labels)" begin
+# label→RO input requires an explicitly configured operator-managed index; the
+# old inverse-design route remains available when that index is configured.
+@testset "Design Pipeline (label/sign search, operator-managed index, design_labels)" begin
     BEB = BiocircuitsExplorerBackend
+    if isempty(get(ENV, "BNE_DESIGN_INDEX", ""))
+        @test isempty(BEB._load_design_index())
+        @test BEB.handle_design_labels(nothing).status == 503
+    else
     idx = BEB._load_design_index()
-    @test !isempty(idx)                                       # tracked new-sign atlas loads
+    @test !isempty(idx)                                       # configured index loads
     @test !isempty(idx[1].motifs)                             # base_motifs field present
     @test BEB.design_search("label", "biphasic_peak")["designable"] === true
     @test !isempty(BEB.design_search("label", "biphasic_peak")["minimal"])
@@ -3415,16 +3466,10 @@ end
     for cell in BEB.design_search("sign", "+-+")["minimal"], net in cell["networks"]
         @test net["out"] in first(BEB._design_canonical_species(net["nid"]))
     end
-    relabeled_nid = "[1,2]+[1]<->[1,1,2]|[1,2]+[3]<->[1,2,3]|[1]+[2]<->[1,2]|[2]+[3]<->[2,3]"
-    relabeled_outs = Set(r.out for r in idx if r.nid == relabeled_nid)
-    @test "C_A_A_B" in relabeled_outs
-    @test "C_B_C" in relabeled_outs
-    @test !("C_A_B_B" in relabeled_outs)
-    @test !("C_A_C" in relabeled_outs)
-    rl = JSON3.read(String(copy(BEB.handle_design_labels(nothing).body)))
-    @test length(rl["labels"]) == 16                          # the 16-motif vocab
-    @test all(l -> !isempty(l["ro_program"]), rl["labels"])   # each carries an RO translation
+    @test any(r -> r.out == "C_A_A", idx)
+    @test BEB.handle_design_labels(nothing).status == 503       # no tracked label corpus
     @test haskey(BEB.API_ROUTES, "/api/run_inverse_design")   # downgraded, not removed
     @test haskey(BEB.API_ROUTES, "/api/design_labels")        # new endpoint wired
     @test haskey(BEB.API_ROUTES, "/api/design_screen")        # tunability-aware screen wired
+    end
 end

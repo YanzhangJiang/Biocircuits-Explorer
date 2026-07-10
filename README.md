@@ -163,7 +163,6 @@ scripts/periodic_table/    search and reproduction entry points
 atlas_specs/               checked-in Atlas build specifications
 tests/                     repository-level Python contracts
 knowledge/                 maintained, evidence-linked developer knowledge
-paper_rop_periodic_table/  embedded reproducibility snapshot, not manuscript authority
 ```
 
 For a short architectural orientation, read
@@ -188,8 +187,7 @@ The repository does not yet provide current evidence for:
 - submission to or completion on a real Slurm cluster;
 - a signed, notarized, stapled, and Gatekeeper-tested macOS DMG;
 - the complete Compose, Nginx, domain, TLS certificate, and renewal path; or
-- release-grade reconciliation of the conflicting periodic-table populations
-  and producer lineage recorded in the knowledge catalog.
+- availability or verification of any untracked research dataset.
 
 Scripts and static tests for several of these paths exist. They reduce known
 failure modes, but they are not substitutes for external runtime evidence.
@@ -205,8 +203,8 @@ Deployment details and the remaining gaps are routed through
 - Scientific numbers belong in versioned artifact manifests and claim ledgers,
   not duplicated prose. Conflicting counts remain unresolved until their
   population meaning and hashes are reconciled.
-- The computation repository and the current manuscript have different owners.
-  See [knowledge/research/repositories.md](knowledge/research/repositories.md).
+- Draft manuscripts, paper figures, private feedback, and workstation material
+  are not tracked here. See [knowledge/research/repositories.md](knowledge/research/repositories.md).
 
 ## Version and license
 
