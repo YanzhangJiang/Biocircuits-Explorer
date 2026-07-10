@@ -38,7 +38,7 @@ function graph_to_dict(model; graph_mode::Symbol=:qk, change_qK=nothing)
             (get_neighbor_graph_qK(model), get_edge_labels(model), "qK-neighbor")
         elseif graph_mode == :siso
             isnothing(change_qK) && error("change_qK is required for SISO graph mode")
-            siso = SISOPaths(model, change_qK)
+            siso = _bounded_siso_paths(model, change_qK)
             siso_graph = get_neighbor_graph_qK(siso)
             edge_labels = Dict(Edge(src(e), dst(e)) => "+" * string(qK_sym(model)[get_change_qK_idx(siso)]) for e in Graphs.edges(siso_graph))
             (siso_graph, edge_labels, "SISO")

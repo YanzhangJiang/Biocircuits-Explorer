@@ -531,6 +531,7 @@ mutable struct Bnc{T} <: AbstractBnc # T is the int type to save all the indices
     # _vertices_Nρ_inv_dict::Dict{Vector{T}, Tuple{SparseMatrixCSC{Float64, Int},T}} # cache the N_inv for each vertex permutation
     _vertices_Nρ_inv_dict :: Union{Any,Nothing}
     _regimes_affine_ready::Bool
+    _regimes_build_complete::Bool
     _regimes_affine_lock::ReentrantLock
     _integration_helper_lock::ReentrantLock
 
@@ -577,6 +578,7 @@ mutable struct Bnc{T} <: AbstractBnc # T is the int type to save all the indices
             nothing,                         # vertices_graph
             nothing,                         # _vertices_perm_Ninv_dict
             false,                           # _regimes_affine_ready
+            false,                           # _regimes_build_complete
             ReentrantLock(),                 # _regimes_affine_lock
             ReentrantLock(),                 # _integration_helper_lock
             # Fields 13-28 (Calculated values)

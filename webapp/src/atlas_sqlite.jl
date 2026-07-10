@@ -5,6 +5,50 @@ const ATLAS_SQLITE_LOCK_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0)
 const ATLAS_SQLITE_LIGHTWEIGHT_ENV = Config.ATLAS_SQLITE_LIGHTWEIGHT_ENV
 const ATLAS_SQLITE_PERSIST_MODE_ENV = Config.ATLAS_SQLITE_PERSIST_MODE_ENV
 
+mutable struct _AtlasSqliteWriteLockEntry
+    lock::ReentrantLock
+    users::Int
+end
+
+const _ATLAS_SQLITE_WRITE_LOCKS = Dict{String, _AtlasSqliteWriteLockEntry}()
+const _ATLAS_SQLITE_WRITE_LOCKS_GUARD = ReentrantLock()
+
+function _atlas_sqlite_lock_key(path::AbstractString)
+    text = String(path)
+    text == ":memory:" && return text
+    return abspath(expanduser(text))
+end
+
+function _atlas_sqlite_lock_key(db::SQLite.DB)
+    path = String(getfield(db, :file))
+    path == ":memory:" && return "memory:$(objectid(db))"
+    return _atlas_sqlite_lock_key(path)
+end
+
+function _with_atlas_sqlite_write_lock(f::Function, db_or_path)
+    key = _atlas_sqlite_lock_key(db_or_path)
+    entry = lock(_ATLAS_SQLITE_WRITE_LOCKS_GUARD) do
+        current = get!(_ATLAS_SQLITE_WRITE_LOCKS, key) do
+            _AtlasSqliteWriteLockEntry(ReentrantLock(), 0)
+        end
+        current.users += 1
+        current
+    end
+    acquired = false
+    try
+        lock(entry.lock)
+        acquired = true
+        return f()
+    finally
+        acquired && unlock(entry.lock)
+        lock(_ATLAS_SQLITE_WRITE_LOCKS_GUARD) do
+            entry.users -= 1
+            entry.users == 0 && get(_ATLAS_SQLITE_WRITE_LOCKS, key, nothing) === entry &&
+                delete!(_ATLAS_SQLITE_WRITE_LOCKS, key)
+        end
+    end
+end
+
 atlas_sqlite_default_path() = normpath(joinpath(@__DIR__, "..", "atlas_store", "atlas.sqlite"))
 
 function _sqlite_path_from_raw(raw)
@@ -188,6 +232,22 @@ function _atlas_sqlite_ensure_columns!(db::SQLite.DB, table::AbstractString, col
 end
 
 function _atlas_sqlite_transaction(f::Function, db::SQLite.DB)
+    if SQLite.intransaction(db)
+        savepoint = "bcx_nested_" * string(rand(UInt64), base=16)
+        _atlas_sqlite_execute(db, "SAVEPOINT $savepoint")
+        try
+            result = f()
+            _atlas_sqlite_execute(db, "RELEASE SAVEPOINT $savepoint")
+            return result
+        catch err
+            try
+                _atlas_sqlite_execute(db, "ROLLBACK TO SAVEPOINT $savepoint")
+                _atlas_sqlite_execute(db, "RELEASE SAVEPOINT $savepoint")
+            catch
+            end
+            rethrow(err)
+        end
+    end
     _atlas_sqlite_execute(db, "BEGIN IMMEDIATE TRANSACTION")
     try
         result = f()
@@ -591,8 +651,12 @@ end
 function _applied_migration_versions(db::SQLite.DB)
     rows = _atlas_sqlite_query(db, "SELECT version FROM schema_migrations")
     versions = Set{String}()
-    for row in rows
-        push!(versions, String(row.version))
+    try
+        for row in rows
+            push!(versions, String(row.version))
+        end
+    finally
+        DBInterface.close!(rows)
     end
     return versions
 end
@@ -613,8 +677,13 @@ function apply_atlas_sqlite_migrations!(db::SQLite.DB;
     # the baseline as applied so future migrations have a stable starting
     # point. Without this, a 0.4.0 migration shipped later would think the DB
     # is brand-new and re-attempt baseline DDL it can skip.
-    baseline_present = !isempty(_atlas_sqlite_query(db,
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_metadata'"))
+    baseline_query = _atlas_sqlite_query(db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='atlas_metadata'")
+    baseline_present = try
+        !isempty(baseline_query)
+    finally
+        DBInterface.close!(baseline_query)
+    end
     if isempty(applied) && baseline_present && !isempty(migrations)
         _record_migration!(db, first(migrations))
         push!(applied, first(migrations).version)
@@ -2012,13 +2081,13 @@ function _atlas_sqlite_clear_snapshot_tables!(db::SQLite.DB)
     return db
 end
 
-function atlas_sqlite_save_library!(db::SQLite.DB, library)
+function atlas_sqlite_save_library!(db::SQLite.DB, library; already_in_transaction::Bool=false)
     stored_library = _refresh_atlas_library!(_materialize(library))
     is_atlas_library(stored_library) || error("atlas_sqlite_save_library! expects an atlas library object.")
     summary = _atlas_library_summary(stored_library)
     slice_index = _atlas_slice_index(collect(_raw_get(stored_library, :behavior_slices, Any[])))
 
-    _atlas_sqlite_transaction(db) do
+    save_snapshot! = function ()
         _atlas_sqlite_clear_snapshot_tables!(db)
         _atlas_sqlite_execute(db,
             "INSERT INTO library_state (snapshot_name, updated_at, summary_json, library_json) VALUES (?, ?, ?, ?)",
@@ -2276,6 +2345,7 @@ function atlas_sqlite_save_library!(db::SQLite.DB, library)
             )
         end
     end
+    already_in_transaction ? save_snapshot!() : _atlas_sqlite_transaction(save_snapshot!, db)
 
     return stored_library
 end
@@ -2311,18 +2381,24 @@ function atlas_sqlite_record_skip_only_event!(db::SQLite.DB; source_label=nothin
             return _atlas_sqlite_direct_summary(db)
         end
     end
-    library = atlas_sqlite_has_library(db) ? atlas_sqlite_load_library(db) : atlas_library_default()
-    updated = _record_library_skip_only_event(library;
-        source_label=source_label,
-        source_metadata=source_metadata,
-        skipped_existing_network_count=skipped_existing_network_count,
-        skipped_existing_slice_count=skipped_existing_slice_count,
-    )
-    return atlas_sqlite_save_library!(db, updated)
+    return _with_atlas_sqlite_write_lock(db) do
+        _atlas_sqlite_transaction(db) do
+            library = atlas_sqlite_has_library(db) ? atlas_sqlite_load_library(db) : atlas_library_default()
+            updated = _record_library_skip_only_event(library;
+                source_label=source_label,
+                source_metadata=source_metadata,
+                skipped_existing_network_count=skipped_existing_network_count,
+                skipped_existing_slice_count=skipped_existing_slice_count,
+            )
+            atlas_sqlite_save_library!(db, updated; already_in_transaction=true)
+        end
+    end
 end
 
 function atlas_sqlite_record_skip_only_event!(db_path::AbstractString; kwargs...)
-    return _atlas_sqlite_with_db(db -> atlas_sqlite_record_skip_only_event!(db; kwargs...), db_path)
+    return _with_atlas_sqlite_write_lock(db_path) do
+        _atlas_sqlite_with_db(db -> atlas_sqlite_record_skip_only_event!(db; kwargs...), db_path)
+    end
 end
 
 function atlas_sqlite_merge_atlas!(db::SQLite.DB, atlas; source_label=nothing, source_metadata=nothing, library_label=nothing, allow_duplicate_atlas::Bool=false, persist_mode=nothing)
@@ -2336,20 +2412,27 @@ function atlas_sqlite_merge_atlas!(db::SQLite.DB, atlas; source_label=nothing, s
             persist_mode=persist_mode_symbol,
         )
     end
-    library = atlas_sqlite_has_library(db) ? atlas_sqlite_load_library(db) : atlas_library_default()
-    if !atlas_sqlite_has_library(db) && library_label !== nothing
-        library["library_label"] = String(library_label)
+    return _with_atlas_sqlite_write_lock(db) do
+        _atlas_sqlite_transaction(db) do
+            has_library = atlas_sqlite_has_library(db)
+            library = has_library ? atlas_sqlite_load_library(db) : atlas_library_default()
+            if !has_library && library_label !== nothing
+                library["library_label"] = String(library_label)
+            end
+            merged = merge_atlas_library(library, atlas;
+                source_label=source_label,
+                source_metadata=source_metadata,
+                allow_duplicate_atlas=allow_duplicate_atlas,
+            )
+            atlas_sqlite_save_library!(db, merged; already_in_transaction=true)
+        end
     end
-    merged = merge_atlas_library(library, atlas;
-        source_label=source_label,
-        source_metadata=source_metadata,
-        allow_duplicate_atlas=allow_duplicate_atlas,
-    )
-    return atlas_sqlite_save_library!(db, merged)
 end
 
 function atlas_sqlite_merge_atlas!(db_path::AbstractString, atlas; kwargs...)
-    return _atlas_sqlite_with_db(db -> atlas_sqlite_merge_atlas!(db, atlas; kwargs...), db_path)
+    return _with_atlas_sqlite_write_lock(db_path) do
+        _atlas_sqlite_with_db(db -> atlas_sqlite_merge_atlas!(db, atlas; kwargs...), db_path)
+    end
 end
 
 function _build_atlas_manifest_fast(atlas; source_label=nothing, source_metadata=nothing)

@@ -3,8 +3,14 @@
 # for networks whose reaction-order program matches a target, and return the
 # Pareto-minimal (d,r,μ). `design_screen` adds a tunability-aware candidate
 # screening layer without folding model building or placement into this node.
-const _DESIGN_INDEX = Ref{Any}(nothing)
-const DESIGN_SCREEN_SCHEMA_VERSION = "bne-design-screen/v0.1.0"
+const _DESIGN_INDEX_STATE = Ref{Any}(nothing)
+const _DESIGN_INDEX_LOCK = ReentrantLock()
+const _DESIGN_INDEX_LOAD_COUNT = Ref(0) # guarded by _DESIGN_INDEX_LOCK; test/diagnostic hook
+
+_design_canonical_ro(value::Real) = begin
+    rounded = round(Float64(value), digits=3)
+    iszero(rounded) ? 0.0 : rounded
+end
 
 function _design_collapse(progstr::AbstractString)
     toks = Float64[]
@@ -12,7 +18,7 @@ function _design_collapse(progstr::AbstractString)
         s = strip(t)
         (isempty(s) || occursin("Inf", s) || occursin("NaN", s)) && continue
         v = tryparse(Float64, s); v === nothing && continue
-        push!(toks, round(v, digits = 3))
+        push!(toks, _design_canonical_ro(v))
     end
     out = Float64[]
     for v in toks; (isempty(out) || out[end] != v) && push!(out, v); end
@@ -151,8 +157,12 @@ function _design_symbol_map_for_nid(nid::AbstractString, raw_outputs::Set{String
     return best_map
 end
 
-function _load_design_index()
-    _DESIGN_INDEX[] === nothing || return _DESIGN_INDEX[]
+function _load_design_index_state()
+    return lock(_DESIGN_INDEX_LOCK) do
+        # Exactly one request performs the 335 MB decompression/parse. Records
+        # and reverse indexes are published together as one immutable state.
+        _DESIGN_INDEX_STATE[] === nothing || return _DESIGN_INDEX_STATE[]
+        _DESIGN_INDEX_LOAD_COUNT[] += 1
     # Tracked new-sign atlas (147,081 slices, carries `base_motifs`). The old
     # webapp/data copy is stale (146,845, old singular-sign); BNE_DESIGN_INDEX overrides.
     path = get(ENV, "BNE_DESIGN_INDEX",
@@ -201,28 +211,49 @@ function _load_design_index()
     end
     symbol_maps = Dict(nid => _design_symbol_map_for_nid(nid, outs)
                        for (nid, outs) in raw_outputs_by_nid)
-    recs = NamedTuple[]
-    for rec in raw_recs
+    # Normalize in place so cold start never retains both a complete raw and a
+    # complete normalized 147k-record vector at once.
+    for idx in eachindex(raw_recs)
+        rec = raw_recs[idx]
         label_map = get(symbol_maps, rec.nid, Dict{String,String}())
-        push!(recs, (; d = rec.d, r = rec.r, mu = rec.mu,
-                      nid = rec.nid,
-                      inp = _design_apply_total_map(label_map, rec.inp),
-                      out = _design_apply_species_map(label_map, rec.out),
-                      signs = rec.signs, exacts = rec.exacts, motifs = rec.motifs,
-                      feasible_paths = rec.feasible_paths, total_paths = rec.total_paths,
-                      n_species = rec.n_species, n_complexes = rec.n_complexes,
-                      max_complex_size = rec.max_complex_size,
-                      assembly_depth = rec.assembly_depth,
-                      uses_homomer = rec.uses_homomer,
-                      uses_complex_growth = rec.uses_complex_growth,
-                      uses_higher_order_template = rec.uses_higher_order_template,
-                      sl_nswitch = rec.sl_nswitch, sl_absro = rec.sl_absro,
-                      vol_sum = rec.vol_sum, vol_max = rec.vol_max,
-                      robust_paths = rec.robust_paths))
+        raw_recs[idx] = (; d = rec.d, r = rec.r, mu = rec.mu,
+                           nid = rec.nid,
+                           inp = _design_apply_total_map(label_map, rec.inp),
+                           out = _design_apply_species_map(label_map, rec.out),
+                           signs = rec.signs, exacts = rec.exacts, motifs = rec.motifs,
+                           feasible_paths = rec.feasible_paths, total_paths = rec.total_paths,
+                           n_species = rec.n_species, n_complexes = rec.n_complexes,
+                           max_complex_size = rec.max_complex_size,
+                           assembly_depth = rec.assembly_depth,
+                           uses_homomer = rec.uses_homomer,
+                           uses_complex_growth = rec.uses_complex_growth,
+                           uses_higher_order_template = rec.uses_higher_order_template,
+                           sl_nswitch = rec.sl_nswitch, sl_absro = rec.sl_absro,
+                           vol_sum = rec.vol_sum, vol_max = rec.vol_max,
+                           robust_paths = rec.robust_paths)
     end
-    _DESIGN_INDEX[] = recs
-    return recs
+    recs = raw_recs
+    by_sign = Dict{String, Vector{Int}}()
+    by_label = Dict{String, Vector{Int}}()
+    by_exact = Dict{Tuple{Vararg{Float64}}, Vector{Int}}()
+    for (idx, rec) in enumerate(recs)
+        for sign in rec.signs
+            push!(get!(by_sign, sign, Int[]), idx)
+        end
+        for label in rec.motifs
+            push!(get!(by_label, label, Int[]), idx)
+        end
+        for exact in rec.exacts
+            push!(get!(by_exact, Tuple(Float64.(exact)), Int[]), idx)
+        end
+    end
+    state = (; records=recs, lookup=(; by_sign, by_label, by_exact))
+    _DESIGN_INDEX_STATE[] = state
+        return state
+    end
 end
+
+_load_design_index() = _load_design_index_state().records
 function _design_pareto(cells)
     cs = sort(collect(Set(cells)))
     [c for c in cs if !any(o != c && o[1] <= c[1] && o[2] <= c[2] && o[3] <= c[3] for o in cs)]
@@ -235,37 +266,49 @@ function _design_normalize_design_target(target_kind, target)
         error("target_kind must be one of `sign`, `exact`, or `label`")
     if kind == "exact"
         target isa AbstractString && error("exact target must be an array of numbers")
+        length(target) <= 32 || error("exact target may contain at most 32 values")
         vals = Float64[]
         for value in collect(target)
             (value isa Bool || !(value isa Real)) &&
                 error("exact target values must be finite non-Bool numbers")
             f = Float64(value)
             isfinite(f) || error("exact target values must be finite non-Bool numbers")
-            push!(vals, f)
+            rounded = _design_canonical_ro(f)
+            (isempty(vals) || vals[end] != rounded) && push!(vals, rounded)
         end
         isempty(vals) && error("exact target must contain at least one number")
         return kind, vals
     else
         text = strip(String(target))
         isempty(text) && error("`target` must not be empty")
+        ncodeunits(text) <= (kind == "sign" ? 32 : 64) ||
+            error("$kind target is too long")
+        if kind == "sign"
+            all(c -> c == '+' || c == '-', text) ||
+                error("sign target must contain only `+` and `-`")
+            collapsed = Char[]
+            for c in text
+                (isempty(collapsed) || collapsed[end] != c) && push!(collapsed, c)
+            end
+            text = String(collapsed)
+        end
         return kind, text
     end
 end
 
 function _design_matches_normalized(target_kind::AbstractString, target)
-    idx = _load_design_index()
-    matched = NamedTuple[]
-    if target_kind == "label"
-        tgt = String(target)
-        for rec in idx; (tgt in rec.motifs) && push!(matched, rec); end
+    state = _load_design_index_state()
+    idx = state.records
+    lookup = state.lookup
+    record_indices = if target_kind == "label"
+        get(lookup.by_label, String(target), Int[])
     elseif target_kind == "sign"
-        tgt = String(target)
-        for rec in idx; (tgt in rec.signs) && push!(matched, rec); end
+        get(lookup.by_sign, String(target), Int[])
     else
-        tgt = Float64[round(Float64(x), digits = 3) for x in target]
-        for rec in idx; any(==(tgt), rec.exacts) && push!(matched, rec); end
+        tgt = Tuple(_design_canonical_ro(x) for x in target)
+        get(lookup.by_exact, tgt, Int[])
     end
-    return matched
+    return [idx[i] for i in record_indices]
 end
 
 function _design_matches(target_kind::AbstractString, target)
@@ -769,6 +812,7 @@ function _design_try_exact_linear_card(card, rec, target_ro::Real, tuning)
             "Exact-linear placement was attempted but did not produce a verified point; inspect active_failures and reason."
         return updated
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         reason = "exact placement error: $(sprint(showerror, e))"
         _design_record_exact_failure!(updated, "exact_placement_error", reason)
         updated["screen_status"] = "proxy_near_miss"
@@ -844,7 +888,11 @@ end
 function handle_design_screen(req)
     body = read_json(req)
     res = try
-        spec = if _raw_haskey(body, :designability_spec)
+        schema_version = _raw_get(body, :schema_version, nothing)
+        spec = if schema_version isa AbstractString &&
+                  String(schema_version) == DESIGNABILITY_SPEC_VERSION
+            Dict{String, Any}(_materialize(body))
+        elseif _raw_haskey(body, :designability_spec)
             _raw_get(body, :designability_spec, nothing)
         else
             base = legacy_designability_spec(
@@ -863,6 +911,7 @@ function handle_design_screen(req)
         end
         design_screen_from_spec(spec)
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("design_screen failed: $(sprint(showerror, e))"; status = 400)
     end
     return json_response(res)

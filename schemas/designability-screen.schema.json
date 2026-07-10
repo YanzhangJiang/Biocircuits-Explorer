@@ -7,6 +7,11 @@
   "required": [
     "schema_version",
     "designable",
+    "n_matches",
+    "screened_count",
+    "eligible_count",
+    "evaluated_count",
+    "truncated",
     "verified_recommendations",
     "screened_candidates",
     "minimal_certificates",
@@ -15,7 +20,7 @@
   ],
   "additionalProperties": true,
   "properties": {
-    "schema_version": { "const": "bne-design-screen/v0.2.0" },
+    "schema_version": { "const": "bne-design-screen/v0.3.0" },
     "designability_spec_normalized": {
       "description": "The normalized DesignabilitySpec used for this screen. This is the target contract, not optional display metadata.",
       "$ref": "designability-spec.schema.json"
@@ -25,7 +30,25 @@
     "designable": { "type": "boolean" },
     "verified_designable": { "type": "boolean" },
     "n_matches": { "type": "integer", "minimum": 0 },
-    "screened_count": { "type": "integer", "minimum": 0 },
+    "screened_count": {
+      "description": "Number of proxy screening cards actually evaluated in this synchronous request.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "eligible_count": {
+      "description": "Number of de-duplicated catalogue records eligible before the synchronous evaluation budget is applied.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "evaluated_count": {
+      "description": "Explicit alias of screened_count for budget accounting.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "description": "True when eligible_count is greater than evaluated_count.",
+      "type": "boolean"
+    },
     "candidate_budget": { "type": "object", "additionalProperties": true },
     "tuning": { "type": "object", "additionalProperties": true },
     "ranking_policy": { "type": "object", "additionalProperties": true },
@@ -59,6 +82,9 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
+        "eligible_count": { "type": "integer", "minimum": 0 },
+        "evaluated_count": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" },
         "verified_status": {
           "enum": [
             "verified_recommendations_available",

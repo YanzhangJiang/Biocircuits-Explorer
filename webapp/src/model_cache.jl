@@ -8,7 +8,10 @@ module ModelCache
 # hash makes the compiled model a *pure derived cache* of the NetworkIR:
 # identical IRs share one bundle, and a bundle can be rebuilt from the IR on a
 # miss (server restart, LRU eviction). The `session_id` becomes a convenience
-# handle pointing at the same object (see SessionStore).
+# handle pointing at the same object (see SessionStore). Cache/session access
+# times live in their owning tables rather than this shared Dict: otherwise two
+# independent locks would race on one `last_access` key and one active alias
+# would incorrectly keep every other alias alive.
 #
 # A lighter `_IRS` side-table keeps the NetworkIR dict by hash so a bundle can
 # be rebuilt even after the (heavier) model bundle is evicted. IRs are small, so
@@ -22,13 +25,14 @@ const DEFAULT_TTL_SECONDS = 3600
 
 const _MODELS = Dict{String, Any}()   # network_ir_hash => bundle (mutable Dict)
 const _IRS    = Dict{String, Any}()   # network_ir_hash => network_ir dict
+const _MODEL_LAST_ACCESS = Dict{String, Float64}()
 const _LOCK   = ReentrantLock()
 
 function get_model(hash::AbstractString)
     lock(_LOCK) do
         bundle = get(_MODELS, String(hash), nothing)
         bundle === nothing && return nothing
-        bundle isa AbstractDict && (bundle["last_access"] = time())
+        _MODEL_LAST_ACCESS[String(hash)] = time()
         return bundle
     end
 end
@@ -39,8 +43,8 @@ function put_model(hash::AbstractString, bundle; max_models::Int = DEFAULT_MAX_M
         if !haskey(_MODELS, key) && length(_MODELS) >= max_models
             _evict_lru_model!()
         end
-        bundle isa AbstractDict && (bundle["last_access"] = time())
         _MODELS[key] = bundle
+        _MODEL_LAST_ACCESS[key] = time()
         return bundle
     end
 end
@@ -65,20 +69,23 @@ function _evict_lru_model!()
     isempty(_MODELS) && return
     oldest_key = nothing
     oldest_t = Inf
-    for (k, v) in _MODELS
-        t = (v isa AbstractDict) ? get(v, "last_access", 0.0) : 0.0
+    for k in keys(_MODELS)
+        t = get(_MODEL_LAST_ACCESS, k, 0.0)
         if t < oldest_t
             oldest_t = t
             oldest_key = k
         end
     end
-    oldest_key !== nothing && delete!(_MODELS, oldest_key)
+    if oldest_key !== nothing
+        delete!(_MODELS, oldest_key)
+        delete!(_MODEL_LAST_ACCESS, oldest_key)
+    end
 end
 
 """
     cleanup_expired_models!(; ttl, now_epoch, on_evict)
 
-Drop model bundles whose `last_access` is older than `ttl` seconds. The IR
+Drop model bundles whose cache-entry access time is older than `ttl` seconds. The IR
 side-table is intentionally *not* expired here (IRs are cheap and let evicted
 models be rebuilt on demand); it is bounded only by its cap. Returns the list of
 evicted hashes.
@@ -86,18 +93,20 @@ evicted hashes.
 function cleanup_expired_models!(; ttl::Real = DEFAULT_TTL_SECONDS,
                                    now_epoch::Real = time(),
                                    on_evict = (h) -> nothing)
-    lock(_LOCK) do
+    to_delete = lock(_LOCK) do
         to_delete = String[]
-        for (h, bundle) in _MODELS
-            last_access = (bundle isa AbstractDict) ? get(bundle, "last_access", 0.0) : 0.0
+        for h in keys(_MODELS)
+            last_access = get(_MODEL_LAST_ACCESS, h, 0.0)
             now_epoch - last_access > ttl && push!(to_delete, h)
         end
         for h in to_delete
             delete!(_MODELS, h)
-            on_evict(h)
+            delete!(_MODEL_LAST_ACCESS, h)
         end
-        return to_delete
+        to_delete
     end
+    foreach(on_evict, to_delete)
+    return to_delete
 end
 
 model_count() = lock(_LOCK) do; length(_MODELS); end
@@ -106,7 +115,11 @@ ir_count()    = lock(_LOCK) do; length(_IRS); end
 # Test hooks. `_clear_models!` simulates LRU/restart eviction of compiled models
 # while keeping IRs, so the rebuild-from-IR path can be exercised; `_clear_all!`
 # simulates a cold start.
-_clear_models!() = lock(_LOCK) do; empty!(_MODELS); end
-_clear_all!()    = lock(_LOCK) do; empty!(_MODELS); empty!(_IRS); end
+_clear_models!() = lock(_LOCK) do; empty!(_MODELS); empty!(_MODEL_LAST_ACCESS); end
+_clear_all!()    = lock(_LOCK) do
+    empty!(_MODELS)
+    empty!(_MODEL_LAST_ACCESS)
+    empty!(_IRS)
+end
 
 end # module

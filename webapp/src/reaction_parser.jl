@@ -80,6 +80,8 @@ end
 function build_model(rules::Vector{String}, kd::Vector{Float64})
     r = length(rules)
     length(kd) == r || error("Length(kd) must match number of reactions")
+    all(value -> isfinite(value) && value > 0, kd) ||
+        error("All Kd values must be finite and positive (> 0)")
 
     N, species, free_syms, prod_syms = parse_network_structure(rules)
 
@@ -93,16 +95,28 @@ function build_model(rules::Vector{String}, kd::Vector{Float64})
 end
 
 function default_log_qK(model, kd::AbstractVector{<:Real}; default_logq::Real = 0.0)
+    all(value -> !(value isa Bool), kd) ||
+        error("All Kd values must be finite, non-boolean, and positive (> 0).")
+    default_logq isa Bool && error("default_logq must be a finite non-boolean number.")
+    isfinite(default_logq) || error("default_logq must be a finite non-boolean number.")
     kd_vec = Float64.(collect(kd))
     length(kd_vec) == model.r ||
         error("Length of Kd values ($(length(kd_vec))) must match model reaction dimension ($(model.r)).")
-    any(x -> x <= 0, kd_vec) && error("All Kd values must be positive (> 0).")
+    all(x -> isfinite(x) && x > 0, kd_vec) ||
+        error("All Kd values must be finite and positive (> 0).")
     return vcat(fill(Float64(default_logq), model.d), log10.(kd_vec))
 end
 
 function fixed_qK_or_default(body, model, kd::AbstractVector{<:Real})
     fixed_qK = if haskey(body, :fixed_qK)
-        Float64.(body[:fixed_qK])
+        raw = body[:fixed_qK]
+        raw isa AbstractVector || error("`fixed_qK` must be an array of finite non-boolean numbers.")
+        all(value -> value isa Real && !(value isa Bool), raw) ||
+            error("`fixed_qK` must be an array of finite non-boolean numbers.")
+        values = Float64.(raw)
+        all(isfinite, values) ||
+            error("`fixed_qK` must be an array of finite non-boolean numbers.")
+        values
     else
         default_log_qK(model, kd)
     end

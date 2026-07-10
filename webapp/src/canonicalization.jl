@@ -202,13 +202,23 @@ function _canonical_support_species_symbol(sym::Symbol, supports::Dict{Symbol, V
     return "C_" * join(labels, "_")
 end
 
+# The current exact relabeling algorithm materializes every base-species
+# permutation before selecting the minimum code. Keep that factorial work
+# bounded (7! = 5,040); larger IR hashes deliberately fall back through
+# `canonical_network_code_or_nothing`, while direct atlas canonicalization
+# reports the unsupported exact-identity size.
+const MAX_EXACT_CANONICAL_FREE_SPECIES = 7
+
 function canonical_network_identity(rules::Vector{String})
     reactants, products = parse_reactions(rules)
     _, _, free_syms, _ = parse_network_structure(rules)
+    length(free_syms) <= MAX_EXACT_CANONICAL_FREE_SPECIES || error(
+        "Exact relabeling canonicalization supports at most " *
+        "$(MAX_EXACT_CANONICAL_FREE_SPECIES) free species; got $(length(free_syms)).")
     supports, support_issue = _infer_binding_supports(rules)
     support_issue === nothing || error("Cannot canonicalize network: $support_issue")
 
-    candidates = NamedTuple[]
+    best = nothing
     for perm in _all_permutations(copy(free_syms))
         remap = Dict(sym => idx for (idx, sym) in enumerate(perm))
         serialized_rules = String[]
@@ -232,11 +242,20 @@ function canonical_network_identity(rules::Vector{String})
             push!(serialized_rules, join(left_terms, "+") * "<->" * join(right_terms, "+"))
         end
         sort!(serialized_rules)
-        push!(candidates, (code=join(serialized_rules, "|"), remap=remap, tie_key=join(String.(perm), ",")))
+        candidate = (
+            code=join(serialized_rules, "|"),
+            remap=remap,
+            tie_key=join(String.(perm), ","),
+        )
+        if best === nothing || isless(
+            (candidate.code, candidate.tie_key),
+            (best.code, best.tie_key),
+        )
+            best = candidate
+        end
     end
 
-    sort!(candidates; by=candidate -> (candidate.code, candidate.tie_key))
-    best = first(candidates)
+    best === nothing && error("Cannot canonicalize a network without free species.")
     free_set = Set(free_syms)
     species_symbol_map = Dict{String, String}()
     for sym in keys(supports)

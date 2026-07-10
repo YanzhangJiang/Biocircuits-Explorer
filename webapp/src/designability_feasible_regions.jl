@@ -857,7 +857,7 @@ function feasible_region_single_ro(rules::Vector{String}, input_sym, output_sym,
     output_idx === nothing && return FeasibleRegionResult(feasible = false, reason = "unknown output symbol")
     input_idx <= model.d || return FeasibleRegionResult(feasible = false, reason = "input symbol must be a total, not a binding constant")
 
-    siso = SISOPaths(model, Symbol(input_sym))
+    siso = _bounded_siso_paths(model, Symbol(input_sym))
     bf = get_behavior_families(siso; observe_x = Symbol(output_sym), path_scope = :feasible,
         deduplicate = false, keep_singular = true, keep_nonasymptotic = true,
         compute_volume = false)
@@ -927,7 +927,7 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
         reason = "input symbol must be a total, not a binding constant",
     )
 
-    siso = SISOPaths(model, Symbol(input_sym))
+    siso = _bounded_siso_paths(model, Symbol(input_sym))
     bf = get_behavior_families(siso; observe_x = Symbol(output_sym), path_scope = :feasible,
         deduplicate = false, keep_singular = true, keep_nonasymptotic = true,
         compute_volume = false)

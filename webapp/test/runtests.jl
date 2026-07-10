@@ -9,6 +9,9 @@ using Base64
 include("schema_generation_contract.jl")
 include("api_contract.jl")
 include("backend_assembly_contract.jl")
+include("concurrency_and_budget_contract.jl")
+include("input_validation_contract.jl")
+include("numerical_validity_contract.jl")
 
 # Keep the Designability/Design Screen API contracts runnable from the main test
 # entry as well as directly; these run before the older atlas @test_broken gate
@@ -2866,6 +2869,7 @@ end
         @test refined["results"][1]["change_signature"] == "orthant(+tA,+tB)"
         @test refined["results"][1]["refinement_status"] == "unsupported_multidimensional_refinement"
     end
+    @test refined["best_candidate"] === nothing
     end # _atlas_test
 end
 
@@ -3265,7 +3269,7 @@ end
     # 6. Cold miss (no model, unknown hash, no IR to rebuild from) tells the
     #    client to resend the NetworkIR rather than failing opaquely.
     MC._clear_all!()
-    cold = post("/api/find_vertices", Dict("network_ir_hash" => "deadbeefcafe"))
+    cold = post("/api/find_vertices", Dict("network_ir_hash" => repeat("d", 64)))
     @test cold.status == 409
     @test response_json(cold)["need_network"] == true
 end
@@ -3334,7 +3338,7 @@ end
         ("design-spec.schema.json", DESIGN_SPEC_SCHEMA_VERSION),
         ("result-artifact.schema.json", RESULT_ARTIFACT_SCHEMA_VERSION),
         ("designability-spec.schema.json", "bne-designability/v1.0.0"),
-        ("designability-screen.schema.json", "bne-design-screen/v0.2.0"),
+        ("designability-screen.schema.json", "bne-design-screen/v0.3.0"),
     ]
         path = joinpath(schema_dir, file)
         @test isfile(path)
@@ -3359,7 +3363,7 @@ end
     @test BEB.design_search("sign", "+-+")["designable"] === true   # no regression
     @test_throws ErrorException BEB.design_search("unknown", [1.0])
     screen = BEB.design_screen("sign", "+-+")
-    @test screen["schema_version"] == "bne-design-screen/v0.2.0"
+    @test screen["schema_version"] == "bne-design-screen/v0.3.0"
     @test screen["designable"] === true
     @test haskey(screen, "designability_spec_normalized")
     @test haskey(screen, "constraint_audit")
@@ -3375,7 +3379,7 @@ end
     all_screen = BEB.design_screen("sign", "+-+";
         candidate_budget=Dict("mode" => "all_matches", "max_recommended" => 3, "max_screened" => 3))
     @test all_screen["designability_spec_normalized"]["candidate_budget"]["mode"] == "all_matches"
-    @test all_screen["screened_count"] >= screen["screened_count"]
+    @test all_screen["eligible_count"] >= screen["eligible_count"]
     @test length(all_screen["screened_candidates"]) <= 3
     spec_screen = BEB.design_screen("sign", "+-+";
         designability_spec=Dict("target_kind" => "sign", "target" => "+-+",

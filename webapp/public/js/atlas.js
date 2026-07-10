@@ -7,6 +7,13 @@ import { triggerConfigUpdate } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { getNodeSerialData } from './workspace.js';
 import { getFamilyColor, hexToRgba } from './theme.js';
+import { formatAtlasLandscapeResponseSummary } from './plot-validity.js';
+import {
+  createAtlasInverseHttpRequest,
+  createAtlasQueryHttpRequest,
+  prepareAtlasSpecForHttp,
+  resolveAtlasHttpSqlitePath,
+} from './atlas-sqlite-policy.js';
 
 let _plotAtlasLandscape2D = null;
 
@@ -1737,7 +1744,10 @@ export function renderAtlasInverseDesignResult(data) {
   const bestDesign = data?.best_design || null;
   const planTraces = Array.isArray(buildPlan.candidate_traces) ? buildPlan.candidate_traces : [];
   const refinementResults = Array.isArray(refinement.results) ? refinement.results : [];
-  const bestCandidate = refinement.best_candidate || refinementResults[0] || null;
+  const bestCandidate = refinement.best_candidate || null;
+  const invalidRefinementCount = refinementResults.filter(result => (
+    result?.refinement_status !== 'ok' || result?.partial === true || result?.best_trial?.partial === true
+  )).length;
 
   let html = `
     <section class="siso-section">
@@ -1812,6 +1822,7 @@ export function renderAtlasInverseDesignResult(data) {
           <span class="summary-chip">trials ${data.refinement?.trials ?? 0}</span>
           <span class="summary-chip">points ${data.refinement?.n_points ?? 0}</span>
           <span class="summary-chip">evaluated ${refinement.evaluated_count ?? 0}</span>
+          ${invalidRefinementCount ? `<span class="summary-chip">invalid ${invalidRefinementCount}</span>` : ''}
         </div>
         ${bestCandidate ? `
           <div class="atlas-inline-card">
@@ -1822,7 +1833,9 @@ export function renderAtlasInverseDesignResult(data) {
               <span class="family-metric">${escapeHtml(bestCandidate.input_symbol || bestCandidate.candidate?.input_symbol || '?')} -> ${escapeHtml(bestCandidate.output_symbol || bestCandidate.candidate?.output_symbol || '?')}</span>
             </div>
           </div>
-        ` : '<div class="text-dim">No refinement candidates were evaluated.</div>'}
+        ` : `<div class="text-dim">${refinementResults.length
+          ? 'No numerically valid refinement candidate; diagnostic trials were retained but not recommended.'
+          : 'No refinement candidates were evaluated.'}</div>`}
       </section>
     `;
   }
@@ -1895,17 +1908,6 @@ function atlasLandscapeSelection(shell) {
     output: shell.querySelector('.atlas-landscape-output')?.value || '',
     nGrid: parseOptionalInteger(shell.querySelector('.atlas-landscape-grid')?.value) || 72,
   };
-}
-
-function atlasLandscapeResponseSummary(response) {
-  const values = (response.output_grid || []).flat().filter(Number.isFinite);
-  const regimes = new Set((response.regime_grid || []).flat().filter(value => Number.isFinite(value) && value > 0));
-  if (!values.length) {
-    return `Showing ${response.param1_symbol} × ${response.param2_symbol}.`;
-  }
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  return `Showing ${response.param1_symbol} × ${response.param2_symbol}; log-output ${minVal.toFixed(2)} to ${maxVal.toFixed(2)} across ${regimes.size} regimes.`;
 }
 
 function applyAtlasLandscapeResponse(shell, response, candidate) {
@@ -1985,7 +1987,7 @@ async function runAtlasLandscapeShell(nodeId, shell, queryData) {
     const plotAtlasLandscape2D = await ensureAtlasPlotting();
     plotAtlasLandscape2D(response, plotEl.id);
     shell.dataset.hasLandscape = 'true';
-    setAtlasLandscapeStatus(shell, atlasLandscapeResponseSummary(response));
+    setAtlasLandscapeStatus(shell, formatAtlasLandscapeResponseSummary(response));
   } catch (error) {
     setAtlasLandscapeStatus(shell, error?.message || 'Landscape computation failed.', true);
   } finally {
@@ -2027,7 +2029,10 @@ export function resolveAtlasExecutionContext(nodeId, queryPayload) {
   return {
     atlas,
     specPayload,
-    sqlitePath: configuredSqlitePath || persistedAtlasSqlitePath || '',
+    sqlitePath: resolveAtlasHttpSqlitePath({
+      configuredPath: configuredSqlitePath,
+      persistedPath: persistedAtlasSqlitePath,
+    }),
   };
 }
 
@@ -2048,7 +2053,8 @@ export async function executeAtlasBuilder(nodeId) {
 
   setNodeLoading(nodeId, true);
   try {
-    const data = await computeApi('build_atlas', payload.spec);
+    const requestSpec = prepareAtlasSpecForHttp(payload.spec, 'Atlas build');
+    const data = await computeApi('build_atlas', requestSpec);
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2094,15 +2100,17 @@ export async function executeAtlasQueryResult(nodeId) {
   const { atlas, sqlitePath } = executionContext;
 
   if (!atlas && !sqlitePath) {
-    showToast('Build an atlas first, or provide a SQLite path in Atlas Query Config');
+    showToast('Build an atlas first; operator-enabled deployments may also use a SQLite path');
     return;
   }
 
   setNodeLoading(nodeId, true);
   try {
-    const request = sqlitePath
-      ? { sqlite_path: sqlitePath, query: queryPayload.query }
-      : { atlas, query: queryPayload.query };
+    const request = createAtlasQueryHttpRequest({
+      atlas,
+      sqlitePath,
+      query: queryPayload.query,
+    });
     const data = await api('query_atlas', request);
     const renderData = {
       ...data,
@@ -2156,18 +2164,17 @@ export async function executeAtlasInverseDesignResult(nodeId) {
     return;
   }
 
-  const request = {
-    query: queryPayload.query,
-    inverse_design: queryPayload.inverseDesign,
-    refinement: queryPayload.refinement,
-  };
-  if (queryPayload.allowDuplicateAtlas) request.allow_duplicate_atlas = true;
-  if (sqlitePath) request.sqlite_path = sqlitePath;
-  if (specPayload) request.atlas_spec = specPayload.spec;
-  else if (atlas) request.atlas = atlas;
-
   setNodeLoading(nodeId, true);
   try {
+    const request = createAtlasInverseHttpRequest({
+      query: queryPayload.query,
+      inverseDesign: queryPayload.inverseDesign,
+      refinement: queryPayload.refinement,
+      allowDuplicateAtlas: queryPayload.allowDuplicateAtlas,
+      sqlitePath,
+      atlasSpec: specPayload?.spec || null,
+      atlas,
+    });
     const data = await computeApi('run_inverse_design', request);
     const info = nodeRegistry[nodeId];
     if (info) {

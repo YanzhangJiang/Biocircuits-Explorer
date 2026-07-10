@@ -1,5 +1,18 @@
 import { setupAutoUpdate, setupTabNavigation } from '../nodes.js';
 import { executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow, refreshAtlasQueryDesigner } from '../atlas.js';
+import { isAtlasHttpSqlitePathEnabled } from '../atlas-sqlite-policy.js';
+
+function atlasSqlitePathHint() {
+  if (isAtlasHttpSqlitePathEnabled()) {
+    return '<div class="text-dim">Operator path mode is enabled. The backend still restricts paths to its configured Atlas store.</div>';
+  }
+  return `
+    <div class="text-dim">
+      Raw SQLite paths are operator-only and disabled on this page. Use an in-memory Atlas connection, or ask a trusted operator to enable both
+      <code>BIOCIRCUITS_EXPLORER_ALLOW_HTTP_SQLITE_PATHS</code> settings and configure <code>BIOCIRCUITS_EXPLORER_ATLAS_STORE_ROOT</code>.
+    </div>
+  `;
+}
 
 export const ATLAS_TYPES = {
   'atlas-spec': {
@@ -36,8 +49,9 @@ export const ATLAS_TYPES = {
             <textarea
               id="${nodeId}-sqlite-path"
               class="auto-update atlas-textarea atlas-textarea-compact atlas-textarea-singleline"
-              placeholder="/absolute/path/to/atlas.sqlite"
+              placeholder="operator-managed path under the Atlas store"
             ></textarea>
+            ${atlasSqlitePathHint()}
             <div class="param-row">
               <label>Skip existing:</label>
               <input type="checkbox" id="${nodeId}-skip-existing" checked class="auto-update">
@@ -193,8 +207,9 @@ export const ATLAS_TYPES = {
             <textarea
               id="${nodeId}-query-sqlite-path"
               class="auto-update atlas-textarea atlas-textarea-compact atlas-textarea-singleline"
-              placeholder="/absolute/path/to/atlas.sqlite"
+              placeholder="operator-managed path under the Atlas store"
             ></textarea>
+            ${atlasSqlitePathHint()}
           </div>
           <div class="atlas-config-section">
             <div class="atlas-section-title">Search Goal</div>
@@ -519,7 +534,7 @@ export const ATLAS_TYPES = {
       return `
         <button class="btn btn-run" data-action="executeAtlasQueryResult" data-node="${nodeId}">Search Atlas</button>
         <div class="viewer-content" id="${nodeId}-content">
-          <span class="text-dim">Connect an Atlas Preview Builder and an Atlas Query Config node, or provide a SQLite atlas path in the query config. For pure preview, use Atlas Preview alone.</span>
+          <span class="text-dim">Connect an Atlas Preview Builder and an Atlas Query Config node. Operator-enabled deployments may also use a SQLite path from the query config. For pure preview, use Atlas Preview alone.</span>
         </div>
       `;
     },
@@ -543,7 +558,7 @@ export const ATLAS_TYPES = {
       return `
         <button class="btn btn-primary" data-action="executeAtlasInverseDesignResult" data-node="${nodeId}">Run Inverse Design</button>
         <div class="viewer-content" id="${nodeId}-content">
-          <span class="text-dim">Connect an Atlas Spec and Atlas Query Config to run the support-first inverse-design pipeline. You can also connect an Atlas Preview Builder or provide a SQLite path in the query config for reuse.</span>
+          <span class="text-dim">Connect an Atlas Spec and Atlas Query Config to run the support-first inverse-design pipeline. You can also connect an Atlas Preview Builder; SQLite-path reuse is available only on operator-enabled deployments.</span>
         </div>
       `;
     },

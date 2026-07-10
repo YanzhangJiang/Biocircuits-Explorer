@@ -1383,7 +1383,11 @@ function handle_jobs_route(req, path::AbstractString)
     end
 
     if parts == ["api", "jobs"]
-        return json_response(submit_biocircuits_job_from_spec(read_json(req); user_sub=user_sub); status=202)
+        request = _normalize_http_atlas_paths(read_json(req))
+        return json_response(
+            submit_biocircuits_job_from_spec(request; user_sub=user_sub);
+            status=202,
+        )
     end
 
     if length(parts) == 3 && parts[1] == "api" && parts[2] == "jobs"

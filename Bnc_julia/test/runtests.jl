@@ -39,9 +39,36 @@
 
 using Test
 using BindingAndCatalysis
+using Graphs
 
 # Keep the heavy progress meters quiet during the suite.
 ENV["BNC_NO_PROGRESS"] = "1"
+
+@testset "SISO path enumeration enforces pre-allocation limits" begin
+    # Six chained diamonds have 2^6 source-to-sink paths while using only 19
+    # vertices. This makes the exponential relationship deterministic without
+    # constructing a large graph in the test.
+    graph = SimpleDiGraph(19)
+    current = 1
+    next_vertex = 2
+    for _ in 1:6
+        left, right, merge = next_vertex, next_vertex + 1, next_vertex + 2
+        add_edge!(graph, current, left)
+        add_edge!(graph, current, right)
+        add_edge!(graph, left, merge)
+        add_edge!(graph, right, merge)
+        current = merge
+        next_vertex += 3
+    end
+
+    paths = BindingAndCatalysis._enumerate_paths(
+        graph; sources=[1], sinks=[current])
+    @test length(paths) == 64
+    @test_throws PathEnumerationLimitExceeded BindingAndCatalysis._enumerate_paths(
+        graph; sources=[1], sinks=[current], max_paths=32)
+    @test_throws PathEnumerationLimitExceeded BindingAndCatalysis._enumerate_paths(
+        graph; sources=[1], sinks=[current], max_total_nodes=100)
+end
 
 # -----------------------------------------------------------------------------
 # Inline replica of webapp ReactionParser.parse_network_structure / build_model.
@@ -273,6 +300,8 @@ end
     @test locate_sym_qK(model, :Kd1) == 3
     @test parse_linear_combination(model, "AL")     == [0.0, 0.0, 1.0]   # SANITY-CHECKED
     @test parse_linear_combination(model, "A + AL") == [1.0, 0.0, 1.0]   # SANITY-CHECKED
+    @test_throws ErrorException parse_linear_combination(model, "1e309*AL")
+    @test_throws ErrorException parse_linear_combination(model, "1e200*AL")
 
     # --- calc_volume (Monte-Carlo) on the asymptotic regimes ---
     # Generous ±15% band (header explains the fixed per-thread RNG seed). The
@@ -327,6 +356,16 @@ end
     @test validc isa Vector{Bool}
     @test all(validc)                                       # clean scan -> all converged
     @test issorted(trajc[:, 1])                             # SANITY-CHECKED dose-response monotone
+
+    # 2D scans expose the same convergence contract when requested and prewarm
+    # mutable regime caches before row-level threading begins.
+    grid_rng = collect(range(-1.0, 1.0; length=3))
+    fixed2d = log10.([1.0, 1.0, 1.0])                      # [tL, Kd1, Kd2]
+    _, _, grid2d, regimes2d, valid2d = scan_parameter_2d(
+        model, 1, 2, grid_rng, grid_rng, outc[1], fixed2d;
+        input_logspace=true, output_logspace=true, track_validity=true)
+    @test size(grid2d) == size(regimes2d) == size(valid2d) == (3, 3)
+    @test all(valid2d)
 end
 
 # -----------------------------------------------------------------------------
@@ -428,6 +467,29 @@ end
     means = [v.mean for v in vols]
     @test isapprox(sum(means), 1.0; atol=0.05)              # SANITY-CHECKED partition of unity
     @test count(>(0.0), means) == 8                         # snapshot: 8 non-singular regimes
+end
+
+@testset "Concurrent cold regime construction is single-flight" begin
+    model = Bnc(
+        N = reshape([1, 1, -1], 1, 3),
+        x_sym = [:A, :L, :AL],
+        q_sym = [:tA, :tL],
+        K_sym = [:Kd1],
+    )
+    gate = Base.Event()
+    tasks = [Threads.@spawn begin
+        wait(gate)
+        graph = get_regimes_graph!(model; full=true)
+        (n_vertices(model), copy(model.vertices_perm), graph)
+    end for _ in 1:8]
+    notify(gate)
+    results = fetch.(tasks)
+
+    @test all(result -> result[1] == results[1][1], results)
+    @test all(result -> result[2] == results[1][2], results)
+    @test all(result -> result[3] === results[1][3], results)
+    @test model._regimes_affine_ready
+    @test model._regimes_build_complete
 end
 
 end # top-level testset

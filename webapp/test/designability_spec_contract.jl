@@ -29,7 +29,7 @@ end
 
         screen = BEB.design_screen_from_spec(spec)
 
-        @test screen["schema_version"] == "bne-design-screen/v0.2.0"
+        @test screen["schema_version"] == "bne-design-screen/v0.3.0"
         @test haskey(screen, "designability_spec_normalized")
         @test haskey(screen, "constraint_audit")
         @test haskey(screen, "verified_recommendations")
@@ -2027,6 +2027,8 @@ end
         @test Set(String.(keys(ranking_policy["properties"]))) == Set(BEB.DESIGN_RANKING_POLICY_KEYS)
         @test Set(String.(keys(audit_policy["properties"]))) == Set(BEB.DESIGN_AUDIT_POLICY_KEYS)
         @test Set(String.(candidate_budget["properties"]["mode"]["enum"])) == Set(["near_minimal", "all_matches"])
+        @test candidate_budget["properties"]["max_screened"]["maximum"] == 64
+        @test candidate_budget["properties"]["max_exact_placements"]["maximum"] == 8
         @test ranking_policy["properties"]["verified_only"]["const"] === true
         @test Set(String.(audit_policy["properties"]["unsupported"]["enum"])) == Set(["block_if_hard"])
     end
@@ -3832,5 +3834,40 @@ end
 
         bad_req = HTTP.Request("POST", "/api/validate_designability_spec", [], JSON3.write(Dict("schema_version" => "wrong")))
         @test BEB.router(bad_req).status == 400
+    end
+
+    @testset "Validation and screening share candidate budget bounds" begin
+        base = Dict(
+            "schema_version" => "bne-designability/v1.0.0",
+            "source" => Dict("kind" => "test_fixture"),
+            "target" => Dict(
+                "legacy_target" => Dict("target_kind" => "sign", "target" => "+"),
+            ),
+        )
+
+        integral_float = merge(base, Dict(
+            "candidate_budget" => Dict("max_screened" => 64.0),
+        ))
+        normalized = BEB.normalize_designability_spec(integral_float)
+        @test normalized.candidate_budget["max_screened"] === 64
+        @test !any(item -> item.path == "/candidate_budget/max_screened" &&
+                          item.kind == "candidate_budget_contract",
+                  normalized.audit)
+        ok_req = HTTP.Request(
+            "POST", "/api/validate_designability_spec", [], JSON3.write(integral_float))
+        @test BEB.router(ok_req).status == 200
+
+        over_limit = merge(base, Dict(
+            "candidate_budget" => Dict("max_screened" => 65),
+        ))
+        over_normalized = BEB.normalize_designability_spec(over_limit)
+        @test any(item -> item.path == "/candidate_budget/max_screened" &&
+                          item.kind == "candidate_budget_contract" &&
+                          item.support_level == "unsupported",
+                  over_normalized.audit)
+        for path in ("/api/validate_designability_spec", "/api/design_screen")
+            req = HTTP.Request("POST", path, [], JSON3.write(over_limit))
+            @test BEB.router(req).status == 422
+        end
     end
 end

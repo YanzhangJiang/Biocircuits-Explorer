@@ -7,6 +7,27 @@ import { convexHull2D } from './plotting.js';
 import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getQKSymbolsForNode, getModelContextForNode, findUpstreamNodeByType, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { getConnectedSISOConfig, getConnectedSISOSelection, normalizeSISOConfig } from './siso.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
+import { formatPartialValidityNotice, prepareScan1DPlotData, prepareScan2DPlotData } from './plot-validity.js';
+
+function syncScanValidityNotice(plotId, prepared) {
+  if (typeof document === 'undefined') return;
+  const plotEl = document.getElementById(plotId);
+  if (!plotEl?.parentNode) return;
+  const noticeId = `${plotId}-validity-status`;
+  let noticeEl = document.getElementById(noticeId);
+  const message = formatPartialValidityNotice(prepared);
+  if (!message) {
+    noticeEl?.remove();
+    return;
+  }
+  if (!noticeEl) {
+    noticeEl = document.createElement('div');
+    noticeEl.id = noticeId;
+    noticeEl.className = 'scan-validity-status text-dim';
+    plotEl.parentNode.insertBefore(noticeEl, plotEl);
+  }
+  noticeEl.textContent = message;
+}
 
 // ===== Parameter Scan 1D Helper Functions =====
 
@@ -162,15 +183,18 @@ export async function executeScan1DResult(nodeId) {
 // ===== Parameter Scan 1D Plotting =====
 
 export function plotParameterScan1D(data, plotId) {
-  const { param_symbol, param_values, output_exprs, output_traj } = data;
+  const { param_symbol, param_values, output_exprs } = data;
   const plotTheme = getPlotTheme();
+  const prepared = prepareScan1DPlotData(data);
+  syncScanValidityNotice(plotId, prepared);
 
   const traces = output_exprs.map((expr, i) => ({
     x: param_values,
-    y: output_traj.map(row => row[i]),
+    y: prepared.outputTraj.map(row => row[i] ?? null),
     mode: 'lines',
     name: expr,
     line: { width: 2 },
+    connectgaps: false,
   }));
 
   const layout = {
@@ -345,16 +369,19 @@ export async function runParameterScan2D(nodeId) {
 // ===== Parameter Scan 2D Plotting =====
 
 export function plotParameterScan2D(data, plotId) {
-  const { param1_symbol, param2_symbol, param1_values, param2_values, output_expr, output_grid, regime_grid } = data;
+  const { param1_symbol, param2_symbol, param1_values, param2_values, output_expr } = data;
   const plotTheme = getPlotTheme();
+  const prepared = prepareScan2DPlotData(data);
+  syncScanValidityNotice(plotId, prepared);
 
   // Create 3D surface plot
   const traces = [
     {
-      z: output_grid,
+      z: prepared.outputGrid,
       x: param1_values,
       y: param2_values,
       type: 'surface',
+      connectgaps: false,
       colorscale: 'Viridis',
       colorbar: themedColorbar(`log(${output_expr})`),
       contours: {

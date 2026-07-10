@@ -7,7 +7,7 @@ const BEB = BiocircuitsExplorerBackend
 
 @testset "Design Screen Contract" begin
     screen = BEB.design_screen("sign", "+-+")
-    @test screen["schema_version"] == "bne-design-screen/v0.2.0"
+    @test screen["schema_version"] == "bne-design-screen/v0.3.0"
     @test screen["designable"] === true
     @test haskey(screen, "designability_spec_normalized")
     @test haskey(screen, "constraint_audit")
@@ -46,7 +46,7 @@ const BEB = BiocircuitsExplorerBackend
     all_screen = BEB.design_screen("sign", "+-+";
         candidate_budget=Dict("mode" => "all_matches", "max_recommended" => 3, "max_screened" => 3))
     @test all_screen["designability_spec_normalized"]["candidate_budget"]["mode"] == "all_matches"
-    @test all_screen["screened_count"] >= screen["screened_count"]
+    @test all_screen["eligible_count"] >= screen["eligible_count"]
     @test length(all_screen["screened_candidates"]) <= 3
     @test BEB._design_exact_placement_budget(Dict(
         "exact_placement_budget" => Dict("max_exact_placements" => 2)
@@ -87,6 +87,31 @@ const BEB = BiocircuitsExplorerBackend
     @test !haskey(exact, "tunability_score")
     @test first(exact["certificate_stack"])["grade"] == "exact-union-siso-rop"
     @test exact_screen["screen_summary"]["verified_status"] == "verified_recommendations_available"
+
+    no_match = BEB.design_screen_from_spec(Dict(
+        "schema_version" => "bne-designability/v1.0.0",
+        "source" => Dict("kind" => "test_fixture"),
+        "target" => Dict(
+            "legacy_target" => Dict(
+                "target_kind" => "exact",
+                "target" => Any[12_345.0],
+            ),
+        ),
+        "constraints" => Dict(
+            "parameter_bounds" => Dict(
+                "basis" => "log10_qK",
+                "kd_log10" => Any[-3.0, 3.0],
+                "total_log10" => Any[-3.0, 3.0],
+            ),
+        ),
+        "candidate_budget" => Dict(
+            "max_screened" => 4,
+            "max_exact_placements" => 0,
+        ),
+    ))
+    @test no_match["designable"] === false
+    @test no_match["n_matches"] == 0
+    @test no_match["screen_summary"]["verified_status"] == "not_designable"
 
     spec_screen = BEB.design_screen("sign", "+-+";
         designability_spec=Dict("target_kind" => "sign", "target" => "+-+",

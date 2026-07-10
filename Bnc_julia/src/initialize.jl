@@ -215,6 +215,7 @@ end
     bn.vertices_graph = nothing
     bn._vertices_Nρ_inv_dict = Dict{Vector{T}, Tuple{SparseMatrixCSC{Float64, Int},T}}()
     bn._regimes_affine_ready = false
+    bn._regimes_build_complete = false
     return nothing
 end
 

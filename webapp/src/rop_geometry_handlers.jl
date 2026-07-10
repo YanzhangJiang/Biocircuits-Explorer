@@ -7,20 +7,36 @@ function handle_rop_polyhedron(req)
 
     if haskey(body, :pairs)
         pairs_in = body[:pairs]
+        pairs_in isa AbstractVector ||
+            return error_response("pairs must be an array"; status=400)
         length(pairs_in) >= 2 || return error_response("At least two ROP axes are required"; status=400)
+        length(pairs_in) <= 3 || return error_response("At most three ROP axes are supported"; status=400)
 
         pairs = Tuple{Symbol, Symbol}[]
-        for pair in pairs_in
-            x_symbol = Symbol(pair[:x_symbol])
-            qk_symbol = Symbol(pair[:qk_symbol])
+        for (idx, pair) in enumerate(pairs_in)
+            (pair isa AbstractDict || pair isa JSON3.Object) ||
+                return error_response("pairs[$idx] must be an object"; status=400)
+            _raw_haskey(pair, :x_symbol) && _raw_haskey(pair, :qk_symbol) ||
+                return error_response(
+                    "pairs[$idx] requires x_symbol and qk_symbol"; status=400)
+            x_symbol = Symbol(_request_string(
+                _raw_get(pair, :x_symbol, nothing), "pairs[$idx].x_symbol"))
+            qk_symbol = Symbol(_request_string(
+                _raw_get(pair, :qk_symbol, nothing), "pairs[$idx].qk_symbol"))
             locate_sym_x(model, x_symbol) === nothing && return error_response("Unknown species: $x_symbol"; status=400)
             locate_sym_qK(model, qk_symbol) === nothing && return error_response("Unknown qK symbol: $qk_symbol"; status=400)
             push!(pairs, (x_symbol, qk_symbol))
         end
 
-        add_inner_points = Bool(get(body, :add_inner_points, true))
-        npoints = clamp(Int(get(body, :npoints, 5000)), 0, 100000)
-        singular_extends = Float64(get(body, :singular_extends, 2.0))
+        add_inner_points = _request_bool(
+            get(body, :add_inner_points, true), "add_inner_points")
+        npoints = sync_bounded_int(
+            get(body, :npoints, 5000), "npoints"; min=0, max=MAX_SYNC_ROP_POINTS)
+        enforce_sync_cost(npoints * model.n^2, MAX_SYNC_ROP_GEOMETRY_COST,
+                          "ROP geometry")
+        singular_extends = sync_finite_float(
+            get(body, :singular_extends, 2.0), "singular_extends"; abs_max=20.0)
+        singular_extends >= 0 || return error_response("singular_extends must be nonnegative"; status=400)
 
         rop_data = try
             get_ROP_plot_data(
@@ -87,7 +103,9 @@ function handle_rop_polyhedron(req)
     )
 
     # Parse output expression
-    output_expr = String(body[:output_expr])
+    output_expr = _request_string(body[:output_expr], "output_expr")
+    ncodeunits(output_expr) <= MAX_SYNC_EXPRESSION_BYTES ||
+        _sync_budget_exceeded("output_expr exceeds $(MAX_SYNC_EXPRESSION_BYTES) bytes.")
     output_coeffs = try
         parse_linear_combination(model, output_expr)
     catch e
@@ -95,16 +113,22 @@ function handle_rop_polyhedron(req)
     end
 
     # Parse parameters
-    param1_symbol = Symbol(body[:param1_symbol])
-    param2_symbol = Symbol(body[:param2_symbol])
+    haskey(body, :param1_symbol) ||
+        return error_response("param1_symbol is required"; status=400)
+    haskey(body, :param2_symbol) ||
+        return error_response("param2_symbol is required"; status=400)
+    param1_symbol = Symbol(_request_string(body[:param1_symbol], "param1_symbol"))
+    param2_symbol = Symbol(_request_string(body[:param2_symbol], "param2_symbol"))
     param1_idx = locate_sym_qK(model, param1_symbol)
     param2_idx = locate_sym_qK(model, param2_symbol)
     param1_idx === nothing && return error_response("Unknown parameter: $param1_symbol"; status=400)
     param2_idx === nothing && return error_response("Unknown parameter: $param2_symbol"; status=400)
     param1_idx == param2_idx && return error_response("Parameters must be different"; status=400)
 
-    asymptotic_only = get(body, :asymptotic_only, true)
-    max_vertices = clamp(Int(get(body, :max_vertices, 1000)), 10, 5000)
+    asymptotic_only = _request_bool(
+        get(body, :asymptotic_only, true), "asymptotic_only")
+    max_vertices = sync_bounded_int(
+        get(body, :max_vertices, 1000), "max_vertices"; min=10, max=5000)
 
     # Compute polyhedron
     poly_data = try

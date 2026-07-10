@@ -1,5 +1,5 @@
 const DESIGNABILITY_SPEC_VERSION = "bne-designability/v1.0.0"
-const DESIGN_SCREEN_V2_SCHEMA_VERSION = "bne-design-screen/v0.2.0"
+const DESIGN_SCREEN_SCHEMA_VERSION = "bne-design-screen/v0.3.0"
 const DESIGN_OUTPUT_FEATURE_KEYS = (
     "feature", "operator", "value", "sample_points", "tolerance_log10", "hard",
 )
@@ -831,17 +831,33 @@ function _design_audit_nonnegative_int_field!(raw_clause, normalized::Dict{Strin
                                               audit::Vector{DesignabilityAuditItem},
                                               key::Symbol,
                                               base_path::AbstractString,
-                                              kind::AbstractString)
+                                              kind::AbstractString;
+                                              maximum::Union{Nothing, Int}=nothing)
     _raw_haskey(raw_clause, key) || return audit
     value = _design_int_bound(_raw_get(raw_clause, key, nothing), 0)
-    value === nothing || return audit
-    _design_push_contract_audit!(
-        audit,
-        "$(base_path)/$(String(key))",
-        kind,
-        "$(base_path)/$(String(key)) must be an integer >= 0 when present.",
-    )
-    _design_delete_raw_key!(normalized, String(key))
+    if value === nothing
+        _design_push_contract_audit!(
+            audit,
+            "$(base_path)/$(String(key))",
+            kind,
+            "$(base_path)/$(String(key)) must be an integer >= 0 when present.",
+        )
+        _design_delete_raw_key!(normalized, String(key))
+        return audit
+    end
+
+    # JSON Schema treats an integral JSON number such as `64.0` as an
+    # integer. Canonicalize it here so the compiler and the Python-facing
+    # contract make the same decision.
+    normalized[String(key)] = value
+    if maximum !== nothing && value > maximum
+        _design_push_contract_audit!(
+            audit,
+            "$(base_path)/$(String(key))",
+            kind,
+            "$(base_path)/$(String(key)) must be <= $(maximum) for synchronous evaluation.",
+        )
+    end
     return audit
 end
 
@@ -877,6 +893,13 @@ function _design_audit_candidate_budget_contract!(candidate_budget_raw,
             candidate_budget["mode"] = "near_minimal"
         end
     end
+    bounded_maxima = Dict{Symbol, Int}(
+        :max_screened => MAX_SYNC_DESIGN_CARDS,
+        :max_verified_recommendations => MAX_SYNC_DESIGN_CARDS,
+        :max_recommended => MAX_SYNC_DESIGN_CARDS,
+        :max_near_misses => MAX_SYNC_DESIGN_CARDS,
+        :max_exact_placements => MAX_SYNC_EXACT_PLACEMENTS,
+    )
     for key in (
         :max_extra_species,
         :max_extra_reactions,
@@ -894,6 +917,7 @@ function _design_audit_candidate_budget_contract!(candidate_budget_raw,
             key,
             "/candidate_budget",
             "candidate_budget_contract",
+            maximum = get(bounded_maxima, key, nothing),
         )
     end
     return audit
@@ -1372,7 +1396,9 @@ end
 
 function _design_int_bound(raw, minimum::Integer)
     raw isa Bool && return nothing
-    raw isa Integer || return nothing
+    raw isa Real || return nothing
+    isfinite(raw) || return nothing
+    isinteger(raw) || return nothing
     value = try
         Int(raw)
     catch
@@ -3093,7 +3119,12 @@ function _design_verified_cards_from_spec(spec::NormalizedDesignabilitySpec, rec
     target_ro = _design_exact_single_ro(spec.legacy_target_kind, spec.legacy_target)
     input_window = _design_effective_behavior_input_window(spec)
     transition_order = _design_supported_transition_order_solver_indices(spec)
-    max_exact = max(0, _design_int(spec.candidate_budget, :max_exact_placements, 0))
+    max_exact = sync_bounded_int(
+        _raw_get(spec.candidate_budget, :max_exact_placements, 0),
+        "candidate_budget.max_exact_placements";
+        min=0,
+        max=MAX_SYNC_EXACT_PLACEMENTS,
+    )
     max_exact == 0 && return Dict{String,Any}[]
     bounds = _design_effective_parameter_bounds(spec)
     min_radius = _design_min_chebyshev_radius(spec)
@@ -3103,7 +3134,9 @@ function _design_verified_cards_from_spec(spec::NormalizedDesignabilitySpec, rec
     shape = input_window === nothing ? nothing : _design_shape_constraint(spec)
     out = Dict{String,Any}[]
     attempts = 0
-    for rec in _design_unique_records(records)
+    # The caller already supplies the deterministic de-duplicated order. Do not
+    # allocate a second full key table for an all-matches request.
+    for rec in records
         attempts >= max_exact && break
         attempts += 1
         use_program_solver = input_window !== nothing || target_ro === nothing
@@ -3134,7 +3167,8 @@ end
 
 function _design_screen_response_from_buckets(spec::NormalizedDesignabilitySpec, matched, cells,
                                               verified, screened; max_recommended::Int,
-                                              max_screened::Int, max_near_misses::Int)
+                                              max_screened::Int, max_near_misses::Int,
+                                              screened_total::Int=length(screened))
     search = _design_search_response(matched, cells)
     minimal_certificates = Any[]
     for cell in search["minimal"]
@@ -3153,11 +3187,14 @@ function _design_screen_response_from_buckets(spec::NormalizedDesignabilitySpec,
     screened_out = screened[1:min(length(screened), max_screened)]
     near_misses_out = screened[1:min(length(screened), max_near_misses)]
     return Dict(
-        "schema_version" => DESIGN_SCREEN_V2_SCHEMA_VERSION,
+        "schema_version" => DESIGN_SCREEN_SCHEMA_VERSION,
         "designable" => !isempty(matched),
         "verified_designable" => !isempty(verified_out),
         "n_matches" => length(matched),
         "screened_count" => length(screened),
+        "eligible_count" => screened_total,
+        "evaluated_count" => length(screened),
+        "truncated" => length(screened) < screened_total,
         "target_kind" => spec.legacy_target_kind,
         "target" => spec.legacy_target,
         "designability_spec_normalized" => designability_spec_to_dict(spec),
@@ -3171,10 +3208,15 @@ function _design_screen_response_from_buckets(spec::NormalizedDesignabilitySpec,
         "all_cells" => search["all_cells"],
         "screen_summary" => Dict(
             "verified_status" => blocked ? "blocked_by_unsupported_hard_clause" :
-                                 (isempty(verified_out) ? "screened_only" : "verified_recommendations_available"),
+                                 (isempty(matched) ? "not_designable" :
+                                  (isempty(verified_out) ? "screened_only" :
+                                   "verified_recommendations_available")),
             "verified_count" => length(verified_out),
             "screened_proxy_count" => length(screened_out),
             "near_miss_count" => length(near_misses_out),
+            "eligible_count" => screened_total,
+            "evaluated_count" => length(screened),
+            "truncated" => length(screened) < screened_total,
             "screen_semantics" => "verified_recommendations require exact or sampled evidence; screened_candidates are exploratory and never proof.",
         ),
         "relaxations" => Any[],
@@ -3196,16 +3238,55 @@ end
 
 function _design_max_verified_recommendations(candidate_budget)
     if _raw_haskey(candidate_budget, :max_verified_recommendations)
-        return max(0, _design_int(candidate_budget, :max_verified_recommendations, 24))
+        return sync_bounded_int(
+            _raw_get(candidate_budget, :max_verified_recommendations, 24),
+            "candidate_budget.max_verified_recommendations";
+            min=0,
+            max=MAX_SYNC_DESIGN_CARDS,
+        )
     end
-    return max(0, _design_int(candidate_budget, :max_recommended, 24))
+    return sync_bounded_int(
+        _raw_get(candidate_budget, :max_recommended, 24),
+        "candidate_budget.max_recommended";
+        min=0,
+        max=MAX_SYNC_DESIGN_CARDS,
+    )
+end
+
+function _design_sync_candidate_budget(candidate_budget)
+    max_recommended = _design_max_verified_recommendations(candidate_budget)
+    max_screened = sync_bounded_int(
+        _raw_get(candidate_budget, :max_screened, 24),
+        "candidate_budget.max_screened";
+        min=0,
+        max=MAX_SYNC_DESIGN_CARDS,
+    )
+    max_near_misses = sync_bounded_int(
+        _raw_get(candidate_budget, :max_near_misses, max_screened),
+        "candidate_budget.max_near_misses";
+        min=0,
+        max=MAX_SYNC_DESIGN_CARDS,
+    )
+    max_exact_placements = sync_bounded_int(
+        _raw_get(candidate_budget, :max_exact_placements, 0),
+        "candidate_budget.max_exact_placements";
+        min=0,
+        max=MAX_SYNC_EXACT_PLACEMENTS,
+    )
+    return (;
+        max_recommended,
+        max_screened,
+        max_near_misses,
+        max_exact_placements,
+    )
 end
 
 function design_screen_from_spec(raw_spec)
     spec = normalize_designability_spec(raw_spec)
-    max_recommended = _design_max_verified_recommendations(spec.candidate_budget)
-    max_screened = max(0, _design_int(spec.candidate_budget, :max_screened, 24))
-    max_near_misses = max(0, _design_int(spec.candidate_budget, :max_near_misses, max_screened))
+    budget = _design_sync_candidate_budget(spec.candidate_budget)
+    max_recommended = budget.max_recommended
+    max_screened = budget.max_screened
+    max_near_misses = budget.max_near_misses
     if !spec.has_search_target
         return _design_screen_response_from_buckets(spec, Any[], Any[], Dict{String,Any}[], Dict{String,Any}[];
             max_recommended = max_recommended,
@@ -3220,15 +3301,18 @@ function design_screen_from_spec(raw_spec)
     pareto_cells = _design_pareto(cells)
     pareto_cell_set = Set(pareto_cells)
     records = _design_records_from_budget(matched, pareto_cells, spec.candidate_budget, spec.constraints)
+    unique_records = _design_unique_records(records)
+    screen_limit = min(length(unique_records), max(max_screened, max_near_misses))
     screened = [_design_downgrade_proxy_card!(_design_screen_card(rec, pareto_cell_set, Dict{String,Any}(), spec.ranking_policy))
-                for rec in _design_unique_records(records)]
+                for rec in @view(unique_records[1:screen_limit])]
     verified = designability_has_unsupported_hard_clause(spec) ?
         Dict{String,Any}[] :
-        _design_verified_cards_from_spec(spec, records, pareto_cell_set)
+        _design_verified_cards_from_spec(spec, unique_records, pareto_cell_set)
     return _design_screen_response_from_buckets(spec, matched, cells, verified, screened;
         max_recommended = max_recommended,
         max_screened = max_screened,
-        max_near_misses = max_near_misses)
+        max_near_misses = max_near_misses,
+        screened_total = length(unique_records))
 end
 
 function handle_validate_designability_spec(req)
@@ -3238,6 +3322,10 @@ function handle_validate_designability_spec(req)
     catch e
         return error_response("invalid DesignabilitySpec: $(sprint(showerror, e))"; status = 400)
     end
+    # Validation and execution must agree on the bounded synchronous fields.
+    # In particular, do not return `ok = true` for a spec that design_screen
+    # will immediately reject with a budget error.
+    _design_sync_candidate_budget(spec.candidate_budget)
     return json_response(Dict(
         "ok" => true,
         "schema_version" => spec.schema_version,

@@ -1,6 +1,23 @@
+_new_session_id() = string(rand(UInt128), base=16, pad=32)
+
+function _request_model_symbol(model, raw, field::AbstractString, allowed)
+    value = Symbol(_request_string(raw, field))
+    value in Symbol.(allowed) || throw(ArgumentError(
+        "$field '$(value)' is not a model symbol; expected one of $(join(string.(allowed), ", "))",
+    ))
+    return value
+end
+
+_request_qk_symbol(model, raw, field::AbstractString="change_qK") =
+    _request_model_symbol(model, raw, field, qK_sym(model))
+
+_request_x_symbol(model, raw, field::AbstractString="observe_x") =
+    _request_model_symbol(model, raw, field, x_sym(model))
+
 function handle_build_model(req)
     body = read_json(req)
-    sid = get(body, :session_id, string(rand(UInt32), base=16))
+    sid = haskey(body, :session_id) ?
+        _request_session_id(body[:session_id]) : _new_session_id()
 
     # Accept either a NetworkIR (top-level or under `network`) or the legacy
     # `{reactions, kd}` shape — parse_network_ir bridges both.
@@ -22,7 +39,14 @@ function handle_build_model(req)
         err isa ArgumentError && return error_response(sprint(showerror, err); status = 400)
         rethrow(err)
     end
-    set_session(String(sid), bundle)
+    if !set_session_if_available(sid, bundle)
+        # A client-supplied alias may already belong to another model. Do not
+        # overwrite shared process state; return a fresh unguessable alias.
+        sid = _new_session_id()
+        while !set_session_if_available(sid, bundle)
+            sid = _new_session_id()
+        end
+    end
 
     model = bundle["model"]
     return json_response(Dict(
@@ -49,14 +73,8 @@ end
 function handle_ir_network_validate(req)
     body = read_json(req)
     payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : body
-    try
-        net = parse_network_ir(payload)
-        return json_response(Dict{String, Any}(
-            "valid" => true,
-            "ir_schema_version" => net.ir_schema_version,
-            "network" => network_ir_to_dict(net),
-            "hash" => network_ir_hash(net),
-        ))
+    net = try
+        parse_network_ir(payload)
     catch err
         err isa IRValidationError ||
             return error_response("Invalid network payload: $(sprint(showerror, err))"; status=400)
@@ -67,6 +85,12 @@ function handle_ir_network_validate(req)
             "path" => err.path,
         ); status=400)
     end
+    return json_response(Dict{String, Any}(
+        "valid" => true,
+        "ir_schema_version" => net.ir_schema_version,
+        "network" => network_ir_to_dict(net),
+        "hash" => network_ir_hash(net),
+    ))
 end
 
 function handle_ir_design_validate(req)
@@ -150,8 +174,19 @@ function handle_build_graph(req)
     err === nothing || return err
 
     model = bundle["model"]
-    graph_mode = Symbol(String(get(body, :graph_mode, "qk")))
-    change_qK = haskey(body, :change_qK) ? Symbol(String(body[:change_qK])) : nothing
+    graph_mode_text = lowercase(_request_string(
+        get(body, :graph_mode, "qk"), "graph_mode"))
+    graph_mode_text in ("qk", "siso") || throw(ArgumentError(
+        "graph_mode must be 'qk' or 'siso'",
+    ))
+    graph_mode = Symbol(graph_mode_text)
+    change_qK = if haskey(body, :change_qK)
+        _request_qk_symbol(model, body[:change_qK])
+    elseif graph_mode === :siso
+        throw(ArgumentError("change_qK is required when graph_mode is 'siso'"))
+    else
+        nothing
+    end
 
     data = graph_to_dict(model; graph_mode=graph_mode, change_qK=change_qK)
     return json_response(data)
@@ -163,10 +198,10 @@ function handle_siso_paths(req)
     err === nothing || return err
 
     model = bundle["model"]
-    change_qK = Symbol(body[:change_qK])
+    change_qK = _request_qk_symbol(model, body[:change_qK])
 
-    siso = SISOPaths(model, change_qK)
-    bundle["siso_$(body[:change_qK])"] = siso
+    siso = _bounded_siso_paths(model, change_qK)
+    bundle["siso_$(change_qK)"] = siso
 
     data = siso_to_dict(model, siso)
     return json_response(data)
@@ -178,11 +213,19 @@ function handle_siso_polyhedra(req)
     err === nothing || return err
 
     model = bundle["model"]
-    change_key = "siso_$(body[:change_qK])"
+    change_qK = _request_string(body[:change_qK], "change_qK")
+    change_key = "siso_$(change_qK)"
     siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
-    path_indices = haskey(body, :path_indices) ? Int.(body[:path_indices]) : collect(1:length(siso.rgm_paths))
+    path_indices = if haskey(body, :path_indices)
+        raw = body[:path_indices]
+        raw isa AbstractVector || throw(ArgumentError("path_indices must be an array"))
+        [sync_bounded_int(value, "path_indices[$idx]";
+             min=1, max=typemax(Int)) for (idx, value) in enumerate(raw)]
+    else
+        collect(1:length(siso.rgm_paths))
+    end
     # Limit to avoid huge computation
     path_indices = path_indices[1:min(length(path_indices), 50)]
 
@@ -209,11 +252,13 @@ function handle_siso_path_condition(req)
     err === nothing || return err
 
     model = bundle["model"]
-    change_key = "siso_$(body[:change_qK])"
+    change_qK = _request_string(body[:change_qK], "change_qK")
+    change_key = "siso_$(change_qK)"
     siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
-    path_idx = Int(body[:path_idx])
+    path_idx = sync_bounded_int(
+        body[:path_idx], "path_idx"; min=1, max=typemax(Int))
     if path_idx < 1 || path_idx > length(siso.rgm_paths)
         return error_response("path_idx out of range (1-$(length(siso.rgm_paths)))"; status=400)
     end
@@ -235,20 +280,22 @@ function handle_siso_trajectory(req)
     err === nothing || return err
 
     model = bundle["model"]
-    change_key = "siso_$(body[:change_qK])"
+    change_qK = _request_string(body[:change_qK], "change_qK")
+    change_key = "siso_$(change_qK)"
     siso = get(bundle, change_key, nothing)
     siso === nothing && return error_response("SISO paths not computed for this qK coordinate"; status=404)
 
-    path_idx = Int(body[:path_idx])
+    path_idx = sync_bounded_int(
+        body[:path_idx], "path_idx"; min=1, max=typemax(Int))
 
     # Validate path_idx
     if path_idx < 1 || path_idx > length(siso.rgm_paths)
         return error_response("path_idx out of range (1-$(length(siso.rgm_paths)))"; status=400)
     end
 
-    npoints = clamp(get(body, :npoints, 500), 10, 5000)
-    start_val = get(body, :start, -6)
-    stop_val = get(body, :stop, 6)
+    npoints = sync_bounded_int(get(body, :npoints, 500), "npoints"; min=10, max=5000)
+    start_val, stop_val = sync_finite_range(
+        get(body, :start, -6), get(body, :stop, 6), "trajectory")
 
     data = compute_siso_trajectory(model, siso, path_idx;
         npoints=npoints, start_val=start_val, stop_val=stop_val)
@@ -261,19 +308,29 @@ function handle_behavior_families(req)
     err === nothing || return err
 
     model = bundle["model"]
-    change_qK = Symbol(body[:change_qK])
-    observe_x = haskey(body, :observe_x) ? Symbol(body[:observe_x]) : error("observe_x is required")
-    path_scope = Symbol(get(body, :path_scope, "feasible"))
-    min_volume_mean = Float64(get(body, :min_volume_mean, 0.0))
-    deduplicate = Bool(get(body, :deduplicate, true))
-    keep_singular = Bool(get(body, :keep_singular, true))
-    keep_nonasymptotic = Bool(get(body, :keep_nonasymptotic, false))
-    compute_volume = Bool(get(body, :compute_volume, true))
+    change_qK = _request_qk_symbol(model, body[:change_qK])
+    haskey(body, :observe_x) || throw(ArgumentError("observe_x is required"))
+    observe_x = _request_x_symbol(model, body[:observe_x])
+    path_scope = Symbol(_request_string(get(body, :path_scope, "feasible"), "path_scope"))
+    path_scope in (:all, :feasible, :robust) || throw(ArgumentError(
+        "path_scope must be 'all', 'feasible', or 'robust'",
+    ))
+    min_volume_mean = _request_finite_real(
+        get(body, :min_volume_mean, 0.0), "min_volume_mean")
+    min_volume_mean >= 0 || throw(ArgumentError("min_volume_mean must be >= 0"))
+    deduplicate = _request_bool(get(body, :deduplicate, true), "deduplicate")
+    keep_singular = _request_bool(get(body, :keep_singular, true), "keep_singular")
+    keep_nonasymptotic = _request_bool(
+        get(body, :keep_nonasymptotic, false), "keep_nonasymptotic")
+    compute_volume = _request_bool(get(body, :compute_volume, true), "compute_volume")
+    path_scope === :robust && !compute_volume && throw(ArgumentError(
+        "compute_volume must be true when path_scope is 'robust'",
+    ))
 
-    change_key = "siso_$(body[:change_qK])"
+    change_key = "siso_$(change_qK)"
     siso = get(bundle, change_key, nothing)
     if siso === nothing
-        siso = SISOPaths(model, change_qK)
+        siso = _bounded_siso_paths(model, change_qK)
         bundle[change_key] = siso
     end
 
@@ -301,9 +358,14 @@ function handle_phenotype_classify(req)
     model = bundle["model"]
     haskey(body, :input_symbol) || return error_response("input_symbol is required"; status=400)
     haskey(body, :output_expr) || return error_response("output_expr is required"; status=400)
-    input_sym = Symbol(String(body[:input_symbol]))
-    output_expr = String(body[:output_expr])
-    K = clamp(Int(get(body, :K, 8)), 1, 64)
+    input_sym = Symbol(_request_string(body[:input_symbol], "input_symbol"))
+    output_expr = _request_string(body[:output_expr], "output_expr")
+    K = sync_bounded_int(get(body, :K, 8), "K"; min=1, max=64)
+    enforce_sync_cost(
+        K * (61 + 161) * model.n^3,
+        MAX_SYNC_SCAN_SOLVE_COST,
+        "Phenotype scan",
+    )
     # Canonical prior Π: Kd ~ LogUniform(-3,3), totals pinned — matches the dose dataset default.
     prior = ParameterPrior(; default_kd = LogUniform(-3.0, 3.0), default_total = PointMass(0.0))
     policy = PhenotyperPolicy(; K = K)
@@ -330,13 +392,20 @@ end
 
 function handle_rop_cloud(req)
     body = read_json(req)
-    mode = lowercase(String(get(body, :sampling_mode, "qk")))
+    mode = lowercase(_request_string(
+        get(body, :sampling_mode, "qk"), "sampling_mode"))
 
-    n_samples = clamp(Int(get(body, :n_samples, 10000)), 100, 100000)
+    n_samples = sync_bounded_int(
+        get(body, :n_samples, 10000), "n_samples"; min=100, max=MAX_SYNC_ROP_SAMPLES)
 
     if mode == "x_space"
         rules = if haskey(body, :reactions)
-            String.(body[:reactions])
+            raw_rules = body[:reactions]
+            raw_rules isa AbstractVector ||
+                throw(ArgumentError("reactions must be an array of strings"))
+            all(rule -> rule isa AbstractString, raw_rules) ||
+                throw(ArgumentError("reactions must be an array of strings"))
+            String.(raw_rules)
         else
             bundle, err = _resolve_bundle_or_response(body)
             err === nothing || return err
@@ -344,23 +413,33 @@ function handle_rop_cloud(req)
         end
 
         isempty(rules) && return error_response("At least one reaction is required"; status=400)
+        enforce_sync_rule_budget(rules)
 
-        logx_min = Float64(get(body, :logx_min, -6.0))
-        logx_max = Float64(get(body, :logx_max, 6.0))
-        logx_min = clamp(logx_min, -20.0, 20.0)
-        logx_max = clamp(logx_max, -20.0, 20.0)
-        logx_max > logx_min || return error_response("logx_max must be greater than logx_min"; status=400)
+        logx_min, logx_max = sync_finite_range(
+            get(body, :logx_min, -6.0), get(body, :logx_max, 6.0), "logx")
 
         target_species = if haskey(body, :target_species)
-            raw = strip(String(body[:target_species]))
+            raw = strip(_request_string(body[:target_species], "target_species"))
             isempty(raw) ? nothing : Symbol(raw)
         else
             nothing
         end
 
-        ro, target_vals, q_sym, d, target_sym = compute_rop_cloud_xspace(
-            rules, n_samples, logx_min, logx_max; target_species=target_species
-        )
+        ro, target_vals, q_sym, d, target_sym = try
+            compute_rop_cloud_xspace(
+                rules, n_samples, logx_min, logx_max;
+                target_species=target_species,
+            )
+        catch err
+            err isa SyncBudgetExceeded && rethrow()
+            if is_request_error(err) || err isa ErrorException
+                return error_response(
+                    "x-space ROP cloud failed: $(sprint(showerror, err))";
+                    status=400,
+                )
+            end
+            rethrow()
+        end
 
         return json_response(Dict(
             "reaction_orders" => mat2vv(ro),
@@ -378,12 +457,17 @@ function handle_rop_cloud(req)
         kd = bundle["kd"]
         prod_syms = Symbol.(bundle["prod_syms"])
 
-        span = clamp(Int(get(body, :span, 6)), 1, 20)
-        ro, fret = compute_rop_cloud(model, kd, prod_syms, n_samples, span)
+        span = sync_bounded_int(get(body, :span, 6), "span"; min=1, max=20)
+        enforce_sync_cost(n_samples * model.n^3, MAX_SYNC_ROP_CLOUD_COST, "ROP cloud")
+        ro, fret, valid = compute_rop_cloud(model, kd, prod_syms, n_samples, span)
 
         return json_response(Dict(
             "reaction_orders" => mat2vv(ro),
             "fret_values" => fret,
+            "valid" => valid,
+            "partial" => !all(valid),
+            "valid_sample_count" => count(identity, valid),
+            "sample_count" => length(valid),
             "q_sym" => string.(model.q_sym),
             "d" => model.d,
             "sampling_mode" => mode,
@@ -399,7 +483,8 @@ function handle_vertex_detail(req)
     err === nothing || return err
 
     model = bundle["model"]
-    idx = Int(body[:vertex_idx])
+    idx = sync_bounded_int(
+        body[:vertex_idx], "vertex_idx"; min=1, max=typemax(Int))
 
     if idx < 1 || idx > n_vertices(model)
         return error_response("vertex_idx out of range (1-$(n_vertices(model)))"; status=400)
@@ -419,26 +504,56 @@ function handle_fret_heatmap(req)
     kd = bundle["kd"]
     prod_syms = Symbol.(bundle["prod_syms"])
 
-    n_grid = clamp(get(body, :n_grid, 80), 20, 300)
-    logq_min = get(body, :logq_min, -6)
-    logq_max = get(body, :logq_max, 6)
+    n_grid = sync_bounded_int(get(body, :n_grid, 80), "n_grid"; min=20, max=300)
+    enforce_sync_cost(n_grid * n_grid * model.n^3, MAX_SYNC_SCAN_SOLVE_COST,
+                      "FRET heatmap")
+    logq_min, logq_max = sync_finite_range(
+        get(body, :logq_min, -6), get(body, :logq_max, 6), "logq")
     logK = log10.(kd)
 
     model.d == 2 || return error_response("FRET heatmap only supports d=2"; status=400)
 
-    prod_idx = [locate_sym_x(model, s) for s in prod_syms]
+    raw_prod_idx = [locate_sym_x(model, s) for s in prod_syms]
+    any(isnothing, raw_prod_idx) &&
+        return error_response("FRET product species are not present in the model"; status=400)
+    prod_idx = Int.(raw_prod_idx)
     logq1 = range(logq_min, logq_max, length=n_grid)
     logq2 = range(logq_min, logq_max, length=n_grid)
 
-    fret = zeros(Float64, n_grid, n_grid)
+    fret = fill(NaN, n_grid, n_grid)
     regime = zeros(Int, n_grid, n_grid)
+    valid = falses(n_grid, n_grid)
 
     for (i, lq1) in enumerate(logq1)
         for (j, lq2) in enumerate(logq2)
             logqK = vcat([lq1, lq2], logK)
-            x = qK2x(model, logqK; input_logspace=true, output_logspace=false)
-            fret[i, j] = sum(x[prod_idx])
-            regime[i, j] = assign_vertex_qK(model, logqK; input_logspace=true, return_idx=true)
+            status = Ref{Symbol}(:not_run)
+            x = try
+                qK2x(
+                    model, logqK;
+                    input_logspace=true,
+                    output_logspace=false,
+                    status=status,
+                )
+            catch err
+                err isa InterruptException && rethrow()
+                continue
+            end
+            all(isfinite, x) || continue
+            fret_value = sum(x[prod_idx])
+            if status[] !== :success || !(isfinite(fret_value) && fret_value > eps(Float64))
+                continue
+            end
+            fret[i, j] = fret_value
+            regime_idx = try
+                assign_vertex_qK(model, logqK; input_logspace=true, return_idx=true)
+            catch err
+                err isa InterruptException && rethrow()
+                fret[i, j] = NaN
+                continue
+            end
+            regime[i, j] = regime_idx
+            valid[i, j] = true
         end
     end
 
@@ -449,6 +564,8 @@ function handle_fret_heatmap(req)
         "logq2" => collect(logq2),
         "fret" => mat2vv(fret),
         "regime" => mat2vv(regime),
+        "validity_grid" => mat2vv(valid),
+        "partial" => !all(valid),
         "bounds" => mat2vv(Float64.(bounds)),
         "q_sym" => string.(model.q_sym),
     ))

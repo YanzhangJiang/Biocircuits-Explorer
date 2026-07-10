@@ -1846,9 +1846,10 @@ function _build_change_paths(model, change_spec)
     qk_signs = Int8.(Int.(_raw_get(change_spec, :qk_signs, Int[])))
     label = String(_raw_get(change_spec, :label, _raw_get(change_spec, :input_symbol, "")))
     if kind == :axis && length(qk_symbols) == 1 && qk_signs == Int8[1]
-        return SISOPaths(model, only(qk_symbols))
+        return _bounded_siso_paths(model, only(qk_symbols))
     elseif kind in (:axis, :orthant)
-        return ChangePaths(model, qk_symbols; signs=qk_signs, label=label, kind=kind)
+        return _bounded_change_paths(
+            model, qk_symbols; signs=qk_signs, label=label, kind=kind)
     else
         error("Unsupported change_spec kind for atlas path construction: $(kind)")
     end
@@ -2843,6 +2844,7 @@ function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallel
     sem = Base.Semaphore(parallelism)
     tasks = Task[]
     first_error = nothing
+    sync_request_context = _in_sync_request_context()
     for idx in eachindex(jobs)
         acquired = false
         try
@@ -2856,12 +2858,14 @@ function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallel
             break
         end
         push!(tasks, Threads.@spawn begin
-            try
-                cancel_check()
-                results[idx] = build_fn(jobs[idx])
-                cancel_check()
-            finally
-                Base.release(sem)
+            _with_sync_request_context(sync_request_context) do
+                try
+                    cancel_check()
+                    results[idx] = build_fn(jobs[idx])
+                    cancel_check()
+                finally
+                    Base.release(sem)
+                end
             end
         end)
     end
@@ -2871,8 +2875,10 @@ function _run_network_jobs_parallel(build_fn::Function, jobs, requested_parallel
             fetch(task)
         catch err
             root_error = err isa TaskFailedException ? err.task.exception : err
-            first_error === nothing &&
-                (first_error = root_error isa LocalJobCancelled ? root_error : err)
+            # Preserve typed policy/cancellation exceptions across the task
+            # boundary so the HTTP layer can map them to 422/429 instead of
+            # seeing an opaque TaskFailedException and returning 500.
+            first_error === nothing && (first_error = root_error)
         end
     end
     cancel_check()
@@ -3044,7 +3050,7 @@ function _build_single_network_atlas(job;
         end
         network_entry["build_state"] = _network_build_state(summary)
     catch err
-        err isa LocalJobCancelled && rethrow()
+        (err isa LocalJobCancelled || err isa SyncBudgetExceeded) && rethrow()
         network_entry["analysis_status"] = "failed"
         network_entry["build_state"] = "failed"
         merge!(network_entry, _atlas_failure_metadata(err, "network_build"))
@@ -4460,7 +4466,7 @@ function _candidate_refinement_trials(model, change_target, output_symbol::Strin
         end
 
         fixed_params = deleteat!(copy(full_qK), param_idx)
-        _, output_traj, regimes = scan_parameter_1d(
+        _, output_traj, regimes, valid = scan_parameter_1d(
             model,
             param_idx,
             param_range,
@@ -4468,13 +4474,26 @@ function _candidate_refinement_trials(model, change_target, output_symbol::Strin
             fixed_params;
             input_logspace=true,
             output_logspace=true,
+            track_validity=true,
         )
         values = vec(output_traj[:, 1])
-        scan_motif = _scan_curve_motif(values, refinement)
-        dynamic_range = isempty(values) ? 0.0 : maximum(values) - minimum(values)
-        regime_transition_count = isempty(regimes) ? 0 : count(i -> regimes[i] != regimes[i+1], 1:(length(regimes)-1))
-        motif_match = _scan_match_score(scan_motif["motif_label"], target_motifs)
-        refinement_score = 100.0 * motif_match + min(dynamic_range, 20.0) + 0.1 * regime_transition_count
+        effective_valid = valid .& isfinite.(values)
+        scan_complete = all(effective_valid)
+        scan_motif = scan_complete ? _scan_curve_motif(values, refinement) : Dict(
+            "motif_profile" => String[],
+            "motif_label" => "invalid_numeric_scan",
+            "token_tolerance" => nothing,
+        )
+        dynamic_range = scan_complete && !isempty(values) ? maximum(values) - minimum(values) : 0.0
+        regime_transition_count = scan_complete && !isempty(regimes) ?
+            count(i -> regimes[i] != regimes[i+1], 1:(length(regimes)-1)) : 0
+        motif_match = scan_complete ?
+            _scan_match_score(scan_motif["motif_label"], target_motifs) : 0.0
+        # An incomplete numerical scan must never outrank a valid trial. Keep a
+        # finite sentinel because refinement records are JSON artifacts.
+        refinement_score = scan_complete ?
+            100.0 * motif_match + min(dynamic_range, 20.0) + 0.1 * regime_transition_count :
+            -1.0e9
 
         trial_summary = Dict(
             "trial_idx" => trial_idx,
@@ -4485,20 +4504,24 @@ function _candidate_refinement_trials(model, change_target, output_symbol::Strin
             "fixed_qK" => collect(full_qK),
             "numeric_motif_profile" => collect(scan_motif["motif_profile"]),
             "numeric_motif_label" => String(scan_motif["motif_label"]),
-            "token_tolerance" => Float64(scan_motif["token_tolerance"]),
+            "token_tolerance" => scan_complete ? Float64(scan_motif["token_tolerance"]) : nothing,
             "dynamic_range" => Float64(dynamic_range),
-            "response_min" => isempty(values) ? nothing : Float64(minimum(values)),
-            "response_max" => isempty(values) ? nothing : Float64(maximum(values)),
+            "response_min" => scan_complete && !isempty(values) ? Float64(minimum(values)) : nothing,
+            "response_max" => scan_complete && !isempty(values) ? Float64(maximum(values)) : nothing,
             "regime_transition_count" => regime_transition_count,
             "motif_match" => motif_match,
             "target_motif_labels" => collect(target_motifs),
             "refinement_score" => refinement_score,
-            "refinement_status" => "ok",
+            "refinement_status" => scan_complete ? "ok" : "partial_solver_failure",
+            "valid_sample_count" => count(identity, effective_valid),
+            "sample_count" => length(effective_valid),
+            "partial" => !scan_complete,
         )
         if refinement.include_traces
             trial_summary["param_values"] = param_range
             trial_summary["output_trace"] = values
             trial_summary["regimes"] = regimes
+            trial_summary["valid"] = effective_valid
         end
 
         push!(trial_summaries, trial_summary)
@@ -4508,6 +4531,13 @@ function _candidate_refinement_trials(model, change_target, output_symbol::Strin
     end
 
     return best_trial, trial_summaries
+end
+
+function _refinement_candidate_is_valid(result)
+    String(_raw_get(result, :refinement_status, "ok")) == "ok" || return false
+    best_trial = _raw_get(result, :best_trial, nothing)
+    best_trial === nothing && return true
+    return !Bool(_raw_get(best_trial, :partial, false))
 end
 
 function refine_inverse_design_candidates(query_result, refinement::InverseRefinementSpec, query::AtlasQuerySpec)
@@ -4558,15 +4588,20 @@ function refine_inverse_design_candidates(query_result, refinement::InverseRefin
             "regime_transition_count" => best_trial["regime_transition_count"],
             "refinement_score" => best_trial["refinement_score"],
             "refinement_status" => _raw_get(best_trial, :refinement_status, "ok"),
+            "partial" => Bool(_raw_get(best_trial, :partial, false)),
             "best_trial" => best_trial,
         ))
     end
 
-    sort!(refined_results; by=result -> (-Float64(_raw_get(result, :refinement_score, 0.0)),
-                                         Int(_raw_get(result, :base_species_count, typemax(Int))),
-                                         Int(_raw_get(result, :reaction_count, typemax(Int))),
-                                         Int(_raw_get(result, :max_support, typemax(Int))),
-                                         Int(_raw_get(result, :support_mass, typemax(Int)))))
+    if refinement.rerank_by_refinement
+        sort!(refined_results; by=result -> (-Float64(_raw_get(result, :refinement_score, 0.0)),
+                                             Int(_raw_get(result, :base_species_count, typemax(Int))),
+                                             Int(_raw_get(result, :reaction_count, typemax(Int))),
+                                             Int(_raw_get(result, :max_support, typemax(Int))),
+                                             Int(_raw_get(result, :support_mass, typemax(Int)))))
+    else
+        sort!(refined_results; by=result -> Int(_raw_get(result, :source_rank, typemax(Int))))
+    end
     for (rank, result) in enumerate(refined_results)
         result["refined_rank"] = rank
     end
@@ -4577,7 +4612,9 @@ function refine_inverse_design_candidates(query_result, refinement::InverseRefin
         "refined_unit" => result_unit,
         "reranked" => refinement.rerank_by_refinement,
         "results" => refined_results,
-        "best_candidate" => isempty(refined_results) ? nothing : first(refined_results),
+        "best_candidate" => let idx = findfirst(_refinement_candidate_is_valid, refined_results)
+            idx === nothing ? nothing : refined_results[idx]
+        end,
     )
 end
 

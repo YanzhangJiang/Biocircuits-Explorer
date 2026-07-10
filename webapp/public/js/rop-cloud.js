@@ -2,6 +2,10 @@ import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.
 import { api, showToast, handleNodeError, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themedColorbar } from './theme.js';
 import { quantileSorted, plotHeatmap } from './plotting.js';
+import {
+  formatPartialValidityNotice,
+  prepareRopCloudPlotData,
+} from './plot-validity.js';
 import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getModelContextForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
 import { normalizeSISOConfig, getConnectedSISOConfig } from './siso.js';
@@ -89,7 +93,8 @@ export function updateROPCloudMode(nodeId) {
 }
 
 export function getROPCloudPlotAxes(data) {
-  const { reaction_orders = [], q_sym = [], d = 0 } = data;
+  const { q_sym = [], d = 0 } = data;
+  const reaction_orders = prepareRopCloudPlotData(data).reactionOrders;
   const plottedDims = d === 3 ? 3 : 2;
   const labels = [];
   for (let i = 0; i < plottedDims; i++) {
@@ -169,6 +174,7 @@ export function renderROPCloudOutput(nodeId, contentEl, data) {
   const presetRanges = getROPCloudPresetRanges(data, currentPreset);
   const savedRanges = Array.isArray(existingData.ropCloudRanges) ? existingData.ropCloudRanges : null;
   const initialRanges = savedRanges && savedRanges.length === axes.plottedDims ? savedRanges : presetRanges;
+  const validityNotice = formatPartialValidityNotice(prepareRopCloudPlotData(data));
 
   const nd = ensureNodeData(nodeId);
   nd.ropCloudData = data;
@@ -189,6 +195,7 @@ export function renderROPCloudOutput(nodeId, contentEl, data) {
       <button type="button" class="btn btn-small" data-action="applyROPCloudFOVPreset" data-node="${nodeId}" data-preset="robust">Robust</button>
       <button type="button" class="btn btn-small" data-action="applyROPCloudFOVPreset" data-node="${nodeId}" data-preset="full">Full</button>
       <span class="summary-chip">Field of view</span>
+      ${validityNotice ? `<span class="summary-chip">${validityNotice}</span>` : ''}
     </div>
     <div class="cloud-fov-panel">
       ${rangeRows}
@@ -227,11 +234,21 @@ export function refreshROPCloudPlot(nodeId) {
 }
 
 export function plotROPCloud(data, plotId, options = {}) {
-  const { reaction_orders, fret_values, q_sym, d } = data;
+  const { q_sym, d } = data;
+  const prepared = prepareRopCloudPlotData(data);
+  const reaction_orders = prepared.reactionOrders;
+  const fret_values = prepared.fretValues;
+  const validityNotice = formatPartialValidityNotice(prepared);
   const plotTheme = getPlotTheme();
   const baseLayout = {
     autosize: true,
     margin: { t: 40, b: 60, l: 70, r: 20 },
+    annotations: validityNotice ? [{
+      text: validityNotice,
+      xref: 'paper', yref: 'paper', x: 0, y: 1.08,
+      xanchor: 'left', yanchor: 'bottom', showarrow: false,
+      font: { color: plotTheme.fontColor, size: 10 },
+    }] : [],
   };
   const ranges = Array.isArray(options.ranges) ? options.ranges : [];
 

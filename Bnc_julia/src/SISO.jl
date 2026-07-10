@@ -17,6 +17,7 @@ High-level idea
 """
 
 export SISOPaths, get_polyhedra, get_polyhedron, get_SISO_graph
+export PathEnumerationLimitExceeded
 export get_sources, get_sinks, get_sources_sinks
 export get_regimes_graph!
 export get_path, get_edge, get_intersect
@@ -50,7 +51,10 @@ function _ensure_full_regimes_graph!(grh::VertexGraph)
     return nothing
 end
 
-_ensure_full_regimes_graph!(model::Bnc) = _ensure_full_regimes_graph!(get_regimes_graph!(model; full=false))
+function _ensure_full_regimes_graph!(model::Bnc)
+    isnothing(model.vertices_graph) && error("Regime graph is not initialized.")
+    return _ensure_full_regimes_graph!(model.vertices_graph)
+end
 
 """
     get_regimes_graph!(bnc::Bnc; full=false) -> VertexGraph
@@ -59,12 +63,11 @@ Ensure the vertex graph is built; when `full=true`, also compute qK change
 directions.
 """
 function get_regimes_graph!(bnc::Bnc; full::Bool=false)::VertexGraph
-    if full
-        vtx_graph = get_regimes_graph!(bnc; full=false)
-        _ensure_full_regimes_graph!(vtx_graph)
-    elseif isnothing(bnc.vertices_graph)
-        find_all_regimes!(bnc)
-    end
+    # Always pass through the construction lock. `vertices_graph !== nothing`
+    # is not a completion marker because the builder assembles several caches
+    # before its final commit point.
+    find_all_regimes!(bnc)
+    full && _ensure_full_regimes_graph!(bnc.vertices_graph)
     return bnc.vertices_graph
 end
 
@@ -274,16 +277,42 @@ function _can_reach_sinks(g::AbstractGraph, sinks::AbstractVector{Int})
     return seen
 end
 
-"""
-    _enumerate_paths(g; sources, sinks) -> Vector{Vector{Int}}
+struct PathEnumerationLimitExceeded <: Exception
+    resource::Symbol
+    maximum::Int
+    observed::Int
+end
 
-Enumerate all paths in a DAG from `sources` to `sinks`.
+Base.showerror(io::IO, err::PathEnumerationLimitExceeded) = print(
+    io,
+    "SISO path enumeration exceeded $(err.resource) limit $(err.maximum) " *
+    "(observed at least $(err.observed))",
+)
+
+"""
+    _enumerate_paths(g; sources, sinks, max_paths=nothing, max_total_nodes=nothing)
+        -> Vector{Vector{Int}}
+
+Enumerate all paths in a DAG from `sources` to `sinks`. Optional limits are
+checked before each path-vector allocation so callers can put a hard bound on
+both the number of returned paths and the cumulative path nodes materialized by
+the dynamic program.
 """
 function _enumerate_paths(
     g::AbstractGraph;
     sources::AbstractVector{Int},
     sinks::AbstractVector{Int},
+    max_paths::Union{Nothing,Integer}=nothing,
+    max_total_nodes::Union{Nothing,Integer}=nothing,
 )::Vector{Vector{Int}}
+    max_paths === nothing || max_paths >= 1 ||
+        throw(ArgumentError("max_paths must be positive or nothing"))
+    max_total_nodes === nothing || max_total_nodes >= 1 ||
+        throw(ArgumentError("max_total_nodes must be positive or nothing"))
+    path_limit = max_paths === nothing ? nothing : Int(max_paths)
+    node_limit = max_total_nodes === nothing ? nothing : Int(max_total_nodes)
+    materialized_nodes = 0
+
     @info "sources: $sources"
     @info "sinks: $sinks"
 
@@ -302,7 +331,11 @@ function _enumerate_paths(
     @showprogress for v in Iterators.reverse(topo)
         active[v] || continue
         if is_sink[v]
+            node_limit !== nothing && materialized_nodes >= node_limit &&
+                throw(PathEnumerationLimitExceeded(
+                    :materialized_path_nodes, node_limit, materialized_nodes + 1))
             memo[v] = [[v]]
+            materialized_nodes += 1
             continue
         end
 
@@ -312,10 +345,19 @@ function _enumerate_paths(
             paths_nb = memo[nb]
             paths_nb === nothing && continue
             for p in paths_nb
-                np = Vector{Int}(undef, length(p) + 1)
+                path_limit !== nothing && length(acc) >= path_limit &&
+                    throw(PathEnumerationLimitExceeded(
+                        :paths, path_limit, length(acc) + 1))
+                next_length = length(p) + 1
+                if node_limit !== nothing && next_length > node_limit - materialized_nodes
+                    throw(PathEnumerationLimitExceeded(
+                        :materialized_path_nodes, node_limit, node_limit + 1))
+                end
+                np = Vector{Int}(undef, next_length)
                 np[1] = v
                 copyto!(np, 2, p, 1, length(p))
                 push!(acc, np)
+                materialized_nodes += next_length
             end
         end
         memo[v] = isempty(acc) ? nothing : acc
@@ -327,6 +369,10 @@ function _enumerate_paths(
         active[s] || continue
         ps = memo[s]
         ps === nothing && continue
+        if path_limit !== nothing && length(ps) > path_limit - length(out)
+            throw(PathEnumerationLimitExceeded(
+                :paths, path_limit, path_limit + 1))
+        end
         append!(out, ps)
     end
 
@@ -2239,13 +2285,26 @@ end
 
 Construct a `SISOPaths` object for a chosen qK coordinate.
 """
-function SISOPaths(model::Bnc{T}, change_qK; rgm_paths=nothing, condition_solver::Symbol=:recursive) where {T}
+function SISOPaths(
+    model::Bnc{T},
+    change_qK;
+    rgm_paths=nothing,
+    condition_solver::Symbol=:recursive,
+    max_paths::Union{Nothing,Integer}=nothing,
+    max_total_nodes::Union{Nothing,Integer}=nothing,
+) where {T}
     change_qK_idx = locate_sym_qK(model, change_qK)
 
     if isnothing(rgm_paths)
         qK_grh = get_SISO_graph(model, change_qK)
         sources, sinks = get_sources_sinks(model, qK_grh)
-        rgm_paths = _enumerate_paths(qK_grh; sources, sinks)
+        rgm_paths = _enumerate_paths(
+            qK_grh;
+            sources,
+            sinks,
+            max_paths,
+            max_total_nodes,
+        )
     else
         qK_grh = graph_from_paths(rgm_paths, n_regimes(model))
         sources_all, sinks_all = get_sources_sinks(qK_grh)

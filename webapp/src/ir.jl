@@ -95,22 +95,37 @@ function _ir_require_string(raw, key::Symbol, path::AbstractString)
     return String(value)
 end
 
+function _ir_finite_number(value, path::AbstractString; nullable::Bool=false)
+    if nullable && value === nothing
+        return nothing
+    end
+    expected = nullable ? "expected a finite number or null" : "expected a finite number"
+    (value isa Real && !(value isa Bool)) || throw(IRValidationError(expected, String(path)))
+    converted = try
+        Float64(value)
+    catch
+        throw(IRValidationError(expected, String(path)))
+    end
+    isfinite(converted) || throw(IRValidationError(expected, String(path)))
+    return converted
+end
+
 function _ir_optional_number(raw, key::Symbol, path::AbstractString)
     _raw_haskey(raw, key) || return nothing
-    value = _raw_get(raw, key, nothing)
-    value === nothing && return nothing
-    value isa Real || throw(IRValidationError(
-        "expected a number or null", _ir_path_join(path, String(key))))
-    return Float64(value)
+    return _ir_finite_number(
+        _raw_get(raw, key, nothing),
+        _ir_path_join(path, String(key));
+        nullable=true,
+    )
 end
 
 function _ir_require_number(raw, key::Symbol, path::AbstractString)
     _raw_haskey(raw, key) || throw(IRValidationError(
         "missing required field `$(String(key))`", String(path)))
-    value = _raw_get(raw, key, nothing)
-    value isa Real || throw(IRValidationError(
-        "expected a number", _ir_path_join(path, String(key))))
-    return Float64(value)
+    return _ir_finite_number(
+        _raw_get(raw, key, nothing),
+        _ir_path_join(path, String(key)),
+    )
 end
 
 function _ir_optional_bool(raw, key::Symbol, default::Bool, path::AbstractString)
@@ -126,7 +141,9 @@ function _ir_optional_symbol(raw, key::Symbol, default::Symbol, allowed::Set{Sym
     _raw_haskey(raw, key) || return default
     value = _raw_get(raw, key, default)
     value === nothing && return default
-    sym = value isa Symbol ? value : Symbol(String(value))
+    (value isa Symbol || value isa AbstractString) || throw(IRValidationError(
+        "expected a string", _ir_path_join(path, String(key))))
+    sym = value isa Symbol ? value : Symbol(value)
     sym in allowed || throw(IRValidationError(
         "value `$(String(sym))` is not one of $(sort!(String.(collect(allowed))))",
         _ir_path_join(path, String(key))))
@@ -554,7 +571,13 @@ function _network_ir_from_legacy_payload(raw)
     path = "network(legacy)"
     rules_raw = _raw_get(raw, :reactions, Any[])
     _ir_require_list(rules_raw, _ir_path_join(path, "reactions"))
-    rules = String[String(r) for r in rules_raw]
+    rules = String[]
+    for (idx, rule) in enumerate(rules_raw)
+        rule isa AbstractString || throw(IRValidationError(
+            "reaction entries must be strings",
+            _ir_path_index(_ir_path_join(path, "reactions"), idx)))
+        push!(rules, String(rule))
+    end
     isempty(rules) && throw(IRValidationError(
         "legacy payload `reactions` must be a non-empty array",
         _ir_path_join(path, "reactions")))
@@ -567,19 +590,22 @@ function _network_ir_from_legacy_payload(raw)
         _ir_require_list(kd_raw, _ir_path_join(path, "kd"))
         out = Float64[]
         for (idx, val) in enumerate(kd_raw)
-            val isa Real || throw(IRValidationError(
-                "kd entries must be numbers", _ir_path_index(_ir_path_join(path, "kd"), idx)))
-            push!(out, Float64(val))
+            push!(out, _ir_finite_number(
+                val,
+                _ir_path_index(_ir_path_join(path, "kd"), idx),
+            ))
         end
         out
     end
     length(kd) == length(rules) || throw(IRValidationError(
         "legacy payload requires length(kd) == length(reactions)",
         _ir_path_join(path, "kd")))
-    all(x -> x > 0, kd) || throw(IRValidationError(
-        "all kd values must be > 0", _ir_path_join(path, "kd")))
+    all(x -> isfinite(x) && x > 0, kd) || throw(IRValidationError(
+        "all kd values must be finite and > 0", _ir_path_join(path, "kd")))
 
     label_raw = _raw_haskey(raw, :label) ? _raw_get(raw, :label, "") : ""
+    (label_raw === nothing || label_raw isa AbstractString) || throw(IRValidationError(
+        "label must be a string or null", _ir_path_join(path, "label")))
     label = label_raw === nothing ? "" : String(label_raw)
 
     input_symbols = _ir_optional_string_list(raw, :input_symbols, _ir_path_join(path, "input_symbols"))
@@ -614,7 +640,8 @@ function network_ir_from_legacy(rules::Vector{String}, kd::Vector{Float64};
                                  output_symbols::Vector{String} = String[])
     length(kd) == length(rules) || throw(IRValidationError(
         "length(kd) must match length(reactions)"))
-    all(x -> x > 0, kd) || throw(IRValidationError("all kd values must be > 0"))
+    all(x -> isfinite(x) && x > 0, kd) ||
+        throw(IRValidationError("all kd values must be finite and > 0"))
 
     reactants, products = parse_reactions(rules)
     species_order = String[]
@@ -722,8 +749,8 @@ function _validate_network_ir_semantics(net::NetworkIR)
     end
 
     for rx in net.reactions
-        rx.kd > 0 || throw(IRValidationError(
-            "reaction kd must be > 0 (formula=`$(rx.formula)`)",
+        (isfinite(rx.kd) && rx.kd > 0) || throw(IRValidationError(
+            "reaction kd must be finite and > 0 (formula=`$(rx.formula)`)",
             "network.reactions"))
     end
 
@@ -830,7 +857,7 @@ function _validate_design_constraints(constraints::AbstractDict, path::AbstractS
     for key in ("max_base_species", "max_reactions")
         haskey(constraints, key) || continue
         v = constraints[key]
-        (v isa Real && isfinite(v) && v > 0 && isinteger(v)) || throw(IRValidationError(
+        (v isa Real && !(v isa Bool) && isfinite(v) && v > 0 && isinteger(v)) || throw(IRValidationError(
             "expected a positive integer", _ir_path_join(cpath, key)))
     end
     for key in ("forbid_regimes", "forbid_transitions")
