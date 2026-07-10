@@ -85,7 +85,10 @@ function read_json(req)
     body_size <= MAX_JSON_REQUEST_BYTES ||
         throw(RequestBodyTooLarge(body_size, MAX_JSON_REQUEST_BYTES))
     try
-        return _validate_json_shape(JSON3.read(String(req.body)))
+        # HTTP.Request bodies are mutable byte buffers.  Converting the buffer
+        # directly to String can take ownership and empty it, but model-bundle
+        # routing and the endpoint handler may both parse the same request.
+        return _validate_json_shape(JSON3.read(String(copy(req.body))))
     catch e
         throw(ArgumentError("Invalid JSON: $(sprint(showerror, e))"))
     end

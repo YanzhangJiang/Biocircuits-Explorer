@@ -31,6 +31,12 @@ EXECUTABLE_BEHAVIOR_SPEC = {
 
 
 class DesignAgentContractTests(unittest.TestCase):
+    def test_end_to_end_design_tool_is_exposed_to_both_provider_protocols(self):
+        self.assertIn("design_from_behavior", design_agent.TOOLS_DISPATCH)
+        self.assertIn("design_from_behavior", [tool["name"] for tool in design_agent.TOOLSPEC])
+        self.assertIn("design_from_behavior", [tool["function"]["name"] for tool in design_agent.OPENAI_TOOLS])
+        self.assertIn("design_from_behavior", [tool["name"] for tool in design_agent.ANTHROPIC_TOOLS])
+
     def test_anthropic_compatible_env_aliases_configure_glm(self):
         with mock.patch.dict(os.environ, {
             "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
@@ -880,6 +886,283 @@ class DesignAgentContractTests(unittest.TestCase):
 
         self.assertIn("designability_spec", res["cards"][0])
         self.assertNotIn("designability_spec", res["cards"][1])
+
+    def test_design_from_behavior_binds_io_after_screen_and_replays_selected_parameters(self):
+        seen = {}
+
+        def fake_validate(spec):
+            seen["validated_spec"] = copy.deepcopy(spec)
+            return {"ok": True, "blocked_by_unsupported_hard_clause": False}
+
+        def fake_screen(spec):
+            if "legacy_target" in spec["target"]:
+                seen["discovery_spec"] = copy.deepcopy(spec)
+                return {
+                    "schema_version": "bne-design-screen/v0.3.0",
+                    "eligible_count": 7,
+                    "evaluated_count": 7,
+                    "truncated": False,
+                    "screened_candidates": [{
+                        "card_id": "discovery-card",
+                        "nid": "[1]+[2]<->[1,2]",
+                        "inp": "tA",
+                        "out": "C_A_B",
+                    }],
+                }
+            seen["screened_spec"] = copy.deepcopy(spec)
+            return {
+                "schema_version": "bne-design-screen/v0.3.0",
+                "eligible_count": 4,
+                "evaluated_count": 4,
+                "truncated": False,
+                "verified_recommendations": [{
+                    "nid": "[1]+[2]<->[1,2]",
+                    "inp": "tA",
+                    "out": "C_A_B",
+                    "pass": True,
+                    "screen_status": "verified_exact",
+                    "certificate_grade": "exact-window-siso-rop-path",
+                    "evidence_grade": "enforced_exact",
+                    "metrics": {"chebyshev_radius": 0.42},
+                    "parameter_recommendation": {"theta_star": {
+                        "status": "computed",
+                        "source_type": "exact_solver",
+                        "bounds_verified": True,
+                        "log_qK": [0.0, 0.2, -0.3],
+                        "kd": [10 ** -0.3],
+                        "totals": {"tA": 1.0, "tB": 10 ** 0.2},
+                    }},
+                    "agent_handoff": {"next_request": {
+                        "endpoint": "/api/v1/placer_curve",
+                        "method": "POST",
+                        "body": {
+                            "rules": ["A + B <-> C_A_B"],
+                            "input_sym": "tA",
+                            "output_sym": "C_A_B",
+                            "kd": [10 ** -0.3],
+                            "totals": {"tA": 1.0, "tB": 10 ** 0.2},
+                        },
+                    }},
+                }],
+            }
+
+        def fake_curve(**kwargs):
+            seen["curve_kwargs"] = copy.deepcopy(kwargs)
+            xs = [-5.0 + 0.5 * i for i in range(21)]
+            return {
+                "param_values": xs,
+                "output_traj": [[-1.0 - 0.1 * x] for x in xs],
+                "valid": [True] * 21,
+                "partial": False,
+            }
+
+        with mock.patch.object(design_agent.E, "validate_designability_spec", fake_validate), \
+             mock.patch.object(design_agent.E, "design_screen", fake_screen), \
+             mock.patch.object(design_agent.E, "placer_curve", fake_curve), \
+             mock.patch.object(design_agent, "_design_finite_slopes", lambda _x, _y, _w: [1.0, 0.0, -1.0]):
+            result = design_agent.design_from_behavior(
+                [1, 0, -1],
+                input_window_log10=[-5, 5],
+                operating_points_log10=[-3, 0, 3],
+                n_points=21,
+            )
+
+        spec = seen["validated_spec"]
+        self.assertEqual(spec, seen["screened_spec"])
+        self.assertEqual(seen["discovery_spec"]["target"]["legacy_target"]["target"], [1.0, 0.0, -1.0])
+        behavior = spec["target"]["behavior_spec"]
+        self.assertEqual(behavior["input"], "tA")
+        self.assertEqual(behavior["output"], "C_A_B")
+        self.assertEqual([step["value"] for step in behavior["program"]], [1.0, 0.0, -1.0])
+        self.assertEqual(seen["curve_kwargs"]["rules"], ["A + B <-> C_A_B"])
+        self.assertEqual(seen["curve_kwargs"]["input_sym"], "tA")
+        self.assertEqual(seen["curve_kwargs"]["output_sym"], "C_A_B")
+        self.assertEqual(seen["curve_kwargs"]["totals"], {"tA": 1.0, "tB": 10 ** 0.2})
+        self.assertEqual(seen["curve_kwargs"]["param_min"], -5.0)
+        self.assertEqual(seen["curve_kwargs"]["param_max"], 5.0)
+        self.assertEqual(seen["curve_kwargs"]["n_points"], 21)
+        self.assertEqual(result["forward_points"], 21)
+        self.assertEqual(result["_card"]["input_symbol"], "tA")
+        self.assertEqual(result["_card"]["output_symbol"], "C_A_B")
+        self.assertEqual(result["_card"]["certificate_grade"], "exact-window-siso-rop-path")
+
+    def test_design_from_behavior_rejects_non_integral_or_boolean_budgets(self):
+        invalid_cases = [
+            {"max_reactions": True},
+            {"max_reactions": 1.5},
+            {"max_reactions": "4"},
+            {"max_screened": True},
+            {"max_screened": 2.9},
+            {"max_verified_recommendations": False},
+            {"max_exact_placements": 2.5},
+            {"n_points": 21.5},
+        ]
+        for kwargs in invalid_cases:
+            with self.subTest(kwargs=kwargs), \
+                 mock.patch.object(design_agent.E, "design_screen") as screen:
+                result = design_agent.design_from_behavior([1, 0, -1], **kwargs)
+
+            self.assertEqual(result["error"], "design budgets and n_points must be integers")
+            screen.assert_not_called()
+
+    def test_design_from_behavior_rejects_stale_or_missing_screen_schema(self):
+        for schema_version in (None, "bne-design-screen/v0.2.0"):
+            discovery = {
+                "schema_version": schema_version,
+                "eligible_count": 1,
+                "evaluated_count": 1,
+                "truncated": False,
+                "screened_candidates": [{
+                    "card_id": "discovery-card",
+                    "nid": "[1]+[2]<->[1,2]",
+                    "inp": "tA",
+                    "out": "C_A_B",
+                }],
+            }
+            with self.subTest(stage="discovery", schema_version=schema_version), \
+                 mock.patch.object(design_agent.E, "design_screen", return_value=discovery), \
+                 mock.patch.object(design_agent.E, "validate_designability_spec") as validate:
+                result = design_agent.design_from_behavior([1, 0, -1])
+
+            self.assertIn("unsupported Design Screen schema_version", result["error"])
+            validate.assert_not_called()
+
+        discovery = {
+            "schema_version": "bne-design-screen/v0.3.0",
+            "eligible_count": 1,
+            "evaluated_count": 1,
+            "truncated": False,
+            "screened_candidates": [{
+                "card_id": "discovery-card",
+                "nid": "[1]+[2]<->[1,2]",
+                "inp": "tA",
+                "out": "C_A_B",
+            }],
+        }
+        stale_final = {
+            "schema_version": "bne-design-screen/v0.2.0",
+            "eligible_count": 1,
+            "evaluated_count": 1,
+            "truncated": False,
+            "verified_recommendations": [{"pass": True}],
+        }
+        with mock.patch.object(design_agent.E, "design_screen", side_effect=[discovery, stale_final]), \
+             mock.patch.object(design_agent.E, "validate_designability_spec", return_value={
+                 "ok": True,
+                 "blocked_by_unsupported_hard_clause": False,
+             }), \
+             mock.patch.object(design_agent.E, "placer_curve") as placer:
+            result = design_agent.design_from_behavior([1, 0, -1])
+
+        self.assertEqual(result["error"], "final Design Screen returned an unsupported schema_version")
+        placer.assert_not_called()
+
+    def test_design_from_behavior_requires_literal_true_curve_validity(self):
+        discovery = {
+            "schema_version": "bne-design-screen/v0.3.0",
+            "eligible_count": 1,
+            "evaluated_count": 1,
+            "truncated": False,
+            "screened_candidates": [{
+                "card_id": "discovery-card",
+                "nid": "[1]+[2]<->[1,2]",
+                "inp": "tA",
+                "out": "C_A_B",
+            }],
+        }
+        exact_card = {
+            "schema_version": "bne-design-screen/v0.3.0",
+            "eligible_count": 1,
+            "evaluated_count": 1,
+            "truncated": False,
+            "verified_recommendations": [{
+                "nid": "[1]+[2]<->[1,2]",
+                "inp": "tA",
+                "out": "C_A_B",
+                "pass": True,
+                "screen_status": "verified_exact",
+                "certificate_grade": "exact-window-siso-rop-path",
+                "evidence_grade": "enforced_exact",
+                "metrics": {"chebyshev_radius": 0.42},
+                "parameter_recommendation": {"theta_star": {
+                    "status": "computed",
+                    "source_type": "exact_solver",
+                    "bounds_verified": True,
+                    "kd": [1.0],
+                    "totals": {"tA": 1.0, "tB": 0.1},
+                    "witness_input_log10": [-3.0, 0.0, 3.0],
+                }},
+                "agent_handoff": {"next_request": {
+                    "endpoint": "/api/v1/placer_curve",
+                    "method": "POST",
+                    "body": {
+                        "rules": ["A + B <-> C_A_B"],
+                        "input_sym": "tA",
+                        "output_sym": "C_A_B",
+                        "kd": [1.0],
+                        "totals": {"tA": 1.0, "tB": 0.1},
+                    },
+                }},
+            }],
+        }
+        xs = [-5.0 + 0.5 * i for i in range(21)]
+        curve = {
+            "param_values": xs,
+            "output_traj": [[-x] for x in xs],
+            "valid": [True] * 20 + ["false"],
+            "partial": False,
+        }
+        with mock.patch.object(design_agent.E, "design_screen", side_effect=[discovery, exact_card]), \
+             mock.patch.object(design_agent.E, "validate_designability_spec", return_value={
+                 "ok": True,
+                 "blocked_by_unsupported_hard_clause": False,
+             }), \
+             mock.patch.object(design_agent.E, "placer_curve", return_value=curve), \
+             mock.patch.object(design_agent, "_design_finite_slopes", return_value=[1.0, 0.0, -1.0]):
+            result = design_agent.design_from_behavior(
+                [1, 0, -1], operating_points_log10=[-3, 0, 3], n_points=21,
+            )
+
+        self.assertIn("no exact recommendation passed", result["error"])
+        self.assertEqual(result["replay_failures"][0]["reason"], "incomplete/non-finite curve")
+
+    def test_run_turn_admits_end_to_end_design_tool_card(self):
+        spec = {
+            "schema_version": "bne-designability/v1.0.0",
+            "source": {"kind": "agent_design"},
+            "target": {"legacy_target": {"target_kind": "exact", "target": [1, 0, -1]}},
+        }
+        card = {
+            "family": "dose_shape",
+            "rules": ["A + B <-> C_A_B"],
+            "kd": [1.0],
+            "input_symbol": "tA",
+            "output_symbol": "C_A_B",
+            "computed_series": [{"x": -1.0, "y": -2.0}, {"x": 1.0, "y": -3.0}],
+            "evidence_tier": "exact Design Screen + fresh finite forward scan",
+        }
+
+        def fake_design(**_kwargs):
+            return {"designability_spec": copy.deepcopy(spec), "_card": copy.deepcopy(card)}
+
+        def fake_runner(_history, _message, dispatch, _cfg, max_iters=12):
+            dispatch("design_from_behavior", {"target_program": [1, 0, -1]})
+            return "设计完成", [{"role": "user", "content": "猫猫曲线"}]
+
+        with mock.patch.dict(design_agent.TOOLS_DISPATCH, {"design_from_behavior": fake_design}, clear=False), \
+             mock.patch.object(design_agent, "_run_anthropic", fake_runner), \
+             mock.patch.object(design_agent, "_write_trace", lambda _trace: None), \
+             mock.patch.object(design_agent, "_spill_card", lambda _card: "cardhash"):
+            result = design_agent.run_turn(
+                {}, "猫猫曲线",
+                {"provider": "anthropic", "api_key": "test-key", "base_url": "https://example.invalid", "model": "test"},
+                top=1,
+            )
+
+        self.assertEqual(result["reply"], "设计完成")
+        self.assertEqual(len(result["cards"]), 1)
+        self.assertEqual(result["cards"][0]["rules"], ["A + B <-> C_A_B"])
+        self.assertEqual(result["designability_spec"]["target"]["legacy_target"]["target"], [1, 0, -1])
 
 
 if __name__ == "__main__":

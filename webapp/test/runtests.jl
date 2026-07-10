@@ -1162,6 +1162,8 @@ end
     ) do
         @test BiocircuitsExplorerBackend.resolve_host(nothing) == "127.0.0.2"
         @test BiocircuitsExplorerBackend.resolve_host(4321) == "127.0.0.2"
+        @test BiocircuitsExplorerBackend.resolve_host(nothing) isa String
+        @test BiocircuitsExplorerBackend.resolve_host(4321) isa String
     end
 
     withenv(
@@ -1169,6 +1171,7 @@ end
         "ROP_HOST" => "::1",
     ) do
         @test BiocircuitsExplorerBackend.resolve_host(nothing) == "::1"
+        @test BiocircuitsExplorerBackend.resolve_host(nothing) isa String
     end
 
     withenv("BIOCIRCUITS_EXPLORER_HOST" => "http://127.0.0.1") do

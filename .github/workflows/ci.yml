@@ -108,6 +108,12 @@ jobs:
           JULIA_NUM_THREADS: auto
         run: julia --project=webapp --color=yes webapp/test/runtests.jl
 
+      - name: Live Design Agent → Design Screen → Placer contract
+        env:
+          JULIA_NUM_THREADS: auto
+        working-directory: webapp/scripts
+        run: python3 -m unittest test_design_agent_live_engine.py -v
+
       - name: Math-core golden-value regression suite (BindingAndCatalysis)
         env:
           JULIA_NUM_THREADS: auto

@@ -45,6 +45,13 @@ available independently.
 - A response containing `kind`, `reply`, `family`, `cards`, `info`, updated
   client state, and `trace_id`; a valid tool result may also contribute a
   `designability_spec`.
+- For one-input reaction-order requests, `design_from_behavior` performs a
+  two-stage handoff: an unbound target discovers candidate I/O roles, then a
+  candidate-bound `DesignabilitySpec` is validated and screened. Only an exact
+  recommendation that also passes a fresh `/api/v1/placer_curve` replay enters
+  the returned-card path. Both Design Screen responses must identify the current
+  screen schema, and every replay validity marker must be the literal Boolean
+  `true` with `partial=false`.
 - Best-effort local `traces/traces.jsonl` records and content-addressed card
   artifacts. Trace write failure is intentionally non-fatal, so a `trace_id`
   alone does not prove that a trace file exists.
@@ -64,19 +71,25 @@ available independently.
 
 - `webapp/scripts/test_design_agent_contract.py` covers provider configuration,
   spec lowering, invalid-spec rejection, solver prerequisites, source identity,
-  and prevention of stale or cross-card spec attachment.
+  the exact-design tool contract, strict integer budgets, screen-version and
+  curve-validity fail-closed behavior, and prevention of stale or cross-card
+  spec attachment.
+- `webapp/scripts/test_design_agent_live_engine.py` starts the real Julia HTTP
+  server and drives the production Agent dispatch with a deterministic provider
+  tool call. It asserts the live Design Screen validation/screening and Placer
+  replay path; it does not contact an external model provider.
 - `webapp/scripts/test_chat_api.py` covers helper-process lifecycle edge cases.
 - `webapp/test/design-spec-node-contract.test.mjs` covers browser-side export
   and rejection of non-rerunnable agent payloads.
-- These tests mock the LLM/tool loop; they are not a live-provider or live-engine
-  end-to-end proof.
+- The ordinary Python contracts mock tool results. The separate live-engine
+  contract uses the real HTTP engine and stubs only the external provider response.
 
 ## CI
 
 `.github/workflows/ci.yml` runs the Python contract tests through
-`npm run test:py` and the browser contract tests through `npm run test:js`.
-CI does not contact an external model, start a real chat service plus Julia
-engine, or validate optional retrieval corpora.
+`npm run test:py`, browser contracts through `npm run test:js`, and the
+process-level Agent-to-engine handoff in the Julia lane. CI does not contact an
+external model provider or validate optional retrieval corpora.
 
 ## Invariants
 
@@ -84,8 +97,11 @@ engine, or validate optional retrieval corpora.
   compute tool evaluates it in the current session.
 - Proxy scores, atlas labels, and retrieval support must never be promoted to a
   verified card or exact certificate.
-- Display cards are admitted only from fresh `simulate` or `simulate_2d` tool
-  results; an explicitly present but invalid spec payload withholds that card.
+- Display cards are admitted only from fresh `simulate`, `simulate_2d`, or
+  `design_from_behavior` tool results under their local admission contracts; an
+  explicitly present but invalid spec payload withholds that card.
+- `design_from_behavior` rejects lossy integer coercion, stale or missing Design
+  Screen versions, non-Boolean curve validity markers, and partial curve replies.
 - Engine connection failures remain typed as `engine_offline`; the agent must
   abstain from inventing curves, labels, or metrics.
 - API keys are not written into Design Agent traces, and the HTTP service logs
@@ -95,8 +111,9 @@ engine, or validate optional retrieval corpora.
 
 ## Known gaps
 
-- No CI job exercises a real LLM provider, a live Julia engine, corpus loading,
-  multi-turn convergence, or replay from a stored trace.
+- No CI job exercises a real LLM provider, optional corpus loading, multi-turn
+  convergence, or replay from a stored trace. The live-engine contract uses a
+  deterministic provider tool call so it proves wiring, not provider language quality.
 - The generic artifact validator does not validate generated Design Agent trace
   instances against `schemas/design-agent-trace.schema.json`.
 - Retrieval quality and corpus provenance are not release-locked; their mere

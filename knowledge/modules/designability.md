@@ -86,6 +86,12 @@ for `max_exact_placements`. A request above a maximum returns the standard 422
 `sync_budget_exceeded` payload. The implementation does not accept a large
 budget and silently pretend every eligible candidate was evaluated.
 
+Within the explicit `max_exact_placements` prefix, a candidate whose SISO
+regime paths exceed the Web materialization limit remains a screened proxy and
+is skipped for exact promotion. That candidate-local limit does not abort later
+bounded candidates; it also does not turn the skipped record into a failure or
+verified recommendation.
+
 A v0.2-only renderer may display `screened_count` for a historical artifact,
 but it cannot infer truncation. Current consumers require v0.3 and display
 eligible, evaluated, and truncation together.
@@ -133,6 +139,10 @@ by the clause.
   unevaluated, or partial values cannot win a verified ranking.
 - `recommended` is a transitional alias for `verified_recommendations`, never
   for `screened_candidates`.
+- Exact verified cards carry an executable `/api/v1/placer_curve` handoff with
+  the selected reaction rules, candidate-specific I/O, Kd values, and totals.
+  Proxy cards never carry this request. A consumer must still execute the
+  handoff and require a complete finite curve before displaying a fresh result.
 
 ## Contract sources and tests
 
