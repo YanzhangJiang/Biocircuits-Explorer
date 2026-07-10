@@ -8,6 +8,7 @@ using Base64
 
 include("schema_generation_contract.jl")
 include("api_contract.jl")
+include("backend_assembly_contract.jl")
 
 # Keep the Designability/Design Screen API contracts runnable from the main test
 # entry as well as directly; these run before the older atlas @test_broken gate
