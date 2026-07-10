@@ -65,6 +65,42 @@ APPLICATION_MANIFESTS = {
         "67d10611-6cfe-4cce-80b3-3428f29739d0",
     ),
 }
+FORBIDDEN_TRACKED_PREFIXES = (
+    "paper_rop_periodic_table/",
+    "webapp/scripts/rop_periodic_table/",
+    "webapp/scripts/_archive/",
+    "workstation/",
+)
+FORBIDDEN_RESEARCH_ROOTS = {
+    "paper",
+    "papers",
+    "manuscript",
+    "manuscripts",
+    "unpublished",
+    "private",
+    "confidential",
+    "submissions",
+}
+FORBIDDEN_RESEARCH_SUFFIXES = {
+    ".tex",
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".bib",
+    ".ris",
+    ".nbib",
+    ".enw",
+}
+REQUIRED_PRIVACY_IGNORES = (
+    "/paper_rop_periodic_table/",
+    "/webapp/scripts/rop_periodic_table/",
+    "/webapp/scripts/_archive/",
+    "/workstation/",
+)
+PRIVATE_WORKSTATION_PATH = re.compile(
+    "/" + r"(?:Users|raid)/" + "|" + "/" + "home/"
+    + r"(?!app(?:/|\s|$)|rop(?:/|\s|$)|runner(?:/|\s|$)|node(?:/|\s|$)|ubuntu(?:/|\s|$))"
+)
 
 
 @dataclass
@@ -242,7 +278,7 @@ def find_private_markers(text: str) -> list[str]:
         "BEGIN " + "OPENSSH PRIVATE KEY",
     ]
     found = [needle for needle in needles if needle in text]
-    if re.search(r"AKIA[0-9A-Z]{16}", text):
+    if re.search(r"(?:AKIA|ASIA)[0-9A-Z]{16}", text):
         found.append("AWS access-key pattern")
     if re.search(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", text):
         found.append("PEM private-key header")
@@ -252,9 +288,110 @@ def find_private_markers(text: str) -> list[str]:
         found.append("GitHub token pattern")
     if re.search(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b", text):
         found.append("OpenAI token pattern")
+    if re.search(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b", text):
+        found.append("Anthropic token pattern")
+    if re.search(r"\bAIza[0-9A-Za-z_-]{35}\b", text):
+        found.append("Google API key pattern")
+    if re.search(r"\bhf_[A-Za-z0-9]{20,}\b", text):
+        found.append("Hugging Face token pattern")
+    if re.search(r"\bxai-[A-Za-z0-9_-]{20,}\b", text):
+        found.append("xAI token pattern")
+    if re.search(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", text):
+        found.append("Slack token pattern")
     if re.search(r"https?://[^/\s:@]+:[^/\s@]+@", text):
         found.append("credential-bearing URL")
     return found
+
+
+def public_repository_path_violation(relative: Path) -> str | None:
+    """Return the public-boundary violation for a tracked path, if any."""
+    value = relative.as_posix()
+    if value.startswith(FORBIDDEN_TRACKED_PREFIXES):
+        return "forbidden private or historical directory"
+    parts = relative.parts
+    if parts and (parts[0] in FORBIDDEN_RESEARCH_ROOTS or parts[0].startswith("paper_")):
+        return "forbidden manuscript or private-research root"
+    if relative.suffix.lower() in FORBIDDEN_RESEARCH_SUFFIXES:
+        return f"forbidden manuscript or bibliography suffix {relative.suffix}"
+    stem = relative.stem.lower()
+    if "rebuttal" in stem or ("reviewer" in stem and ("response" in stem or "reply" in stem)):
+        return "forbidden peer-review response filename"
+    return None
+
+
+def _tracked_repository_paths(root: Path, audit: Audit) -> list[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=False
+        )
+    except OSError as exc:
+        audit.errors.append(f"cannot inventory tracked repository files: {exc}")
+        return []
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        audit.errors.append(f"cannot inventory tracked repository files: {detail}")
+        return []
+    return [Path(raw.decode("utf-8", errors="surrogateescape")) for raw in result.stdout.split(b"\0") if raw]
+
+
+def check_notebook_is_clear(relative: Path, text: str, audit: Audit) -> None:
+    try:
+        notebook = json.loads(text)
+    except json.JSONDecodeError as exc:
+        audit.errors.append(f"cannot parse tracked notebook {relative}: {exc}")
+        return
+    cells = notebook.get("cells") if isinstance(notebook, dict) else None
+    if not isinstance(cells, list):
+        audit.errors.append(f"tracked notebook {relative} has no cells array")
+        return
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            audit.errors.append(f"tracked notebook {relative} has a non-object cell at index {index}")
+            continue
+        outputs = cell.get("outputs", [])
+        if isinstance(outputs, list) and outputs:
+            audit.errors.append(f"tracked notebook {relative} contains output at cell {index}")
+        if cell.get("execution_count") is not None:
+            audit.errors.append(f"tracked notebook {relative} has execution_count at cell {index}")
+
+
+def check_public_repository_safety(root: Path, audit: Audit) -> None:
+    """Reject tracked private research, credentials, and workstation identifiers."""
+    # Unit tests exercise generation order with a bare temporary directory. The
+    # public-boundary policy applies only when there is a Git index to inspect.
+    if not (root / ".git").exists():
+        return
+    ignore_path = root / ".gitignore"
+    try:
+        ignore_lines = set(ignore_path.read_text(encoding="utf-8").splitlines())
+    except OSError as exc:
+        audit.errors.append(f"cannot read .gitignore for privacy policy: {exc}")
+        ignore_lines = set()
+    for required in REQUIRED_PRIVACY_IGNORES:
+        audit.require(required in ignore_lines, f".gitignore must contain {required}")
+
+    ignored_general_markers = {"/" + "home/", "/" + "tmp/", "file" + "://"}
+    for relative in _tracked_repository_paths(root, audit):
+        violation = public_repository_path_violation(relative)
+        audit.require(violation is None, f"tracked path {relative} violates public boundary: {violation}")
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        except OSError as exc:
+            audit.errors.append(f"cannot read tracked file {relative}: {exc}")
+            continue
+        markers = [marker for marker in find_private_markers(text) if marker not in ignored_general_markers]
+        audit.require(not markers, f"private or credential marker in tracked file {relative}: {markers}")
+        audit.require(
+            PRIVATE_WORKSTATION_PATH.search(text) is None,
+            f"private workstation path in tracked file {relative}",
+        )
+        if relative.suffix == ".ipynb":
+            check_notebook_is_clear(relative, text, audit)
 
 
 def markdown_inline_destinations(text: str) -> list[str]:
@@ -1136,6 +1273,7 @@ def verify(root: Path, *, write: bool, external: bool = True) -> int:
     else:
         compare_or_write_generated(root, expected, False, audit)
 
+    check_public_repository_safety(root, audit)
     public_files = sorted(set(maintained + [GENERATED_REFERENCE, Path("scripts/verify_repository.py")]))
     for relative in public_files:
         path = root / relative

@@ -82,6 +82,24 @@ tests/
 *.doc
 *.docx
 *.pdf
+*.bib
+*.ris
+*.nbib
+*.enw
+
+# Unpublished research material and site-specific operational scripts must stay
+# in their private workspaces. The repository verifier rejects tracked copies.
+/paper_rop_periodic_table/
+/webapp/scripts/rop_periodic_table/
+/webapp/scripts/_archive/
+/workstation/
+/paper/
+/papers/
+/manuscript/
+/manuscripts/
+/unpublished/
+/private/
+/confidential/
 
 # Periodic table runtime outputs can grow quickly; keep generated runs local.
 results/periodic_table/runs/*
@@ -138,6 +156,23 @@ known_hosts
 
 # Unify Claude config across all subtrees (supersedes /.claude/ + webapp/.claude/).
 **/.claude/
+**/.openai/
+**/.anthropic/
+**/.gemini/
+**/.continue/
+**/.cline/
+**/.aider*
+
+# AI-provider and automation credential exports. Real values are supplied only
+# through the environment or the deployment secret store.
+*api-key*.json
+*api-key*.txt
+*api_key*.json
+*api_key*.txt
+*token*.json
+*token*.txt
+*secret*.json
+*secret*.txt
 
 # --- Language / tooling caches (future-proofing) ---
 node_modules/

@@ -8,7 +8,7 @@
 # 11-network seed pool could not produce. Self-contained: dataset rows carry
 # `rules`, so build_model needs no atlas. Supports --task-shard i/n for parallelism.
 #
-#   julia --sysimage workstation/bnc_sys.so --project=webapp_hpc \
+#   julia --sysimage /path/to/bnc_sys.so --project=webapp_hpc \
 #     webapp/scripts/bench_retrieve_verify.jl --dataset datasets/latent-atlas-v0 \
 #     --tasks benchmarks/tasks --retrieve 80 --verify 20 --K 16 \
 #     --out benchmarks/reports/baseline_corpus.json [--task-shard 0/4]

@@ -163,11 +163,21 @@ function _load_design_index_state()
         # and reverse indexes are published together as one immutable state.
         _DESIGN_INDEX_STATE[] === nothing || return _DESIGN_INDEX_STATE[]
         _DESIGN_INDEX_LOAD_COUNT[] += 1
-    # Tracked new-sign atlas (147,081 slices, carries `base_motifs`). The old
-    # webapp/data copy is stale (146,845, old singular-sign); BNE_DESIGN_INDEX overrides.
-    path = get(ENV, "BNE_DESIGN_INDEX",
-               normpath(joinpath(@__DIR__, "..", "..", "paper_rop_periodic_table",
-                                 "data", "slices.jsonl.gz")))
+    # The design index is operator-managed data. Never make a tracked research
+    # snapshot the implicit production source: it can be unpublished, stale, or
+    # too large for the application checkout.
+    path = get(ENV, "BNE_DESIGN_INDEX", "")
+    if isempty(path)
+        # An absent optional corpus must not make request validation or the
+        # solver-backed designability path unavailable. It contributes no
+        # retrieved candidates until an operator supplies BNE_DESIGN_INDEX.
+        state = (; records=NamedTuple[],
+                  lookup=(; by_sign=Dict{String, Vector{Int}}(),
+                           by_label=Dict{String, Vector{Int}}(),
+                           by_exact=Dict{Tuple{Vararg{Float64}}, Vector{Int}}()))
+        _DESIGN_INDEX_STATE[] = state
+        return state
+    end
     isfile(path) || error("design index (slices.jsonl.gz) not found at $path")
     raw_recs = NamedTuple[]
     raw_outputs_by_nid = Dict{String, Set{String}}()
@@ -918,11 +928,12 @@ function handle_design_screen(req)
 end
 
 # GET/POST /api/design_labels — the behavior base-motif vocab (16 labels) with a
-# representative RO program each, so the UI can show "label → RO language". Sourced
-# from the tracked data products (motif_rep_prog.json + periodic_table.json
-# vocab.base_motifs) so the picker never drifts from the atlas.
+# representative RO program each, so the UI can show "label → RO language".
+# These are operator-managed research products, never a tracked manuscript
+# snapshot.
 function handle_design_labels(req)
-    dir = normpath(joinpath(@__DIR__, "..", "..", "paper_rop_periodic_table", "data"))
+    dir = get(ENV, "BNE_DESIGN_LABELS_DIR", "")
+    isempty(dir) && return error_response("design labels are unavailable; set BNE_DESIGN_LABELS_DIR to an operator-managed data directory"; status = 503)
     rep_path   = joinpath(dir, "motif_rep_prog.json")
     vocab_path = joinpath(dir, "periodic_table.json")
     isfile(rep_path)   || return error_response("motif_rep_prog.json not found at $rep_path"; status = 500)

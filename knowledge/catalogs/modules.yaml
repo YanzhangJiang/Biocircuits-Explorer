@@ -288,8 +288,6 @@ modules:
     owner_paths:
       - "src/periodic_table"
       - "scripts/periodic_table"
-      - "paper_rop_periodic_table"
-      - "webapp/scripts/rop_periodic_table"
     entrypoints:
       - "scripts/periodic_table/run_periodic_search.py"
       - "src/periodic_table/complete_definition.py"
@@ -301,6 +299,6 @@ modules:
     provides:
       - "periodic-table-search"
       - "witness-and-certificate-records"
-      - "embedded-research-snapshot"
+      - "periodic-search-artifacts"
     maturity: "research"
-    evidence_boundary: "Bounded search supports witnesses but not general absence; the embedded snapshot is not manuscript authority."
+    evidence_boundary: "Bounded search supports witnesses but not general absence; paper-side material is not tracked or verified here."

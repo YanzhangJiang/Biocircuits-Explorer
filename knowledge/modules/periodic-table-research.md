@@ -13,9 +13,8 @@ cell, witness, and certificate records with profile and code provenance.
 
 - Bounded candidate generation is a witness-discovery frontier, not an
   exhaustive negative proof for non-trivial cells.
-- This repository is not the manuscript authority. The nested
-  `paper_rop_periodic_table/` directory is an embedded reproduction snapshot,
-  not the current standalone paper repository.
+- This public repository does not store manuscript text, paper-side datasets,
+  figure exports, or workstation-specific research snapshots.
 - A precomputed aggregate, notebook output, retrieval result, or proxy score is
   not automatically a theorem, minimality certificate, or verified claim.
 
@@ -27,8 +26,6 @@ cell, witness, and certificate records with profile and code provenance.
 - Executable engine semantics: `Bnc_julia/src/rop/` and related Bnc math core
 - Focused smoke notebooks: `notebooks/periodic_table/`
 - Generated-run location: `results/periodic_table/runs/`
-- Historical embedded package: `paper_rop_periodic_table/` (reference snapshot
-  only; never the owner of current manuscript claims)
 
 ## Inputs
 
@@ -72,8 +69,8 @@ frontier, multi-base constraints, witness inheritance, and dry-run output shape.
 
 `.github/workflows/ci.yml` runs the root periodic-table Python contracts and the
 Bnc Julia golden suite. It does not run the full bounded search, reproduce a
-stored witness, verify a non-dry generated run, execute notebooks, compare the
-embedded snapshot, or build the standalone manuscript.
+stored witness, verify a non-dry generated run, execute notebooks, or build a
+manuscript.
 
 ## Invariants
 
@@ -100,11 +97,9 @@ embedded snapshot, or build the standalone manuscript.
   consistency.
 - Only a subset of declared properties has executable witness oracles; the
   runner must preserve unsupported properties as unknown.
-- The embedded paper snapshot contains stale prose and data metadata and has no
-  release lock tying it to a current Explorer artifact. It must not be cited as
-  current manuscript or data authority.
-- Notebook and report claims lack an enforced claim ledger that maps wording to
-  dataset hash, code revision, verifier, and figure generator.
+- Untracked paper-side material cannot be cited or verified from this checkout.
+- Notebook and report claims require an external claim ledger that maps wording
+  to dataset hash, code revision, verifier, and figure generator.
 
 ## Change protocol
 
@@ -115,14 +110,14 @@ embedded snapshot, or build the standalone manuscript.
    statements in code and prose.
 3. Reproduce witnesses and run `verify_results.py` before exporting a run; keep
    config, records, logs, and revision together.
-4. Transfer evidence to the standalone paper repository through a versioned,
-   hashed artifact release and claim ledger, never by editing the embedded
-   snapshot into apparent authority.
+4. Transfer evidence to a manuscript workflow only through a reviewed,
+   versioned, hashed artifact release and claim ledger; never copy paper-side
+   material back into this public repository.
 
 ## Verified against
 
 - Source commit: `f9c65a5`
 - Evidence inspected: periodic definitions, generators, schemas, runner,
-  verifier, root tests, Bnc boundary, embedded snapshot, and CI workflow wiring.
+  verifier, root tests, Bnc boundary, and CI workflow wiring.
 - Boundary: smoke and contract coverage only; no full search, notebook result,
-  embedded data claim, or manuscript conclusion was promoted to verified.
+  dataset claim, or manuscript conclusion was promoted to verified.

@@ -168,24 +168,9 @@ documents:
     kind: "template"
     owner: "knowledge-core"
     status: "active"
-  - id: "context-pack-paper-evidence-transfer"
-    path: "knowledge/context-packs/paper-evidence-transfer.md"
-    kind: "context-pack"
-    owner: "cross-repository"
-    status: "active"
-
 accepted_decisions:
   - "0001-shared-runtime-concurrency"
-active_context_packs:
-  - "context-pack-paper-evidence-transfer"
-
-known_gaps:
-  - id: "workstation-campaign-scripts"
-    path_pattern: "workstation/**"
-    classification: "site-specific-historical"
-    current_owner: "unknown"
-    reason: "These campaign scripts retain assumptions from one workstation environment and are not part of the current batch-hpc owner, entrypoint, or provided-contract surface."
-    verification: "No portable workstation campaign or result-merge run is CI-verified."
+active_context_packs: []
 
 non_authoritative_by_default:
   - path_pattern: "doc/**"
@@ -194,12 +179,6 @@ non_authoritative_by_default:
     reason: "Legacy narrative not continuously checked against source"
   - path_pattern: "wiki/**"
     reason: "Legacy narrative not continuously checked against source"
-  - path_pattern: "paper_rop_periodic_table/**"
-    reason: "Embedded research snapshot, not standalone manuscript authority"
-  - path_pattern: "webapp/scripts/_archive/**"
-    reason: "Archived campaign scripts"
-  - path_pattern: "workstation/**"
-    reason: "Site-specific historical campaign scripts outside the current batch-hpc contract"
 
 public_safety:
   allow_private_repository_urls: false

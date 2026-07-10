@@ -45,10 +45,11 @@ def production_files() -> list[Path]:
 
 class PortablePathTests(unittest.TestCase):
     def test_production_surfaces_have_no_personal_checkout_roots(self):
+        slash = "/"
         forbidden = {
-            "macOS user checkout": re.compile(r"/Users/[^/\s'\"]+"),
-            "personal Linux home": re.compile(r"/home/(?!rop(?:/|$))[^/\s'\"]+"),
-            "workstation RAID": re.compile(r"/raid/"),
+            "macOS user checkout": re.compile(slash + "Users/" + r"[^/\s'\"]+"),
+            "personal Linux home": re.compile(slash + "home/" + r"(?!rop(?:/|$))[^/\s'\"]+"),
+            "workstation RAID": re.compile(slash + "raid/"),
         }
         findings: list[str] = []
         for path in production_files():
