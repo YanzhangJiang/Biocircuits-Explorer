@@ -29,7 +29,8 @@ and expose a stable bridge to the native macOS host.
 - Type and restore safety: `webapp/public/js/port-types.js`,
   `webapp/public/js/connection-validation.js`
 - Feature UI: `webapp/public/js/node-types/`, `webapp/public/js/atlas.js`,
-  `webapp/public/js/design-screen-render.js`, `webapp/public/js/sbml-io.js`
+  `webapp/public/js/design-screen-render.js`, `webapp/public/js/plot-validity.js`,
+  `webapp/public/js/atlas-sqlite-policy.js`, `webapp/public/js/sbml-io.js`
 - Tooling: `webapp/package.json`, `webapp/eslint.config.mjs`
 
 ## Inputs
@@ -37,6 +38,8 @@ and expose a stable bridge to the native macOS host.
 - Pointer, keyboard, menu, clipboard, file-import, and node-control events.
 - Workspace JSON supplied by browser file IO or the native shell bridge.
 - Backend JSON responses and the shared schemas under `schemas/`.
+- Solver-validity metadata for scans, FRET heatmaps, ROP clouds, and Atlas
+  landscapes. Non-finite serialized tokens are never plot coordinates.
 - Optional Design Agent responses from the separate Python chat service.
 
 ## Outputs
@@ -66,8 +69,10 @@ and expose a stable bridge to the native macOS host.
 `webapp/test/*.test.mjs` exercises command undo/redo, geometry, typed ports,
 event dispatch, restored-connection validation, model request recovery, reaction
 species parsing, native clipboard fallback, design-result evidence grouping, and
-the Design Spec node contract. Julia route and schema tests cover the server side
-of requests the workspace emits.
+the Design Spec node contract. `scan-validity-contract.test.mjs` and
+`atlas-sqlite-policy.test.mjs` cover failed-solver gaps and the operator-only
+SQLite transport. Julia route and schema tests cover the server side of
+requests the workspace emits.
 
 ## CI
 
@@ -90,6 +95,14 @@ the source ES modules directly.
   nodes must rebuild the model before further backend work.
 - Verified, screened/proxy, minimal-certificate, and unsupported evidence remain
   visually and semantically distinct.
+- A failed or non-finite numerical sample renders as a gap. Partial responses
+  display that boundary and cannot be made visually indistinguishable from a
+  complete result.
+- Design Screen v0.3 shows evaluated and eligible counts; a truncated screen
+  says that the unevaluated candidates remain unknown.
+- Browser requests do not send `sqlite_path` unless an operator explicitly
+  enables the page policy. Server opt-in and store-root confinement remain
+  separate requirements; the browser flag is not authorization.
 
 ## Known gaps
 
@@ -115,8 +128,9 @@ the source ES modules directly.
 
 ## Verified against
 
-- Source commit: `f9c65a5`
+- Source commit: `1177a3d`
 - Evidence inspected: browser owner paths, package scripts, focused JS tests,
   shared schemas, server routing, and CI workflow wiring.
+- Historical baseline: `f9c65a5` remains the earlier catalog evidence anchor.
 - Boundary: no claim of browser visual fidelity or full user-flow behavior was
   made without a browser end-to-end run.

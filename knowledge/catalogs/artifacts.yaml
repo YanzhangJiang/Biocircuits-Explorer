@@ -1,6 +1,6 @@
 schema_version: "bcx-artifact-catalog/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "01a01be"
+current_verified_revision: "1177a3d"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -77,7 +77,19 @@ artifacts:
     producer: "manual-with-runtime-owner"
     validator: "scripts/verify_repository.py --check"
     authority: "Each schema plus the runtime owner named in the contract catalog"
-    status: "mixed-coverage"
+    status: "mixed-coverage-design-screen-v0.3-directly-tested"
+
+  - id: "designability-screen-v0.3-responses"
+    kind: "runtime-output"
+    storage: "runtime-only"
+    definition_paths:
+      - "webapp/src/designability.jl"
+      - "webapp/public/js/design-screen-render.js"
+    producer: "webapp/src/designability.jl"
+    validator: "webapp/test/design_screen_contract.jl plus webapp/test/design-target-render.test.mjs"
+    schema: "schemas/designability-screen.schema.json"
+    authority: "The v0.3 response, including eligible_count, evaluated_count, and truncated, together with its evidence-graded candidate cards"
+    status: "v0.3-backend-and-rendering-contract-tested"
 
   - id: "behavior-benchmark-specs"
     kind: "benchmark-input"

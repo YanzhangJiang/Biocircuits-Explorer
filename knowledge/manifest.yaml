@@ -1,6 +1,6 @@
 schema_version: "bcx-knowledge-manifest/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "01a01be"
+current_verified_revision: "1177a3d"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -153,6 +153,11 @@ documents:
     kind: "template"
     owner: "knowledge-core"
     status: "active"
+  - id: "0001-shared-runtime-concurrency"
+    path: "knowledge/decisions/0001-shared-runtime-concurrency.md"
+    kind: "architecture-decision"
+    owner: "backend-runtime"
+    status: "accepted"
   - id: "context-pack-policy"
     path: "knowledge/context-packs/README.md"
     kind: "process"
@@ -169,7 +174,8 @@ documents:
     owner: "cross-repository"
     status: "active"
 
-accepted_decisions: []
+accepted_decisions:
+  - "0001-shared-runtime-concurrency"
 active_context_packs:
   - "context-pack-paper-evidence-transfer"
 

@@ -1,6 +1,6 @@
 schema_version: "bcx-contract-catalog/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "01a01be"
+current_verified_revision: "1177a3d"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -16,12 +16,41 @@ contracts:
       - "webapp/src/routing.jl"
       - "webapp/src/jobs.jl"
       - "webapp/src/serialization.jl"
+      - "webapp/src/request_support.jl"
+      - "webapp/src/sync_work_budget.jl"
+      - "webapp/src/path_work_budget.jl"
+      - "webapp/src/atlas_build_budget.jl"
+      - "webapp/src/atlas_corpus_budget.jl"
+      - "webapp/src/atlas_query_budget.jl"
       - "webapp/scripts/export_reference_facts.jl"
     tests:
       - "webapp/test/api_contract.jl"
       - "webapp/test/runtests.jl"
-    compatibility: "The canonical versioned surface and legacy sunset come from executable route metadata; bare /api routes remain deprecated aliases until that sunset."
+      - "webapp/test/concurrency_and_budget_contract.jl"
+      - "webapp/test/input_validation_contract.jl"
+      - "tests/test_deployment_contract.py"
+    compatibility: "The canonical versioned surface and legacy sunset come from executable route metadata; bare /api routes remain deprecated aliases until that sunset. Oversized JSON bodies, exhausted synchronous capacity, and over-budget synchronous work fail with bounded machine-readable 413, 429, and 422 responses respectively."
     coverage: "direct"
+
+  - id: "numerical-validity"
+    version: "current-at-1177a3d"
+    kind: "runtime-result-semantics"
+    owner: "backend-runtime"
+    docs:
+      - "knowledge/contracts/api.md"
+      - "knowledge/contracts/scientific-evidence.md"
+    sources:
+      - "webapp/src/model_runtime.jl"
+      - "webapp/src/analysis_computation.jl"
+      - "webapp/src/parameter_scan_handlers.jl"
+      - "webapp/public/js/plot-validity.js"
+      - "webapp/public/js/scan.js"
+      - "webapp/public/js/rop-cloud.js"
+    tests:
+      - "webapp/test/numerical_validity_contract.jl"
+      - "webapp/test/scan-validity-contract.test.mjs"
+    compatibility: "Failed or non-finite numerical samples remain explicit through validity and partial-result fields and render as gaps; they must not be silently coerced to valid zero-valued observations."
+    coverage: "direct-backend-and-rendering"
 
   - id: "application-release-identity"
     version_source: "VERSION"
@@ -62,6 +91,7 @@ contracts:
       - "webapp/scripts/gen_schemas.jl"
     tests:
       - "webapp/test/runtests.jl"
+      - "webapp/test/input_validation_contract.jl"
     compatibility: "Generated schema; parser accepts the bne-ir family and selected legacy reaction payloads."
     coverage: "generated-drift-and-runtime"
 
@@ -132,7 +162,8 @@ contracts:
     tests:
       - "webapp/test/designability_spec_contract.jl"
       - "webapp/test/design_screen_contract.jl"
-    compatibility: "recommended is a compatibility alias for verified_recommendations, never screened_candidates."
+      - "webapp/test/design-target-render.test.mjs"
+    compatibility: "Design Screen v0.3 adds eligible_count, evaluated_count, and truncated so callers can distinguish complete from budget-limited evaluation. The UI retains a v0.2 count fallback; recommended remains a compatibility alias for verified_recommendations, never screened_candidates."
     coverage: "direct"
 
   - id: "behavior-spec"
@@ -280,6 +311,7 @@ contracts:
       - "webapp/test/runtests.jl"
       - "webapp/test/jobs_cancellation_contract.jl"
       - "webapp/test/cooperative_cancel_checkpoints_contract.jl"
+      - "webapp/test/concurrency_and_budget_contract.jl"
     compatibility: "Terminal state is monotonic; local cancellation is cooperative; remote calls execute outside the shared job lock; a persisted claim serializes concurrent AWS cancel dispatch and is released for retry after failure. AWS queue, definition, artifact, name, environment, CPU, and memory values supplied by a request override trusted runtime configuration only when BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG is explicitly enabled."
     coverage: "direct-race-contracts"
 

@@ -6,15 +6,27 @@ desired response. The central result is not merely a list of candidates: the
 product keeps a retrieved or suggested candidate separate from a result
 recomputed by the mathematics engine.
 
-The P5 implementation evidence anchor is `01a01be`. Revision `f9c65a5` remains
-the historical evidence baseline for the maintained knowledge catalog. Later
-documentation or refactoring commits may advance the branch without changing
-which implementation revision these P5 claims inspected.
+The current implementation evidence anchor is `1177a3d`. Revision `f9c65a5`
+remains the historical evidence baseline for the maintained knowledge catalog.
+Later documentation commits may advance the branch without changing which
+implementation revision these runtime claims inspected.
 
 ## What the current revision establishes
 
 - Local quick start defaults the workspace to `127.0.0.1:8088` and Design Chat
   to `127.0.0.1:8765`.
+- Synchronous compute requests are admitted through a two-slot process gate and
+  rejected before known unbounded work. Oversized work returns a structured
+  `422`; temporary capacity exhaustion returns `429` with `Retry-After`.
+- Compiled models are content-addressed and single-flight. Each shared model
+  bundle owns its mutable-cache lock, while session aliases and compiled-model
+  entries keep separate bounded LRU state.
+- Parameter scans, FRET heatmaps, ROP clouds, placement verification, and
+  inverse refinement preserve failed-solver points as explicit partial/invalid
+  evidence; those points are not plotted or promoted as best designs.
+- Raw HTTP `sqlite_path` access is disabled by default. An operator must enable
+  it explicitly on both client and server, and the server confines paths to a
+  configured store root.
 - `webapp/start.sh` is the one explicit unauthenticated Design Chat path. It is
   limited to loopback development and an exact browser origin.
 - Outside that explicit development mode, Design Chat launches require an

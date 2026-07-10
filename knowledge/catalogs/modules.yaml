@@ -1,6 +1,6 @@
 schema_version: "bcx-module-catalog/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "01a01be"
+current_verified_revision: "1177a3d"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -31,6 +31,17 @@ modules:
     doc: "knowledge/modules/backend-runtime.md"
     owner_paths:
       - "webapp/src"
+      - "webapp/src/runtime_lifecycle.jl"
+      - "webapp/src/request_support.jl"
+      - "webapp/src/sync_work_budget.jl"
+      - "webapp/src/path_work_budget.jl"
+      - "webapp/src/analysis_serializers.jl"
+      - "webapp/src/analysis_computation.jl"
+      - "webapp/src/model_runtime.jl"
+      - "webapp/src/model_handlers.jl"
+      - "webapp/src/parameter_scan_handlers.jl"
+      - "webapp/src/rop_geometry_handlers.jl"
+      - "webapp/src/service_handlers.jl"
       - "webapp/server.jl"
       - "webapp/Project.toml"
     entrypoints:
@@ -38,6 +49,10 @@ modules:
       - "webapp/src/routing.jl"
     tests:
       - "webapp/test/runtests.jl"
+      - "webapp/test/backend_assembly_contract.jl"
+      - "webapp/test/concurrency_and_budget_contract.jl"
+      - "webapp/test/input_validation_contract.jl"
+      - "webapp/test/numerical_validity_contract.jl"
       - "tests/version_resource_contract.jl"
     depends_on:
       - "engine-rop"
@@ -49,7 +64,7 @@ modules:
       - "job-runtime"
       - "application-readiness"
     maturity: "core"
-    evidence_boundary: "Runtime tests cover request boundaries, component readiness, trusted AWS configuration, and packaged version discovery; they do not prove a live TLS/cloud deployment or global scientific completeness."
+    evidence_boundary: "Runtime tests cover shared-state ownership, bounded synchronous work, request validation, numerical failure signalling, component readiness, trusted AWS configuration, and packaged version discovery; they do not prove a live TLS/cloud deployment or global scientific completeness."
 
   - id: "atlas"
     name: "Atlas construction and storage"
@@ -59,6 +74,9 @@ modules:
       - "webapp/src/atlas.jl"
       - "webapp/src/atlas_sqlite.jl"
       - "webapp/src/behavior_program_codec.jl"
+      - "webapp/src/atlas_build_budget.jl"
+      - "webapp/src/atlas_corpus_budget.jl"
+      - "webapp/src/atlas_query_budget.jl"
       - "atlas_specs"
     entrypoints:
       - "webapp/build_atlas.jl"
@@ -68,6 +86,8 @@ modules:
       - "webapp/test/runtests.jl"
       - "webapp/test/d1_atlas_contract.jl"
       - "webapp/test/inverse_config_contract.jl"
+      - "webapp/test/concurrency_and_budget_contract.jl"
+      - "webapp/test/input_validation_contract.jl"
     depends_on:
       - "engine-rop"
     provides:
@@ -75,7 +95,7 @@ modules:
       - "behavior-program-identity"
       - "retrieval-priors"
     maturity: "core"
-    evidence_boundary: "An atlas is conditional on its grammar, bounds, classifier config, and persisted snapshot."
+    evidence_boundary: "An atlas is conditional on its grammar, bounds, classifier config, and persisted snapshot. Synchronous build/query limits and serialized SQLite updates are tested locally; HTTP SQLite paths remain disabled unless an operator opts in."
 
   - id: "designability"
     name: "Designability screening and parameter placement"
@@ -84,6 +104,9 @@ modules:
     owner_paths:
       - "webapp/src/designability.jl"
       - "webapp/src/designability_feasible_regions.jl"
+      - "webapp/src/design_search.jl"
+      - "webapp/src/parameter_placement.jl"
+      - "webapp/src/parameter_level.jl"
       - "schemas/designability-spec.schema.json"
       - "schemas/designability-screen.schema.json"
     entrypoints:
@@ -92,6 +115,7 @@ modules:
       - "webapp/test/designability_spec_contract.jl"
       - "webapp/test/design_screen_contract.jl"
       - "webapp/test/design-spec-node-contract.test.mjs"
+      - "webapp/test/design-target-render.test.mjs"
     depends_on:
       - "engine-rop"
       - "atlas"
@@ -100,7 +124,7 @@ modules:
       - "designability-screen"
       - "verified-recommendations"
     maturity: "core"
-    evidence_boundary: "Screened proxy cards are exploratory and never proof; retain evidence and certificate grades."
+    evidence_boundary: "Screened proxy cards are exploratory and never proof. Design Screen v0.3 reports eligible versus evaluated candidates and whether evaluation was truncated; retain evidence and certificate grades."
 
   - id: "design-agent"
     name: "Conversational Design Agent and Reader"
@@ -135,12 +159,17 @@ modules:
     doc: "knowledge/modules/web-workspace.md"
     owner_paths:
       - "webapp/public"
+      - "webapp/public/js/plot-validity.js"
+      - "webapp/public/js/atlas-sqlite-policy.js"
       - "webapp/package.json"
     entrypoints:
       - "webapp/public/index.html"
       - "webapp/public/js/main.js"
     tests:
       - "webapp/test"
+      - "webapp/test/scan-validity-contract.test.mjs"
+      - "webapp/test/atlas-sqlite-policy.test.mjs"
+      - "webapp/test/design-target-render.test.mjs"
     depends_on:
       - "backend-runtime"
       - "design-agent"
@@ -150,7 +179,7 @@ modules:
       - "browser-api-client"
       - "sbml-browser-exchange"
     maturity: "active"
-    evidence_boundary: "Frontend labels render backend evidence; they do not upgrade its scientific grade."
+    evidence_boundary: "Frontend labels render backend evidence, preserve invalid numerical samples as plot gaps, and expose Design Screen truncation; they do not upgrade scientific grade."
 
   - id: "macos-host"
     name: "macOS host"
