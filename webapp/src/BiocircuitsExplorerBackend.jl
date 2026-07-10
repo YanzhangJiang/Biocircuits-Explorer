@@ -62,14 +62,15 @@ include(joinpath(@__DIR__, "observability.jl"))
 include(joinpath(@__DIR__, "serialization.jl"))
 include(joinpath(@__DIR__, "reaction_parser.jl"))
 include(joinpath(@__DIR__, "static_assets.jl"))
-using .SessionStore: get_session, set_session
+using .SessionStore: get_session, set_session, set_session_if_available
 using .DebugLog: append_debug_log, with_debug_client_scope,
                   debug_client_id_from_request, install_debug_logger!
 using .Observability: counter_inc!, gauge_set!, hist_observe!,
                        render_prometheus, log_request_json,
                        json_logs_enabled, iso_timestamp
 using .Serialization: mat2vv, json_safe_value, json_safe_real, json_safe_profile,
-                       json_response, error_response, read_json, is_request_error
+                       json_response, error_response, read_json, is_request_error,
+                       RequestBodyTooLarge
 using .ReactionParser: parse_term, parse_side, parse_reactions, parse_network_structure,
                        build_model, default_log_qK, fixed_qK_or_default
 using .StaticAssets: static_dir, serve_static
@@ -87,6 +88,10 @@ include(joinpath(@__DIR__, "runtime_lifecycle.jl"))
 
 include(joinpath(@__DIR__, "request_support.jl"))
 
+include(joinpath(@__DIR__, "sync_work_budget.jl"))
+
+include(joinpath(@__DIR__, "path_work_budget.jl"))
+
 include(joinpath(@__DIR__, "analysis_serializers.jl"))
 
 include(joinpath(@__DIR__, "analysis_computation.jl"))
@@ -96,6 +101,9 @@ include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
 include(joinpath(@__DIR__, "inverse_design.jl"))
+include(joinpath(@__DIR__, "atlas_build_budget.jl"))
+include(joinpath(@__DIR__, "atlas_corpus_budget.jl"))
+include(joinpath(@__DIR__, "atlas_query_budget.jl"))
 include(joinpath(@__DIR__, "ir.jl"))
 include(joinpath(@__DIR__, "sbml.jl"))
 include(joinpath(@__DIR__, "version.jl"))

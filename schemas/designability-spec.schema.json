@@ -264,11 +264,11 @@
         "max_extra_species": { "type": "integer", "minimum": 0 },
         "max_extra_reactions": { "type": "integer", "minimum": 0 },
         "max_extra_mu": { "type": "integer", "minimum": 0 },
-        "max_screened": { "type": "integer", "minimum": 0 },
-        "max_verified_recommendations": { "type": "integer", "minimum": 0 },
-        "max_recommended": { "type": "integer", "minimum": 0 },
-        "max_near_misses": { "type": "integer", "minimum": 0 },
-        "max_exact_placements": { "type": "integer", "minimum": 0 }
+        "max_screened": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_verified_recommendations": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_recommended": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_near_misses": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_exact_placements": { "type": "integer", "minimum": 0, "maximum": 8 }
       }
     },
     "ranking_policy": {

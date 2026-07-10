@@ -102,6 +102,13 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("location / {", nginx)
         self.assertIn("proxy_pass http://julia_app", nginx)
 
+    def test_proxy_payload_limit_uses_the_api_error_contract(self):
+        nginx = (ROOT / "deploy/nginx.conf").read_text(encoding="utf-8")
+        self.assertIn("client_max_body_size 1m", nginx)
+        self.assertIn("error_page 413 = @json_payload_too_large", nginx)
+        self.assertIn('"code":"request_body_too_large"', nginx)
+        self.assertIn('"limit_bytes":1048576', nginx)
+
     def test_tls_proxy_is_templated_and_deploy_fails_closed(self):
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
         nginx = (ROOT / "deploy/nginx.conf").read_text(encoding="utf-8")

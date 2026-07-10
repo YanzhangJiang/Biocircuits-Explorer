@@ -49,7 +49,7 @@ export const ROP_POLY_TYPES = {
         </div>
         <div class="param-row">
           <label>Inner samples:</label>
-          <input type="number" id="${nodeId}-npoints" value="5000" min="0" max="100000" step="500" class="auto-update">
+          <input type="number" id="${nodeId}-npoints" value="5000" min="0" max="20000" step="500" class="auto-update">
         </div>
         <div class="param-row">
           <label>Ray extend:</label>
@@ -161,7 +161,7 @@ export const ROP_POLY_TYPES = {
         </div>
         <div class="param-row">
           <label>Inner samples:</label>
-          <input type="number" id="${nodeId}-npoints" value="5000" min="0" max="100000" step="500">
+          <input type="number" id="${nodeId}-npoints" value="5000" min="0" max="20000" step="500">
         </div>
         <div class="param-row">
           <label>Ray extend:</label>

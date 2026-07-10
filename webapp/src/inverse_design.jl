@@ -457,15 +457,25 @@ function _support_signature_from_validation(validation)
 
     isempty(species_syms) && return "support::empty_species::d=$(length(free_syms))"
 
-    candidates = String[]
+    if length(free_syms) > MAX_EXACT_CANONICAL_FREE_SPECIES
+        positional = Dict(
+            "free_symbols" => sort!(String.(free_syms)),
+            "species_supports" => Dict(
+                String(sym) => sort!(String.(supports[sym])) for sym in species_syms
+            ),
+        )
+        return "support-positional::d=$(length(free_syms))::$(stable_hash(positional))"
+    end
+
+    best = nothing
     for perm in _all_permutations(copy(free_syms))
         remap = Dict(sym => idx for (idx, sym) in enumerate(perm))
         serialized = sort!([_canonical_term_string(sym, supports, remap) for sym in species_syms])
-        push!(candidates, join(serialized, "|"))
+        candidate = join(serialized, "|")
+        (best === nothing || isless(candidate, best)) && (best = candidate)
     end
 
-    sort!(candidates)
-    return "support::d=$(length(free_syms))::" * first(candidates)
+    return "support::d=$(length(free_syms))::" * best
 end
 
 function _support_graph_payload(validation)
@@ -2112,7 +2122,7 @@ function _polyhedron_seed_candidates(poly_dict)
 end
 
 function _evaluate_refinement_background(model, param_idx::Int, param_range, output_coeffs, fixed_params, refinement::InverseRefinementSpec, target_motifs::Vector{String}; seed_source::AbstractString, seed_point=nothing, interior_margin=nothing, polyhedron_summary=nothing)
-    _, output_traj, regimes = scan_parameter_1d(
+    _, output_traj, regimes, valid = scan_parameter_1d(
         model,
         param_idx,
         param_range,
@@ -2120,28 +2130,43 @@ function _evaluate_refinement_background(model, param_idx::Int, param_range, out
         fixed_params;
         input_logspace=true,
         output_logspace=true,
+        track_validity=true,
     )
 
     values = vec(output_traj[:, 1])
-    scan_motif = _scan_curve_motif(values, refinement)
-    dynamic_range = isempty(values) ? 0.0 : maximum(values) - minimum(values)
-    regime_transition_count = isempty(regimes) ? 0 : count(i -> regimes[i] != regimes[i + 1], 1:(length(regimes) - 1))
-    motif_match = _scan_match_score(scan_motif["motif_label"], target_motifs)
+    effective_valid = valid .& isfinite.(values)
+    scan_complete = all(effective_valid)
+    scan_motif = scan_complete ? _scan_curve_motif(values, refinement) : Dict(
+        "motif_profile" => String[],
+        "motif_label" => "invalid_numeric_scan",
+        "token_tolerance" => nothing,
+    )
+    dynamic_range = scan_complete && !isempty(values) ? maximum(values) - minimum(values) : 0.0
+    regime_transition_count = scan_complete && !isempty(regimes) ?
+        count(i -> regimes[i] != regimes[i + 1], 1:(length(regimes) - 1)) : 0
+    motif_match = scan_complete ?
+        _scan_match_score(scan_motif["motif_label"], target_motifs) : 0.0
     margin_bonus = interior_margin === nothing ? 0.0 : max(Float64(interior_margin), 0.0)
-    refinement_score = 100.0 * motif_match + min(dynamic_range, 20.0) + 0.1 * regime_transition_count + 0.01 * margin_bonus
+    refinement_score = scan_complete ?
+        100.0 * motif_match + min(dynamic_range, 20.0) + 0.1 * regime_transition_count + 0.01 * margin_bonus :
+        -1.0e9
 
     trial = Dict(
         "seed_source" => String(seed_source),
         "fixed_qK_background" => collect(fixed_params),
         "numeric_motif_profile" => collect(scan_motif["motif_profile"]),
         "numeric_motif_label" => String(scan_motif["motif_label"]),
-        "token_tolerance" => Float64(scan_motif["token_tolerance"]),
+        "token_tolerance" => scan_complete ? Float64(scan_motif["token_tolerance"]) : nothing,
         "dynamic_range" => Float64(dynamic_range),
         "regime_transition_count" => regime_transition_count,
         "motif_match" => motif_match,
         "target_motif_labels" => target_motifs,
         "refinement_score" => refinement_score,
         "interior_margin" => interior_margin,
+        "refinement_status" => scan_complete ? "ok" : "partial_solver_failure",
+        "valid_sample_count" => count(identity, effective_valid),
+        "sample_count" => length(effective_valid),
+        "partial" => !scan_complete,
     )
     seed_point === nothing || (trial["seed_point"] = collect(seed_point))
     polyhedron_summary === nothing || (trial["polyhedron_summary"] = polyhedron_summary)
@@ -2149,6 +2174,7 @@ function _evaluate_refinement_background(model, param_idx::Int, param_range, out
         trial["param_values"] = param_range
         trial["output_trace"] = values
         trial["regimes"] = regimes
+        trial["valid"] = effective_valid
     end
     return trial
 end
@@ -2283,7 +2309,7 @@ function _best_seeded_trial(result, gamma_q, refinement::InverseRefinementSpec, 
             ),
         )
         trial["change_signature"] = String(_raw_get(change_spec, :signature, String(scalar_input_symbol)))
-        trial["refinement_status"] = "ok"
+        get!(trial, "refinement_status", "ok")
         if best_trial === nothing || Float64(trial["refinement_score"]) > Float64(best_trial["refinement_score"])
             best_trial = trial
         end
@@ -2351,15 +2377,20 @@ function refine_top_k(query_result, gamma_q, refinement_policy::InverseRefinemen
             "regime_transition_count" => best_trial["regime_transition_count"],
             "refinement_score" => best_trial["refinement_score"],
             "refinement_status" => _raw_get(best_trial, :refinement_status, "ok"),
+            "partial" => Bool(_raw_get(best_trial, :partial, false)),
             "best_trial" => best_trial,
         ))
     end
 
-    sort!(refined_results; by=result -> (-Float64(_raw_get(result, :refinement_score, 0.0)),
-                                         Int(_raw_get(result, :base_species_count, typemax(Int))),
-                                         Int(_raw_get(result, :reaction_count, typemax(Int))),
-                                         Int(_raw_get(result, :max_support, typemax(Int))),
-                                         Int(_raw_get(result, :support_mass, typemax(Int)))))
+    if refinement_policy.rerank_by_refinement
+        sort!(refined_results; by=result -> (-Float64(_raw_get(result, :refinement_score, 0.0)),
+                                             Int(_raw_get(result, :base_species_count, typemax(Int))),
+                                             Int(_raw_get(result, :reaction_count, typemax(Int))),
+                                             Int(_raw_get(result, :max_support, typemax(Int))),
+                                             Int(_raw_get(result, :support_mass, typemax(Int)))))
+    else
+        sort!(refined_results; by=result -> Int(_raw_get(result, :source_rank, typemax(Int))))
+    end
     for (rank, result) in enumerate(refined_results)
         result["refined_rank"] = rank
     end
@@ -2369,9 +2400,11 @@ function refine_top_k(query_result, gamma_q, refinement_policy::InverseRefinemen
         "policy_version" => DEFAULT_REFINEMENT_POLICY_VERSION,
         "evaluated_count" => length(refined_results),
         "refined_unit" => result_unit,
-        "reranked" => true,
+        "reranked" => refinement_policy.rerank_by_refinement,
         "results" => refined_results,
-        "best_candidate" => isempty(refined_results) ? nothing : first(refined_results),
+        "best_candidate" => let idx = findfirst(_refinement_candidate_is_valid, refined_results)
+            idx === nothing ? nothing : refined_results[idx]
+        end,
     )
 end
 
@@ -2425,6 +2458,25 @@ function _resolve_precomputed_query_target(spec, sqlite_path)
     else
         return nothing, "none"
     end
+end
+
+function _select_inverse_best_design(refinement_result, query_result)
+    best_refined_candidate = _raw_get(refinement_result, :best_candidate, nothing)
+    refinement_reranked = Bool(_raw_get(refinement_result, :reranked, false))
+    if Bool(_raw_get(refinement_result, :enabled, false)) &&
+       refinement_reranked && best_refined_candidate !== nothing
+        return Dict(
+            "selection_source" => "refinement",
+            "candidate" => _materialize(best_refined_candidate),
+        )
+    end
+
+    query_results = collect(_raw_get(query_result, :results, Any[]))
+    isempty(query_results) && return nothing
+    return Dict(
+        "selection_source" => "query",
+        "candidate" => _materialize(first(query_results)),
+    )
 end
 
 function run_inverse_design_pipeline_from_spec(spec; cancel_check::Function=_no_cancel_check)
@@ -2568,19 +2620,7 @@ function run_inverse_design_pipeline_from_spec(spec; cancel_check::Function=_no_
 
     sqlite_path !== nothing && working_library !== nothing && atlas_sqlite_save_library!(sqlite_path, working_library)
 
-    best_design = if Bool(_raw_get(refinement_result, :enabled, false)) && !isempty(collect(_raw_get(refinement_result, :results, Any[])))
-        Dict(
-            "selection_source" => "refinement",
-            "candidate" => _materialize(first(collect(_raw_get(refinement_result, :results, Any[])))),
-        )
-    elseif !isempty(collect(_raw_get(query_result, :results, Any[])))
-        Dict(
-            "selection_source" => "query",
-            "candidate" => _materialize(first(collect(_raw_get(query_result, :results, Any[])))),
-        )
-    else
-        nothing
-    end
+    best_design = _select_inverse_best_design(refinement_result, query_result)
 
     result = Dict(
         "inverse_design_schema_version" => "0.2.0",

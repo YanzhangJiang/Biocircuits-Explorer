@@ -13,11 +13,14 @@ function test(name, fn) {
 }
 
 const payload = {
-  schema_version: 'bne-design-screen/v0.2.0',
+  schema_version: 'bne-design-screen/v0.3.0',
   designable: true,
   verified_designable: true,
   n_matches: 12,
   screened_count: 2,
+  eligible_count: 12,
+  evaluated_count: 2,
+  truncated: true,
   constraint_audit: [
     { path: '/target/legacy_target', support_level: 'enforced_exact', stage: 'atlas_match' },
   ],
@@ -183,6 +186,42 @@ test('renderDesignScreenResults separates verified, screened, and minimal groups
   assert.doesNotMatch(html, /score 0\.82/);
   assert.doesNotMatch(html.toLowerCase(), /wizard/);
   assert.equal((html.match(/design-build-btn/g) || []).length, 1);
+  assert.match(html, /2 \/ 12/);
+  assert.match(html, /evaluated \/ eligible/);
+  assert.match(html, /truncated/);
+  assert.match(html, /Only <strong>2 of 12<\/strong> eligible candidates were evaluated/);
+  assert.match(html, /results are not exhaustive/);
+});
+
+test('renderDesignScreenResults keeps v0.2 count rendering when v0.3 fields are absent', () => {
+  const legacyPayload = {
+    ...payload,
+    schema_version: 'bne-design-screen/v0.2.0',
+    eligible_count: undefined,
+    evaluated_count: undefined,
+    truncated: undefined,
+  };
+  const html = renderDesignScreenResults('node-legacy', legacyPayload, null);
+
+  assert.match(html, /<strong>2<\/strong> screened/);
+  assert.doesNotMatch(html, /evaluated \/ eligible/);
+  assert.doesNotMatch(html, /design-screen-truncation-warning/);
+  assert.doesNotMatch(html, /results are not exhaustive/);
+});
+
+test('renderDesignScreenResults shows v0.3 coverage without warning when evaluation is complete', () => {
+  const completePayload = {
+    ...payload,
+    eligible_count: 12,
+    evaluated_count: 12,
+    truncated: false,
+  };
+  const html = renderDesignScreenResults('node-complete', completePayload, null);
+
+  assert.match(html, /12 \/ 12/);
+  assert.match(html, /evaluated \/ eligible/);
+  assert.doesNotMatch(html, /design-screen-truncation-warning/);
+  assert.doesNotMatch(html, /results are not exhaustive/);
 });
 
 test('renderDesignScreenResults never treats legacy recommended as verified', () => {

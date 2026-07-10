@@ -101,11 +101,15 @@ Keyword `H_mode` controls how binding-regime affine coefficients are stored:
 - `:rational` uses exact rational coefficients for `H` / `C_qK`
 """
 function find_all_regimes!(model::Bnc{T}; H_mode::Symbol=_affine_mode(model)) where T
-
-    
     # Decide what type should we used to store H.
     H_mode = _normalize_affine_mode(H_mode)
-    is_bind_regimes_built(model) && model.affine_coeff_mode == H_mode && return nothing
+    # Regime construction publishes several interdependent mutable caches. A
+    # partial `BindRegimes` value must never become a false fast-path for a
+    # concurrent caller, so the check and the complete build share one lock.
+    lock(model._regimes_affine_lock)
+    try
+        is_bind_regimes_built(model) && model._regimes_build_complete &&
+            model.affine_coeff_mode == H_mode && return nothing
     
     _remove_regime_data!(model)
     model.affine_coeff_mode = H_mode
@@ -144,8 +148,16 @@ function find_all_regimes!(model::Bnc{T}; H_mode::Symbol=_affine_mode(model)) wh
 
     _ensure_full_regimes_graph!(model)
 
+    model._regimes_build_complete = true
     @info "Finished."
-    return nothing
+        return nothing
+    catch
+        # Never leave a partially published graph as a future fast-path.
+        _remove_regime_data!(model)
+        rethrow()
+    finally
+        unlock(model._regimes_affine_lock)
+    end
 end
 
 @inline function _build_bind_regimes(model::Bnc{T}, all_perms, is_asymptotic, nullity) where T

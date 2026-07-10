@@ -264,18 +264,40 @@ function isVerifiedRecommendationCard(card) {
     screenStatuses.has(card.screen_status);
 }
 
+function designEvaluationCoverage(data = {}) {
+  data = data && typeof data === 'object' ? data : {};
+  const eligibleCount = data.eligible_count;
+  const evaluatedCount = data.evaluated_count;
+  const hasV03Counts = Number.isInteger(eligibleCount) && eligibleCount >= 0 &&
+    Number.isInteger(evaluatedCount) && evaluatedCount >= 0 && evaluatedCount <= eligibleCount;
+
+  const chip = hasV03Counts
+    ? `<span class="summary-chip design-evaluation-coverage"><strong>${escapeHtml(evaluatedCount)} / ${escapeHtml(eligibleCount)}</strong> evaluated / eligible</span>`
+    : `<span class="summary-chip"><strong>${escapeHtml(data.screened_count || 0)}</strong> screened</span>`;
+
+  if (data.truncated !== true) return { chip, warning: '' };
+  const warning = hasV03Counts
+    ? `<div class="design-screen-truncation-warning" role="status"><span class="tag tag-atlas-failed">truncated</span> ` +
+      `Only <strong>${escapeHtml(evaluatedCount)} of ${escapeHtml(eligibleCount)}</strong> eligible candidates were evaluated; results are not exhaustive.</div>`
+    : `<div class="design-screen-truncation-warning" role="status"><span class="tag tag-atlas-failed">truncated</span> ` +
+      `Candidate evaluation was truncated; results are not exhaustive.</div>`;
+  return { chip, warning };
+}
+
 export function renderDesignScreenResults(nodeId, data, selection = null) {
   const activeNid = selectedNid(selection);
   const activeKey = selectedCandidateKey(selection);
   const emitChip = activeNid
     ? `emitting <strong>${escapeHtml(shortNid(activeNid))}</strong>`
     : '<span class="text-dim">no network selected</span>';
+  const evaluationCoverage = designEvaluationCoverage(data);
   const summaryPrefix = data?.designable
     ? `<div class="siso-summary-line">` +
       `<span class="summary-chip"><span class="tag tag-atlas-ok">designable</span></span>` +
       `<span class="summary-chip"><strong>${escapeHtml(data.n_matches || 0)}</strong> realizing slices</span>` +
-      `<span class="summary-chip"><strong>${escapeHtml(data.screened_count || 0)}</strong> screened</span>` +
+      evaluationCoverage.chip +
       `<span class="summary-chip" id="${escapeHtml(nodeId)}-emit">${emitChip}</span></div>` +
+      evaluationCoverage.warning +
       `<div class="text-dim">Design Target consumes a DesignabilitySpec, separates verified evidence from exploratory candidates, then emits the selected reaction network downstream. Model Builder and Placer stay as separate nodes.</div>`
     : `<div class="siso-summary-line"><span class="summary-chip"><span class="tag tag-atlas-failed">not designable</span></span></div>` +
       `<div class="text-dim">Within the grammar (d<=4, r<=5, mu<=5). Under dominance-closure this is a parameter-independent impossibility, not merely unobserved.</div>`;

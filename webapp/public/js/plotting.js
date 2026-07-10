@@ -1,5 +1,11 @@
 import { applyPlotLayoutTheme, getPlotTheme, themeAxisTitle, applyPlotAxisTheme, themedColorbar, hexToRgba } from './theme.js';
 import { setupPlotInteractionGuard } from './nodes.js';
+import {
+  formatPartialValidityNotice,
+  maskGridByOutputValidity,
+  prepareAtlasLandscapePlotData,
+  prepareFretHeatmapPlotData,
+} from './plot-validity.js';
 
 export function formatPolyNumber(value) {
   const num = Number(value);
@@ -183,8 +189,13 @@ export function quantileSorted(sorted, q) {
 }
 
 export function plotHeatmap(data, plotId) {
-  const { logq1, logq2, fret, regime, bounds, q_sym } = data;
-  const logFret = fret.map(row => row.map(v => Math.log10(v + 1e-30)));
+  const { logq1, logq2, bounds, q_sym } = data;
+  const prepared = prepareFretHeatmapPlotData(data);
+  const logFret = prepared.outputGrid.map(row => row.map(
+    v => (typeof v === 'number' && v > 0 ? Math.log10(v) : null),
+  ));
+  const maskedBounds = maskGridByOutputValidity(bounds, prepared.outputGrid);
+  const validityNotice = formatPartialValidityNotice(prepared);
   const plotTheme = getPlotTheme();
 
   const traces = [
@@ -193,7 +204,7 @@ export function plotHeatmap(data, plotId) {
       colorbar: themedColorbar('log(FRET)'),
     },
     {
-      z: bounds, x: logq1, y: logq2, type: 'contour',
+      z: maskedBounds, x: logq1, y: logq2, type: 'contour',
       contours: { start: 0.5, end: 0.5, size: 1, coloring: 'none' },
       line: { color: plotTheme.contourLineColor, width: 2 }, showscale: false,
     },
@@ -205,6 +216,12 @@ export function plotHeatmap(data, plotId) {
     title: { text: 'FRET + Regime Boundaries', font: { color: plotTheme.titleColor, size: 11 }, y: 0.98, yanchor: 'top' },
     xaxis: { title: `log(${q_sym[0]})` },
     yaxis: { title: `log(${q_sym[1]})` },
+    annotations: validityNotice ? [{
+      text: validityNotice,
+      xref: 'paper', yref: 'paper', x: 0, y: 1.08,
+      xanchor: 'left', yanchor: 'bottom', showarrow: false,
+      font: { color: plotTheme.fontColor, size: 10 },
+    }] : [],
   };
 
   Plotly.newPlot(plotId, traces, applyPlotLayoutTheme(layout), { responsive: true, displayModeBar: false, scrollZoom: true });
@@ -214,7 +231,6 @@ export function plotAtlasLandscape2D(data, plotId) {
   const {
     param1_values,
     param2_values,
-    output_grid,
     regime_grid,
     bounds,
     param1_symbol,
@@ -222,9 +238,11 @@ export function plotAtlasLandscape2D(data, plotId) {
     output_expr,
   } = data;
   const plotTheme = getPlotTheme();
+  const prepared = prepareAtlasLandscapePlotData(data);
+  const maskedBounds = maskGridByOutputValidity(bounds, prepared.outputGrid);
 
   const topoTrace = {
-    z: output_grid,
+    z: prepared.outputGrid,
     x: param1_values,
     y: param2_values,
     type: 'heatmap',
@@ -232,10 +250,11 @@ export function plotAtlasLandscape2D(data, plotId) {
     colorbar: themedColorbar(`log(${output_expr || 'output'})`),
     hovertemplate: `${param1_symbol}=%{x:.2f}<br>${param2_symbol}=%{y:.2f}<br>${escapeHtmlForHover(output_expr || 'output')}=%{z:.3f}<br>rgm %{customdata}<extra></extra>`,
     customdata: regime_grid,
+    connectgaps: false,
   };
 
   const contourTrace = {
-    z: output_grid,
+    z: prepared.outputGrid,
     x: param1_values,
     y: param2_values,
     type: 'contour',
@@ -249,10 +268,11 @@ export function plotAtlasLandscape2D(data, plotId) {
     },
     hoverinfo: 'skip',
     showscale: false,
+    connectgaps: false,
   };
 
   const regimeBoundaryTrace = {
-    z: bounds,
+    z: maskedBounds,
     x: param1_values,
     y: param2_values,
     type: 'contour',
@@ -260,6 +280,7 @@ export function plotAtlasLandscape2D(data, plotId) {
     line: { color: plotTheme.contourLineColor, width: 2.2 },
     hoverinfo: 'skip',
     showscale: false,
+    connectgaps: false,
   };
 
   const layout = {

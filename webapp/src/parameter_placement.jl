@@ -11,6 +11,59 @@
 # `Polyhedra` via `using Polyhedra`. Pure polytope geometry in the solve;
 # sampling is used only for the forward verification and the dose-response curve.
 
+function _placer_finite_number(raw, name::AbstractString; positive::Bool=false)
+    (raw isa Real && !(raw isa Bool)) ||
+        throw(ArgumentError("$name must be a finite non-boolean number"))
+    value = try
+        Float64(raw)
+    catch
+        throw(ArgumentError("$name must be a finite non-boolean number"))
+    end
+    isfinite(value) || throw(ArgumentError("$name must be finite"))
+    positive && value <= 0 && throw(ArgumentError("$name must be positive"))
+    return value
+end
+
+function _placer_numeric_vector(raw, name::AbstractString;
+                                expected_length::Union{Nothing, Int}=nothing,
+                                positive::Bool=false)
+    raw isa AbstractVector || throw(ArgumentError("$name must be an array"))
+    values = Float64[
+        _placer_finite_number(value, "$name[$idx]"; positive=positive)
+        for (idx, value) in enumerate(raw)
+    ]
+    expected_length === nothing || length(values) == expected_length ||
+        throw(ArgumentError("$name must contain exactly $(expected_length) values"))
+    return values
+end
+
+function _placer_totals_dict(raw)
+    raw === nothing && return Dict{Symbol, Float64}()
+    (raw isa AbstractDict || raw isa JSON3.Object) ||
+        throw(ArgumentError("totals must be an object of positive finite numbers"))
+    totals = Dict{Symbol, Float64}()
+    for (key, value) in pairs(raw)
+        totals[Symbol(key)] = _placer_finite_number(
+            value, "totals.$(String(key))"; positive=true)
+    end
+    return totals
+end
+
+function _placer_required_string(body, key::Symbol)
+    _raw_haskey(body, key) || throw(ArgumentError("`$key` is required"))
+    value = _raw_get(body, key, nothing)
+    (value isa AbstractString && !isempty(strip(value))) ||
+        throw(ArgumentError("`$key` must be a non-empty string"))
+    return String(value)
+end
+
+function _placer_rules(raw)
+    raw isa AbstractVector || throw(ArgumentError("`rules` must be an array of strings"))
+    all(rule -> rule isa AbstractString, raw) ||
+        throw(ArgumentError("`rules` must be an array of strings"))
+    return String.(raw)
+end
+
 # Split an engine log10-(q,K) vector into linear-space kd (Kd1..Kdr) + totals dict.
 function _placer_split_log_qK(model, logqK::AbstractVector{<:Real})
     d = model.d; r = model.r
@@ -29,7 +82,14 @@ function _placer_measure_local_RO(model, logqK, input_idx::Int, output_idx::Int;
     base = collect(Float64.(logqK))
     f(delta) = begin
         p = copy(base); p[input_idx] += delta
-        qK2x(model, p; input_logspace = true, output_logspace = true)[output_idx]
+        status = Ref{Symbol}(:not_run)
+        value = qK2x(
+            model, p;
+            input_logspace=true,
+            output_logspace=true,
+            status=status,
+        )[output_idx]
+        return status[] === :success ? value : NaN
     end
     return (f(+h) - f(-h)) / (2h)
 end
@@ -70,18 +130,25 @@ end
 function placer_place_bounded(rules::Vector{String}, input_sym, output_sym,
                               target_RO::Real; tol::Real = 0.05, verify_h::Real = 0.02,
                               kd_bounds::Tuple{<:Real, <:Real})
-    lo, hi = Float64(kd_bounds[1]), Float64(kd_bounds[2])
-    lo < hi || error("kd_bounds must be (lo_log10, hi_log10) with lo < hi")
+    enforce_sync_rule_budget(rules)
+    lo, hi = sync_finite_range(kd_bounds[1], kd_bounds[2], "kd"; abs_max=20.0)
+    target = sync_finite_float(target_RO, "target_RO"; abs_max=20.0)
+    tolerance = _placer_finite_number(tol, "tol")
+    isfinite(tolerance) && 0 < tolerance <= 1 || error("tol must be finite and in (0, 1]")
+    verification_step = _placer_finite_number(verify_h, "verify_h")
+    isfinite(verification_step) && 1e-4 <= verification_step <= 0.5 ||
+        error("verify_h must be finite and in [1e-4, 0.5]")
     input_sym = Symbol(input_sym); output_sym = Symbol(output_sym)
 
     model, species, _, _ = build_model(rules, fill(1.0, length(rules)))
+    enforce_sync_model_budget(model)
     find_all_vertices!(model)
     input_idx = locate_sym_qK(model, input_sym)
     input_idx === nothing && error("Unknown input parameter: $input_sym")
     output_idx = locate_sym_x(model, output_sym)
     output_idx === nothing && error("Unknown output species: $output_sym")
 
-    siso = SISOPaths(model, input_sym)
+    siso = _bounded_siso_paths(model, input_sym)
     bf = get_behavior_families(siso; observe_x = output_sym, path_scope = :feasible,
         deduplicate = false, keep_singular = true, keep_nonasymptotic = true,
         compute_volume = false)
@@ -94,16 +161,16 @@ function placer_place_bounded(rules::Vector{String}, input_sym, output_sym,
         length(vtxs) == length(ros) || continue
         for (v, ro) in zip(vtxs, ros)
             isfinite(ro) || continue
-            miss = abs(ro - target_RO)
+            miss = abs(ro - target)
             if miss < best_miss; best_miss = miss; best_v = v; best_ro = ro; end
-            if miss <= tol; chosen_v = v; chosen_ro = ro; break; end
+            if miss <= tolerance; chosen_v = v; chosen_ro = ro; break; end
         end
         chosen_v === nothing || break
     end
 
     if chosen_v === nothing
         return (; feasible = false, kd_bounds = (lo, hi),
-            reason = "No regime realizes target_RO=$target_RO (tol=$tol) for output " *
+            reason = "No regime realizes target_RO=$target (tol=$tolerance) for output " *
                      "$output_sym vs input $input_sym. Closest achievable RO is " *
                      "$best_ro at vertex $best_v. This target is infeasible for this topology.",
             closest_RO = best_ro, closest_vertex = best_v,
@@ -133,8 +200,8 @@ function placer_place_bounded(rules::Vector{String}, input_sym, output_sym,
     logqK, cheb_r, mode = _placer_most_interior_point(poly; extend = 3)
     kd, totals = _placer_split_log_qK(model, logqK)
     dominance = string.(show_dominant_condition(model, chosen_v))
-    measured = _placer_measure_local_RO(model, logqK, input_idx, output_idx; h = verify_h)
-    pass = abs(measured - target_RO) <= max(tol, 5 * verify_h)
+    measured = _placer_measure_local_RO(model, logqK, input_idx, output_idx; h = verification_step)
+    pass = abs(measured - target) <= max(tolerance, 5 * verification_step)
 
     return (; feasible = true, kd, totals, vertex_idx = chosen_v, predicted_RO = chosen_ro,
             dominance_ordering = dominance, log_qK = logqK, measured_RO = measured, pass,
@@ -150,7 +217,13 @@ function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
                               totals::Dict{Symbol, Float64}, input_sym::Symbol,
                               output_expr::String; param_min = -6.0, param_max = 6.0,
                               n_points = 200)
+    enforce_sync_rule_budget(rules)
+    length(kd) == length(rules) || error("Length of kd must match reactions")
+    all(x -> isfinite(x) && x > 0, kd) || error("All Kd values must be finite and positive")
+    all(x -> isfinite(x) && x > 0, values(totals)) ||
+        error("All supplied totals must be finite and positive")
     model, _, _, _ = build_model(rules, kd)
+    enforce_sync_model_budget(model)
     input_idx = locate_sym_qK(model, input_sym)
     coeffs = parse_linear_combination(model, output_expr)
     qsyms = Symbol.(string.(q_sym(model)))
@@ -162,17 +235,21 @@ function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
         fixed_qK[model.d + j] = log10(kd[j])
     end
     fixed_params = deleteat!(copy(fixed_qK), input_idx)
-    n_pts = clamp(Int(n_points), 10, 1000)
-    param_range = collect(range(Float64(param_min), Float64(param_max), length = n_pts))
-    param_vals, output_traj, regimes = scan_parameter_1d(
+    n_pts = sync_bounded_int(n_points, "n_points"; min=10, max=1000)
+    lower, upper = sync_finite_range(param_min, param_max, "param"; abs_max=20.0)
+    enforce_sync_cost(n_pts * model.n^3, MAX_SYNC_SCAN_SOLVE_COST, "Placer dose-response")
+    param_range = collect(range(lower, upper, length = n_pts))
+    param_vals, output_traj, regimes, valid = scan_parameter_1d(
         model, input_idx, param_range, [coeffs], fixed_params;
-        input_logspace = true, output_logspace = true)
+        input_logspace=true, output_logspace=true, track_validity=true)
     return Dict(
         "param_symbol" => string(input_sym),
         "param_values" => param_vals,
         "output_exprs" => [output_expr],
         "output_traj"  => mat2vv(output_traj),
         "regimes"      => regimes,
+        "valid"        => valid,
+        "partial"      => !all(valid),
         "x_sym"        => string.(model.x_sym),
     )
 end
@@ -186,33 +263,36 @@ function handle_place_parameters(req)
     # Reactions: explicit `rules` win; otherwise resolve a model bundle and use
     # its rules (session_id / network / network_ir_hash).
     rules = if _raw_haskey(body, :rules)
-        String.(collect(_raw_get(body, :rules, String[])))
+        _placer_rules(_raw_get(body, :rules, nothing))
     else
         bundle, err = _resolve_bundle_or_response(body)
         err === nothing || return err
         String.(collect(bundle["rules"]))
     end
     isempty(rules) && return error_response("No reactions: provide `rules` or a resolvable model"; status = 400)
+    enforce_sync_rule_budget(rules)
 
-    _raw_haskey(body, :input_sym)  || return error_response("`input_sym` is required"; status = 400)
-    _raw_haskey(body, :output_sym) || return error_response("`output_sym` is required"; status = 400)
-    input_sym  = Symbol(_raw_get(body, :input_sym, ""))
-    output_sym = Symbol(_raw_get(body, :output_sym, ""))
-    target_ro  = Float64(_raw_get(body, :target_ro, 1.0))
-    tol        = Float64(_raw_get(body, :tol, 0.05))
+    input_sym  = Symbol(_placer_required_string(body, :input_sym))
+    output_sym = Symbol(_placer_required_string(body, :output_sym))
+    target_ro = sync_finite_float(_raw_get(body, :target_ro, 1.0), "target_ro"; abs_max=20.0)
+    tol = _placer_finite_number(_raw_get(body, :tol, 0.05), "tol")
+    isfinite(tol) && 0 < tol <= 1 || return error_response("tol must be finite and in (0, 1]"; status=400)
 
     kb_raw = _raw_get(body, :kd_bounds, nothing)
     kd_bounds = if kb_raw === nothing
         (-3.0, 3.0)
     else
-        kbv = Float64.(collect(kb_raw))
-        length(kbv) == 2 || return error_response("`kd_bounds` must be [lo_log10, hi_log10]"; status = 400)
-        (kbv[1], kbv[2])
+        (kb_raw isa AbstractVector || kb_raw isa Tuple) ||
+            throw(ArgumentError("`kd_bounds` must be [lo_log10, hi_log10]"))
+        length(kb_raw) == 2 ||
+            throw(ArgumentError("`kd_bounds` must be [lo_log10, hi_log10]"))
+        sync_finite_range(kb_raw[1], kb_raw[2], "kd"; abs_max=20.0)
     end
 
     res = try
         placer_place_bounded(rules, input_sym, output_sym, target_ro; tol = tol, kd_bounds = kd_bounds)
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("ParameterPlacer failed: $(sprint(showerror, e))"; status = 400)
     end
 
@@ -250,10 +330,12 @@ end
 # each with a representative regime + its dominance ordering. Enumerated from the
 # regimes (no sampling) — mirrors placer_place_bounded's path-record loop.
 function placer_menu(rules::Vector{String}, input_sym, output_sym)
+    enforce_sync_rule_budget(rules)
     input_sym = Symbol(input_sym); output_sym = Symbol(output_sym)
     model, _, _, _ = build_model(rules, fill(1.0, length(rules)))
+    enforce_sync_model_budget(model)
     find_all_vertices!(model)
-    siso = SISOPaths(model, input_sym)
+    siso = _bounded_siso_paths(model, input_sym)
     bf = get_behavior_families(siso; observe_x = output_sym, path_scope = :feasible,
         deduplicate = false, keep_singular = true, keep_nonasymptotic = true,
         compute_volume = false)
@@ -291,18 +373,22 @@ end
 function handle_placer_menu(req)
     body = read_json(req)
     rules = if _raw_haskey(body, :rules)
-        String.(collect(_raw_get(body, :rules, String[])))
+        _placer_rules(_raw_get(body, :rules, nothing))
     else
         bundle, err = _resolve_bundle_or_response(body)
         err === nothing || return err
         String.(collect(bundle["rules"]))
     end
     isempty(rules) && return error_response("No reactions: provide `rules` or a resolvable model"; status = 400)
-    _raw_haskey(body, :input_sym)  || return error_response("`input_sym` is required"; status = 400)
-    _raw_haskey(body, :output_sym) || return error_response("`output_sym` is required"; status = 400)
+    enforce_sync_rule_budget(rules)
     res = try
-        placer_menu(rules, Symbol(_raw_get(body, :input_sym, "")), Symbol(_raw_get(body, :output_sym, "")))
+        placer_menu(
+            rules,
+            Symbol(_placer_required_string(body, :input_sym)),
+            Symbol(_placer_required_string(body, :output_sym)),
+        )
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("ParameterPlacer menu failed: $(sprint(showerror, e))"; status = 400)
     end
     return json_response(res)
@@ -313,27 +399,25 @@ end
 function handle_placer_curve(req)
     body = read_json(req)
     rules = if _raw_haskey(body, :rules)
-        String.(collect(_raw_get(body, :rules, String[])))
+        _placer_rules(_raw_get(body, :rules, nothing))
     else
         bundle, err = _resolve_bundle_or_response(body)
         err === nothing || return err
         String.(collect(bundle["rules"]))
     end
     isempty(rules) && return error_response("No reactions: provide `rules` or a resolvable model"; status = 400)
-    _raw_haskey(body, :input_sym)  || return error_response("`input_sym` is required"; status = 400)
-    _raw_haskey(body, :output_sym) || return error_response("`output_sym` is required"; status = 400)
+    enforce_sync_rule_budget(rules)
     _raw_haskey(body, :kd)         || return error_response("`kd` is required"; status = 400)
-    input_sym  = Symbol(_raw_get(body, :input_sym, ""))
-    output_sym = String(_raw_get(body, :output_sym, ""))
-    kd = Float64.(collect(_raw_get(body, :kd, Float64[])))
-    totals = Dict{Symbol, Float64}()
-    tw = _raw_get(body, :totals, nothing)
-    if tw !== nothing
-        for (k, v) in pairs(tw); totals[Symbol(k)] = Float64(v); end
-    end
+    input_sym  = Symbol(_placer_required_string(body, :input_sym))
+    output_sym = _placer_required_string(body, :output_sym)
+    kd = _placer_numeric_vector(
+        _raw_get(body, :kd, nothing), "kd";
+        expected_length=length(rules), positive=true)
+    totals = _placer_totals_dict(_raw_get(body, :totals, nothing))
     curve = try
         placer_dose_response(rules, kd, totals, input_sym, output_sym)
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("Dose-response curve failed: $(sprint(showerror, e))"; status = 400)
     end
     return json_response(curve)
@@ -345,10 +429,16 @@ end
 # place_threshold (uses BindingAndCatalysis.get_interface_qK). Verifies by forward scan.
 function placer_threshold(rules::Vector{String}, input_sym, output_sym,
                           from_idx::Int, to_idx::Int, target_input_value::Real; tol_dec::Real = 0.2)
+    enforce_sync_rule_budget(rules)
+    target_input = _placer_finite_number(
+        target_input_value, "target_input_value"; positive=true)
+    isfinite(target_input) && target_input > 0 || error("target_input_value must be finite and positive")
+    tolerance_decades = _placer_finite_number(tol_dec, "tol_dec"; positive=true)
     input_sym = Symbol(input_sym); output_sym = Symbol(output_sym)
     model, _, _, _ = build_model(rules, fill(1.0, length(rules)))
+    enforce_sync_model_budget(model)
     find_all_vertices!(model)
-    SISOPaths(model, input_sym)   # populate oriented qK interfaces along the input axis
+    _bounded_siso_paths(model, input_sym)   # populate oriented qK interfaces along the input axis
     input_idx  = locate_sym_qK(model, input_sym); input_idx === nothing && error("Unknown input: $input_sym")
     output_idx = locate_sym_x(model, output_sym); output_idx === nothing && error("Unknown output: $output_sym")
     n = model.n
@@ -358,7 +448,7 @@ function placer_threshold(rules::Vector{String}, input_sym, output_sym,
         BindingAndCatalysis.get_interface_direct(model, from_idx, to_idx)
     end
     dirv = collect(Float64.(Vector(dir)))
-    logtgt = log10(Float64(target_input_value))
+    logtgt = log10(target_input)
     e_input = zeros(Float64, n); e_input[input_idx] = 1.0
     # equality rows (get_polyhedron builds hrep(-C,C0); equality a·x==rhs -> row a, C0 -rhs)
     C  = vcat(reshape(e_input, 1, n), reshape(dirv, 1, n))
@@ -381,42 +471,48 @@ function placer_threshold(rules::Vector{String}, input_sym, output_sym,
     fixed = copy(logqK); deleteat!(fixed, input_idx)
     onehot = zeros(Float64, length(x_sym(model))); onehot[output_idx] = 1.0
     rng = collect(range(logtgt - 2.0, logtgt + 2.0; length = 401))
-    _, _, regimes = scan_parameter_1d(model, input_idx, rng, [onehot], fixed;
-        input_logspace = true, output_logspace = true)
+    _, _, regimes, valid = scan_parameter_1d(model, input_idx, rng, [onehot], fixed;
+        input_logspace=true, output_logspace=true, track_validity=true)
     bp_log = NaN
     for i in 2:length(regimes)
-        if regimes[i] == to_idx && regimes[i-1] == from_idx
+        if valid[i] && valid[i-1] && regimes[i] == to_idx && regimes[i-1] == from_idx
             bp_log = (rng[i] + rng[i-1]) / 2; break
         end
     end
-    pass = isfinite(bp_log) && abs(bp_log - logtgt) <= tol_dec
+    pass = isfinite(bp_log) && abs(bp_log - logtgt) <= tolerance_decades
     return (; feasible = true, kd, totals, target_input = Float64(target_input_value),
             measured_breakpoint = isfinite(bp_log) ? 10.0^bp_log : NaN,
-            pass, dominance_ordering = string.(show_dominant_condition(model, to_idx)))
+            pass, verification_validity=valid, verification_partial=!all(valid),
+            dominance_ordering = string.(show_dominant_condition(model, to_idx)))
 end
 
 # POST /api/placer_threshold — { rules|session, input_sym, output_sym, from_idx, to_idx, target_input }
 function handle_placer_threshold(req)
     body = read_json(req)
     rules = if _raw_haskey(body, :rules)
-        String.(collect(_raw_get(body, :rules, String[])))
+        _placer_rules(_raw_get(body, :rules, nothing))
     else
         bundle, err = _resolve_bundle_or_response(body)
         err === nothing || return err
         String.(collect(bundle["rules"]))
     end
     isempty(rules) && return error_response("No reactions"; status = 400)
+    enforce_sync_rule_budget(rules)
     for k in (:input_sym, :output_sym, :from_idx, :to_idx)
         _raw_haskey(body, k) || return error_response("`$k` is required"; status = 400)
     end
-    input_sym  = Symbol(_raw_get(body, :input_sym, ""))
-    output_sym = Symbol(_raw_get(body, :output_sym, ""))
-    from_idx   = Int(_raw_get(body, :from_idx, 0))
-    to_idx     = Int(_raw_get(body, :to_idx, 0))
-    target     = Float64(_raw_get(body, :target_input, 1.0))
+    input_sym  = Symbol(_placer_required_string(body, :input_sym))
+    output_sym = Symbol(_placer_required_string(body, :output_sym))
+    from_idx   = sync_bounded_int(
+        _raw_get(body, :from_idx, 0), "from_idx"; min=1, max=typemax(Int))
+    to_idx     = sync_bounded_int(
+        _raw_get(body, :to_idx, 0), "to_idx"; min=1, max=typemax(Int))
+    target     = _placer_finite_number(
+        _raw_get(body, :target_input, 1.0), "target_input"; positive=true)
     res = try
         placer_threshold(rules, input_sym, output_sym, from_idx, to_idx, target)
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("Threshold placement failed: $(sprint(showerror, e))"; status = 400)
     end
     res.feasible || return json_response(Dict("error" => res.reason))
@@ -424,6 +520,7 @@ function handle_placer_threshold(req)
     curve = try
         placer_dose_response(rules, kd_vec, res.totals, input_sym, String(output_sym))
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("Dose-response curve failed: $(sprint(showerror, e))"; status = 400)
     end
     return json_response(Dict(
@@ -432,6 +529,8 @@ function handle_placer_threshold(req)
         "target_input"        => res.target_input,
         "measured_breakpoint" => json_safe_real(res.measured_breakpoint),
         "pass"                => res.pass,
+        "verification_validity" => res.verification_validity,
+        "verification_partial" => res.verification_partial,
         "dominance_ordering"  => res.dominance_ordering,
         "dose_response_curve" => curve,
     ))
@@ -484,12 +583,16 @@ end
 function placer_realize_program(rules::Vector{String}, input_sym, output_sym;
                                 kd_bounds::Tuple{<:Real, <:Real} = (-3.0, 3.0),
                                 decade_gap::Real = 2.0)
+    enforce_sync_rule_budget(rules)
+    lo, hi = sync_finite_range(kd_bounds[1], kd_bounds[2], "kd"; abs_max=20.0)
+    gap = _placer_finite_number(decade_gap, "decade_gap"; positive=true)
     input_sym = Symbol(input_sym); output_sym = Symbol(output_sym)
     model, _, _, _ = build_model(rules, fill(1.0, length(rules)))
+    enforce_sync_model_budget(model)
     find_all_vertices!(model)
     input_idx  = locate_sym_qK(model, input_sym);  input_idx  === nothing && error("Unknown input $input_sym")
     output_idx = locate_sym_x(model, output_sym);  output_idx === nothing && error("Unknown output $output_sym")
-    siso = SISOPaths(model, input_sym)
+    siso = _bounded_siso_paths(model, input_sym)
     bf = get_behavior_families(siso; observe_x = output_sym, path_scope = :feasible,
         deduplicate = false, keep_singular = true, keep_nonasymptotic = true, compute_volume = false)
     best = nothing; best_n = -1
@@ -508,7 +611,7 @@ function placer_realize_program(rules::Vector{String}, input_sym, output_sym;
     n = model.n
     k = m - 1
     # target breakpoint log10-doses: a monotone ladder centred at 0 (the Kd ordering).
-    τ = [ (i - (k + 1) / 2) * Float64(decade_gap) for i in 1:k ]
+    τ = [ (i - (k + 1) / 2) * gap for i in 1:k ]
     bg_idx = [j for j in 1:n if j != input_idx]
     A = zeros(Float64, k, length(bg_idx)); bvec = zeros(Float64, k); ok = trues(k)
     for i in 1:k
@@ -534,21 +637,22 @@ function placer_realize_program(rules::Vector{String}, input_sym, output_sym;
     logqK = zeros(Float64, n)
     for (col, j) in enumerate(bg_idx); logqK[j] = z[col]; end
     logqK[input_idx] = 0.0
-    lo, hi = Float64(kd_bounds[1]), Float64(kd_bounds[2])
     for j in (model.d + 1):(model.d + model.r); logqK[j] = clamp(logqK[j], lo, hi); end
     kd, totals = _placer_split_log_qK(model, logqK)
 
     # Forward-verify: sweep the input across the full ladder window, read the realized
     # regime sequence + per-segment reaction orders + breakpoint doses.
-    span = max((k + 2) * Float64(decade_gap), 6.0)
+    span = max((k + 2) * gap, 6.0)
     rng = collect(range(-span / 2, span / 2; length = 700))
     fixed = copy(logqK); deleteat!(fixed, input_idx)
     coeffs = parse_linear_combination(model, String(output_sym))
-    pvals, otrajm, regimes = scan_parameter_1d(model, input_idx, rng, [coeffs], fixed;
-        input_logspace = true, output_logspace = true)
+    pvals, otrajm, regimes, valid = scan_parameter_1d(
+        model, input_idx, rng, [coeffs], fixed;
+        input_logspace=true, output_logspace=true, track_validity=true)
     otraj = vec(collect(Float64.(otrajm)))
     regv  = Int.(collect(regimes))
-    segs = _placer_segment_ros(pvals, otraj, regv)
+    verification_complete = all(valid)
+    segs = verification_complete ? _placer_segment_ros(pvals, otraj, regv) : []
     # Keep only segments that occupy a real input interval (≥0.4 decade) — a genuine
     # asymptotic plateau, not a transient sliver between clustered breakpoints.
     WIDTH_MIN = 0.4
@@ -561,11 +665,12 @@ function placer_realize_program(rules::Vector{String}, input_sym, output_sym;
     target_finite = [round(r, digits = 3) for r in ros if isfinite(r)]
     measured_signs = _collapse_signs(measured_ros)
     target_signs   = _collapse_signs(target_finite)
-    pass = measured_signs == target_signs && !isempty(target_signs)
+    pass = verification_complete && measured_signs == target_signs && !isempty(target_signs)
 
     return (; feasible = true, kd, totals, log_qK = logqK,
             target_program = target_finite, measured_program = [round(r, digits = 3) for r in measured_ros if isfinite(r)],
             target_signs, measured_signs, breakpoints, pass,
+            verification_validity=valid, verification_partial=!verification_complete,
             dominance_ordering = string.(show_dominant_condition(model, vtxs[end])),
             n_transitions = k, n_placed = length(rows))
 end
@@ -574,29 +679,40 @@ end
 function handle_placer_realize_program(req)
     body = read_json(req)
     rules = if _raw_haskey(body, :rules)
-        String.(collect(_raw_get(body, :rules, String[])))
+        _placer_rules(_raw_get(body, :rules, nothing))
     else
         bundle, err = _resolve_bundle_or_response(body)
         err === nothing || return err
         String.(collect(bundle["rules"]))
     end
     isempty(rules) && return error_response("No reactions: provide `rules` or a resolvable model"; status = 400)
+    enforce_sync_rule_budget(rules)
     for k in (:input_sym, :output_sym)
         _raw_haskey(body, k) || return error_response("`$k` is required"; status = 400)
     end
-    input_sym  = Symbol(_raw_get(body, :input_sym, ""))
-    output_sym = Symbol(_raw_get(body, :output_sym, ""))
+    input_sym  = Symbol(_placer_required_string(body, :input_sym))
+    output_sym = Symbol(_placer_required_string(body, :output_sym))
     kdb = _raw_get(body, :kd_bounds, nothing)
-    kd_bounds = (kdb === nothing) ? (-3.0, 3.0) : (Float64(kdb[1]), Float64(kdb[2]))
+    kd_bounds = if kdb === nothing
+        (-3.0, 3.0)
+    else
+        (kdb isa AbstractVector || kdb isa Tuple) ||
+            throw(ArgumentError("`kd_bounds` must be [lo_log10, hi_log10]"))
+        length(kdb) == 2 ||
+            throw(ArgumentError("`kd_bounds` must be [lo_log10, hi_log10]"))
+        sync_finite_range(kdb[1], kdb[2], "kd"; abs_max=20.0)
+    end
     res = try
         placer_realize_program(rules, input_sym, output_sym; kd_bounds = kd_bounds)
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("Program realization failed: $(sprint(showerror, e))"; status = 400)
     end
     kd_vec = collect(Float64.(res.kd))
     curve = try
         placer_dose_response(rules, kd_vec, res.totals, input_sym, String(output_sym))
     catch e
+        e isa SyncBudgetExceeded && rethrow()
         return error_response("Dose-response curve failed: $(sprint(showerror, e))"; status = 400)
     end
     return json_response(Dict(
@@ -608,6 +724,8 @@ function handle_placer_realize_program(req)
         "measured_signs"     => res.measured_signs,
         "breakpoints"        => [json_safe_real(x) for x in res.breakpoints],
         "pass"               => res.pass,
+        "verification_validity" => res.verification_validity,
+        "verification_partial" => res.verification_partial,
         "n_transitions"      => res.n_transitions,
         "n_placed"           => res.n_placed,
         "dominance_ordering" => res.dominance_ordering,

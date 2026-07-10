@@ -3,19 +3,23 @@
 function derive_atomic_totals_matrix(N::Matrix{Int}, n_free::Int)
     r, n = size(N)
     d = n_free
-    d > 0 || error("At least one free species is required")
-    n == d + r || error("x-space closed-form requires n = d + r, got n=$n, d=$d, r=$r")
+    d > 0 || throw(ArgumentError("At least one free species is required"))
+    n == d + r || throw(ArgumentError(
+        "x-space closed-form requires n = d + r, got n=$n, d=$d, r=$r"))
 
     N_free = Rational{Int}.(N[:, 1:d])
     N_bound = Rational{Int}.(N[:, d+1:end])
-    size(N_bound, 1) == size(N_bound, 2) || error("Bound block of N must be square for anchored totals")
-    rank(Float64.(N_bound)) == size(N_bound, 1) || error("Bound block of N is singular; cannot derive anchored totals")
+    size(N_bound, 1) == size(N_bound, 2) ||
+        throw(ArgumentError("Bound block of N must be square for anchored totals"))
+    rank(Float64.(N_bound)) == size(N_bound, 1) ||
+        throw(ArgumentError("Bound block of N is singular; cannot derive anchored totals"))
 
     Z = -(N_bound \ N_free) # r × d
     L_rat = hcat(Matrix{Rational{Int}}(I, d, d), transpose(Z))
 
     residual = Rational{Int}.(N) * transpose(L_rat)
-    all(iszero, residual) || error("Failed to derive valid conservation matrix (N * L' != 0)")
+    all(iszero, residual) ||
+        throw(ArgumentError("Failed to derive valid conservation matrix (N * L' != 0)"))
 
     L = Float64.(L_rat)
     L[abs.(L) .< 1e-12] .= 0.0
@@ -24,14 +28,20 @@ end
 
 function compute_rop_cloud_xspace(rules::Vector{String}, n_samples::Int, logx_min::Float64, logx_max::Float64;
     target_species::Union{Nothing,Symbol}=nothing)
-    logx_max > logx_min || error("logx_max must be greater than logx_min")
+    logx_max > logx_min ||
+        throw(ArgumentError("logx_max must be greater than logx_min"))
 
     N, species, free_syms, prod_syms = parse_network_structure(rules)
     L = derive_atomic_totals_matrix(N, length(free_syms))
 
     r, n = size(N)
     d = size(L, 1)
-    n == d + r || error("Internal error: expected n=d+r")
+    n == d + r || throw(ArgumentError("x-space model must satisfy n=d+r"))
+    r <= MAX_SYNC_REACTIONS ||
+        _sync_budget_exceeded("Model reaction count exceeds the synchronous limit of $(MAX_SYNC_REACTIONS).")
+    n <= MAX_SYNC_MODEL_N ||
+        _sync_budget_exceeded("Model dimension exceeds the synchronous limit of $(MAX_SYNC_MODEL_N).")
+    enforce_sync_cost(n_samples * n^3, MAX_SYNC_ROP_CLOUD_COST, "x-space ROP cloud")
 
     target_sym = if isnothing(target_species)
         !isempty(prod_syms) ? prod_syms[1] : species[end]
@@ -39,7 +49,8 @@ function compute_rop_cloud_xspace(rules::Vector{String}, n_samples::Int, logx_mi
         target_species
     end
     target_idx = findfirst(==(target_sym), species)
-    target_idx === nothing && error("target_species '$target_sym' not found in species: $(join(string.(species), ", "))")
+    target_idx === nothing && throw(ArgumentError(
+        "target_species '$target_sym' not found in species: $(join(string.(species), ", "))"))
 
     reaction_orders = Matrix{Float64}(undef, n_samples, d)
     target_values = Vector{Float64}(undef, n_samples)
@@ -84,7 +95,10 @@ function compute_rop_cloud_xspace(rules::Vector{String}, n_samples::Int, logx_mi
         target_values[accepted] = x[target_idx]
     end
 
-    accepted == n_samples || error("Only accepted $accepted / $n_samples samples (attempts=$attempts)")
+    accepted == n_samples || throw(DomainError(
+        accepted,
+        "Only accepted $accepted / $n_samples samples (attempts=$attempts)",
+    ))
 
     q_sym = Symbol.("t" .* String.(free_syms))
     return reaction_orders, target_values, q_sym, d, species[target_idx]
@@ -102,21 +116,57 @@ function compute_rop_cloud(model, kd, prod_syms_sym, n_samples, span)
     # Allocate output
     reaction_orders = Matrix{Float64}(undef, n_samples, d)
     fret_values = Vector{Float64}(undef, n_samples)
+    valid = falses(n_samples)
 
     for k in 1:n_samples
         logq = logq_min .+ (logq_max - logq_min) .* rand(d)
         logqK = vcat(logq, logK)
-        x = qK2x(model, logqK; input_logspace=true, output_logspace=false)
-        J = ∂logx_∂logqK(model; qK=logqK, input_logspace=true)
+        status = Ref{Symbol}(:not_run)
+        x = qK2x(
+            model, logqK;
+            input_logspace=true,
+            output_logspace=false,
+            status=status,
+        )
+        if status[] !== :success || any(!isfinite, x)
+            reaction_orders[k, :] .= NaN
+            fret_values[k] = NaN
+            continue
+        end
+        J = try
+            # Reuse the equilibrium state whose convergence was just checked.
+            # Supplying qK here would run a second, untracked nonlinear solve.
+            ∂logx_∂logqK(model; x=x, input_logspace=false)
+        catch err
+            if err isa SingularException || err isa LinearAlgebra.LAPACKException ||
+               err isa DomainError
+                reaction_orders[k, :] .= NaN
+                fret_values[k] = NaN
+                continue
+            end
+            rethrow()
+        end
 
         # Weighted reaction orders for FRET proxy
-        w = x[prod_idx] ./ sum(x[prod_idx])
+        fret_total = sum(x[prod_idx])
+        if !(isfinite(fret_total) && fret_total > eps(Float64)) || any(!isfinite, J)
+            reaction_orders[k, :] .= NaN
+            fret_values[k] = NaN
+            continue
+        end
+        w = x[prod_idx] ./ fret_total
         ro = vec(w' * J[prod_idx, 1:d])
+        if any(!isfinite, ro)
+            reaction_orders[k, :] .= NaN
+            fret_values[k] = NaN
+            continue
+        end
         reaction_orders[k, :] = ro
-        fret_values[k] = sum(x[prod_idx])
+        fret_values[k] = fret_total
+        valid[k] = true
     end
 
-    return reaction_orders, fret_values
+    return reaction_orders, fret_values, valid
 end
 
 # ─── SISO trajectory computation ───

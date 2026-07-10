@@ -87,15 +87,20 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
         converged = !track_validity || (st[] === :success)
         track_validity && (valid[i] = converged)
 
-        # Extract outputs using linear combinations
-        for j in 1:n_outputs
-            if output_logspace
-                # For log-space output: log10(sum(c_i * 10^x_i))
-                x_linear = exp10.(x)
-                output_val = dot(output_coeffs[j], x_linear)
-                output_traj[i, j] = log10(max(output_val, 1e-100))  # Avoid log(0)
-            else
-                output_traj[i, j] = dot(output_coeffs[j], x)
+        # Invalid solves are explicit when validity tracking is requested; do
+        # not expose their terminal ODE state as a trustworthy sample. Compute
+        # exp10(x) once per point rather than once per output expression.
+        if track_validity && !converged
+            output_traj[i, :] .= NaN
+        else
+            x_linear = output_logspace ? exp10.(x) : x
+            for j in 1:n_outputs
+                if output_logspace
+                    output_val = dot(output_coeffs[j], x_linear)
+                    output_traj[i, j] = log10(max(output_val, 1e-100))  # Avoid log(0)
+                else
+                    output_traj[i, j] = dot(output_coeffs[j], x_linear)
+                end
             end
         end
 
@@ -135,11 +140,16 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
                            param_range1::Vector{Float64}, param_range2::Vector{Float64},
                            output_coeffs::Vector{Float64}, fixed_params::Vector{Float64};
                            input_logspace::Bool=true, output_logspace::Bool=true,
-                           warm_start::Bool=true)
+                           warm_start::Bool=true, track_validity::Bool=false)
     n1, n2 = length(param_range1), length(param_range2)
 
     output_grid = Matrix{Float64}(undef, n1, n2)
     regime_grid = Matrix{Int}(undef, n1, n2)
+    valid = track_validity ? Matrix{Bool}(undef, n1, n2) : falses(0, 0)
+
+    # Do the one-time mutable regime/affine initialization before row workers
+    # start reading the model concurrently.
+    find_all_regimes!(model)
 
     # Warm-start continuation ALONG EACH ROW (fixed param1, sweeping param2): the inner-j
     # neighbour is a near-perfect homotopy start, exactly as in scan_parameter_1d, and the
@@ -181,8 +191,13 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
                 qK2x(model, qK; input_logspace=input_logspace, output_logspace=output_logspace, status=st)
             end
 
+            converged = st[] === :success
+            track_validity && (valid[i, j] = converged)
+
             # Extract output using linear combination
-            if output_logspace
+            if track_validity && !converged
+                output_grid[i, j] = NaN
+            elseif output_logspace
                 x_linear = exp10.(x)
                 output_grid[i, j] = log10(max(dot(output_coeffs, x_linear), 1e-100))
             else
@@ -190,7 +205,7 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
             end
 
             # Cache as the next-in-row warm-start seed (log space) only if it converged.
-            if st[] === :success
+            if converged
                 prev_logx = output_logspace ? x : log10.(max.(x, 1e-100))
                 prev_logqK = input_logspace ? qK : log10.(qK)
                 prev_regime = regime_ij
@@ -201,13 +216,17 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
         end
     end
 
-    return param_range1, param_range2, output_grid, regime_grid
+    return track_validity ?
+        (param_range1, param_range2, output_grid, regime_grid, valid) :
+        (param_range1, param_range2, output_grid, regime_grid)
 end
 
 
 #------------------------------------------------------------
 # Expression parser for linear combinations
 #------------------------------------------------------------
+
+const MAX_LINEAR_COMBINATION_ABS_COEFFICIENT = sqrt(floatmax(Float64))
 
 """
     parse_linear_combination(model::Bnc, expr::String) -> Vector{Float64}
@@ -251,6 +270,8 @@ function parse_linear_combination(model::Bnc, expr::String)::Vector{Float64}
 
         # Add to coefficient vector
         coeffs[idx] += sign * coeff
+        isfinite(coeffs[idx]) || error(
+            "Linear combination coefficient is non-finite after accumulation for $species")
     end
 
     return coeffs
@@ -307,6 +328,9 @@ function parse_term(term::String)::Tuple{Float64, Float64, String}
         length(parts) == 2 || error("Invalid term: $term (multiple * operators)")
         try
             coeff = parse(Float64, parts[1])
+            isfinite(coeff) || error("Coefficient must be finite")
+            abs(coeff) <= MAX_LINEAR_COMBINATION_ABS_COEFFICIENT ||
+                error("Coefficient magnitude is too large")
             species = parts[2]
             isempty(species) && error("Invalid term: $term (no species after *)")
             return sign, coeff, species

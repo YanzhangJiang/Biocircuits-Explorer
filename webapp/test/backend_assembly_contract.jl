@@ -8,6 +8,8 @@ using Test
     ordered_components = [
         "runtime_lifecycle.jl",
         "request_support.jl",
+        "sync_work_budget.jl",
+        "path_work_budget.jl",
         "analysis_serializers.jl",
         "analysis_computation.jl",
         "cancellation.jl",
@@ -15,6 +17,9 @@ using Test
         "behavior_program_codec.jl",
         "atlas_sqlite.jl",
         "inverse_design.jl",
+        "atlas_build_budget.jl",
+        "atlas_corpus_budget.jl",
+        "atlas_query_budget.jl",
         "ir.jl",
         "sbml.jl",
         "version.jl",

@@ -27,7 +27,7 @@ export const ROP_CLOUD_TYPES = {
         </div>
         <div class="param-row">
           <label>Samples:</label>
-          <input type="number" id="${nodeId}-samples" value="10000" min="100" max="100000" step="1000" class="auto-update">
+          <input type="number" id="${nodeId}-samples" value="10000" min="100" max="20000" step="1000" class="auto-update">
         </div>
         <div id="${nodeId}-xspace-params">
           <div class="param-row">
@@ -106,7 +106,7 @@ export const ROP_CLOUD_TYPES = {
         </div>
         <div class="param-row">
           <label>Samples:</label>
-          <input type="number" id="${nodeId}-samples" value="10000" min="100" max="100000" step="1000">
+          <input type="number" id="${nodeId}-samples" value="10000" min="100" max="20000" step="1000">
         </div>
         <div id="${nodeId}-xspace-params">
           <div class="param-row">

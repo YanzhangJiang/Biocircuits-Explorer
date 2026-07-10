@@ -17,7 +17,7 @@ const _CORS_HEADERS = [
     # http://127.0.0.1:18088) cannot reach the EC2 broker
     # (origin https://…) for /api/jobs/* and /api/auth/config.
     "Access-Control-Allow-Headers" => "Content-Type, Authorization, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
-    "Access-Control-Expose-Headers" => "X-API-Deprecation",
+    "Access-Control-Expose-Headers" => "X-API-Deprecation, Retry-After",
     "Access-Control-Max-Age"       => "600",
 ]
 
@@ -166,12 +166,34 @@ function _api_response_with_error_mapping(handler, path::AbstractString)
     try
         return handler()
     catch e
-        @error "API error" path exception=(e, catch_backtrace())
         if e isa QuotaExceeded
             return error_response(sprint(showerror, e); status=429)
+        elseif e isa RequestBodyTooLarge
+            return json_response(Dict(
+                "error" => sprint(showerror, e),
+                "code" => "request_body_too_large",
+                "limit_bytes" => e.limit,
+                "retryable" => false,
+            ); status=413)
+        elseif e isa SyncCapacityExceeded
+            response = json_response(Dict(
+                "error" => sprint(showerror, e),
+                "code" => "sync_capacity_exhausted",
+                "retry_after_seconds" => 1,
+                "retryable" => true,
+            ); status=429)
+            push!(response.headers, "Retry-After" => "1")
+            return response
+        elseif e isa SyncBudgetExceeded
+            return json_response(Dict(
+                "error" => sprint(showerror, e),
+                "code" => "sync_budget_exceeded",
+                "retryable" => false,
+            ); status=422)
         elseif is_request_error(e)
             return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
         else
+            @error "API error" path exception=(e, catch_backtrace())
             return error_response("Internal server error"; status=500)
         end
     end
@@ -221,8 +243,16 @@ function _dispatch_api(req, path::AbstractString)::Union{HTTP.Response, Nothing}
 
     if route !== nothing && haskey(API_ROUTES, route.internal_path)
         client_id = debug_client_id_from_request(req)
+        handler = API_ROUTES[route.internal_path]
         return with_debug_client_scope(client_id) do
-            _api_response_with_error_mapping(() -> API_ROUTES[route.internal_path](req), path)
+            _api_response_with_error_mapping(
+                () -> with_sync_work_gate(route.handler) do
+                    with_request_model_bundle_lock(route.handler, req) do
+                        handler(req)
+                    end
+                end,
+                path,
+            )
         end
     end
 

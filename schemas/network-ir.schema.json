@@ -108,6 +108,7 @@
           "type": "string"
         },
         "kd": {
+          "exclusiveMinimum": 0,
           "type": "number"
         },
         "kd_distribution": {

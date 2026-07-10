@@ -1,27 +1,32 @@
 # ─── API Route Handlers ───
 
 function handle_build_atlas(req)
-    body = read_json(req)
+    body = _normalize_http_atlas_paths(read_json(req))
+    enforce_sync_atlas_request_budget(body, :handle_build_atlas)
     return json_response(build_behavior_atlas_from_spec(body))
 end
 
 function handle_query_atlas(req)
-    body = read_json(req)
+    body = _normalize_http_atlas_paths(read_json(req))
+    enforce_sync_atlas_request_budget(body, :handle_query_atlas)
     return json_response(query_behavior_atlas_from_spec(body))
 end
 
 function handle_build_atlas_library(req)
-    body = read_json(req)
+    body = _normalize_http_atlas_paths(read_json(req))
+    enforce_sync_atlas_request_budget(body, :handle_build_atlas_library)
     return json_response(build_atlas_library_from_spec(body))
 end
 
 function handle_merge_atlas_library(req)
-    body = read_json(req)
+    body = _normalize_http_atlas_paths(read_json(req))
+    enforce_sync_atlas_request_budget(body, :handle_merge_atlas_library)
     return json_response(merge_atlas_library_from_spec(body))
 end
 
 function handle_run_inverse_design(req)
-    body = read_json(req)
+    body = _normalize_http_atlas_paths(read_json(req))
+    enforce_sync_atlas_request_budget(body, :handle_run_inverse_design)
     return json_response(run_inverse_design_from_spec(body))
 end
 

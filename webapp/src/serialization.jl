@@ -3,6 +3,41 @@ module Serialization
 using HTTP
 using JSON3
 
+struct RequestBodyTooLarge <: Exception
+    size::Int
+    limit::Int
+end
+Base.showerror(io::IO, err::RequestBodyTooLarge) =
+    print(io, "JSON request body is $(err.size) bytes; limit is $(err.limit) bytes")
+
+# Keep the application boundary aligned with deploy/nginx.conf.
+const MAX_JSON_REQUEST_BYTES = 1024 * 1024
+const MAX_JSON_NESTING_DEPTH = 64
+const MAX_JSON_VALUE_NODES = 100_000
+
+function _validate_json_shape(root)
+    stack = Tuple{Any, Int}[(root, 0)]
+    nodes = 0
+    while !isempty(stack)
+        value, depth = pop!(stack)
+        nodes += 1
+        nodes <= MAX_JSON_VALUE_NODES ||
+            throw(ArgumentError("JSON request has too many values"))
+        depth <= MAX_JSON_NESTING_DEPTH ||
+            throw(ArgumentError("JSON request nesting exceeds $(MAX_JSON_NESTING_DEPTH) levels"))
+        if value isa AbstractDict || value isa JSON3.Object
+            for (_, child) in pairs(value)
+                push!(stack, (child, depth + 1))
+            end
+        elseif value isa AbstractVector || value isa Tuple
+            for child in value
+                push!(stack, (child, depth + 1))
+            end
+        end
+    end
+    return root
+end
+
 mat2vv(M::AbstractMatrix) = [collect(M[i,:]) for i in 1:size(M,1)]
 
 json_safe_real(x::Real) = if isnan(x)
@@ -46,8 +81,11 @@ error_response(msg; status::Integer = 400) =
     json_response(Dict("error" => msg); status = status)
 
 function read_json(req)
+    body_size = length(req.body)
+    body_size <= MAX_JSON_REQUEST_BYTES ||
+        throw(RequestBodyTooLarge(body_size, MAX_JSON_REQUEST_BYTES))
     try
-        return JSON3.read(String(req.body))
+        return _validate_json_shape(JSON3.read(String(req.body)))
     catch e
         throw(ArgumentError("Invalid JSON: $(sprint(showerror, e))"))
     end

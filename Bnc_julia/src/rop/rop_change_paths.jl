@@ -424,6 +424,8 @@ function ChangePaths(
     label=nothing,
     rgm_paths=nothing,
     kind::Symbol=:orthant,
+    max_paths::Union{Nothing,Integer}=nothing,
+    max_total_nodes::Union{Nothing,Integer}=nothing,
 ) where {T}
     change_qK_indices = T[]
     for sym in change_qK_syms
@@ -448,7 +450,13 @@ function ChangePaths(
     if rgm_paths === nothing
         qK_grh = get_change_graph(model, change_qK_indices, sign_vals)
         sources, sinks = get_sources_sinks(model, qK_grh)
-        rgm_paths = _enumerate_paths(qK_grh; sources, sinks)
+        rgm_paths = _enumerate_paths(
+            qK_grh;
+            sources,
+            sinks,
+            max_paths,
+            max_total_nodes,
+        )
     else
         qK_grh = graph_from_paths(rgm_paths, n_regimes(model))
         sources, sinks = get_sources_sinks(qK_grh)

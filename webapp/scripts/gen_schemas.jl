@@ -45,24 +45,24 @@ const NESTED = Set([:SpeciesDecl, :ReactionDecl, :ObservableDecl, :ParameterDist
 # Map a Julia field type to a JSON Schema fragment.
 function schema_for(T, sname::Symbol, field::Symbol)
     haskey(ENUMS, (sname, field)) &&
-        return Dict("type" => "string", "enum" => sort(String.(collect(ENUMS[(sname, field)]))))
-    T === String                          && return Dict("type" => "string")
-    T === Float64                         && return Dict("type" => "number")
-    T === Bool                            && return Dict("type" => "boolean")
-    T === Symbol                          && return Dict("type" => "string")
-    T === Dict{String, Any}               && return Dict("type" => "object")
-    T === Union{Nothing, Float64}         && return Dict("type" => ["number", "null"])
-    T === Union{Nothing, String}          && return Dict("type" => ["string", "null"])
-    T === Union{Nothing, Dict{String, Any}} && return Dict("type" => ["object", "null"])
+        return Dict{String, Any}("type" => "string", "enum" => sort(String.(collect(ENUMS[(sname, field)]))))
+    T === String                          && return Dict{String, Any}("type" => "string")
+    T === Float64                         && return Dict{String, Any}("type" => "number")
+    T === Bool                            && return Dict{String, Any}("type" => "boolean")
+    T === Symbol                          && return Dict{String, Any}("type" => "string")
+    T === Dict{String, Any}               && return Dict{String, Any}("type" => "object")
+    T === Union{Nothing, Float64}         && return Dict{String, Any}("type" => ["number", "null"])
+    T === Union{Nothing, String}          && return Dict{String, Any}("type" => ["string", "null"])
+    T === Union{Nothing, Dict{String, Any}} && return Dict{String, Any}("type" => ["object", "null"])
     if T <: AbstractVector
         el = eltype(T)
         elname = nameof(el)
-        elname in NESTED && return Dict("type" => "array", "items" => Dict("\$ref" => "#/\$defs/$(elname)"))
-        el === Dict{String, Any} && return Dict("type" => "array", "items" => Dict("type" => "object"))
-        return Dict("type" => "array")
+        elname in NESTED && return Dict{String, Any}("type" => "array", "items" => Dict("\$ref" => "#/\$defs/$(elname)"))
+        el === Dict{String, Any} && return Dict{String, Any}("type" => "array", "items" => Dict("type" => "object"))
+        return Dict{String, Any}("type" => "array")
     end
     nameof(T) === :Provenance && return Dict("\$ref" => "#/\$defs/Provenance")
-    return Dict()  # permissive fallback for anything unmodeled
+    return Dict{String, Any}()  # permissive fallback for anything unmodeled
 end
 
 function object_schema(S)
@@ -83,6 +83,10 @@ function network_ir_schema()
     for S in (BNE.SpeciesDecl, BNE.ReactionDecl, BNE.ObservableDecl, BNE.ParameterDistribution, BNE.Provenance)
         defs[String(nameof(S))] = object_schema(S)
     end
+    # Runtime semantic validation requires every dissociation constant to be
+    # finite and strictly positive. JSON numbers are finite by construction;
+    # keep the generated schema aligned on the positive bound.
+    defs["ReactionDecl"]["properties"]["kd"]["exclusiveMinimum"] = 0
     base = object_schema(BNE.NetworkIR)
     base["properties"]["ir_schema_version"] = Dict("const" => BNE.NETWORK_IR_SCHEMA_VERSION)
     base["properties"]["species"]["items"] = Dict("\$ref" => "#/\$defs/SpeciesDecl")
