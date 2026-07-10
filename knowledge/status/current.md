@@ -211,9 +211,9 @@ python3 tests/test_deployment_contract.py -q
 python3 scripts/verify_repository.py --check
 ```
 
-The broader release, Python, Reader, HPC, and macOS commands remain in
-[the agent verification matrix](../../AGENTS.md#verification-matrix). A
-successful narrow command does not prove an unrelated phase complete.
+Broader release, Python, Reader, HPC, and macOS checks remain separate from
+this command list. A successful narrow command does not prove an unrelated
+phase complete.
 
 The standard CI owner is
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). The

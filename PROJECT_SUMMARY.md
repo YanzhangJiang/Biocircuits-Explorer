@@ -92,5 +92,5 @@ paths, but they do not upgrade an external result from unknown to verified.
 For local work: inspect `git status`, read
 [the current status](knowledge/status/current.md), choose the relevant module
 in [the module catalog](knowledge/catalogs/modules.yaml), and verify its cited
-source and tests before changing it. Exact commands and handoff rules are in
-[AGENTS.md](AGENTS.md).
+source and tests before changing it. CI workflows and executable tests define
+the supported verification commands.

@@ -163,6 +163,15 @@ known_hosts
 **/.cline/
 **/.aider*
 
+# Private instructions for AI coding assistants and internal QC notes do not
+# belong in the public repository.
+**/AGENTS.md
+**/CLAUDE.md
+**/CODEX.md
+**/COPILOT.md
+**/GEMINI.md
+/DESIGNABILITY_SPEC_QC.md
+
 # AI-provider and automation credential exports. Real values are supplied only
 # through the environment or the deployment secret store.
 *api-key*.json

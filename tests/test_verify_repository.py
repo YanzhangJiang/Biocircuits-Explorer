@@ -85,7 +85,7 @@ class PathAndMarkdownTests(unittest.TestCase):
             parent = Path(temporary)
             root = parent / "repo"
             (root / "knowledge" / "catalogs").mkdir(parents=True)
-            for name in ("README.md", "PROJECT_SUMMARY.md", "AGENTS.md", "CLAUDE.md"):
+            for name in ("README.md", "PROJECT_SUMMARY.md"):
                 (root / name).write_text("maintained\n", encoding="utf-8")
             outside = parent / "outside.md"
             outside.write_text("outside\n", encoding="utf-8")
@@ -165,7 +165,7 @@ class PathAndMarkdownTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "knowledge" / "catalogs").mkdir(parents=True)
-            for name in ("README.md", "PROJECT_SUMMARY.md", "AGENTS.md", "CLAUDE.md"):
+            for name in ("README.md", "PROJECT_SUMMARY.md"):
                 (root / name).write_text("maintained\n", encoding="utf-8")
             (root / "knowledge" / "same.md").write_text("# Same\n", encoding="utf-8")
             for name in ("modules.yaml", "contracts.yaml", "artifacts.yaml"):

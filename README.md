@@ -140,8 +140,7 @@ python3 webapp/scripts/reader/test_reader_nofabrication.py
 ```
 
 The HPC environment check must be run once with Julia 1.10 and once with Julia
-1.12. The macOS unit-test commands and the exact CI-aligned HPC command are in
-[AGENTS.md](AGENTS.md#verification-matrix). The single-image runtime smoke is
+1.12. The single-image runtime smoke is
 defined in [.github/workflows/docker.yml](.github/workflows/docker.yml); passing
 it does not verify the full deployment stack.
 
@@ -168,7 +167,7 @@ knowledge/                 maintained, evidence-linked developer knowledge
 For a short architectural orientation, read
 [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md). The maintained developer knowledge
 base begins at [knowledge/README.md](knowledge/README.md), and coding agents
-must follow [AGENTS.md](AGENTS.md). Module ownership and gaps are indexed in
+must follow the module contracts and executable tests. Module ownership and gaps are indexed in
 [knowledge/catalogs/modules.yaml](knowledge/catalogs/modules.yaml).
 
 The browser-facing guides are

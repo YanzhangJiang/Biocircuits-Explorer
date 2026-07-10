@@ -533,7 +533,7 @@ def validate_knowledge(
             f"{name} does not declare the unified current-tree gate",
         )
 
-    maintained: list[Path] = [Path("README.md"), Path("PROJECT_SUMMARY.md"), Path("AGENTS.md"), Path("CLAUDE.md")]
+    maintained: list[Path] = [Path("README.md"), Path("PROJECT_SUMMARY.md")]
     for relative in maintained:
         require_local_path(root, relative.as_posix(), "maintained entrypoint", audit)
         audit.require((root / relative).is_file(), f"maintained entrypoint is not a file: {relative}")
