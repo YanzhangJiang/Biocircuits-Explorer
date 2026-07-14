@@ -98,6 +98,23 @@ function _metric_path_label(raw_path::AbstractString)
     return "static"
 end
 
+# Return the bounded canonical route label only when the caller actually used
+# a declared bare-/api compatibility alias. Canonical v1 traffic, unknown
+# paths, and v1-only routes deliberately do not enter the sunset counter.
+function _legacy_metric_path_label(raw_path::AbstractString)
+    canonical, is_legacy = _canonicalize_api_path(raw_path)
+    is_legacy || return nothing
+    route = _match_api_route(canonical)
+    if route !== nothing
+        route.legacy_alias === nothing && return nothing
+        return _metric_path_label(raw_path)
+    end
+    # Malformed paths under the historical jobs namespace retain the API JSON
+    # 404/deprecation behavior and collapse to one bounded label.
+    (canonical == "/api/jobs" || startswith(canonical, "/api/jobs/")) || return nothing
+    return "/api/jobs/:id"
+end
+
 function _client_ip(req)
     fwd = HTTP.header(req, "X-Forwarded-For", "")
     if !isempty(fwd)
@@ -139,6 +156,11 @@ function router(req)
     path_label = _metric_path_label(raw_path)
     counter_inc!("bcx_http_requests_total",
         (req.method, path_label, string(response.status)))
+    legacy_path_label = _legacy_metric_path_label(raw_path)
+    if legacy_path_label !== nothing
+        counter_inc!("bcx_http_legacy_requests_total",
+            (req.method, legacy_path_label, string(response.status)))
+    end
     hist_observe!("bcx_http_request_duration_seconds",
         (req.method, path_label), elapsed_s)
 

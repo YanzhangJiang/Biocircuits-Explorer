@@ -96,7 +96,7 @@ export async function fetchAuthConfig() {
   if (cachedConfig) return cachedConfig;
   if (configPromise) return configPromise;
   configPromise = (async () => {
-    const resp = await fetch(`${CLOUD_API}/api/auth/config`);
+    const resp = await fetch(`${CLOUD_API}/api/v1/auth/config`);
     if (!resp.ok) throw new Error(`Auth config fetch failed: ${resp.status}`);
     cachedConfig = await resp.json();
     return cachedConfig;

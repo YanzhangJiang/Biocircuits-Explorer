@@ -1503,6 +1503,7 @@ end
 
     # Required series are present with their TYPE annotations.
     @test occursin("# TYPE bcx_http_requests_total counter", body)
+    @test occursin("# TYPE bcx_http_legacy_requests_total counter", body)
     @test occursin("# TYPE bcx_http_request_duration_seconds histogram", body)
     @test occursin("# TYPE bcx_uptime_seconds gauge", body)
     @test occursin("# TYPE bcx_sessions_active gauge", body)
@@ -1518,6 +1519,15 @@ end
     # The 400 build_model attempt shows up as its own series.
     @test occursin(
         r"bcx_http_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
+        body)
+
+    # Canonical and legacy calls intentionally share the ordinary request
+    # series, but the sunset counter records only compatibility-surface use.
+    @test occursin(
+        r"bcx_http_legacy_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
+        body)
+    @test !occursin(
+        r"bcx_http_legacy_requests_total\{method=\"GET\",path=\"/api/version\"",
         body)
 
     # Histogram has both cumulative buckets and _sum/_count.
@@ -1724,6 +1734,14 @@ end
           ("/api/v1", false)
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/static/foo.css") ==
           ("/static/foo.css", false)
+
+    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/version") ==
+          "/api/version"
+    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/jobs/not/a/declared/route") ==
+          "/api/jobs/:id"
+    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/v1/version") === nothing
+    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/rop_shape_optimize") === nothing
+    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/not-a-route") === nothing
 end
 
 @testset "SBML Export/Import Round-Trip" begin
