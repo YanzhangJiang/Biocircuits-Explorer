@@ -63,7 +63,7 @@ export function renderDebugEntry(entry) {
   if (header) lines.push(header);
   if (entry.message) lines.push(String(entry.message));
   if (entry.details) lines.push(String(entry.details));
-  return `<pre class="debug-terminal-line level-${level.toLowerCase()}" data-seq="${entry.seq}">${escapeHtml(lines.join('\n'))}</pre>`;
+  return `<pre class="debug-terminal-line level-${escapeHtml(level.toLowerCase())}" data-seq="${escapeHtml(entry.seq)}">${escapeHtml(lines.join('\n'))}</pre>`;
 }
 
 export function updateDebugConsoleIndicator() {

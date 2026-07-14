@@ -12,11 +12,37 @@ struct SyncCapacityExceeded <: Exception
 end
 Base.showerror(io::IO, err::SyncCapacityExceeded) = print(io, err.msg)
 
+struct ModelCandidateBoundExceeded <: Exception
+    label::String
+    maximum::Int
+    observed_lower_bound::Int
+end
+
+Base.showerror(io::IO, err::ModelCandidateBoundExceeded) = print(
+    io,
+    "$(err.label) regime-enumeration candidate product exceeds the hard " *
+    "preflight limit $(err.maximum) (observed at least " *
+    "$(err.observed_lower_bound)); enumeration was not started. This " *
+    "resource-bound rejection does not establish scientific infeasibility.",
+)
+
+struct JobWorkBoundExceeded <: Exception
+    msg::String
+end
+Base.showerror(io::IO, err::JobWorkBoundExceeded) = print(io, err.msg)
+
 const MAX_SYNC_MODEL_N = 24
 const MAX_SYNC_REACTIONS = 5
 const MAX_SYNC_REGIME_CANDIDATES = 20_000
+# Local ROP jobs are allowed to exceed the interactive model/reaction limits,
+# but exact regime construction must still have a finite pre-materialization
+# boundary. This is deliberately independent of the user's post-materialization
+# max_paths/max_cells coverage budget.
+const MAX_JOB_REGIME_CANDIDATES = 100_000
+const MAX_JOB_REPLAY_SOLVE_COST = 250_000_000
 const MAX_SYNC_DESIGN_CARDS = 64
 const MAX_SYNC_EXACT_PLACEMENTS = 8
+const MAX_SYNC_DESIGNABILITY_FEASIBLE_CELLS = 256
 const MAX_SYNC_SCAN_OUTPUTS = 16
 const MAX_SYNC_EXPRESSION_BYTES = 1024
 const MAX_SYNC_ROP_SAMPLES = 20_000
@@ -79,13 +105,43 @@ function enforce_sync_model_budget(model)
 end
 
 function sync_model_candidate_bound(model)
+    try
+        return model_candidate_bound(
+            model;
+            maximum=MAX_SYNC_REGIME_CANDIDATES,
+            label="Synchronous request",
+        )
+    catch err
+        err isa ModelCandidateBoundExceeded || rethrow()
+        _sync_budget_exceeded(
+            "The regime-enumeration candidate bound exceeds " *
+            "$(MAX_SYNC_REGIME_CANDIDATES).",
+        )
+    end
+end
+
+"""
+    model_candidate_bound(model; maximum, label) -> Int
+
+Compute the Cartesian-product upper bound for the model's regime candidates
+without overflowing `Int`. If the product crosses `maximum`, stop immediately
+with a resource-bound error before exact regime enumeration starts.
+"""
+function model_candidate_bound(model; maximum::Integer, label::AbstractString)
+    limit = try
+        Int(maximum)
+    catch
+        throw(ArgumentError("maximum must fit in Int"))
+    end
+    limit >= 1 || throw(ArgumentError("maximum must be positive"))
     candidate_bound = 1
     for choices in model._L_helper.J
         count = length(choices)
         count == 0 && return 0
-        candidate_bound > MAX_SYNC_REGIME_CANDIDATES ÷ count &&
-            _sync_budget_exceeded(
-                "The regime-enumeration candidate bound exceeds $(MAX_SYNC_REGIME_CANDIDATES).")
+        if candidate_bound > limit ÷ count
+            observed = limit == typemax(Int) ? typemax(Int) : limit + 1
+            throw(ModelCandidateBoundExceeded(String(label), limit, observed))
+        end
         candidate_bound *= count
     end
     return candidate_bound
@@ -130,6 +186,7 @@ const SYNC_HEAVY_HANDLER_NAMES = Set{Symbol}((
     :handle_placer_level,
     :handle_design_search,
     :handle_design_screen,
+    :handle_rop_shape_optimize,
 ))
 
 const _SYNC_HEAVY_GATE_LOCK = ReentrantLock()

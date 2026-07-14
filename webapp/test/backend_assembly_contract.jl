@@ -31,12 +31,15 @@ using Test
         "model_runtime.jl",
         "model_handlers.jl",
         "parameter_placement.jl",
+        "rop_shape_replay.jl",
+        "rop_shape_optimization.jl",
         "design_search.jl",
         "parameter_level.jl",
         "parameter_scan_handlers.jl",
         "rop_geometry_handlers.jl",
         "designability_feasible_regions.jl",
         "designability.jl",
+        "rop_shape_api.jl",
         "routing.jl",
     ]
 

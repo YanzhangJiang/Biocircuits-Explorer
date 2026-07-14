@@ -6,15 +6,18 @@
 // proper settings surface later. Supports BOTH an OpenAI-compatible endpoint (base URL +
 // Bearer key — e.g. a local reverse proxy) and Anthropic (x-api-key).
 //
-// Storage: localStorage 'bcx-llm-cfg' = {provider, apiKey, baseUrl, model}. getLLMConfig()
-// returns it; agent-view.js sends it in each /design-chat request. The key never leaves the
-// browser except on that request, which the backend forwards to the configured LLM.
+// Storage: localStorage 'bcx-llm-cfg' contains only non-secret preferences
+// ({provider, baseUrl, model, effort}). The API key is held in this module's memory and
+// disappears on navigation/reload. A one-time migration removes keys written by older builds.
+// getLLMConfig() returns the merged runtime config for agent-view.js to send in a turn.
 //
 // The key is OPTIONAL: without it the backend's rule-based (keyword) compiler handles
 // requests; a key upgrades the NL→spec step to free-form phrasing via llm_compile.py.
 
 const KEY = 'bcx-llm-cfg';
 const DEFAULTS = { provider: 'openai', apiKey: '', baseUrl: '', model: '', effort: '' };
+const PROVIDERS = new Set(['openai', 'anthropic']);
+let memoryApiKey = '';
 const PLACEHOLDER = {
   openai:    { base: 'http://localhost:8317/v1  (or https://api.openai.com/v1)', model: 'gpt-5.4-mini' },
   anthropic: { base: 'https://api.anthropic.com (optional)',                     model: 'claude-sonnet-4-6' },
@@ -31,11 +34,81 @@ const EFFORT_NOTE = {
   anthropic: 'Anthropic: extended-thinking budget (low…max).',
 };
 
-export function getLLMConfig() {
-  try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; }
-  catch { return { ...DEFAULTS }; }
+function preferenceStorage() {
+  try { return globalThis.localStorage || null; }
+  catch { return null; }
 }
-function save(cfg) { localStorage.setItem(KEY, JSON.stringify(cfg)); }
+
+function normalizedPreferences(value = {}) {
+  const provider = PROVIDERS.has(value.provider) ? value.provider : DEFAULTS.provider;
+  const allowedEfforts = new Set((EFFORTS[provider] || EFFORTS.openai).map(([effort]) => effort));
+  return {
+    provider,
+    baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl : '',
+    model: typeof value.model === 'string' ? value.model : '',
+    effort: allowedEfforts.has(value.effort) ? value.effort : '',
+  };
+}
+
+function persistPreferences(preferences) {
+  const storage = preferenceStorage();
+  if (!storage) return;
+  try { storage.setItem(KEY, JSON.stringify(normalizedPreferences(preferences))); }
+  catch { /* unavailable or quota-limited storage leaves preferences in memory only */ }
+}
+
+function migrateLegacyConfig() {
+  const storage = preferenceStorage();
+  if (!storage) return { ...DEFAULTS };
+
+  let parsed;
+  try {
+    const raw = storage.getItem(KEY);
+    if (!raw) return { ...DEFAULTS };
+    parsed = JSON.parse(raw);
+  } catch {
+    // A malformed legacy value may still contain a key. Fail closed by deleting it.
+    try { storage.removeItem(KEY); } catch {}
+    return { ...DEFAULTS };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    try { storage.removeItem(KEY); } catch {}
+    return { ...DEFAULTS };
+  }
+
+  if (typeof parsed.apiKey === 'string' && parsed.apiKey.trim()) {
+    // Preserve the current page's usability while immediately removing the
+    // legacy persistent copy. A reload intentionally forgets this value.
+    memoryApiKey = parsed.apiKey.trim();
+  }
+  const preferences = normalizedPreferences(parsed);
+  // Delete first so a quota/write failure cannot leave the legacy secret in
+  // place. Rewriting the non-secret preferences is best effort.
+  try { storage.removeItem(KEY); } catch {}
+  persistPreferences(preferences);
+  return { ...DEFAULTS, ...preferences, apiKey: memoryApiKey };
+}
+
+let currentPreferences = migrateLegacyConfig();
+
+export function getLLMConfig() {
+  return { ...DEFAULTS, ...currentPreferences, apiKey: memoryApiKey };
+}
+
+export function setLLMConfig(config = {}) {
+  currentPreferences = normalizedPreferences(config);
+  memoryApiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+  persistPreferences(currentPreferences);
+  return getLLMConfig();
+}
+
+export function clearLLMConfig() {
+  memoryApiKey = '';
+  currentPreferences = { ...DEFAULTS };
+  const storage = preferenceStorage();
+  try { storage?.removeItem(KEY); } catch {}
+}
 
 function mount() {
   if (document.getElementById('bcx-llm-fab')) return;
@@ -69,7 +142,7 @@ function mount() {
         <option value="anthropic">Anthropic (x-api-key)</option>
       </select>
       <label>API key</label>
-      <input id="llm-key" type="password" autocomplete="off" placeholder="sk-…">
+      <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-…">
       <label>Base URL <span style="font-weight:400;color:#999">(optional)</span></label>
       <input id="llm-base" type="text" placeholder="">
       <label>Model</label>
@@ -77,10 +150,10 @@ function mount() {
       <label>Reasoning effort <span style="font-weight:400;color:#999">(if the model supports it)</span></label>
       <select id="llm-effort"></select>
       <div class="note" id="llm-effort-note"></div>
-      <div class="row"><button class="save" id="llm-save">Save</button><button id="llm-clear">Clear</button></div>
+      <div class="row"><button class="save" id="llm-save">Apply</button><button id="llm-clear">Clear</button></div>
       <div id="bcx-llm-status"></div>
-      <div class="note">Stored in this browser only (localStorage). Optional — the design
-        agent works without a key (keyword parsing); a key enables free-form phrasing.</div>
+      <div class="note">The API key is kept only in this page's memory and is cleared on
+        reload or close. Provider, URL, model, and effort preferences are saved locally.</div>
     </div>
     <button class="fab" id="bcx-llm-toggle">⚙ LLM key</button>`;
   document.body.appendChild(wrap);
@@ -99,8 +172,9 @@ function mount() {
     effortI.value = opts.some(([v]) => v === want) ? want : '';
     effortNote.textContent = EFFORT_NOTE[prov.value] || EFFORT_NOTE.openai;
   }
-  // hydrate from stored
-  prov.value = cfg.provider; keyI.value = cfg.apiKey; baseI.value = cfg.baseUrl; modelI.value = cfg.model; effortI.value = cfg.effort || '';
+  // Hydrate only non-secret controls. Never copy a migrated/runtime key back
+  // into the DOM; the explicit Clear button retires the in-memory key.
+  prov.value = cfg.provider; keyI.value = ''; baseI.value = cfg.baseUrl; modelI.value = cfg.model; effortI.value = cfg.effort || '';
   applyProviderUI();
   status.textContent = cfg.apiKey ? `key set (${cfg.provider}${cfg.model ? ', ' + cfg.model : ''})` : 'no key set';
 
@@ -112,11 +186,27 @@ function mount() {
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') panel.classList.remove('show'); });
   $('llm-save').addEventListener('click', () => {
-    save({ provider: prov.value, apiKey: keyI.value.trim(), baseUrl: baseI.value.trim(), model: modelI.value.trim(), effort: effortI.value });
-    status.textContent = keyI.value.trim() ? `saved (${prov.value}${modelI.value.trim() ? ', ' + modelI.value.trim() : ''}${effortI.value ? ', effort=' + effortI.value : ''})` : 'cleared';
+    const enteredKey = keyI.value.trim();
+    const activeKey = enteredKey || getLLMConfig().apiKey;
+    const next = setLLMConfig({
+      provider: prov.value,
+      apiKey: activeKey,
+      baseUrl: baseI.value.trim(),
+      model: modelI.value.trim(),
+      effort: effortI.value,
+    });
+    keyI.value = '';
+    status.textContent = next.apiKey
+      ? `key active for this page (${next.provider}${next.model ? ', ' + next.model : ''}${next.effort ? ', effort=' + next.effort : ''})`
+      : 'no key set';
   });
   $('llm-clear').addEventListener('click', () => {
-    localStorage.removeItem(KEY); keyI.value = baseI.value = modelI.value = ''; effortI.value = ''; status.textContent = 'cleared';
+    clearLLMConfig();
+    prov.value = DEFAULTS.provider;
+    keyI.value = baseI.value = modelI.value = '';
+    effortI.value = '';
+    applyProviderUI();
+    status.textContent = 'cleared';
   });
 }
 

@@ -46,6 +46,7 @@ version owners, and CI configuration. Regenerate with
 | `/api/v1/query_atlas` | POST | `handle_query_atlas` | /api/query_atlas | exact |
 | `/api/v1/rop_cloud` | POST | `handle_rop_cloud` | /api/rop_cloud | exact |
 | `/api/v1/rop_polyhedron` | POST | `handle_rop_polyhedron` | /api/rop_polyhedron | exact |
+| `/api/v1/rop_shape_optimize` | POST | `handle_rop_shape_optimize` | none | exact |
 | `/api/v1/run_inverse_design` | POST | `handle_run_inverse_design` | /api/run_inverse_design | exact |
 | `/api/v1/siso_path_condition` | POST | `handle_siso_path_condition` | /api/siso_path_condition | exact |
 | `/api/v1/siso_paths` | POST | `handle_siso_paths` | /api/siso_paths | exact |
@@ -70,11 +71,14 @@ owned by handlers and schemas; this table documents paths and methods only.
 | `schemas/design-spec.schema.json` | `https://biocircuits-explorer.com/schemas/design-spec.schema.json` | `ir_schema_version` | `bne-design/v1.0.0` | `design-spec` / `backend-runtime` | generated-drift-and-runtime |
 | `schemas/designability-screen.schema.json` | `bne-design-screen` | `schema_version` | `bne-design-screen/v0.3.0` | `designability-screen` / `designability` | direct |
 | `schemas/designability-spec.schema.json` | `bne-designability-spec` | `schema_version` | `bne-designability/v1.0.0` | `designability-spec` / `designability` | direct |
+| `schemas/job-result-manifest.schema.json` | `https://biocircuits-explorer.com/schemas/job-result-manifest.schema.json` | `schema_version` | `bne-job-result-manifest/v1.0.0` | `job-result-manifest` / `batch-hpc` | strict-runtime-validator-mocked-object-store-and-schema-version |
 | `schemas/latent-atlas-manifest.schema.json` | `https://biocircuits-explorer/schemas/latent-atlas-manifest.schema.json` | `manifest_schema_version` | `latent-atlas-manifest/v0.1.0` | `latent-atlas-manifest` / `atlas` | conditional-no-tracked-instance |
 | `schemas/network-ir.schema.json` | `https://biocircuits-explorer.com/schemas/network-ir.schema.json` | `ir_schema_version` | `bne-ir/v1.0.0` | `network-ir` / `backend-runtime` | generated-drift-and-runtime |
 | `schemas/reader-query.schema.json` | `bne-reader-query` | `schema_version` | `bne-reader-query/v0.1.0` | `reader-query-result` / `design-agent` | semantic-boundary-partial-schema |
 | `schemas/reader-result.schema.json` | `bne-reader-result` | `schema_version` | `bne-reader-result/v0.1.0` | `reader-query-result` / `design-agent` | semantic-boundary-partial-schema |
 | `schemas/result-artifact.schema.json` | `https://biocircuits-explorer.com/schemas/result-artifact.schema.json` | `artifact_schema_version` | `bne-result/v1.0.0` | `result-artifact` / `backend-runtime` | runtime-shape-and-version |
+| `schemas/rop-shape-optimization.schema.json` | `https://biocircuits-explorer.com/schemas/rop-shape-optimization.schema.json` | `schema_version` | `bne-rop-shape-optimization/v1.0.0` | `rop-shape-optimization` / `rop-shape-optimization` | schema-instance-and-core-contracts |
+| `schemas/rop-shape-optimize-request.schema.json` | `https://biocircuits-explorer.com/schemas/rop-shape-optimize-request.schema.json` | `schema_version` | `bne-rop-shape-optimize-request/v1.0.0` | `rop-shape-optimization` / `rop-shape-optimization` | schema-instance-and-core-contracts |
 | `schemas/target-spec.schema.json` | `bne-target-spec` | `schema_version` | `bne-target-spec/v0.1.0` | `target-spec` / `design-agent` | partial |
 
 Schema versions are derived from each schema's identity-field `const`; catalogs do not
@@ -93,11 +97,14 @@ own a second copy of those values.
 | Julia container base | `1.12` | `deploy/Dockerfile` |
 | Node configured in CI | `20` | `.github/workflows/ci.yml` |
 | Python configured in CI | `3.13` | `.github/workflows/ci.yml` |
-| Swift project marketing default | `1.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
-| Swift build version (separate identity) | `1` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
+| Swift project marketing default | `0.1.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
+| Swift build version (separate identity) | `1000` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
 | macOS deployment target | `14.0` | `frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj` |
 
 A version configured in CI is not, by itself, evidence that an external CI run passed.
 The Xcode project defaults are reported separately from the application version. The DMG
-release script overrides MARKETING_VERSION with the application's three-part numeric core;
-prerelease/build metadata remains in VERSION, backend responses, and artifact filenames.
+release script derives MARKETING_VERSION and CURRENT_PROJECT_VERSION from the application's
+three-part numeric core; formal release mode also requires Developer ID signing, notarization,
+stapling, and Gatekeeper assessment. Local mode remains explicitly ad-hoc signed;
+prerelease/build metadata remains in VERSION, backend responses, and artifact filenames, while
+formal qualified versions require an explicitly increasing Apple build-number override.

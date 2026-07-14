@@ -64,6 +64,29 @@ function _placer_rules(raw)
     return String.(raw)
 end
 
+# Placement evidence is complete only when every required numerical sample is
+# explicitly valid. Keep this decision pure so partial/failure behavior can be
+# tested without depending on a solver failure occurring on a particular host.
+function _placer_verification_complete(validity)
+    validity isa AbstractVector || return false
+    return !isempty(validity) && all(value -> value === true, validity)
+end
+
+_placer_verified_pass(candidate_pass, validity) =
+    candidate_pass === true && _placer_verification_complete(validity)
+
+function _placer_curve_verification(candidate_pass, curve)
+    curve isa AbstractDict || return (
+        pass=false, validity=Bool[], partial=true, reason="missing_dose_response")
+    validity = get(curve, "valid", Bool[])
+    complete = _placer_verification_complete(validity) &&
+        get(curve, "partial", true) === false
+    pass = candidate_pass === true && complete
+    reason = pass ? "complete" :
+        (candidate_pass === true ? "partial_dose_response" : "local_reaction_order_mismatch")
+    return (; pass, validity, partial=!complete, reason)
+end
+
 # Split an engine log10-(q,K) vector into linear-space kd (Kd1..Kdr) + totals dict.
 function _placer_split_log_qK(model, logqK::AbstractVector{<:Real})
     d = model.d; r = model.r
@@ -213,18 +236,46 @@ end
 # the solved kd, set the solved totals as background, sweep the input total, and
 # observe the output — reusing the exact `scan_parameter_1d` engine path of
 # `handle_parameter_scan_1d` so the result has the `plotParameterScan1D` shape.
-function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
-                              totals::Dict{Symbol, Float64}, input_sym::Symbol,
-                              output_expr::String; param_min = -6.0, param_max = 6.0,
-                              n_points = 200)
-    enforce_sync_rule_budget(rules)
-    length(kd) == length(rules) || error("Length of kd must match reactions")
-    all(x -> isfinite(x) && x > 0, kd) || error("All Kd values must be finite and positive")
-    all(x -> isfinite(x) && x > 0, values(totals)) ||
-        error("All supplied totals must be finite and positive")
-    model, _, _, _ = build_model(rules, kd)
-    enforce_sync_model_budget(model)
-    input_idx = locate_sym_qK(model, input_sym)
+function _placer_async_replay_points(value)
+    (value isa Real && !(value isa Bool) && isfinite(value) && isinteger(value)) ||
+        throw(ArgumentError("n_points must be a finite integer"))
+    result = try
+        Int(value)
+    catch
+        throw(ArgumentError("n_points is outside the supported integer range"))
+    end
+    result >= 10 || throw(ArgumentError("n_points must be >= 10"))
+    result <= 1_000 || throw(ArgumentError(
+        "n_points exceeds the asynchronous replay sample hard limit of 1000."))
+    return result
+end
+
+function _placer_enforce_job_replay_cost(n_points::Int, model)
+    cost = BigInt(n_points) * BigInt(model.n)^3
+    cost <= MAX_JOB_REPLAY_SOLVE_COST || throw(JobWorkBoundExceeded(
+        "ROP asynchronous replay solve estimate exceeds the hard bound " *
+        "$(MAX_JOB_REPLAY_SOLVE_COST). This resource-bound rejection does " *
+        "not establish scientific infeasibility.",
+    ))
+    return Int(cost)
+end
+
+function _placer_dose_response_compute(
+    model,
+    kd::Vector{Float64},
+    totals::Dict{Symbol, Float64},
+    input_sym::Symbol,
+    output_expr::String,
+    lower::Float64,
+    upper::Float64,
+    n_points::Int;
+    cancel_check=_no_cancel_check,
+)
+    cancel_check()
+    input_idx_raw = locate_sym_qK(model, input_sym)
+    input_idx_raw === nothing &&
+        throw(ArgumentError("Unknown input total: $(String(input_sym))"))
+    input_idx = Int(input_idx_raw)
     coeffs = parse_linear_combination(model, output_expr)
     qsyms = Symbol.(string.(q_sym(model)))
     fixed_qK = zeros(Float64, model.n)
@@ -235,13 +286,12 @@ function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
         fixed_qK[model.d + j] = log10(kd[j])
     end
     fixed_params = deleteat!(copy(fixed_qK), input_idx)
-    n_pts = sync_bounded_int(n_points, "n_points"; min=10, max=1000)
-    lower, upper = sync_finite_range(param_min, param_max, "param"; abs_max=20.0)
-    enforce_sync_cost(n_pts * model.n^3, MAX_SYNC_SCAN_SOLVE_COST, "Placer dose-response")
-    param_range = collect(range(lower, upper, length = n_pts))
+    param_range = collect(range(lower, upper, length=n_points))
     param_vals, output_traj, regimes, valid = scan_parameter_1d(
         model, input_idx, param_range, [coeffs], fixed_params;
-        input_logspace=true, output_logspace=true, track_validity=true)
+        input_logspace=true, output_logspace=true, track_validity=true,
+        cancel_check=cancel_check)
+    cancel_check()
     return Dict(
         "param_symbol" => string(input_sym),
         "param_values" => param_vals,
@@ -249,8 +299,49 @@ function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
         "output_traj"  => mat2vv(output_traj),
         "regimes"      => regimes,
         "valid"        => valid,
-        "partial"      => !all(valid),
+        "partial"      => !_placer_verification_complete(valid),
         "x_sym"        => string.(model.x_sym),
+    )
+end
+
+function placer_dose_response(rules::Vector{String}, kd::Vector{Float64},
+                              totals::Dict{Symbol, Float64}, input_sym::Symbol,
+                              output_expr::String; param_min = -6.0, param_max = 6.0,
+                              n_points = 200,
+                              execution_policy::Symbol=:synchronous,
+                              cancel_check=_no_cancel_check)
+    execution_policy in (:synchronous, :asynchronous) || throw(ArgumentError(
+        "execution_policy must be :synchronous or :asynchronous"))
+    execution_policy == :synchronous && enforce_sync_rule_budget(rules)
+    length(kd) == length(rules) || error("Length of kd must match reactions")
+    all(x -> isfinite(x) && x > 0, kd) || error("All Kd values must be finite and positive")
+    all(x -> isfinite(x) && x > 0, values(totals)) ||
+        error("All supplied totals must be finite and positive")
+    n_pts = execution_policy == :synchronous ?
+        sync_bounded_int(n_points, "n_points"; min=10, max=1000) :
+        _placer_async_replay_points(n_points)
+    lower, upper = sync_finite_range(param_min, param_max, "param"; abs_max=20.0)
+    cancel_check()
+    model, _, _, _ = build_model(rules, kd)
+    cancel_check()
+    if execution_policy == :synchronous
+        enforce_sync_model_budget(model)
+        enforce_sync_cost(
+            n_pts * model.n^3,
+            MAX_SYNC_SCAN_SOLVE_COST,
+            "Placer dose-response",
+        )
+    else
+        model_candidate_bound(
+            model;
+            maximum=MAX_JOB_REGIME_CANDIDATES,
+            label="ROP asynchronous replay",
+        )
+        _placer_enforce_job_replay_cost(n_pts, model)
+    end
+    return _placer_dose_response_compute(
+        model, kd, totals, input_sym, output_expr, lower, upper, n_pts;
+        cancel_check=cancel_check,
     )
 end
 
@@ -311,13 +402,19 @@ function handle_place_parameters(req)
         return error_response("Dose-response curve failed: $(sprint(showerror, e))"; status = 400)
     end
 
+    verification = _placer_curve_verification(res.pass, curve)
+
     return json_response(Dict(
         "kd"                  => kd_vec,
         "totals"              => Dict(string(k) => v for (k, v) in res.totals),
         "vertex_idx"          => res.vertex_idx,
         "predicted_RO"        => json_safe_real(res.predicted_RO),
         "measured_RO"         => json_safe_real(res.measured_RO),
-        "pass"                => res.pass,
+        "pass"                => verification.pass,
+        "local_reaction_order_pass" => res.pass,
+        "verification_validity" => verification.validity,
+        "verification_partial" => verification.partial,
+        "verification_reason" => verification.reason,
         "dominance_ordering"  => res.dominance_ordering,
         "kd_bounds"           => collect(res.kd_bounds),
         "solve_mode"          => string(res.solve_mode),
@@ -485,10 +582,13 @@ function placer_threshold(rules::Vector{String}, input_sym, output_sym,
             bp_log = (rng[i] + rng[i-1]) / 2; break
         end
     end
-    pass = isfinite(bp_log) && abs(bp_log - logtgt) <= tolerance_decades
+    breakpoint_pass = isfinite(bp_log) && abs(bp_log - logtgt) <= tolerance_decades
+    verification_complete = _placer_verification_complete(valid)
+    pass = _placer_verified_pass(breakpoint_pass, valid)
     return (; feasible = true, kd, totals, target_input = Float64(target_input_value),
             measured_breakpoint = isfinite(bp_log) ? 10.0^bp_log : NaN,
-            pass, verification_validity=valid, verification_partial=!all(valid),
+            breakpoint_pass, pass, verification_validity=valid,
+            verification_partial=!verification_complete,
             dominance_ordering = string.(show_dominant_condition(model, to_idx)))
 end
 
@@ -534,6 +634,7 @@ function handle_placer_threshold(req)
         "totals"              => Dict(string(k) => v for (k, v) in res.totals),
         "target_input"        => res.target_input,
         "measured_breakpoint" => json_safe_real(res.measured_breakpoint),
+        "breakpoint_pass"     => res.breakpoint_pass,
         "pass"                => res.pass,
         "verification_validity" => res.verification_validity,
         "verification_partial" => res.verification_partial,
@@ -657,7 +758,7 @@ function placer_realize_program(rules::Vector{String}, input_sym, output_sym;
         input_logspace=true, output_logspace=true, track_validity=true)
     otraj = vec(collect(Float64.(otrajm)))
     regv  = Int.(collect(regimes))
-    verification_complete = all(valid)
+    verification_complete = _placer_verification_complete(valid)
     segs = verification_complete ? _placer_segment_ros(pvals, otraj, regv) : []
     # Keep only segments that occupy a real input interval (≥0.4 decade) — a genuine
     # asymptotic plateau, not a transient sliver between clustered breakpoints.

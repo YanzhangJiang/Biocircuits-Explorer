@@ -4,6 +4,14 @@ import { showToast } from './api.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { hasModelContextForNode } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
+import {
+  invalidateBuildersForConnectionChange,
+  replaceConnectionsWithModelInvalidation,
+} from './model-lifecycle.js';
+import {
+  invalidateAtlasExecutionsForConnectionChange,
+  invalidateScanExecutionsForConnectionChange,
+} from './execution-lifecycle.js';
 import { record, SetConnectionsCommand } from './commands.js';
 import { portsCompatible, portTypeOf, PORT_TYPES } from './port-types.js';
 
@@ -15,31 +23,43 @@ import { portsCompatible, portTypeOf, PORT_TYPES } from './port-types.js';
 export function addConnection(conn) {
   let replaced = null;
   const existing = connections.find(c => c.toNode === conn.toNode && c.toPort === conn.toPort);
+  const next = connections.filter(c => c !== existing);
   if (existing) {
     replaced = { ...existing };
-    setConnections(connections.filter(c => c !== existing));
   }
-  connections.push({ ...conn });
+  next.push({ ...conn });
+  replaceConnectionsWithModelInvalidation(next, 'connection-added-or-rewired');
   updateConnections();
   return replaced;
 }
 
 export function removeConnection(conn) {
-  setConnections(connections.filter(c => !(
+  replaceConnectionsWithModelInvalidation(connections.filter(c => !(
     c.fromNode === conn.fromNode && c.fromPort === conn.fromPort &&
-    c.toNode === conn.toNode && c.toPort === conn.toPort)));
+    c.toNode === conn.toNode && c.toPort === conn.toPort)), 'connection-removed');
   updateConnections();
 }
 
 // Replace the whole connection set (backs SetConnectionsCommand).
 export function replaceConnections(arr) {
-  setConnections((arr || []).map(c => ({ ...c })));
+  replaceConnectionsWithModelInvalidation(arr, 'connection-set-replaced');
   updateConnections();
 }
 
 function connectionsEqual(a, b) {
   if (a.length !== b.length) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+  const keys = list => list.map(conn => [
+    conn?.fromNode, conn?.fromPort, conn?.toNode, conn?.toPort,
+  ].map(value => String(value ?? '')).join('\u0000')).sort();
+  return JSON.stringify(keys(a)) === JSON.stringify(keys(b));
+}
+
+export function finalizeInteractiveConnectionChange(before) {
+  if (!before || connectionsEqual(before, connections)) return false;
+  invalidateBuildersForConnectionChange(before, connections, 'interactive-connection-gesture');
+  invalidateScanExecutionsForConnectionChange(before, connections, 'interactive-connection-gesture');
+  invalidateAtlasExecutionsForConnectionChange(before, connections, 'interactive-connection-gesture');
+  return true;
 }
 
 // Module-level DOM refs, set by initSocketEvents()
@@ -154,6 +174,9 @@ export function initSocketEvents() {
 
       if (existing) {
         // Disconnect existing wire and start re-dragging from the output end
+        // This is a transient drag state. Invalidate only once on mouseup from
+        // the gesture's original graph to its final graph, so dragging a wire
+        // back to the same socket remains a semantic no-op.
         setConnections(connections.filter(c => c !== existing));
         updateConnections();
         // Start wiring from the original output socket
@@ -209,8 +232,9 @@ export function initSocketEvents() {
           // No self-connections
           if (fromNode !== toNode) {
             // Remove existing connection to this input (one input = one wire)
-            setConnections(connections.filter(c => !(c.toNode === toNode && c.toPort === toPort)));
-            connections.push({ fromNode, fromPort, toNode, toPort });
+            const next = connections.filter(c => !(c.toNode === toNode && c.toPort === toPort));
+            next.push({ fromNode, fromPort, toNode, toPort });
+            setConnections(next);
             updateConnections();
 
             // Auto-populate config nodes when connected
@@ -246,7 +270,7 @@ export function initSocketEvents() {
     // wire, a detach that dropped on empty space, or a rewire — because we
     // diff the whole set against the pre-gesture snapshot. Runs before
     // canvas.js clears wiringState (document listeners fire before window).
-    if (before && !connectionsEqual(before, connections)) {
+    if (finalizeInteractiveConnectionChange(before)) {
       record(new SetConnectionsCommand({ before, after: connections }));
     }
     wiringState.connSnapshotBefore = null;

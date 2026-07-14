@@ -105,10 +105,16 @@ export function setConnections(c) { connections = c; }
 export const canvasState = {
   panX: 0, panY: 0, isPanning: false, startPanX: 0, startPanY: 0,
 };
-export let scale = 1.0;
-export function setScale(s) { scale = s; }
 export const MIN_SCALE = 0.005;
 export const MAX_SCALE = 3.0;
+export const MAX_CANVAS_PAN = 1_000_000_000;
+export let scale = 1.0;
+export function setScale(s) {
+  if (!Number.isFinite(s) || s < MIN_SCALE || s > MAX_SCALE) {
+    throw new RangeError(`Canvas scale must be a finite number between ${MIN_SCALE} and ${MAX_SCALE}`);
+  }
+  scale = s;
+}
 export const ZOOM_SENSITIVITY = 0.0048;
 
 export const dragState = {
@@ -131,6 +137,9 @@ export const PORT_TYPES = {
   atlas: 'atlas',
   'atlas-query': 'atlas-query',
   'atlas-network': 'atlas-network',
+  'rop-shape-reference': 'rop-shape-reference',
+  'rop-shape-request': 'rop-shape-request',
+  'rop-shape-result': 'rop-shape-result',
 };
 
 export const PORT_COLOR_GROUPS = {
@@ -142,6 +151,9 @@ export const PORT_COLOR_GROUPS = {
   atlas: 'model',
   'atlas-query': 'params',
   'atlas-network': 'params',
+  'rop-shape-reference': 'params',
+  'rop-shape-request': 'params',
+  'rop-shape-result': 'result',
 };
 
 export function getPortColor(port) {

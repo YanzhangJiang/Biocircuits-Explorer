@@ -1,8 +1,8 @@
 # Current verified snapshot
 
-- Snapshot date: 2026-07-10
+- Snapshot date: 2026-07-15
 - Component-split revision inspected: `603635d`
-- Current implementation revision inspected: `1177a3d`
+- Current implementation revision inspected: `f2ca13c`
 - Historical knowledge baseline retained: `f9c65a5`
 - Current-tree contract inventory:
   `python3 scripts/verify_repository.py --check`
@@ -10,6 +10,11 @@
   [generated from their owners](../generated/reference.md#versions-and-configured-toolchains)
 - Scope: repository runtime and local verification evidence, not manuscript
   claims, a remote CI result, or proof that an external deployment succeeded
+
+The current committed evidence anchor is `f2ca13c`. It integrates the larger
+fixed-topology ROP shape-optimization implementation, runtime/job hardening,
+browser lifecycle contracts, and macOS host maintenance described below.
+Revision `1177a3d` remains the earlier bounded-runtime evidence anchor.
 
 ## Result in plain language
 
@@ -33,16 +38,76 @@ files. It was not intended to change behavior. Revision `1177a3d` then added the
 concurrency, work-boundary, validation, and numerical-result changes to those
 owners.
 
+## Integrated extension: direct fixed-topology shape control
+
+The previous cat-response prototype asked whether one of three hand-picked
+operating-point changes could be built. The integrated revision asks how far one
+pinned network can move a typed response edit before its declared path geometry
+or parameter bounds stop it. It then chooses a realization with remaining
+biochemical parameter room and independently replays the finite curve.
+
+This extension introduces the canonical v1-only
+`POST /api/v1/rop_shape_optimize` route, asynchronous local-job support,
+typed edits, bounded path/cell enumeration, direct per-cell LPs, explicit
+parameter-only margin, active-row/right-hand-side sensitivity, directional
+intervals, stored finite replay, Design Screen handoff, an allow-listed Agent
+tool, and a fail-closed browser workspace chain. Design Target emits a pinned
+reference only for an exact canonical finite-window card; a separate edit-config
+node constructs the typed request; a result node calls the v1 route, renders the
+evidence layers, and marks restored output as historical until rerun. The three
+artifacts use distinct strict port types and are exposed in both Web and macOS
+Add Node menus. The Design Screen candidate prior still comes from the tracked
+ROP design index (`paper_rop_periodic_table/data/slices.jsonl.gz`, or its explicit
+operator override); the optimizer request is self-contained and does not receive
+an Atlas SQLite path. The detailed owner and evidence
+boundary are in the
+[ROP shape-optimization module](../modules/rop-shape-optimization.md) and
+[decision 0002](../decisions/0002-rop-shape-margin-and-evidence.md).
+
+The frozen cat benchmark evaluated all 18 eligible paths and all 24 eligible
+cells for each of four edits with no truncation. All four direct solves found a
+non-grid geometric optimum. Three selected realizations passed complete sampled
+finite replay. The `widen_center` realization completed replay but failed its
+declared two-peak metric, demonstrating that exact witness geometry is not an
+exact nonlinear peak-feature guarantee.
+
+| Integration check | Local result | Boundary |
+|---|---|---|
+| Full Julia Web suite | No failing tests; the one pre-existing explicit `@test_broken` remains | Local Julia 1.12.6 process, not remote CI |
+| Shape core compatibility | 124/124 on Julia 1.12.6 and 124/124 on Julia 1.10.11 | Core LP contract only on 1.10; the full Web suite was not rerun there |
+| BindingAndCatalysis suite | All testsets passed; golden-value set 145/145 | Tested models and solver policies only |
+| Browser and Python consumers | JS suite passed (including renderer 25/25, reference producer 7/7, shape nodes 12/12); local real-page menu/node/port/intent/fail-closed smoke had zero console errors; Chat API 12/12, Design Agent 39/39, Reader 15/15, and repository Python 103/103 passed | No live LLM provider or browser-to-live-engine optimizer run |
+| Frozen cat artifact | Read-only contract 160/160; four geometric optima, three replay passes | One fixed topology and finite replay grid |
+| Repository gate | 39 maintained files, 14 schemas, and 49 routes passed regenerated and read-only checks | Local source/catalog consistency only |
+
+These are results for one pinned topology, program, bounds, compiler, and
+finite replay grid. They are not evidence of optimality over all networks,
+experimental validity, or a live provider/cloud deployment.
+
+## Integrated macOS host maintenance
+
+The integrated revision also hardens the native shell, project
+persistence, local helper identity, browser-content boundary, and release
+packaging. The configured CI matrix now builds and runs the Swift unit target on
+`macos-15-intel` and `macos-26`. On 2026-07-15, a local macOS 27 arm64 run with
+Xcode 26.6 passed `build-for-testing` and all unit tests. Browser, Design Chat,
+packaged-resource, and release-metadata contracts also passed locally.
+
+This is local evidence for revision `f2ca13c`. No remote
+CI result, real Cognito flow, packaged helper launch, relocatable Python input,
+Developer ID signature, notarization, stapling, Gatekeeper install, or clean-host
+qualification is claimed.
+
 The evidence below is local repository evidence. It does not establish that a
 remote workflow ran, an image was published, AWS or Slurm accepted a job, or a
 signed application was installed.
 
 ## Evidence recorded for this snapshot
 
-| Check | Local result at `1177a3d` | Boundary |
+| Check | Local result at `f2ca13c` | Boundary |
 |---|---|---|
 | Full Julia web suite | Completed with no failing tests; one pre-existing `@test_broken` remains explicitly recorded | Local process only; not evidence of a remote CI run or production traffic |
-| `BindingAndCatalysis` suite | 126/126 tests passed | Numerical regression coverage is conditional on the tested models and solver policies |
+| `BindingAndCatalysis` suite | All testsets passed; golden-value set 145/145 | Numerical regression coverage is conditional on the tested models and solver policies |
 | Browser JavaScript suite | `npm run test:js` passed, including scan-validity, SQLite-policy, and Design Screen rendering contracts | No full browser-to-live-provider Design Agent conversation was exercised |
 | Generated schema check | `julia --project=webapp webapp/scripts/gen_schemas.jl --check` passed | Confirms generated NetworkIR/DesignSpec drift only; hand-authored schemas retain their cataloged coverage levels |
 | Deployment contract suite | `python3 tests/test_deployment_contract.py -q` passed, 15/15 | Static and mocked checks do not prove a registry, TLS endpoint, AWS account, or rollback was exercised |
@@ -56,7 +121,8 @@ signed application was installed.
 | `cec0b59` | Synchronized release identity, packaged Design Agent resources, and the split web/HPC CI matrix |
 | `01a01be` | Added fail-closed container, image, Compose, TLS, AWS setup, and rollback contracts |
 | `603635d` | Moved the backend monolith into focused runtime, model, analysis, placement, scan, geometry, and service files; an assembly contract checks the dependency order and exported surface |
-| `1177a3d` | Bounded shared runtime work, serialized mutable state, tightened request validation, preserved numerical failure information, and promoted Design Screen to v0.3; this is the current inspected revision |
+| `1177a3d` | Bounded shared runtime work, serialized mutable state, tightened request validation, preserved numerical failure information, and promoted Design Screen to v0.3 |
+| `f2ca13c` | Integrated fixed-topology ROP shape control, durable job ownership, browser lifecycle hardening, deterministic volume contracts, and macOS host maintenance; this is the current inspected revision |
 
 ## What `1177a3d` establishes
 
@@ -170,7 +236,7 @@ they do not rewrite the catalog's baseline identifier or historical
 
 ## Known unknowns and unverified surfaces
 
-1. No remote CI run is claimed for `1177a3d`; the evidence table records local
+1. No remote CI run is claimed for `f2ca13c`; the evidence table records local
    commands only.
 2. No current evidence establishes publishing to or pulling from a live image
    registry. Image signing, signature verification, and an SBOM release lane

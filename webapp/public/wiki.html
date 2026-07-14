@@ -1449,8 +1449,10 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         <li>Click <strong>Save</strong>. Click anywhere outside the panel, or press <kbd>Esc</kbd>, to close it.</li>
       </ol>
       <p>
-        The key is stored in this browser only (localStorage) and is sent only with
-        each design request, which the backend forwards to the LLM you configured.
+        The key is kept only in this page's memory and is cleared on reload or
+        close. It is sent only with each design request, which the backend forwards
+        to the LLM you configured. Non-secret provider and model preferences remain
+        in browser storage.
         Without a key a built-in keyword compiler still handles simple requests; a
         key unlocks arbitrary phrasing, including non-English.
       </p>
@@ -1791,16 +1793,18 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           <li>
             <h4>Return to the app</h4>
             <p>
-              Tokens are written to <code>localStorage</code> and the SPA
-              navigates back to the page that initiated sign-in. From this
-              point every cloud job submission attaches
+              The ID and refresh tokens are kept in this tab's
+              <code>sessionStorage</code>; the unused access token is discarded.
+              The SPA then navigates back to the page that initiated sign-in.
+              From this point every cloud job submission attaches
               <code>Authorization: Bearer &lt;id_token&gt;</code>.
             </p>
           </li>
         </ol>
         <p>
           ID tokens auto-refresh five minutes before expiry using the
-          refresh token. Signing out clears local tokens and visits
+          refresh token. Closing the browser tab or macOS app clears the session;
+          signing out clears it immediately and visits
           Cognito's <code>/logout</code> endpoint so the next sign-in lands
           on the Hosted UI fresh.
         </p>
@@ -1810,11 +1814,10 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         <h3><span class="sec-num">10.3</span>Same flow on macOS</h3>
         <p>
           The Swift macOS app runs the same <code>auth.js</code> inside a
-          <code>WKWebView</code>. Tokens live in the WebView's own
-          <code>localStorage</code>. There is no native Keychain integration
-          today — a future Swift-side change could switch to
-          <code>ASWebAuthenticationSession</code> + Keychain without
-          touching the web codebase.
+          <code>WKWebView</code>. Authentication state is session-only and is
+          cleared when the app closes. It is not persisted in WebView
+          <code>localStorage</code>, and there is no native Keychain integration;
+          reopening the app therefore requires a new sign-in.
         </p>
         <p>
           The Cognito app client must register the macOS WebView's loopback

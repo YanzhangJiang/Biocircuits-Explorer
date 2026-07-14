@@ -3,7 +3,9 @@
 This project uses three AWS surfaces for cloud compute:
 
 - ECR stores the Docker image.
-- S3 stores per-job artifacts: `input.json`, `status.json`, and `result.json`.
+- S3 stores per-job artifacts: `input.json`, `status.json`, `result.json`, and
+  the small `result-manifest.json` commit marker published after a complete
+  result upload.
 - AWS Batch runs the same image as a worker when the UI cloud-compute toggle submits a long job.
 
 S3 is not for image files. The image stays in ECR.
@@ -15,7 +17,7 @@ Batch resources. Attach `deploy/aws_setup_permissions_policy.json` to the IAM
 user/role that runs the setup.
 
 The current ECR-only permissions are not enough; the script also needs actions
-such as `ec2:DescribeVpcs`, `s3:CreateBucket`, and
+such as `ec2:DescribeVpcs`, `s3:CreateBucket`, `s3:PutBucketCORS`, and
 `batch:CreateComputeEnvironment`.
 
 ## 2. Create The Batch Stack
@@ -45,6 +47,35 @@ The script is re-runnable: it prunes old non-default versions of the submitter
 policy before publishing a new one, and registers the job definition with
 `executionRoleArn` set so ECR image pulls and CloudWatch log delivery succeed
 on both EC2-launch and Fargate-launch Batch compute environments.
+
+Completed cloud results are not relayed through the website backend. The
+browser asks the broker for `/api/jobs/<id>/result-url` and then downloads the
+JSON object directly from the returned pre-signed S3 URL. The setup script
+therefore installs a dedicated artifact-bucket CORS rule whose only methods are
+`GET` and `HEAD`. Its default origins cover the local Web and macOS shells:
+
+```text
+http://127.0.0.1:8088
+http://localhost:8088
+http://127.0.0.1:18088
+```
+
+Add or replace origins explicitly for another browser deployment:
+
+```bash
+deploy/setup_aws_batch.sh \
+  --region us-west-2 \
+  --image "$IMAGE_URI" \
+  --artifact-cors-origins 'https://app.yourdomain.com,http://127.0.0.1:18088'
+```
+
+The equivalent setup-time environment variable is
+`BIOCIRCUITS_EXPLORER_AWS_ARTIFACT_CORS_ORIGINS`. When `--with-cognito` is
+used, every `--cognito-logout-urls` origin is merged into the artifact list, so
+the same browser origins can both sign out and download a completed result.
+`put-bucket-cors` replaces the bucket's CORS configuration; use the generated
+bucket as a dedicated artifact bucket or include every required origin in this
+list.
 
 If you already know the EC2 instance role that runs the website backend, pass
 `--attach-to-role <role>` so the script attaches the submitter policy to it
@@ -261,16 +292,24 @@ use `execution.mode = "aws_batch"` or run locally.
 Required for cloud jobs:
 
 ```text
-AWS_REGION
-AWS_DEFAULT_REGION
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION
 BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX
 ```
 
+At least one Batch region source is required; the generated runtime file writes
+all three to one value:
+
+```text
+BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION
+AWS_REGION
+AWS_DEFAULT_REGION
+```
+
 Optional:
 
 ```text
+BIOCIRCUITS_EXPLORER_AWS_ACCOUNT_ID                  # exactly 12 digits
 BIOCIRCUITS_EXPLORER_IMAGE
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX
 BIOCIRCUITS_EXPLORER_AWS_CLI
@@ -280,3 +319,26 @@ BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG    # set to 1 to let the
                                                        # UI choose vcpus,
                                                        # memory, queue, etc.
 ```
+
+The job-name prefix must start with a letter or digit, contain only letters,
+digits, hyphens, or underscores, and be at most 95 characters. The runtime
+appends the complete 32-character canonical job ID and persists the resolved
+name, queue, definition, Batch region, optional account ID, worker command,
+tags, and artifact URIs before it contacts Batch. The Batch region resolves in
+the order `BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION`, `AWS_REGION`, then
+`AWS_DEFAULT_REGION`; every Batch CLI call receives the persisted value
+explicitly.
+
+After the input object is published, one `dispatch_started` transition permits
+one SubmitJob call only after the exact record parent directory is durably
+synced. Rename without confirmed directory durability performs zero submits and
+leaves the record reconciliation-only. If the response is lost, the broker does
+not submit again: later job reads reconcile the persisted name in the persisted
+queue/region, then require complete one-for-one DescribeJobs coverage of the
+listed IDs. Missing, duplicate, malformed, or unrequested details retry the
+whole observation. Full queue/definition ARNs compare only by full equality;
+plain names may match ARN resource names only within the persisted
+region/account identity. Public job records expose `submission_state` and the
+persisted identity diagnostics; `reconciling` and `unknown` remain eligible for
+later adoption, while `conflict` reports multiple exact matches without
+selecting one.

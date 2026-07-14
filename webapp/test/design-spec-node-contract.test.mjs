@@ -51,9 +51,9 @@ test('Design Spec Config emits the DesignabilitySpec artifact consumed by Design
   assert.ok(portsCompatible('designability-spec', 'designability-spec'));
 });
 
-test('Design Target stays a reaction source and does not absorb Model Builder or Placer ports', () => {
+test('Design Target stays a reaction source and emits a separate pinned ROP shape reference', () => {
   const targetNode = NODE_TYPES['design-target'];
-  assert.deepEqual(targetNode.outputs.map(p => p.port), ['reactions']);
+  assert.deepEqual(targetNode.outputs.map(p => p.port), ['reactions', 'rop-shape-reference']);
   assert.equal(targetNode.inputs.some(p => p.port === 'model'), false);
   assert.equal(targetNode.outputs.some(p => p.port === 'params'), false);
 });
@@ -63,6 +63,15 @@ test('web and native add-node menus expose Design Spec Config', () => {
   const nativeMenu = fs.readFileSync(path.join(repoRoot, 'frontend-swift/BiocircuitsExplorerMac/ContentView.swift'), 'utf8');
   assert.match(webMenu, /data-type="design-spec-config"/);
   assert.match(nativeMenu, /NodeMenuItem\(id: "design-spec-config"/);
+});
+
+test('web and native add-node menus expose the ROP shape config/result pair', () => {
+  const webMenu = fs.readFileSync(path.join(repoRoot, 'webapp/public/index-node.html'), 'utf8');
+  const nativeMenu = fs.readFileSync(path.join(repoRoot, 'frontend-swift/BiocircuitsExplorerMac/ContentView.swift'), 'utf8');
+  for (const type of ['rop-shape-edit-config', 'rop-shape-result']) {
+    assert.match(webMenu, new RegExp(`data-type="${type}"`));
+    assert.match(nativeMenu, new RegExp(`NodeMenuItem\\(id: "${type}"`));
+  }
 });
 
 test('Design Target UI no longer uses wizard or proxy-recommendation wording', () => {
@@ -1405,7 +1414,7 @@ test('Design Spec Config validation preview reports hard unsupported clauses as 
       'status-badge': { className: '', textContent: '' },
     }[id] || field(''));
     globalThis.fetch = async (url, options) => {
-      assert.equal(url, '/api/validate_designability_spec');
+      assert.equal(url, '/api/v1/validate_designability_spec');
       const body = JSON.parse(options.body);
       assert.deepEqual(body.target.temporal_dynamics.peak_width_seconds, { min: 1 });
       assert.equal(body.constraints.robustness.min_sampled_pass_fraction, 0.8);

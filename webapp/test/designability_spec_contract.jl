@@ -1063,6 +1063,7 @@ end
             ),
             "constraints" => Dict(
                 "dynamic_range" => Dict("min_fold_change" => 10.0, "sample_points" => 81, "hard" => true),
+                "robustness" => Dict("min_chebyshev_radius" => 1.0e-6),
             ),
             "candidate_budget" => Dict("max_recommended" => 4, "max_screened" => 4, "max_exact_placements" => 3),
             "ranking_policy" => Dict("prefer" => Any["dynamic_range"]),
@@ -1075,6 +1076,29 @@ end
         card = first(screen["verified_recommendations"])
         @test card["certificate_grade"] == "exact-window-siso-rop-path"
         @test card["evidence_grade"] == "enforced_exact+sampled_forward"
+        normalized_screen_constraints =
+            screen["designability_spec_normalized"]["constraints"]
+        normalized_screen_robustness = normalized_screen_constraints["robustness"]
+        @test normalized_screen_robustness["min_chebyshev_radius"] == 1.0e-6
+        handoff = card["optimization_handoff_template"]
+        handoff_body = handoff["body_template"]
+        @test handoff["endpoint"] == "/api/v1/rop_shape_optimize"
+        @test !haskey(handoff_body["designability_spec"]["constraints"],
+            "robustness")
+        handoff_optimization = handoff_body["optimization"]
+        @test handoff_optimization["minimum_parameter_margin"] == 1.0e-6
+        filled_handoff = deepcopy(handoff_body)
+        filled_handoff["edit_intent"] = Dict(
+            "id" => "contract-separate",
+            "kind" => "separate",
+            "steps" => Any[0, 1],
+            "preserve_midpoint_tolerance_log10" => 0.2,
+        )
+        normalized_handoff = BEB._rop_shape_normalize_request(
+            filled_handoff; synchronous=true)
+        @test normalized_handoff.network_hash ==
+              card["fixed_topology_reference"]["network_ir_hash"]
+        @test normalized_handoff.minimum_parameter_margin == 1.0e-6
         @test card["constraints"]["input_window_verified"] === true
         @test card["constraints"]["dynamic_range_verified"] === true
         @test card["metrics"]["sampled_dynamic_range_fold_change"] >= 10.0

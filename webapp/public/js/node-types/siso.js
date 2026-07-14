@@ -1,5 +1,5 @@
 import { nodeRegistry } from '../state.js';
-import { api, syncSelectOptions } from '../api.js';
+import { api, escapeHtml, renderNodeError, syncSelectOptions } from '../api.js';
 import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, hasModelContextForNode, setupAutoUpdate } from '../nodes.js';
 import { computeSISOResult, recomputeSISO, executeQKPolyResult } from '../siso.js';
 
@@ -153,17 +153,17 @@ export const SISO_TYPES = {
       try {
         if (!modelContext?.sessionId) throw new Error('Build the connected model first');
         const data = await api('siso_paths', { session_id: modelContext.sessionId, change_qK: changeQK });
-        let html = `<div style="margin-bottom:8px;"><strong>${data.n_paths}</strong> paths, <strong>${data.sources.length}</strong> sources, <strong>${data.sinks.length}</strong> sinks</div>`;
+        let html = `<div style="margin-bottom:8px;"><strong>${escapeHtml(data.n_paths)}</strong> paths, <strong>${data.sources.length}</strong> sources, <strong>${data.sinks.length}</strong> sinks</div>`;
         html += '<div class="path-list">';
         data.paths.forEach(p => {
           const permStr = p.perms.map(pr => `[${pr.join(',')}]`).join(' → ');
-          html += `<div class="path-item" data-idx="${p.idx}" data-qk="${changeQK}" data-node="${nodeId}" data-action="selectSISOPath">#${p.idx}: ${permStr}</div>`;
+          html += `<div class="path-item" data-idx="${escapeHtml(p.idx)}" data-qk="${escapeHtml(changeQK)}" data-node="${nodeId}" data-action="selectSISOPath">#${escapeHtml(p.idx)}: ${escapeHtml(permStr)}</div>`;
         });
         html += '</div>';
         html += `<div class="plot-container" id="${nodeId}-traj-plot" style="display:none;"></div>`;
         contentEl.innerHTML = html;
       } catch (e) {
-        contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+        renderNodeError(contentEl, e);
       }
       setNodeLoading(nodeId, false);
     },

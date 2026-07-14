@@ -1,0 +1,1269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/rop-shape-optimization.schema.json",
+  "title": "Fixed-topology ROP shape optimization result",
+  "description": "A fixed-topology reaction-order witness optimization result. Exact polyhedral geometry, bounded path/cell coverage, parameter-only margin, and sampled finite replay remain separate evidence layers.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "request_hash",
+    "normalized_request",
+    "fixed_topology",
+    "geometric_status",
+    "geometric_status_message",
+    "feasible",
+    "coverage",
+    "compiled_edit",
+    "selected",
+    "replay",
+    "certificate_grade",
+    "geometric_evidence_grade",
+    "finite_replay_evidence_grade",
+    "solver_contract",
+    "result_hash",
+    "artifact",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "bne-rop-shape-optimization/v1.0.0"
+    },
+    "request_hash": { "$ref": "#/$defs/sha256_hex" },
+    "normalized_request": {
+      "allOf": [
+        { "$ref": "rop-shape-optimize-request.schema.json" },
+        {
+          "type": "object",
+          "properties": {
+            "network": {
+              "$ref": "rop-shape-optimize-request.schema.json#/$defs/full_network_ir"
+            },
+            "expected_network_ir_hash": { "$ref": "#/$defs/sha256_hex" }
+          }
+        }
+      ]
+    },
+    "fixed_topology": { "$ref": "#/$defs/fixed_topology" },
+    "geometric_status": {
+      "enum": [
+        "global_optimal_over_declared_cells",
+        "best_over_evaluated_cells",
+        "infeasible_over_declared_cells",
+        "infeasible_over_evaluated_cells",
+        "unbounded_over_declared_cells",
+        "unbounded_over_evaluated_cells",
+        "numerical_error"
+      ]
+    },
+    "geometric_status_message": { "type": "string", "minLength": 1 },
+    "feasible": { "type": "boolean" },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "compiled_edit": { "$ref": "#/$defs/compiled_edit" },
+    "selected": {
+      "oneOf": [
+        { "$ref": "#/$defs/selected_result" },
+        { "type": "null" }
+      ]
+    },
+    "directional_request_interval": {
+      "$ref": "#/$defs/directional_request_interval"
+    },
+    "replay": { "$ref": "#/$defs/replay" },
+    "certificate_grade": {
+      "const": "exact-window-siso-rop-path-optimization"
+    },
+    "geometric_evidence_grade": { "const": "exact_path_polyhedral" },
+    "finite_replay_evidence_grade": {
+      "enum": [
+        "not_run",
+        "sampled-forward-complete",
+        "sampled-forward-partial",
+        "sampled-forward-failed"
+      ]
+    },
+    "solver_contract": { "$ref": "#/$defs/solver_contract" },
+    "result_hash": { "$ref": "#/$defs/sha256_hex" },
+    "artifact": {
+      "allOf": [
+        { "$ref": "result-artifact.schema.json" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "rop_shape_optimize" }
+          }
+        }
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "geometric_status": {
+            "enum": [
+              "global_optimal_over_declared_cells",
+              "best_over_evaluated_cells"
+            ]
+          }
+        },
+        "required": ["geometric_status"]
+      },
+      "then": {
+        "properties": {
+          "selected": { "$ref": "#/$defs/selected_result" },
+          "feasible": { "const": true }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": { "truncated": { "const": true } },
+            "required": ["truncated"]
+          }
+        },
+        "required": ["coverage"]
+      },
+      "then": {
+        "not": {
+          "properties": {
+            "geometric_status": {
+              "enum": [
+                "global_optimal_over_declared_cells",
+                "infeasible_over_declared_cells",
+                "unbounded_over_declared_cells"
+              ]
+            }
+          },
+          "required": ["geometric_status"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "geometric_status": {
+            "enum": [
+              "infeasible_over_declared_cells",
+              "infeasible_over_evaluated_cells",
+              "unbounded_over_declared_cells",
+              "unbounded_over_evaluated_cells",
+              "numerical_error"
+            ]
+          }
+        },
+        "required": ["geometric_status"]
+      },
+      "then": {
+        "properties": {
+          "selected": { "type": "null" },
+          "feasible": { "const": false }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "geometric_status": {
+            "enum": [
+              "best_over_evaluated_cells",
+              "infeasible_over_evaluated_cells",
+              "unbounded_over_evaluated_cells"
+            ]
+          }
+        },
+        "required": ["geometric_status"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": { "truncated": { "const": true } },
+            "required": ["truncated"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replay": {
+            "properties": { "status": { "const": "pass" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["replay"]
+      },
+      "then": {
+        "properties": {
+          "finite_replay_evidence_grade": { "const": "sampled-forward-complete" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replay": {
+            "properties": { "status": { "const": "not_run" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["replay"]
+      },
+      "then": {
+        "properties": {
+          "finite_replay_evidence_grade": { "const": "not_run" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replay": {
+            "properties": { "status": { "const": "partial" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["replay"]
+      },
+      "then": {
+        "properties": {
+          "finite_replay_evidence_grade": { "const": "sampled-forward-partial" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replay": {
+            "properties": {
+              "status": { "enum": ["failed", "numerical_error"] }
+            },
+            "required": ["status"]
+          }
+        },
+        "required": ["replay"]
+      },
+      "then": {
+        "properties": {
+          "finite_replay_evidence_grade": { "const": "sampled-forward-failed" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": { "truncated": { "const": true } },
+            "required": ["truncated"]
+          }
+        },
+        "required": ["coverage", "directional_request_interval"]
+      },
+      "then": {
+        "properties": {
+          "directional_request_interval": {
+            "properties": { "scope": { "const": "evaluated_cells" } },
+            "required": ["scope"]
+          }
+        }
+      },
+      "else": {
+        "if": { "required": ["directional_request_interval"] },
+        "then": {
+          "properties": {
+            "directional_request_interval": {
+              "properties": { "scope": { "const": "declared_cells" } },
+              "required": ["scope"]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "positive_number": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "fixed_topology": {
+      "type": "object",
+      "required": [
+        "normalized_network",
+        "network_ir_hash",
+        "network_canonical_code",
+        "network_identity_semantics",
+        "input",
+        "output",
+        "topology_preserved"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "normalized_network": {
+          "$ref": "rop-shape-optimize-request.schema.json#/$defs/full_network_ir"
+        },
+        "network_ir_hash": { "$ref": "#/$defs/sha256_hex" },
+        "network_canonical_code": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        },
+        "network_identity_semantics": {
+          "enum": ["canonical_code_available", "positional_content_hash_only"]
+        },
+        "input": { "type": "string", "minLength": 1 },
+        "output": { "type": "string", "minLength": 1 },
+        "topology_preserved": { "const": true }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "network_identity_semantics": { "const": "canonical_code_available" }
+            },
+            "required": ["network_identity_semantics"]
+          },
+          "then": {
+            "properties": {
+              "network_canonical_code": { "type": "string", "minLength": 1 }
+            }
+          },
+          "else": {
+            "properties": { "network_canonical_code": { "type": "null" } }
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "eligible_path_count",
+        "evaluated_path_count",
+        "eligible_cell_count",
+        "evaluated_cell_count",
+        "feasible_cell_count",
+        "replay_candidate_count",
+        "replayed_count",
+        "truncated",
+        "truncation_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "eligible_path_count": { "type": "integer", "minimum": 0 },
+        "evaluated_path_count": { "type": "integer", "minimum": 0 },
+        "eligible_cell_count": { "type": "integer", "minimum": 0 },
+        "evaluated_cell_count": { "type": "integer", "minimum": 0 },
+        "feasible_cell_count": { "type": "integer", "minimum": 0 },
+        "replay_candidate_count": { "type": "integer", "minimum": 0 },
+        "replayed_count": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" },
+        "truncation_reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "truncated": { "const": true } },
+            "required": ["truncated"]
+          },
+          "then": {
+            "properties": {
+              "truncation_reasons": { "type": "array", "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": { "truncation_reasons": { "const": [] } }
+          }
+        }
+      ]
+    },
+    "compiled_edit": {
+      "type": "object",
+      "required": [
+        "compiler_version",
+        "source_intent_id",
+        "intent",
+        "constraints",
+        "objective",
+        "direction",
+        "auxiliary_coordinates",
+        "index_basis",
+        "units"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "compiler_version": { "const": "bne-rop-shape-compiler/v1.0.0" },
+        "source_intent_id": { "type": "string", "minLength": 1 },
+        "intent": {
+          "$ref": "rop-shape-optimize-request.schema.json#/properties/edit_intent"
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/compiled_linear_constraint"
+          }
+        },
+        "objective": {
+          "oneOf": [
+            { "$ref": "#/$defs/compiled_linear_objective" },
+            { "$ref": "#/$defs/compiled_max_min_objective" }
+          ]
+        },
+        "direction": {
+          "oneOf": [
+            { "$ref": "#/$defs/compiled_direction" },
+            { "type": "null" }
+          ]
+        },
+        "auxiliary_coordinates": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "index_basis": { "const": "zero_based_program_step" },
+        "units": { "const": "log10_input" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "objective": {
+                "properties": {
+                  "kind": { "const": "max_min_linear_operating_point_improvement" }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["objective"]
+          },
+          "then": {
+            "properties": { "auxiliary_coordinates": { "const": ["alpha"] } }
+          },
+          "else": {
+            "properties": { "auxiliary_coordinates": { "const": [] } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "intent": {
+                "properties": { "kind": { "const": "linear_witness" } },
+                "required": ["kind"]
+              }
+            },
+            "required": ["intent"]
+          },
+          "then": { "properties": { "direction": { "type": "null" } } },
+          "else": {
+            "properties": { "direction": { "$ref": "#/$defs/compiled_direction" } }
+          }
+        }
+      ]
+    },
+    "compiled_direction": {
+      "type": "object",
+      "required": ["values", "l2_norm", "normalization", "alpha_units"],
+      "additionalProperties": false,
+      "properties": {
+        "values": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1
+        },
+        "l2_norm": { "type": "number", "exclusiveMinimum": 0 },
+        "normalization": { "const": "not_normalized" },
+        "alpha_units": { "const": "declared_raw_direction_scale" }
+      }
+    },
+    "compiled_linear_constraint": {
+      "type": "object",
+      "required": ["id", "kind", "terms", "operator", "rhs_log10", "hard"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "linear" },
+        "terms": {
+          "type": "array",
+          "items": {
+            "$ref": "rop-shape-optimize-request.schema.json#/$defs/linear_term"
+          },
+          "minItems": 1
+        },
+        "operator": { "enum": ["<=", ">=", "="] },
+        "rhs_log10": { "type": "number" },
+        "hard": { "const": true }
+      }
+    },
+    "compiled_linear_objective": {
+      "type": "object",
+      "required": ["id", "kind", "sense", "terms", "reference_value"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "linear_operating_point" },
+        "sense": { "enum": ["maximize", "minimize"] },
+        "terms": {
+          "type": "array",
+          "items": {
+            "$ref": "rop-shape-optimize-request.schema.json#/$defs/linear_term"
+          },
+          "minItems": 1
+        },
+        "reference_value": { "type": "number" }
+      }
+    },
+    "compiled_max_min_group": {
+      "type": "object",
+      "required": ["terms", "reference_value"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "terms": {
+          "type": "array",
+          "items": {
+            "$ref": "rop-shape-optimize-request.schema.json#/$defs/linear_term"
+          },
+          "minItems": 1
+        },
+        "reference_value": { "type": "number" }
+      }
+    },
+    "compiled_max_min_objective": {
+      "type": "object",
+      "required": ["id", "kind", "sense", "groups", "reference_value"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "max_min_linear_operating_point_improvement" },
+        "sense": { "const": "maximize" },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/compiled_max_min_group" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "reference_value": { "type": "number" }
+      }
+    },
+    "background_log_qK": {
+      "type": "object",
+      "required": ["symbols", "values"],
+      "additionalProperties": false,
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "number" }
+        }
+      }
+    },
+    "primary_effect": {
+      "type": "object",
+      "required": [
+        "objective_id",
+        "sense",
+        "value",
+        "effect_bound",
+        "semantics",
+        "effect_kind",
+        "reference_value",
+        "closure_support_value",
+        "cell_primary_value",
+        "selected_value",
+        "closure_support_improvement",
+        "selected_improvement",
+        "effect_tolerance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "objective_id": { "type": "string", "minLength": 1 },
+        "sense": { "enum": ["maximize", "minimize"] },
+        "value": { "type": "number" },
+        "effect_bound": { "type": "number" },
+        "semantics": {
+          "const": "closed_polyhedral_support_limit_and_secondary_realization"
+        },
+        "effect_kind": { "enum": ["linear", "balanced_minimum_improvement"] },
+        "reference_value": { "type": "number" },
+        "closure_support_value": { "type": "number" },
+        "cell_primary_value": { "type": "number" },
+        "selected_value": { "type": "number" },
+        "closure_support_improvement": { "type": "number" },
+        "selected_improvement": { "type": "number" },
+        "effect_tolerance": { "type": "number", "minimum": 0 }
+      }
+    },
+    "parameter_margin": {
+      "type": "object",
+      "required": [
+        "value",
+        "basis",
+        "coordinate_basis",
+        "dimension",
+        "equality_rank",
+        "coordinates",
+        "basis_matrix",
+        "rank_relative_tolerance",
+        "rank_absolute_threshold",
+        "zero_dimensional_convention"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "type": "number", "minimum": 0 },
+        "basis": { "const": "equality_feasible_log10_qK_subspace" },
+        "coordinate_basis": { "const": "unweighted_euclidean_log10_qK" },
+        "dimension": { "type": "integer", "minimum": 0 },
+        "equality_rank": { "type": "integer", "minimum": 0 },
+        "coordinates": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "basis_matrix": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" }
+          }
+        },
+        "rank_relative_tolerance": { "type": "number", "exclusiveMinimum": 0 },
+        "rank_absolute_threshold": { "type": "number", "minimum": 0 },
+        "zero_dimensional_convention": {
+          "enum": ["radius_zero", "not_applicable"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "dimension": { "const": 0 } },
+            "required": ["dimension"]
+          },
+          "then": {
+            "properties": {
+              "value": { "const": 0 },
+              "zero_dimensional_convention": { "const": "radius_zero" }
+            }
+          },
+          "else": {
+            "properties": {
+              "zero_dimensional_convention": { "const": "not_applicable" }
+            }
+          }
+        }
+      ]
+    },
+    "active_constraint": {
+      "type": "object",
+      "required": [
+        "row_id",
+        "row_kind",
+        "point_residual",
+        "ball_residual",
+        "normalized_residual",
+        "dual",
+        "shadow_price",
+        "shadow_price_semantics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "row_id": { "type": "string", "minLength": 1 },
+        "row_kind": {
+          "enum": [
+            "cell_equality",
+            "cell_inequality",
+            "witness_constraint",
+            "effect_bound"
+          ]
+        },
+        "point_residual": { "type": "number" },
+        "ball_residual": { "type": "number" },
+        "normalized_residual": { "type": "number" },
+        "dual": { "type": ["number", "null"] },
+        "shadow_price": { "type": ["number", "null"] },
+        "shadow_price_semantics": {
+          "const": "derivative_of_objective_value_with_respect_to_compiled_rhs"
+        }
+      }
+    },
+    "solver": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "termination_status",
+        "validation_tolerance",
+        "active_tolerance",
+        "rank_tolerance",
+        "primary_termination_status",
+        "primary_message",
+        "secondary_message",
+        "core_status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "Clarabel" },
+        "version": { "type": "string", "minLength": 1 },
+        "termination_status": { "type": "string", "minLength": 1 },
+        "validation_tolerance": { "type": "number", "exclusiveMinimum": 0 },
+        "active_tolerance": { "type": "number", "exclusiveMinimum": 0 },
+        "rank_tolerance": { "type": "number", "exclusiveMinimum": 0 },
+        "primary_termination_status": { "type": "string", "minLength": 1 },
+        "primary_message": { "type": "string" },
+        "secondary_message": { "type": "string" },
+        "core_status": { "$ref": "#/$defs/core_status" }
+      }
+    },
+    "selected_result": {
+      "type": "object",
+      "required": [
+        "cell_id",
+        "path_identity",
+        "path_idx",
+        "witness_identity",
+        "witness_vertex_indices",
+        "full_path_vertex_indices",
+        "predicted_profile",
+        "witness_input_log10",
+        "background_log_qK",
+        "kd",
+        "totals",
+        "primary_effect",
+        "parameter_margin",
+        "active_constraints",
+        "solver"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cell_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "path_identity": { "type": "string", "pattern": "^path:[1-9][0-9]*$" },
+        "path_idx": { "type": "integer", "minimum": 1 },
+        "witness_identity": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^step:[0-9]+:vertex:[1-9][0-9]*$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "witness_vertex_indices": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        },
+        "full_path_vertex_indices": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        },
+        "predicted_profile": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1
+        },
+        "witness_input_log10": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1
+        },
+        "background_log_qK": { "$ref": "#/$defs/background_log_qK" },
+        "kd": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/positive_number" },
+          "minItems": 1
+        },
+        "totals": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/positive_number" }
+        },
+        "primary_effect": { "$ref": "#/$defs/primary_effect" },
+        "parameter_margin": { "$ref": "#/$defs/parameter_margin" },
+        "active_constraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/active_constraint" }
+        },
+        "solver": { "$ref": "#/$defs/solver" }
+      }
+    },
+    "directional_request_interval": {
+      "type": "object",
+      "required": [
+        "direction",
+        "direction_l2_norm",
+        "normalization",
+        "alpha_units",
+        "cell_intervals",
+        "union_intervals",
+        "complete_over_evaluated_cells",
+        "numerical_error_count",
+        "scope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1
+        },
+        "direction_l2_norm": { "type": "number", "exclusiveMinimum": 0 },
+        "normalization": { "const": "not_normalized" },
+        "alpha_units": { "const": "declared_raw_direction_scale" },
+        "cell_intervals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/directional_cell_interval" }
+        },
+        "union_intervals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/directional_union_interval" }
+        },
+        "complete_over_evaluated_cells": { "type": "boolean" },
+        "numerical_error_count": { "type": "integer", "minimum": 0 },
+        "scope": { "enum": ["evaluated_cells", "declared_cells"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "numerical_error_count": { "const": 0 } },
+            "required": ["numerical_error_count"]
+          },
+          "then": {
+            "properties": { "complete_over_evaluated_cells": { "const": true } }
+          },
+          "else": {
+            "properties": { "complete_over_evaluated_cells": { "const": false } }
+          }
+        }
+      ]
+    },
+    "directional_cell_interval": {
+      "type": "object",
+      "required": [
+        "cell_id",
+        "path_identity",
+        "status",
+        "lower_status",
+        "upper_status",
+        "alpha_min",
+        "alpha_max",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cell_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "path_identity": { "type": "string", "pattern": "^path:[1-9][0-9]*$" },
+        "status": { "$ref": "#/$defs/core_status" },
+        "lower_status": { "$ref": "#/$defs/core_status" },
+        "upper_status": { "$ref": "#/$defs/core_status" },
+        "alpha_min": { "type": ["number", "null"] },
+        "alpha_max": { "type": ["number", "null"] },
+        "message": { "type": "string" }
+      }
+    },
+    "directional_union_interval": {
+      "type": "object",
+      "required": ["alpha_min", "alpha_max", "lower_unbounded", "upper_unbounded"],
+      "additionalProperties": false,
+      "properties": {
+        "alpha_min": { "type": ["number", "null"] },
+        "alpha_max": { "type": ["number", "null"] },
+        "lower_unbounded": { "type": "boolean" },
+        "upper_unbounded": { "type": "boolean" }
+      }
+    },
+    "core_status": {
+      "enum": ["optimal", "infeasible", "unbounded", "numerical_error"]
+    },
+    "solver_contract": {
+      "type": "object",
+      "required": [
+        "lp_backend",
+        "objective_policy",
+        "parameter_margin_basis",
+        "effect_limit_semantics",
+        "active_row_shadow_price_semantics",
+        "compiler_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "lp_backend": { "const": "Clarabel" },
+        "objective_policy": {
+          "const": "global_epsilon_lexicographic_effect_then_parameter_margin"
+        },
+        "parameter_margin_basis": {
+          "const": "equality_feasible_log10_qK_subspace"
+        },
+        "effect_limit_semantics": { "const": "closed_polyhedral_support_limit" },
+        "active_row_shadow_price_semantics": {
+          "const": "objective_derivative_with_respect_to_compiled_rhs_not_primal_parameter_derivative"
+        },
+        "compiler_version": { "const": "bne-rop-shape-compiler/v1.0.0" }
+      }
+    },
+    "replay_request_body": {
+      "type": "object",
+      "required": [
+        "rules",
+        "input_sym",
+        "output_sym",
+        "kd",
+        "totals",
+        "param_min",
+        "param_max",
+        "n_points"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "input_sym": { "type": "string", "minLength": 1 },
+        "output_sym": { "type": "string", "minLength": 1 },
+        "kd": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/positive_number" },
+          "minItems": 1
+        },
+        "totals": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/positive_number" }
+        },
+        "param_min": { "type": "number" },
+        "param_max": { "type": "number" },
+        "n_points": { "type": "integer", "minimum": 11, "maximum": 1000 }
+      }
+    },
+    "replay_request": {
+      "type": "object",
+      "required": ["endpoint", "method", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "const": "/api/v1/placer_curve" },
+        "method": { "const": "POST" },
+        "body": { "$ref": "#/$defs/replay_request_body" }
+      }
+    },
+    "replay_curve": {
+      "type": "object",
+      "required": ["param_values", "output_traj", "valid", "partial"],
+      "additionalProperties": false,
+      "properties": {
+        "param_values": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 11,
+          "maxItems": 1000
+        },
+        "output_traj": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 1
+          },
+          "minItems": 11,
+          "maxItems": 1000
+        },
+        "valid": {
+          "type": "array",
+          "items": { "type": "boolean" },
+          "minItems": 11,
+          "maxItems": 1000
+        },
+        "partial": { "type": "boolean" }
+      }
+    },
+    "two_peak_metrics": {
+      "type": "object",
+      "required": ["schema_version", "status", "sample_points", "complete", "pass"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": "bne-rop-shape-replay/v1.0.0" },
+        "status": {
+          "enum": [
+            "invalid_shape",
+            "under_resolved",
+            "invalid_threshold",
+            "partial_solver_failure",
+            "nonfinite_sample",
+            "invalid_grid",
+            "two_peaks_not_found",
+            "half_prominence_crossing_missing",
+            "pass",
+            "prominence_below_minimum"
+          ]
+        },
+        "reason": { "type": "string" },
+        "sample_points": { "type": "integer", "minimum": 0 },
+        "complete": { "type": "boolean" },
+        "pass": { "type": "boolean" },
+        "peak_candidate_count": { "type": "integer", "minimum": 0 },
+        "peak_indices": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "peak_input_log10": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "peak_output_log10": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "valley_index": { "type": "integer", "minimum": 1 },
+        "valley_input_log10": { "type": "number" },
+        "valley_output_log10": { "type": "number" },
+        "peak_separation_log10": { "type": "number", "minimum": 0 },
+        "left_prominence_log10": { "type": "number", "minimum": 0 },
+        "right_prominence_log10": { "type": "number", "minimum": 0 },
+        "left_half_prominence_width_log10": { "type": "number", "minimum": 0 },
+        "right_half_prominence_width_log10": { "type": "number", "minimum": 0 },
+        "central_half_prominence_interval_log10": { "type": "number", "minimum": 0 },
+        "half_prominence_crossings_log10": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "min_prominence_log10": { "type": "number", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "pass" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": [
+              "reason",
+              "peak_candidate_count",
+              "peak_indices",
+              "peak_input_log10",
+              "peak_output_log10",
+              "valley_index",
+              "valley_input_log10",
+              "valley_output_log10",
+              "peak_separation_log10",
+              "left_prominence_log10",
+              "right_prominence_log10",
+              "left_half_prominence_width_log10",
+              "right_half_prominence_width_log10",
+              "central_half_prominence_interval_log10",
+              "half_prominence_crossings_log10",
+              "min_prominence_log10"
+            ],
+            "properties": {
+              "sample_points": { "type": "integer", "minimum": 11, "maximum": 1000 },
+              "peak_candidate_count": { "type": "integer", "minimum": 2 },
+              "complete": { "const": true },
+              "pass": { "const": true }
+            }
+          }
+        }
+      ]
+    },
+    "replay": {
+      "type": "object",
+      "required": [
+        "status",
+        "request",
+        "request_hash",
+        "curve",
+        "metrics",
+        "result_hash",
+        "complete",
+        "pass"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": ["not_run", "pass", "failed", "partial", "numerical_error"]
+        },
+        "request": {
+          "oneOf": [
+            { "$ref": "#/$defs/replay_request" },
+            { "type": "null" }
+          ]
+        },
+        "request_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256_hex" },
+            { "type": "null" }
+          ]
+        },
+        "curve": {
+          "oneOf": [
+            { "$ref": "#/$defs/replay_curve" },
+            { "type": "null" }
+          ]
+        },
+        "metrics": {
+          "oneOf": [
+            { "$ref": "#/$defs/two_peak_metrics" },
+            { "type": "null" }
+          ]
+        },
+        "result_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256_hex" },
+            { "type": "null" }
+          ]
+        },
+        "complete": { "type": "boolean" },
+        "pass": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "pass" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "request": { "$ref": "#/$defs/replay_request" },
+              "request_hash": { "$ref": "#/$defs/sha256_hex" },
+              "curve": {
+                "allOf": [
+                  { "$ref": "#/$defs/replay_curve" },
+                  {
+                    "properties": {
+                      "valid": {
+                        "type": "array",
+                        "items": { "const": true },
+                        "minItems": 11,
+                        "maxItems": 1000
+                      },
+                      "partial": { "const": false }
+                    }
+                  }
+                ]
+              },
+              "metrics": {
+                "allOf": [
+                  { "$ref": "#/$defs/two_peak_metrics" },
+                  {
+                    "properties": {
+                      "status": { "const": "pass" },
+                      "complete": { "const": true },
+                      "pass": { "const": true }
+                    }
+                  }
+                ]
+              },
+              "result_hash": { "$ref": "#/$defs/sha256_hex" },
+              "complete": { "const": true },
+              "pass": { "const": true }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "failed" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "request": { "$ref": "#/$defs/replay_request" },
+              "request_hash": { "$ref": "#/$defs/sha256_hex" },
+              "curve": { "$ref": "#/$defs/replay_curve" },
+              "metrics": {
+                "allOf": [
+                  { "$ref": "#/$defs/two_peak_metrics" },
+                  {
+                    "properties": {
+                      "complete": { "const": true },
+                      "pass": { "const": false }
+                    }
+                  }
+                ]
+              },
+              "result_hash": { "$ref": "#/$defs/sha256_hex" },
+              "complete": { "const": true },
+              "pass": { "const": false }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "partial" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "request": { "$ref": "#/$defs/replay_request" },
+              "request_hash": { "$ref": "#/$defs/sha256_hex" },
+              "curve": { "$ref": "#/$defs/replay_curve" },
+              "metrics": { "$ref": "#/$defs/two_peak_metrics" },
+              "result_hash": { "$ref": "#/$defs/sha256_hex" },
+              "complete": { "const": false },
+              "pass": { "const": false }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "not_run" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "request": { "type": "null" },
+              "request_hash": { "type": "null" },
+              "curve": { "type": "null" },
+              "metrics": { "type": "null" },
+              "result_hash": { "type": "null" },
+              "complete": { "const": false },
+              "pass": { "const": false }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "numerical_error" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "request": { "type": "null" },
+              "request_hash": { "type": "null" },
+              "curve": { "type": "null" },
+              "metrics": { "type": "null" },
+              "result_hash": { "$ref": "#/$defs/sha256_hex" },
+              "complete": { "const": false },
+              "pass": { "const": false }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

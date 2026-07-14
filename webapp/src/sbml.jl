@@ -281,6 +281,8 @@ Parse the binding-network subset of an SBML document into a NetworkIR and a
 list of human-readable warnings for anything that could not be represented
 (extra compartments, modifiers, missing/ambiguous Kd, unsupported SBML
 constructs). Throws `ArgumentError` if the XML is malformed or has no model.
+Throws `IRValidationError` when an explicit Kd declaration/reference is
+missing a numeric value or violates the canonical finite-positive invariant.
 """
 function sbml_to_network_ir(xml::AbstractString)
     warnings = String[]
@@ -309,8 +311,11 @@ function sbml_to_network_ir(xml::AbstractString)
             "$ncomp compartments collapsed into one well-mixed compartment (spatial structure dropped).")
     end
 
-    # Global parameters: id -> value.
+    # Global parameters: retain both the parsed values and declarations.  A
+    # Kd-like declaration with a missing or unparseable value is invalid input,
+    # not an absent Kd that may use the lossy 1.0 fallback.
     global_params = Dict{String, Float64}()
+    global_param_nodes = Dict{String, EzXML.Node}()
     param_list = _sbml_child(model, "listOfParameters")
     species_decls = SpeciesDecl[]
     param_dists = ParameterDistribution[]
@@ -318,6 +323,10 @@ function sbml_to_network_ir(xml::AbstractString)
         for p in _sbml_children(param_list, "parameter")
             id = _sbml_attr(p, "id", "")
             v = _sbml_num(p, "value")
+            if !isempty(id)
+                global_param_nodes[id] = p
+                v === nothing && delete!(global_params, id)
+            end
             if !isempty(id) && v !== nothing
                 global_params[id] = v
                 # Surface non-Kd parameters as point distributions so users
@@ -379,7 +388,7 @@ function sbml_to_network_ir(xml::AbstractString)
 
             formula = _side_to_string(reactants) * " <-> " * _side_to_string(products)
 
-            kd, kd_note = _extract_kd(rx, rid, global_params)
+            kd, kd_note = _extract_kd(rx, rid, global_params, global_param_nodes)
             kd_note !== nothing && push!(warnings, kd_note)
 
             push!(reaction_decls, ReactionDecl(
@@ -411,6 +420,11 @@ function sbml_to_network_ir(xml::AbstractString)
             "sbml" => Dict{String, Any}("id" => model_id, "name" => model_name),
         ),
     )
+    # NetworkIR structs can be constructed directly, so importing must invoke
+    # the same semantic validator used by `parse_network_ir`. In particular,
+    # explicit SBML Kd values must remain finite and strictly positive; only a
+    # genuinely missing Kd follows the documented 1.0 + warning fallback.
+    _validate_network_ir_semantics(ir)
     return ir, warnings
 end
 
@@ -432,7 +446,20 @@ end
 # kineticLaw whose id looks like a dissociation constant, then a kineticLaw
 # local parameter, then the conventional Kd_<rid> global parameter; else
 # default to 1.0 and report it.
-function _extract_kd(reaction, rid, global_params)
+function _invalid_sbml_kd_value(rid, id, node; scope)
+    detail = if !haskey(node, "value")
+        "is missing its required numeric `value` attribute"
+    elseif isempty(strip(node["value"]))
+        "has an empty `value` attribute"
+    else
+        "has a non-numeric `value` attribute (`$(node["value"])`)"
+    end
+    throw(IRValidationError(
+        "Reaction $rid: $scope Kd parameter `$id` $detail",
+        "sbml.reactions.$rid.kineticLaw"))
+end
+
+function _extract_kd(reaction, rid, global_params, global_param_nodes)
     klaw = _sbml_child(reaction, "kineticLaw")
     kd_like(id) = occursin(r"^(kd|k_d|keq)"i, id) || occursin(r"^Kd_"i, id)
 
@@ -442,8 +469,17 @@ function _extract_kd(reaction, rid, global_params)
         if math !== nothing
             for ci in _all_descendants(math, "ci")
                 ref = strip(EzXML.nodecontent(ci))
-                if haskey(global_params, ref) && kd_like(ref)
-                    return global_params[ref], nothing
+                if kd_like(ref)
+                    if haskey(global_params, ref)
+                        return global_params[ref], nothing
+                    elseif haskey(global_param_nodes, ref)
+                        _invalid_sbml_kd_value(rid, ref, global_param_nodes[ref];
+                            scope="global")
+                    else
+                        throw(IRValidationError(
+                            "Reaction $rid: Kd reference `$ref` has no declared global parameter",
+                            "sbml.reactions.$rid.kineticLaw"))
+                    end
                 end
             end
         end
@@ -454,14 +490,23 @@ function _extract_kd(reaction, rid, global_params)
             for lp in EzXML.eachelement(lp_list)
                 id = _sbml_attr(lp, "id", "")
                 v = _sbml_num(lp, "value")
-                v !== nothing && kd_like(id) && return v, nothing
+                if kd_like(id)
+                    v !== nothing && return v, nothing
+                    _invalid_sbml_kd_value(rid, id, lp; scope="local")
+                end
             end
         end
     end
 
     conventional = "Kd_$(rid)"
     haskey(global_params, conventional) && return global_params[conventional], nothing
+    haskey(global_param_nodes, conventional) &&
+        _invalid_sbml_kd_value(rid, conventional, global_param_nodes[conventional];
+            scope="global")
     haskey(global_params, "Kd_r") && return global_params["Kd_r"], nothing
+    haskey(global_param_nodes, "Kd_r") &&
+        _invalid_sbml_kd_value(rid, "Kd_r", global_param_nodes["Kd_r"];
+            scope="global")
 
     return 1.0, "Reaction $rid: no dissociation constant found in SBML; defaulted Kd = 1.0."
 end

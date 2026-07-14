@@ -1,13 +1,23 @@
 // Biocircuits Explorer — Parameter Scan & ROP Polyhedron Functions
 
 import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.js';
-import { api, showToast, handleNodeError, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
+import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, hexToRgba, themedColorbar, prefersLightTheme } from './theme.js';
 import { convexHull2D } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getQKSymbolsForNode, getModelContextForNode, findUpstreamNodeByType, triggerConfigUpdate, ensureModelSession } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getQKSymbolsForNode, getModelContextForNode, getModelContextFromBuilder, findUpstreamNodeByType, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { getConnectedSISOConfig, getConnectedSISOSelection, normalizeSISOConfig } from './siso.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { formatPartialValidityNotice, prepareScan1DPlotData, prepareScan2DPlotData } from './plot-validity.js';
+import {
+  beginScanExecution,
+  clearStoredScanResult,
+  executionDependencyConnections,
+  invalidateScanExecution,
+  isCurrentScanExecution,
+  releaseScanExecution,
+  scanUpstreamSignature,
+  scheduleCurrentScanPlot,
+} from './execution-lifecycle.js';
 
 function syncScanValidityNotice(plotId, prepared) {
   if (typeof document === 'undefined') return;
@@ -29,6 +39,237 @@ function syncScanValidityNotice(plotId, prepared) {
   noticeEl.textContent = message;
 }
 
+function scanModelIdentity(nodeId) {
+  const dependencyConnections = executionDependencyConnections();
+  const visited = new Set();
+  const findBuilder = (current) => {
+    if (!current || visited.has(current)) return null;
+    visited.add(current);
+    if (nodeRegistry[current]?.type === 'model-builder') return current;
+    for (const conn of dependencyConnections) {
+      if (conn?.toNode !== current) continue;
+      const found = findBuilder(conn.fromNode);
+      if (found) return found;
+    }
+    return null;
+  };
+  const builderNodeId = findBuilder(nodeId);
+  const context = builderNodeId ? getModelContextFromBuilder(builderNodeId) : null;
+  if (!builderNodeId || !context) return null;
+  return {
+    builderNodeId,
+    networkIrHash: context.networkIrHash || context.network_ir_hash || null,
+    inputFingerprint: context.inputFingerprint || null,
+    builtForRevision: context.builtForRevision ?? null,
+  };
+}
+
+function scanDependencyFingerprint(nodeId, endpoint, config) {
+  return JSON.stringify({
+    endpoint,
+    config,
+    model: scanModelIdentity(nodeId),
+    upstream: scanUpstreamSignature(nodeId),
+  });
+}
+
+function setScanAttemptMessage(nodeId, message) {
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  if (contentEl) {
+    contentEl.innerHTML = `<span class="text-dim scan-result-status">${message}</span>`;
+  }
+}
+
+function invalidScanAttempt(nodeId, ticket, message) {
+  if (message) alert(message);
+  if (isCurrentScanExecution(nodeId, ticket)) {
+    clearStoredScanResult(nodeId, 'Scan did not run — fix the inputs and try again.');
+    releaseScanExecution(nodeId, ticket);
+  }
+  return null;
+}
+
+function readLegacyScan1DConfig(nodeId) {
+  return {
+    param_symbol: document.getElementById(`${nodeId}-param`)?.value || '',
+    param_min: parseFloat(document.getElementById(`${nodeId}-min`)?.value),
+    param_max: parseFloat(document.getElementById(`${nodeId}-max`)?.value),
+    n_points: parseInt(document.getElementById(`${nodeId}-points`)?.value, 10),
+    output_exprs: [document.getElementById(`${nodeId}-expr`)?.value?.trim() || ''],
+  };
+}
+
+function readLegacyScan2DConfig(nodeId) {
+  return {
+    param1_symbol: document.getElementById(`${nodeId}-param1`)?.value || '',
+    param2_symbol: document.getElementById(`${nodeId}-param2`)?.value || '',
+    param1_min: parseFloat(document.getElementById(`${nodeId}-min1`)?.value),
+    param1_max: parseFloat(document.getElementById(`${nodeId}-max1`)?.value),
+    param2_min: parseFloat(document.getElementById(`${nodeId}-min2`)?.value),
+    param2_max: parseFloat(document.getElementById(`${nodeId}-max2`)?.value),
+    n_grid: parseInt(document.getElementById(`${nodeId}-grid`)?.value, 10),
+    output_expr: document.getElementById(`${nodeId}-expr`)?.value?.trim() || '',
+  };
+}
+
+function readConnectedScanConfig(nodeId, expectedType) {
+  const conn = executionDependencyConnections()
+    .find(candidate => candidate.toNode === nodeId && candidate.toPort === 'params');
+  if (!conn || nodeRegistry[conn.fromNode]?.type !== expectedType) return null;
+  return cloneSerializable(getNodeSerialData(conn.fromNode, expectedType));
+}
+
+function prepareConnectedScanConfig(nodeId, expectedType, ticket) {
+  const conn = executionDependencyConnections()
+    .find(candidate => candidate.toNode === nodeId && candidate.toPort === 'params');
+  if (!conn) {
+    return invalidScanAttempt(nodeId, ticket,
+      `Please connect to a ${expectedType === 'scan-1d-params' ? 'Scan 1D' : 'Scan 2D'} Config node`);
+  }
+  const paramsNode = nodeRegistry[conn.fromNode];
+  if (!paramsNode || paramsNode.type !== expectedType) {
+    return invalidScanAttempt(nodeId, ticket, 'Config node has no configuration. Please configure it first.');
+  }
+
+  // Synchronize the exact DOM values used by this click. Excluding this result
+  // node prevents the synchronization itself from retiring its new ticket;
+  // any other result fed by the config is still invalidated.
+  triggerConfigUpdate(conn.fromNode, expectedType, { preserveExecutionNodeId: nodeId });
+  return cloneSerializable(paramsNode.data?.config || getNodeSerialData(conn.fromNode, expectedType));
+}
+
+function validateScanConfig(nodeId, ticket, dimension, config) {
+  if (!isCurrentScanExecution(nodeId, ticket)) return null;
+  if (!config) {
+    return invalidScanAttempt(nodeId, ticket, 'Config node has no configuration. Please configure it first.');
+  }
+  if (dimension === 1) {
+    if (!config.param_symbol) {
+      return invalidScanAttempt(nodeId, ticket, 'Please select a scan parameter');
+    }
+    if (!config.output_exprs?.[0]) {
+      return invalidScanAttempt(nodeId, ticket, 'Please enter an output expression');
+    }
+  } else {
+    if (!config.param1_symbol || !config.param2_symbol) {
+      return invalidScanAttempt(nodeId, ticket, 'Please select both X and Y axis parameters');
+    }
+    if (!config.output_expr) {
+      return invalidScanAttempt(nodeId, ticket, 'Please enter an output expression');
+    }
+  }
+  return config;
+}
+
+async function executeScanRequest(nodeId, definition) {
+  const ticket = beginScanExecution(nodeId, definition.endpoint);
+  if (!ticket) return false;
+  clearStoredScanResult(nodeId, 'Preparing scan...');
+
+  const prepared = validateScanConfig(
+    nodeId,
+    ticket,
+    definition.dimension,
+    definition.prepareConfig(ticket),
+  );
+  if (!prepared || !isCurrentScanExecution(nodeId, ticket)) return false;
+
+  setNodeLoading(nodeId, true);
+  setScanAttemptMessage(nodeId, 'Computing scan...');
+  let requestIsCurrent = null;
+  try {
+    const sessionId = await ensureModelSession(nodeId, {
+      connectionResolver: executionDependencyConnections,
+    });
+    if (!isCurrentScanExecution(nodeId, ticket)) return false;
+
+    const currentConfig = definition.readCurrentConfig();
+    const modelIdentity = scanModelIdentity(nodeId);
+    if (!currentConfig || !modelIdentity) {
+      invalidateScanExecution(nodeId, 'scan-dependency-missing-before-request');
+      return false;
+    }
+    const dependencyFingerprint = scanDependencyFingerprint(
+      nodeId,
+      definition.endpoint,
+      currentConfig,
+    );
+    ticket.dependencyFingerprint = dependencyFingerprint;
+    const request = { session_id: sessionId, ...currentConfig };
+    requestIsCurrent = () => {
+      if (!isCurrentScanExecution(nodeId, ticket)) return false;
+      const liveConfig = definition.readCurrentConfig();
+      if (!liveConfig) return false;
+      return scanDependencyFingerprint(nodeId, definition.endpoint, liveConfig) ===
+        ticket.dependencyFingerprint;
+    };
+
+    const data = await api(definition.endpoint, request, { statusIsCurrent: requestIsCurrent });
+    if (!requestIsCurrent()) {
+      if (isCurrentScanExecution(nodeId, ticket)) {
+        invalidateScanExecution(nodeId, 'scan-dependency-changed-during-request');
+      }
+      return false;
+    }
+
+    const info = nodeRegistry[nodeId];
+    info.data = info.data || {};
+    info.data[definition.resultKey] = data;
+    info.data[definition.metaKey] = {
+      contract: 'bne-scan-execution/v1',
+      endpoint: definition.endpoint,
+      request: cloneSerializable(request),
+      requestFingerprint: dependencyFingerprint,
+      model: cloneSerializable(modelIdentity),
+      upstreamSignature: scanUpstreamSignature(nodeId),
+      executedAt: new Date().toISOString(),
+      historical: false,
+    };
+
+    const contentEl = document.getElementById(`${nodeId}-content`);
+    if (!contentEl || !requestIsCurrent()) return false;
+    contentEl.dataset.resultState = 'current';
+    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
+    commitWorkspaceSnapshot(definition.snapshotLabel);
+    scheduleCurrentScanPlot(nodeId, ticket, () => {
+      if (!requestIsCurrent()) {
+        if (isCurrentScanExecution(nodeId, ticket)) {
+          invalidateScanExecution(nodeId, 'scan-dependency-changed-before-plot');
+        }
+        return;
+      }
+      definition.plot(data, `${nodeId}-plot`);
+      setupPlotResize(nodeId, `${nodeId}-plot`);
+    });
+    return true;
+  } catch (error) {
+    if (!isCurrentScanExecution(nodeId, ticket)) return false;
+    if (requestIsCurrent && !requestIsCurrent()) {
+      invalidateScanExecution(nodeId, 'scan-dependency-changed-during-request');
+      return false;
+    }
+    handleNodeError(error, nodeId, definition.operationLabel);
+    const contentEl = document.getElementById(`${nodeId}-content`);
+    renderNodeError(contentEl, error);
+    return false;
+  } finally {
+    if (releaseScanExecution(nodeId, ticket)) {
+      setNodeLoading(nodeId, false);
+    }
+  }
+}
+
+export function setupLegacyScanInputInvalidation(nodeId) {
+  const node = document.getElementById(nodeId);
+  if (!node) return;
+  node.querySelectorAll('input:not([data-action]), select:not([data-action])').forEach((input) => {
+    const eventType = input.tagName === 'SELECT' ? 'change' : 'input';
+    input.addEventListener(eventType, () => {
+      invalidateScanExecution(nodeId, 'scan-config-input-changed');
+    });
+  });
+}
+
 // ===== Parameter Scan 1D Helper Functions =====
 
 export function insertSpecies1D(nodeId) {
@@ -40,15 +281,14 @@ export function insertSpecies1D(nodeId) {
     const info = nodeRegistry[nodeId];
     if (info && info.type === 'scan-1d-params') {
       triggerConfigUpdate(nodeId, info.type);
+    } else if (info?.type === 'parameter-scan-1d') {
+      invalidateScanExecution(nodeId, 'scan-output-expression-changed');
     }
   }
 }
 
 export function updateScan1DConfig(nodeId) {
   const paramSelect = document.getElementById(`${nodeId}-param`);
-  const minInput = document.getElementById(`${nodeId}-min`);
-  const maxInput = document.getElementById(`${nodeId}-max`);
-  const pointsInput = document.getElementById(`${nodeId}-points`);
   const exprInput = document.getElementById(`${nodeId}-expr`);
 
   if (!paramSelect.value) {
@@ -61,123 +301,36 @@ export function updateScan1DConfig(nodeId) {
     return;
   }
 
-  // Store config in node data
-  nodeRegistry[nodeId].data.config = {
-    param_symbol: paramSelect.value,
-    param_min: parseFloat(minInput.value),
-    param_max: parseFloat(maxInput.value),
-    n_points: parseInt(pointsInput.value),
-    output_exprs: [exprInput.value.trim()],
-  };
-
+  triggerConfigUpdate(nodeId, 'scan-1d-params');
   showToast('Configuration updated');
 }
 
 export async function runParameterScan1D(nodeId) {
-  const paramSymbol = document.getElementById(`${nodeId}-param`).value;
-  const min = parseFloat(document.getElementById(`${nodeId}-min`).value);
-  const max = parseFloat(document.getElementById(`${nodeId}-max`).value);
-  const points = parseInt(document.getElementById(`${nodeId}-points`).value);
-
-  const expr = document.getElementById(`${nodeId}-expr`).value.trim();
-  if (!expr) {
-    alert('Please enter an output expression');
-    return;
-  }
-
-  setNodeLoading(nodeId, true);
-  const contentEl = document.getElementById(`${nodeId}-content`);
-
-  try {
-    const sessionId = await ensureModelSession(nodeId);
-    const data = await api('parameter_scan_1d', {
-      session_id: sessionId,
-      param_symbol: paramSymbol,
-      param_min: min,
-      param_max: max,
-      n_points: points,
-      output_exprs: [expr],
-    });
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).scan1DResult = data;
-    }
-
-    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-    commitWorkspaceSnapshot('scan-1d');
-    setTimeout(() => {
-      plotParameterScan1D(data, `${nodeId}-plot`);
-      setupPlotResize(nodeId, `${nodeId}-plot`);
-    }, 50);
-  } catch (e) {
-    handleNodeError(e, nodeId, 'Parameter scan 1D');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
-  } finally {
-    setNodeLoading(nodeId, false);
-  }
+  return executeScanRequest(nodeId, {
+    endpoint: 'parameter_scan_1d',
+    dimension: 1,
+    resultKey: 'scan1DResult',
+    metaKey: 'scan1DResultMeta',
+    snapshotLabel: 'scan-1d',
+    operationLabel: 'Parameter scan 1D',
+    prepareConfig: () => readLegacyScan1DConfig(nodeId),
+    readCurrentConfig: () => readLegacyScan1DConfig(nodeId),
+    plot: plotParameterScan1D,
+  });
 }
 
 export async function executeScan1DResult(nodeId) {
-  // Find connected params node
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
-  if (!conn) {
-    alert('Please connect to a Scan 1D Config node');
-    return;
-  }
-
-  const paramsNode = nodeRegistry[conn.fromNode];
-  if (!paramsNode) {
-    alert('Config node has no configuration. Please configure it first.');
-    return;
-  }
-
-  // Sync latest DOM values to avoid stale config when user changed fields just before Run.
-  triggerConfigUpdate(conn.fromNode, paramsNode.type || 'scan-1d-params');
-  const config = paramsNode.data?.config;
-  if (!config) {
-    alert('Config node has no configuration. Please configure it first.');
-    return;
-  }
-
-  // Validate required fields
-  if (!config.param_symbol) {
-    alert('Please select a scan parameter in the config node');
-    return;
-  }
-
-  if (!config.output_exprs || !config.output_exprs[0]) {
-    alert('Please enter an output expression in the config node');
-    return;
-  }
-
-  setNodeLoading(nodeId, true);
-  const contentEl = document.getElementById(`${nodeId}-content`);
-
-  try {
-    const sessionId = await ensureModelSession(nodeId);
-    const data = await api('parameter_scan_1d', {
-      session_id: sessionId,
-      param_symbol: config.param_symbol,
-      param_min: config.param_min,
-      param_max: config.param_max,
-      n_points: config.n_points,
-      output_exprs: config.output_exprs,
-    });
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).scan1DResult = data;
-    }
-
-    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-    commitWorkspaceSnapshot('scan-1d');
-    setTimeout(() => {
-      plotParameterScan1D(data, `${nodeId}-plot`);
-      setupPlotResize(nodeId, `${nodeId}-plot`);
-    }, 50);
-  } catch (e) {
-    handleNodeError(e, nodeId, 'Parameter scan 1D');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
-  } finally {
-    setNodeLoading(nodeId, false);
-  }
+  return executeScanRequest(nodeId, {
+    endpoint: 'parameter_scan_1d',
+    dimension: 1,
+    resultKey: 'scan1DResult',
+    metaKey: 'scan1DResultMeta',
+    snapshotLabel: 'scan-1d',
+    operationLabel: 'Parameter scan 1D',
+    prepareConfig: ticket => prepareConnectedScanConfig(nodeId, 'scan-1d-params', ticket),
+    readCurrentConfig: () => readConnectedScanConfig(nodeId, 'scan-1d-params'),
+    plot: plotParameterScan1D,
+  });
 }
 
 // ===== Parameter Scan 1D Plotting =====
@@ -220,6 +373,8 @@ export function insertSpecies2D(nodeId) {
     const info = nodeRegistry[nodeId];
     if (info && info.type === 'scan-2d-params') {
       triggerConfigUpdate(nodeId, info.type);
+    } else if (info?.type === 'parameter-scan-2d') {
+      invalidateScanExecution(nodeId, 'scan-output-expression-changed');
     }
   }
 }
@@ -227,11 +382,6 @@ export function insertSpecies2D(nodeId) {
 export function updateScan2DConfig(nodeId) {
   const param1 = document.getElementById(`${nodeId}-param1`).value;
   const param2 = document.getElementById(`${nodeId}-param2`).value;
-  const min1 = parseFloat(document.getElementById(`${nodeId}-min1`).value);
-  const max1 = parseFloat(document.getElementById(`${nodeId}-max1`).value);
-  const min2 = parseFloat(document.getElementById(`${nodeId}-min2`).value);
-  const max2 = parseFloat(document.getElementById(`${nodeId}-max2`).value);
-  const points = parseInt(document.getElementById(`${nodeId}-points`).value);
   const expr = document.getElementById(`${nodeId}-expr`).value.trim();
 
   if (!param1 || !param2) {
@@ -244,126 +394,36 @@ export function updateScan2DConfig(nodeId) {
     return;
   }
 
-  nodeRegistry[nodeId].data.config = {
-    param_symbol_1: param1,
-    param_symbol_2: param2,
-    param_min_1: min1,
-    param_max_1: max1,
-    param_min_2: min2,
-    param_max_2: max2,
-    n_points: points,
-    output_exprs: [expr],
-  };
-
+  triggerConfigUpdate(nodeId, 'scan-2d-params');
   showToast('Configuration updated');
 }
 
 export async function executeScan2DResult(nodeId) {
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
-  if (!conn) {
-    alert('Please connect to a Scan 2D Config node');
-    return;
-  }
-
-  const paramsNode = nodeRegistry[conn.fromNode];
-  if (!paramsNode) {
-    alert('Config node has no configuration. Please configure it first.');
-    return;
-  }
-
-  // Sync latest DOM values to avoid stale config when user changed fields just before Run.
-  triggerConfigUpdate(conn.fromNode, paramsNode.type || 'scan-2d-params');
-  const config = paramsNode.data?.config;
-  if (!config) {
-    alert('Config node has no configuration. Please configure it first.');
-    return;
-  }
-
-  // Validate required fields
-  if (!config.param1_symbol || !config.param2_symbol) {
-    alert('Please select both X and Y axis parameters in the config node');
-    return;
-  }
-
-  if (!config.output_expr) {
-    alert('Please enter an output expression in the config node');
-    return;
-  }
-
-  setNodeLoading(nodeId, true);
-  const contentEl = document.getElementById(`${nodeId}-content`);
-
-  try {
-    const sessionId = await ensureModelSession(nodeId);
-    const data = await api('parameter_scan_2d', {
-      session_id: sessionId,
-      ...config
-    });
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).scan2DResult = data;
-    }
-
-    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-    commitWorkspaceSnapshot('scan-2d');
-    setTimeout(() => {
-      plotParameterScan2D(data, `${nodeId}-plot`);
-      setupPlotResize(nodeId, `${nodeId}-plot`);
-    }, 50);
-  } catch (e) {
-    handleNodeError(e, nodeId, 'Parameter scan 2D');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
-  } finally {
-    setNodeLoading(nodeId, false);
-  }
+  return executeScanRequest(nodeId, {
+    endpoint: 'parameter_scan_2d',
+    dimension: 2,
+    resultKey: 'scan2DResult',
+    metaKey: 'scan2DResultMeta',
+    snapshotLabel: 'scan-2d',
+    operationLabel: 'Parameter scan 2D',
+    prepareConfig: ticket => prepareConnectedScanConfig(nodeId, 'scan-2d-params', ticket),
+    readCurrentConfig: () => readConnectedScanConfig(nodeId, 'scan-2d-params'),
+    plot: plotParameterScan2D,
+  });
 }
 
 export async function runParameterScan2D(nodeId) {
-  const param1 = document.getElementById(`${nodeId}-param1`).value;
-  const param2 = document.getElementById(`${nodeId}-param2`).value;
-  const min1 = parseFloat(document.getElementById(`${nodeId}-min1`).value);
-  const max1 = parseFloat(document.getElementById(`${nodeId}-max1`).value);
-  const min2 = parseFloat(document.getElementById(`${nodeId}-min2`).value);
-  const max2 = parseFloat(document.getElementById(`${nodeId}-max2`).value);
-  const grid = parseInt(document.getElementById(`${nodeId}-grid`).value);
-  const expr = document.getElementById(`${nodeId}-expr`).value.trim();
-
-  if (!expr) {
-    alert('Please enter an output expression');
-    return;
-  }
-
-  setNodeLoading(nodeId, true);
-  const contentEl = document.getElementById(`${nodeId}-content`);
-
-  try {
-    const sessionId = await ensureModelSession(nodeId);
-    const data = await api('parameter_scan_2d', {
-      session_id: sessionId,
-      param1_symbol: param1,
-      param2_symbol: param2,
-      param1_min: min1,
-      param1_max: max1,
-      param2_min: min2,
-      param2_max: max2,
-      n_grid: grid,
-      output_expr: expr,
-    });
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).scan2DResult = data;
-    }
-
-    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-    commitWorkspaceSnapshot('scan-2d');
-    setTimeout(() => {
-      plotParameterScan2D(data, `${nodeId}-plot`);
-      setupPlotResize(nodeId, `${nodeId}-plot`);
-    }, 50);
-  } catch (e) {
-    handleNodeError(e, nodeId, 'Parameter scan 2D');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
-  } finally {
-    setNodeLoading(nodeId, false);
-  }
+  return executeScanRequest(nodeId, {
+    endpoint: 'parameter_scan_2d',
+    dimension: 2,
+    resultKey: 'scan2DResult',
+    metaKey: 'scan2DResultMeta',
+    snapshotLabel: 'scan-2d',
+    operationLabel: 'Parameter scan 2D',
+    prepareConfig: () => readLegacyScan2DConfig(nodeId),
+    readCurrentConfig: () => readLegacyScan2DConfig(nodeId),
+    plot: plotParameterScan2D,
+  });
 }
 
 // ===== Parameter Scan 2D Plotting =====
@@ -477,7 +537,7 @@ export async function executeROPPolyResult(nodeId) {
     renderROPPolyhedronOutput(nodeId, contentEl, data, config);
   } catch (e) {
     handleNodeError(e, nodeId, 'ROP polyhedron');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -514,7 +574,7 @@ export async function runROPPolyhedron(nodeId) {
     renderROPPolyhedronOutput(nodeId, contentEl, data, config);
   } catch (e) {
     handleNodeError(e, nodeId, 'ROP polyhedron');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -524,7 +584,7 @@ export function renderROPPolyhedronOutput(nodeId, contentEl, data, config = {}) 
   const axisSummary = (data.pairs || config.pairs || []).map((pair, idx) => {
     const xSymbol = pair.x_symbol || pair.xSymbol || '?';
     const qkSymbol = pair.qk_symbol || pair.qkSymbol || '?';
-    return `<span class="summary-chip">A${idx + 1}: ${xSymbol} / ${qkSymbol}</span>`;
+    return `<span class="summary-chip">A${idx + 1}: ${escapeHtml(xSymbol)} / ${escapeHtml(qkSymbol)}</span>`;
   }).join('');
   const hasInnerPoints = (data.inner_points || []).length > 0;
 
@@ -534,7 +594,7 @@ export function renderROPPolyhedronOutput(nodeId, contentEl, data, config = {}) 
 
   contentEl.innerHTML = `
     <div class="siso-summary-line">
-      <span class="summary-chip"><strong>${data.dimension || config.dimension}D</strong></span>
+      <span class="summary-chip"><strong>${escapeHtml(data.dimension || config.dimension)}D</strong></span>
       ${axisSummary}
     </div>
     <div class="siso-summary-line">

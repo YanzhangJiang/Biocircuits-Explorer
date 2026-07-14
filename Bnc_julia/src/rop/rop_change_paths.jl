@@ -70,8 +70,19 @@ function _calc_RO_for_single_path(
     change_qK_indices::AbstractVector{<:Integer},
     observe_x_idx,
     change_qK_signs::AbstractVector{<:Integer},
+    ;
+    cancel_check=_NO_CANCEL_CHECK,
 )::Vector{Vector{Float64}}
-    return [_calc_change_response_for_vertex(model, vertex_idx, change_qK_indices, observe_x_idx, change_qK_signs) for vertex_idx in path]
+    cancel_check()
+    result = Vector{Vector{Float64}}(undef, length(path))
+    for i in eachindex(path)
+        (Int(i) & 0xff) == 0 && cancel_check()
+        result[i] = _calc_change_response_for_vertex(
+            model, path[i], change_qK_indices, observe_x_idx,
+            change_qK_signs)
+    end
+    cancel_check()
+    return result
 end
 
 """
@@ -92,7 +103,9 @@ function get_RO_path(
     deduplicate::Bool=false,
     keep_singular::Bool=true,
     keep_nonasymptotic::Bool=true,
+    cancel_check=_NO_CANCEL_CHECK,
 )
+    cancel_check()
     rgm_idx_shift_pth = get_idx.(Ref(model), rgm_idx_shift_pth)
     observe_x_idx = locate_sym_x(model, observe_x)
 
@@ -103,10 +116,15 @@ function get_RO_path(
     ord_path = if isnothing(change_qK_indices)
         isnothing(change_qK) && error("change_qK is required when change_qK_indices is not provided.")
         change_qK_idx = locate_sym_qK(model, change_qK)
-        _calc_RO_for_single_path(model, rgm_idx_shift_pth, change_qK_idx, observe_x_idx)
+        _calc_RO_for_single_path(
+            model, rgm_idx_shift_pth, change_qK_idx, observe_x_idx;
+            cancel_check=cancel_check)
     else
         sign_vals = isnothing(change_qK_signs) ? fill(Int8(1), length(change_qK_indices)) : Int8[Int8(sign) for sign in change_qK_signs]
-        _calc_RO_for_single_path(model, rgm_idx_shift_pth, Int[Int(idx) for idx in change_qK_indices], observe_x_idx, sign_vals)
+        _calc_RO_for_single_path(
+            model, rgm_idx_shift_pth,
+            Int[Int(idx) for idx in change_qK_indices], observe_x_idx,
+            sign_vals; cancel_check=cancel_check)
     end
 
     mask = _get_mask(model, rgm_idx_shift_pth;
@@ -284,7 +302,10 @@ get_C_C0_nullity_qK(grh::ChangePaths, pth_idx) = get_polyhedron(grh, pth_idx) |>
         recalculate=false, constraint_C=nothing, constraint_C0=nothing,
         constraint_nullity=0, kwargs...) -> Vector{Volume}
 
-Volumes of the projected path polyhedra for the selected change paths.
+Volumes of the projected path polyhedra for the selected change paths. Only the
+unrebased estimator with no explicit estimator keywords uses the legacy
+single-value path cache. Rebased or customized estimates are computed
+ephemerally.
 """
 function get_volumes(
     grh::ChangePaths,
@@ -298,6 +319,8 @@ function get_volumes(
     kwargs...,
 )
     pth_idx = isnothing(pth_idx) ? collect(1:length(grh.rgm_paths)) : get_idx.(Ref(grh), pth_idx)
+    unique_pth_idx = unique(pth_idx)
+    has_extra_constraint = _has_extra_constraint(constraint_C, constraint_C0)
 
     rebase_mat = if !isnothing(rebase_mat)
         @assert !rebase_K "Cannot specify both rebase_K and providing rebase_mat"
@@ -309,19 +332,40 @@ function get_volumes(
     else
         nothing
     end
+    isempty(unique_pth_idx) && return Volume[]
 
-    if _has_extra_constraint(constraint_C, constraint_C0)
+    if has_extra_constraint
         polys = get_polyhedra(
             grh,
-            pth_idx;
+            unique_pth_idx;
             constraint_C=constraint_C,
             constraint_C0=constraint_C0,
             constraint_nullity=constraint_nullity,
         )
-        return _constrained_volumes(polys; rebase_mat=rebase_mat, kwargs...)
+        unique_volumes = _constrained_volumes(polys; rebase_mat=rebase_mat, kwargs...)
+        result_by_path = Dict(zip(unique_pth_idx, unique_volumes))
+        return [result_by_path[idx] for idx in pth_idx]
     end
 
-    idxes_to_calculate = recalculate ? pth_idx : filter(x -> !grh.path_volume_is_calc[x], pth_idx)
+    use_volume_cache = _volume_request_is_cacheable(rebase_K, rebase_mat, kwargs)
+    if !use_volume_cache
+        polys = get_polyhedra(grh, unique_pth_idx)
+        unique_volumes = fill(Volume(0.0, 0.0), length(unique_pth_idx))
+        nonempty_positions = findall(!isempty, polys)
+        if !isempty(nonempty_positions)
+            calculated = calc_volume(
+                Polyhedron[polys[position] for position in nonempty_positions];
+                rebase_mat=rebase_mat,
+                kwargs...,
+            )
+            unique_volumes[nonempty_positions] .= calculated
+        end
+        result_by_path = Dict(zip(unique_pth_idx, unique_volumes))
+        return [result_by_path[idx] for idx in pth_idx]
+    end
+
+    idxes_to_calculate = recalculate ? unique_pth_idx :
+        filter(x -> !grh.path_volume_is_calc[x], unique_pth_idx)
     if !isempty(idxes_to_calculate)
         polys = get_polyhedra(grh, idxes_to_calculate)
         nonempty_pairs = [(idx, poly) for (idx, poly) in zip(idxes_to_calculate, polys) if !isempty(poly)]
@@ -380,13 +424,20 @@ direction is fetched via `_edge_qK_interface(grh, edge)` (sign already folded in
 guarded with `_edge_has_qK_interface(edge)`. The directionality (the old `e.to < i`
 skip) is preserved by only considering each undirected edge from its lower endpoint.
 """
-function get_change_graph(grh::VertexGraph, change_qK_indices::AbstractVector{<:Integer}, change_qK_signs::AbstractVector{<:Integer})::SimpleDiGraph
+function get_change_graph(
+    grh::VertexGraph,
+    change_qK_indices::AbstractVector{<:Integer},
+    change_qK_signs::AbstractVector{<:Integer};
+    cancel_check=_NO_CANCEL_CHECK,
+)::SimpleDiGraph
+    cancel_check()
     bn = get_binding_network(grh)
-    _ensure_full_regimes_graph!(grh)
+    _ensure_full_regimes_graph!(grh; cancel_check=cancel_check)
 
     n = length(grh.neighbors)
     g = SimpleDiGraph(n)
     for (i, edges) in enumerate(grh.neighbors)
+        cancel_check()
         nlt = get_nullity(bn, i)
         if nlt > 1
             continue
@@ -405,11 +456,21 @@ function get_change_graph(grh::VertexGraph, change_qK_indices::AbstractVector{<:
             end
         end
     end
+    cancel_check()
     return g
 end
 
-get_change_graph(Bnc::Bnc, change_qK_indices::AbstractVector{<:Integer}, change_qK_signs::AbstractVector{<:Integer}) =
-    get_change_graph(get_vertices_graph!(Bnc; full=true), change_qK_indices, change_qK_signs)
+function get_change_graph(
+    Bnc::Bnc,
+    change_qK_indices::AbstractVector{<:Integer},
+    change_qK_signs::AbstractVector{<:Integer};
+    cancel_check=_NO_CANCEL_CHECK,
+)
+    graph = get_regimes_graph!(Bnc; full=true, cancel_check=cancel_check)
+    return get_change_graph(
+        graph, change_qK_indices, change_qK_signs;
+        cancel_check=cancel_check)
+end
 
 """
     ChangePaths(model::Bnc, change_qK_syms; signs=nothing, label=nothing, rgm_paths=nothing, kind=:orthant)
@@ -426,9 +487,12 @@ function ChangePaths(
     kind::Symbol=:orthant,
     max_paths::Union{Nothing,Integer}=nothing,
     max_total_nodes::Union{Nothing,Integer}=nothing,
+    cancel_check=_NO_CANCEL_CHECK,
 ) where {T}
+    cancel_check()
     change_qK_indices = T[]
     for sym in change_qK_syms
+        cancel_check()
         idx = locate_sym_qK(model, sym)
         isnothing(idx) && error("Unknown qK symbol in change specification: $(sym)")
         push!(change_qK_indices, idx)
@@ -448,7 +512,10 @@ function ChangePaths(
     end
 
     if rgm_paths === nothing
-        qK_grh = get_change_graph(model, change_qK_indices, sign_vals)
+        qK_grh = get_change_graph(
+            model, change_qK_indices, sign_vals;
+            cancel_check=cancel_check)
+        cancel_check()
         sources, sinks = get_sources_sinks(model, qK_grh)
         rgm_paths = _enumerate_paths(
             qK_grh;
@@ -456,28 +523,59 @@ function ChangePaths(
             sinks,
             max_paths,
             max_total_nodes,
+            cancel_check,
         )
     else
+        cancel_check()
+        find_all_regimes!(model; cancel_check=cancel_check)
+        cancel_check()
         qK_grh = graph_from_paths(rgm_paths, n_regimes(model))
         sources, sinks = get_sources_sinks(qK_grh)
     end
 
-    return ChangePaths(model, qK_grh, kind, label_str, change_qK_indices, sign_vals, sources, sinks, rgm_paths)
+    cancel_check()
+    result = ChangePaths(
+        model, qK_grh, kind, label_str, change_qK_indices, sign_vals,
+        sources, sinks, rgm_paths)
+    cancel_check()
+    return result
 end
 
-function get_RO_paths(model::ChangePaths, pth_idx::Union{Nothing, AbstractVector}=nothing ; observe_x, kwargs...)
+function get_RO_paths(
+    model::ChangePaths,
+    pth_idx::Union{Nothing,AbstractVector}=nothing;
+    observe_x,
+    cancel_check=nothing,
+    kwargs...,
+)
     rgm_paths = isnothing(pth_idx) ? model.rgm_paths : get_path.(Ref(model), pth_idx; return_idx=true)
     observe_x_idx = locate_sym_x(model.bn, observe_x)
     profiles = Vector{Any}(undef, length(rgm_paths))
-    Threads.@threads for i in eachindex(rgm_paths)
-        profiles[i] = get_RO_path(
-            model.bn,
-            rgm_paths[i];
-            change_qK_indices=change_qK_indices(model),
-            change_qK_signs=change_qK_signs(model),
-            observe_x=observe_x_idx,
-            kwargs...,
-        )
+    if _use_parallel_ro_paths(cancel_check)
+        Threads.@threads for i in eachindex(rgm_paths)
+            profiles[i] = get_RO_path(
+                model.bn,
+                rgm_paths[i];
+                change_qK_indices=change_qK_indices(model),
+                change_qK_signs=change_qK_signs(model),
+                observe_x=observe_x_idx,
+                kwargs...,
+            )
+        end
+    else
+        for i in eachindex(rgm_paths)
+            cancel_check()
+            profiles[i] = get_RO_path(
+                model.bn,
+                rgm_paths[i];
+                change_qK_indices=change_qK_indices(model),
+                change_qK_signs=change_qK_signs(model),
+                observe_x=observe_x_idx,
+                cancel_check=cancel_check,
+                kwargs...,
+            )
+        end
+        cancel_check()
     end
     return profiles
 end
