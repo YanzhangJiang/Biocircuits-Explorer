@@ -30,6 +30,32 @@ const _STATIC_MIMES = Dict(
     ".webm" => "video/webm",
 )
 
+const _NODE_APP_CSP = join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-eval'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https: http://127.0.0.1:* http://localhost:*",
+    "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self' https:",
+], "; ")
+
+function _static_security_headers(relative_path::AbstractString)
+    headers = Pair{String, String}[
+        "X-Content-Type-Options" => "nosniff",
+        "Referrer-Policy" => "no-referrer",
+        "Permissions-Policy" => "camera=(), microphone=(), geolocation=()",
+    ]
+    if relative_path == "index-node.html"
+        push!(headers, "Content-Security-Policy" => _NODE_APP_CSP)
+    end
+    return headers
+end
+
 function resolve_static_dir()
     candidates = String[]
 
@@ -191,10 +217,12 @@ function serve_static(req)
     # otherwise apply heuristic caching to HTML/JS modules (no Cache-Control
     # → cache for ~10% of Last-Modified age), which masks frontend updates
     # behind stale module imports even after "Reload Shell".
-    return HTTP.Response(200, [
+    headers = Pair{String, String}[
         "Content-Type"  => content_type,
         "Cache-Control" => "no-store",
-    ], read(filepath))
+    ]
+    append!(headers, _static_security_headers(relative_path))
+    return HTTP.Response(200, headers, read(filepath))
 end
 
 end # module

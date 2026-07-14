@@ -1,5 +1,5 @@
 import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.js';
-import { api, showToast, handleNodeError, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
+import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themedColorbar } from './theme.js';
 import { quantileSorted, plotHeatmap } from './plotting.js';
 import {
@@ -183,7 +183,7 @@ export function renderROPCloudOutput(nodeId, contentEl, data) {
 
   const rangeRows = axes.labels.map((label, idx) => `
     <div class="cloud-fov-row">
-      <span class="cloud-fov-axis">${label}</span>
+      <span class="cloud-fov-axis">${escapeHtml(label)}</span>
       <input type="number" step="0.1" id="${nodeId}-fov-${idx + 1}-min" data-action="refreshROPCloudPlot" data-node="${nodeId}">
       <span class="cloud-fov-sep">to</span>
       <input type="number" step="0.1" id="${nodeId}-fov-${idx + 1}-max" data-action="refreshROPCloudPlot" data-node="${nodeId}">
@@ -195,7 +195,7 @@ export function renderROPCloudOutput(nodeId, contentEl, data) {
       <button type="button" class="btn btn-small" data-action="applyROPCloudFOVPreset" data-node="${nodeId}" data-preset="robust">Robust</button>
       <button type="button" class="btn btn-small" data-action="applyROPCloudFOVPreset" data-node="${nodeId}" data-preset="full">Full</button>
       <span class="summary-chip">Field of view</span>
-      ${validityNotice ? `<span class="summary-chip">${validityNotice}</span>` : ''}
+      ${validityNotice ? `<span class="summary-chip">${escapeHtml(validityNotice)}</span>` : ''}
     </div>
     <div class="cloud-fov-panel">
       ${rangeRows}
@@ -383,7 +383,7 @@ export async function executeROPCloudResult(nodeId) {
     renderROPCloudOutput(nodeId, contentEl, data);
   } catch (e) {
     handleNodeError(e, nodeId, 'ROP cloud');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -434,7 +434,7 @@ export async function executeFRETResult(nodeId) {
     }, 50);
   } catch (e) {
     handleNodeError(e, nodeId, 'FRET heatmap');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }

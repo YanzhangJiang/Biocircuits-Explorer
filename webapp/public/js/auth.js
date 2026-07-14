@@ -1,8 +1,8 @@
 // Cognito Hosted UI OAuth (Authorization Code + PKCE) for the SPA.
 // Works both in the browser and inside the Swift macOS WebView (same JS
-// runtime, same localStorage). Tokens are kept in localStorage; this is the
-// standard tradeoff for public SPA clients — XSS protection in this app is
-// the layer that matters, and we never put long-lived AWS credentials here.
+// runtime). OAuth state and tokens live only for the current browsing context
+// in sessionStorage. Older localStorage credentials are migrated once and the
+// persistent copies are deleted immediately.
 
 import { CLOUD_API } from './state.js';
 
@@ -15,12 +15,71 @@ const KEY_PKCE_VERIFIER = STORAGE_PREFIX + 'pkce_verifier';
 const KEY_PKCE_STATE = STORAGE_PREFIX + 'pkce_state';
 const KEY_POST_LOGIN_RETURN = STORAGE_PREFIX + 'post_login_return';
 
+const LEGACY_AUTH_KEYS = [
+  KEY_ID_TOKEN,
+  KEY_ACCESS_TOKEN,
+  KEY_REFRESH_TOKEN,
+  KEY_EXPIRES_AT,
+  KEY_PKCE_VERIFIER,
+  KEY_PKCE_STATE,
+  KEY_POST_LOGIN_RETURN,
+];
+
 const REFRESH_LEEWAY_SECONDS = 300; // refresh 5 minutes before expiry
 
 let cachedConfig = null;
 let configPromise = null;
 let refreshPromise = null;
 const subscribers = new Set();
+
+function browserStorage(name) {
+  try { return window?.[name] || null; }
+  catch { return null; }
+}
+
+function sessionValue(key) {
+  try { return browserStorage('sessionStorage')?.getItem(key) ?? null; }
+  catch { return null; }
+}
+
+function setSessionValue(key, value) {
+  try {
+    const storage = browserStorage('sessionStorage');
+    if (!storage) return false;
+    storage.setItem(key, String(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeSessionValue(key) {
+  try { browserStorage('sessionStorage')?.removeItem(key); }
+  catch {}
+}
+
+function migrateLegacyAuthStorage() {
+  const legacy = browserStorage('localStorage');
+  if (!legacy) return;
+
+  for (const key of LEGACY_AUTH_KEYS) {
+    let legacyValue = null;
+    try { legacyValue = legacy.getItem(key); } catch {}
+
+    // The access token has no browser consumer. Discard it instead of moving
+    // another bearer credential into the new session-scoped store.
+    if (key !== KEY_ACCESS_TOKEN && legacyValue !== null && sessionValue(key) === null) {
+      setSessionValue(key, legacyValue);
+    }
+
+    // Removal is unconditional: if session storage is unavailable, signing
+    // in again is safer than retaining a persistent plaintext credential.
+    try { legacy.removeItem(key); } catch {}
+  }
+  removeSessionValue(KEY_ACCESS_TOKEN);
+}
+
+migrateLegacyAuthStorage();
 
 function notifyChange() {
   for (const cb of subscribers) {
@@ -81,14 +140,30 @@ function callbackUrl() {
   return `${window.location.origin}/auth-callback.html`;
 }
 
-function postLoginReturnUrl() {
-  // Where to send the user after a successful login. Defaults to the app.
+function sameOriginReturnPath(value) {
   try {
-    const stored = window.localStorage.getItem(KEY_POST_LOGIN_RETURN);
-    return stored || '/index-node.html';
-  } catch (_) {
+    const base = new URL(window.location.origin);
+    const target = new URL(String(value || '/index-node.html'), base);
+    if (target.origin !== base.origin) return '/index-node.html';
+    return `${target.pathname}${target.search}${target.hash}` || '/index-node.html';
+  } catch {
     return '/index-node.html';
   }
+}
+
+function postLoginReturnUrl() {
+  return sameOriginReturnPath(sessionValue(KEY_POST_LOGIN_RETURN));
+}
+
+function consumePostLoginReturnUrl() {
+  const target = postLoginReturnUrl();
+  removeSessionValue(KEY_POST_LOGIN_RETURN);
+  return target;
+}
+
+function clearOauthFlow() {
+  removeSessionValue(KEY_PKCE_VERIFIER);
+  removeSessionValue(KEY_PKCE_STATE);
 }
 
 export async function signIn({ returnTo } = {}) {
@@ -99,12 +174,15 @@ export async function signIn({ returnTo } = {}) {
 
   const { verifier, challenge } = await generatePkce();
   const state = generateState();
-  window.localStorage.setItem(KEY_PKCE_VERIFIER, verifier);
-  window.localStorage.setItem(KEY_PKCE_STATE, state);
-  if (returnTo) {
-    window.localStorage.setItem(KEY_POST_LOGIN_RETURN, returnTo);
-  } else if (!window.localStorage.getItem(KEY_POST_LOGIN_RETURN)) {
-    window.localStorage.setItem(KEY_POST_LOGIN_RETURN, window.location.pathname + window.location.search);
+  const currentPath = `${window.location.pathname || '/'}${window.location.search || ''}${window.location.hash || ''}`;
+  const returnPath = sameOriginReturnPath(returnTo || currentPath);
+  const stored = setSessionValue(KEY_PKCE_VERIFIER, verifier)
+    && setSessionValue(KEY_PKCE_STATE, state)
+    && setSessionValue(KEY_POST_LOGIN_RETURN, returnPath);
+  if (!stored) {
+    clearOauthFlow();
+    removeSessionValue(KEY_POST_LOGIN_RETURN);
+    throw new Error('Sign-in requires session storage so OAuth credentials are not persisted long-term.');
   }
 
   const params = new URLSearchParams({
@@ -125,6 +203,7 @@ export async function handleCallback(searchParams) {
 
   const error = searchParams.get('error');
   if (error) {
+    clearOauthFlow();
     const description = searchParams.get('error_description') || error;
     throw new Error(`Cognito returned ${error}: ${description}`);
   }
@@ -132,12 +211,15 @@ export async function handleCallback(searchParams) {
   const state = searchParams.get('state');
   if (!code) throw new Error('Missing authorization code.');
 
-  const storedState = window.localStorage.getItem(KEY_PKCE_STATE);
+  const storedState = sessionValue(KEY_PKCE_STATE);
   if (!storedState || storedState !== state) {
     throw new Error('State mismatch — refusing to complete sign-in.');
   }
-  const verifier = window.localStorage.getItem(KEY_PKCE_VERIFIER);
+  const verifier = sessionValue(KEY_PKCE_VERIFIER);
   if (!verifier) throw new Error('Missing PKCE verifier.');
+  // The authorization code is single-use. Retire state/verifier before the
+  // exchange so retries cannot accidentally reuse the OAuth transaction.
+  clearOauthFlow();
 
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -157,51 +239,66 @@ export async function handleCallback(searchParams) {
     throw new Error(`Token exchange failed (${resp.status}): ${text}`);
   }
   const tokens = await resp.json();
+  clearTokenValues({ clearReturn: false });
   persistTokens(tokens);
-  window.localStorage.removeItem(KEY_PKCE_VERIFIER);
-  window.localStorage.removeItem(KEY_PKCE_STATE);
   notifyChange();
-  return postLoginReturnUrl();
+  return consumePostLoginReturnUrl();
 }
 
 function persistTokens(tokens) {
-  if (tokens.id_token) window.localStorage.setItem(KEY_ID_TOKEN, tokens.id_token);
-  if (tokens.access_token) window.localStorage.setItem(KEY_ACCESS_TOKEN, tokens.access_token);
-  if (tokens.refresh_token) window.localStorage.setItem(KEY_REFRESH_TOKEN, tokens.refresh_token);
-  const expiresIn = Number(tokens.expires_in || 3600);
+  if (!tokens || typeof tokens.id_token !== 'string' || !tokens.id_token) {
+    throw new Error('Token response did not contain an ID token.');
+  }
+  const expiresValue = Number(tokens.expires_in);
+  const expiresIn = Number.isFinite(expiresValue) && expiresValue > 0 ? expiresValue : 3600;
   const expiresAt = Date.now() + expiresIn * 1000;
-  window.localStorage.setItem(KEY_EXPIRES_AT, String(expiresAt));
+  const stored = setSessionValue(KEY_ID_TOKEN, tokens.id_token)
+    && setSessionValue(KEY_EXPIRES_AT, String(expiresAt))
+    && (!tokens.refresh_token || setSessionValue(KEY_REFRESH_TOKEN, tokens.refresh_token));
+  // The browser never consumes Cognito's access token, so intentionally do
+  // not retain it. ID and refresh tokens remain scoped to this window.
+  removeSessionValue(KEY_ACCESS_TOKEN);
+  if (!stored) {
+    clearTokenValues({ clearReturn: false });
+    throw new Error('Unable to keep the sign-in session in session storage.');
+  }
+}
+
+function clearTokenValues({ clearReturn = true } = {}) {
+  removeSessionValue(KEY_ID_TOKEN);
+  removeSessionValue(KEY_ACCESS_TOKEN);
+  removeSessionValue(KEY_REFRESH_TOKEN);
+  removeSessionValue(KEY_EXPIRES_AT);
+  if (clearReturn) removeSessionValue(KEY_POST_LOGIN_RETURN);
 }
 
 function clearTokens() {
-  window.localStorage.removeItem(KEY_ID_TOKEN);
-  window.localStorage.removeItem(KEY_ACCESS_TOKEN);
-  window.localStorage.removeItem(KEY_REFRESH_TOKEN);
-  window.localStorage.removeItem(KEY_EXPIRES_AT);
-  window.localStorage.removeItem(KEY_POST_LOGIN_RETURN);
+  clearTokenValues();
+  clearOauthFlow();
 }
 
 export function isAuthenticated() {
-  const token = window.localStorage.getItem(KEY_ID_TOKEN);
+  const token = sessionValue(KEY_ID_TOKEN);
   if (!token) return false;
-  const expiresAt = Number(window.localStorage.getItem(KEY_EXPIRES_AT) || 0);
+  const expiresAt = Number(sessionValue(KEY_EXPIRES_AT) || 0);
   return Date.now() < expiresAt;
 }
 
 export function getCurrentUser() {
-  const token = window.localStorage.getItem(KEY_ID_TOKEN);
+  const token = sessionValue(KEY_ID_TOKEN);
   if (!token) return null;
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')));
     return {
       sub: payload.sub,
       email: payload.email,
       email_verified: payload['email_verified'],
       exp: payload.exp,
     };
-  } catch (_) {
+  } catch {
     return null;
   }
 }
@@ -210,7 +307,7 @@ async function refreshTokens() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     const config = await fetchAuthConfig();
-    const refresh = window.localStorage.getItem(KEY_REFRESH_TOKEN);
+    const refresh = sessionValue(KEY_REFRESH_TOKEN);
     if (!refresh) throw new Error('No refresh token available.');
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
@@ -245,14 +342,14 @@ async function refreshTokens() {
 export async function getIdToken({ requireFresh = false } = {}) {
   const config = await fetchAuthConfig();
   if (!config.enabled) return null;
-  const token = window.localStorage.getItem(KEY_ID_TOKEN);
-  const expiresAt = Number(window.localStorage.getItem(KEY_EXPIRES_AT) || 0);
+  const token = sessionValue(KEY_ID_TOKEN);
+  const expiresAt = Number(sessionValue(KEY_EXPIRES_AT) || 0);
   const needsRefresh = !token || requireFresh ||
     (Date.now() + REFRESH_LEEWAY_SECONDS * 1000 >= expiresAt);
   if (!needsRefresh) return token;
   try {
     return await refreshTokens();
-  } catch (e) {
+  } catch {
     return null;
   }
 }

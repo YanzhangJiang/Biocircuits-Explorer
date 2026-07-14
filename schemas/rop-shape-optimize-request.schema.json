@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/rop-shape-optimize-request.schema.json",
+  "title": "Fixed-topology ROP shape optimization request",
+  "description": "A bounded, stateless request to optimize finite-window reaction-order witness locations for one fixed network. The network is either a complete canonical NetworkIR or the complete legacy reactions/Kd/I/O payload already canonicalized by the Julia NetworkIR owner. The embedded DesignabilitySpec owns the qualitative program, finite input window, transition clauses, and parameter bounds; this envelope owns the fixed topology, reference-relative edit, optimization policy, work budget, and fresh replay policy.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "network",
+    "expected_network_ir_hash",
+    "designability_spec",
+    "reference",
+    "edit_intent",
+    "optimization",
+    "work_budget",
+    "replay"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "network": { "required": ["ir_schema_version"] }
+        },
+        "required": ["network"]
+      },
+      "then": {
+        "properties": {
+          "expected_network_ir_hash": { "$ref": "#/$defs/sha256_hex" }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "bne-rop-shape-optimize-request/v1.0.0"
+    },
+    "network": {
+      "description": "A complete canonical NetworkIR or complete legacy reactions/Kd/I/O payload. A cache hash without either inline representation is not sufficient for a durable or asynchronous request.",
+      "oneOf": [
+        { "$ref": "#/$defs/full_network_ir" },
+        { "$ref": "#/$defs/legacy_network" }
+      ]
+    },
+    "expected_network_ir_hash": {
+      "description": "Expected SHA-256 content identity of a supplied NetworkIR, or null when the caller supplied a legacy payload and Julia must canonicalize it first. A non-null value must be recomputed and matched by the server. This hash includes parameter and observable content and is not, by itself, pure topology identity.",
+      "oneOf": [
+        { "$ref": "#/$defs/sha256_hex" },
+        { "type": "null" }
+      ]
+    },
+    "designability_spec": {
+      "description": "Current DesignabilitySpec v1 carrying one structured reaction-order program, its finite input window, and declared parameter bounds.",
+      "allOf": [
+        { "$ref": "designability-spec.schema.json" },
+        {
+          "type": "object",
+          "required": ["constraints"],
+          "properties": {
+            "target": {
+              "type": "object",
+              "required": ["behavior_spec"],
+              "not": { "required": ["legacy_target"] },
+              "properties": {
+                "behavior_spec": {
+                  "type": "object",
+                  "required": ["input", "output", "program", "input_window"],
+                  "properties": {
+                    "program": { "type": "array", "minItems": 2 },
+                    "input_window": {
+                      "type": "object",
+                      "required": ["input_log10"]
+                    }
+                  }
+                }
+              }
+            },
+            "constraints": {
+              "type": "object",
+              "required": ["parameter_bounds"],
+              "properties": {
+                "robustness": {
+                  "type": "object",
+                  "description": "Shape optimization owns its parameter-margin threshold at optimization.minimum_parameter_margin. An embedded min_chebyshev_radius is ambiguous and is therefore rejected.",
+                  "not": { "required": ["min_chebyshev_radius"] }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reference": { "$ref": "#/$defs/reference" },
+    "edit_intent": {
+      "description": "One allow-listed high-level edit or one canonical step-indexed linear witness program. Step indices are zero-based DesignabilitySpec program indices.",
+      "oneOf": [
+        { "$ref": "#/$defs/broaden_intent" },
+        { "$ref": "#/$defs/separate_intent" },
+        { "$ref": "#/$defs/widen_center_intent" },
+        { "$ref": "#/$defs/translate_group_intent" },
+        { "$ref": "#/$defs/linear_witness_intent" }
+      ]
+    },
+    "optimization": {
+      "type": "object",
+      "required": ["minimum_parameter_margin", "effect_tolerance"],
+      "additionalProperties": false,
+      "properties": {
+        "minimum_parameter_margin": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum Chebyshev radius in the equality-feasible background log10(q,K) parameter subspace. It is never an augmented parameter-plus-witness radius."
+        },
+        "effect_tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Absolute witness-objective tolerance defining the globally near-optimal set used by the secondary parameter-margin solve."
+        }
+      }
+    },
+    "work_budget": {
+      "type": "object",
+      "required": ["max_paths", "max_cells", "max_replays", "require_exhaustive"],
+      "additionalProperties": false,
+      "properties": {
+        "max_paths": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "max_cells": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Portable finite job-contract cap. The synchronous HTTP route applies its narrower 256-cell admission limit and returns the standard 422 budget response above it."
+        },
+        "max_replays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Portable finite job-contract cap. The synchronous HTTP route applies its narrower two-replay admission limit."
+        },
+        "require_exhaustive": {
+          "type": "boolean",
+          "description": "When true, a request that cannot evaluate the complete declared path/cell population must fail with a work-budget response instead of returning a truncated optimum."
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "required": [
+        "input_window_log10",
+        "sample_points",
+        "require_complete",
+        "store_curve",
+        "metrics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "input_window_log10": { "$ref": "#/$defs/log10_bounds" },
+        "sample_points": { "type": "integer", "minimum": 11, "maximum": 1000 },
+        "require_complete": { "const": true },
+        "store_curve": { "const": true },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/two_peak_metric_request" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "full_network_ir": {
+      "allOf": [
+        { "$ref": "network-ir.schema.json" },
+        {
+          "type": "object",
+          "required": [
+            "ir_schema_version",
+            "label",
+            "species",
+            "reactions",
+            "observables",
+            "parameter_distributions",
+            "compartments",
+            "provenance",
+            "extensions"
+          ],
+          "properties": {
+            "ir_schema_version": { "const": "bne-ir/v1.0.0" },
+            "label": { "type": "string" },
+            "species": { "type": "array" },
+            "reactions": { "type": "array", "minItems": 1 },
+            "observables": { "type": "array" },
+            "parameter_distributions": { "type": "array" },
+            "compartments": { "type": "array" },
+            "provenance": { "type": "object" },
+            "extensions": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "legacy_network": {
+      "type": "object",
+      "required": ["reactions", "kd", "input_symbols", "output_symbols"],
+      "additionalProperties": false,
+      "properties": {
+        "reactions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "kd": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/positive_number" },
+          "minItems": 1
+        },
+        "input_symbols": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "output_symbols": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "label": { "type": "string" }
+      }
+    },
+    "positive_number": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "log10_bounds": {
+      "type": "array",
+      "items": { "type": "number", "minimum": -20, "maximum": 20 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "step": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "step_pair": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" },
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true
+    },
+    "step_group": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "reference_hash",
+        "network_ir_hash",
+        "operating_points_log10",
+        "kd",
+        "totals"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reference_hash": {
+          "$ref": "#/$defs/sha256_hex",
+          "description": "SHA-256 over the canonical inline reference payload, excluding reference_hash and optional artifact_ref."
+        },
+        "artifact_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional durable result reference such as job://... or sha256:.... Inline values remain required so the request is self-contained."
+        },
+        "network_ir_hash": { "$ref": "#/$defs/sha256_hex" },
+        "operating_points_log10": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2
+        },
+        "kd": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/positive_number" },
+          "minItems": 1
+        },
+        "totals": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/positive_number" }
+        },
+        "path_identity": { "type": "string", "minLength": 1 },
+        "cell_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "linear_term": {
+      "type": "object",
+      "required": ["step", "coefficient"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "$ref": "#/$defs/step" },
+        "coefficient": {
+          "type": "number",
+          "not": { "const": 0 }
+        }
+      }
+    },
+    "linear_constraint": {
+      "type": "object",
+      "required": ["id", "terms", "operator", "rhs_log10", "hard"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "terms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/linear_term" },
+          "minItems": 1
+        },
+        "operator": { "enum": ["<=", ">=", "="] },
+        "rhs_log10": { "type": "number" },
+        "hard": { "const": true }
+      }
+    },
+    "linear_objective": {
+      "type": "object",
+      "required": ["id", "terms", "sense"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "terms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/linear_term" },
+          "minItems": 1
+        },
+        "sense": { "enum": ["maximize", "minimize"] }
+      }
+    },
+    "broaden_intent": {
+      "type": "object",
+      "required": ["id", "kind", "left_span_steps", "right_span_steps", "shared_magnitude"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "broaden" },
+        "left_span_steps": { "$ref": "#/$defs/step_pair" },
+        "right_span_steps": { "$ref": "#/$defs/step_pair" },
+        "shared_magnitude": { "const": true }
+      }
+    },
+    "separate_intent": {
+      "type": "object",
+      "required": ["id", "kind", "steps", "preserve_midpoint_tolerance_log10"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "separate" },
+        "steps": { "$ref": "#/$defs/step_pair" },
+        "preserve_midpoint_tolerance_log10": { "type": "number", "minimum": 0 }
+      }
+    },
+    "widen_center_intent": {
+      "type": "object",
+      "required": ["id", "kind", "steps", "anchor_step", "anchor_tolerance_log10"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "widen_center" },
+        "steps": { "$ref": "#/$defs/step_pair" },
+        "anchor_step": { "$ref": "#/$defs/step" },
+        "anchor_tolerance_log10": { "type": "number", "minimum": 0 }
+      }
+    },
+    "translate_group_intent": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "group_steps",
+        "preserve_steps",
+        "preserve_tolerance_log10",
+        "sense",
+        "shared_shift"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "translate_group" },
+        "group_steps": { "$ref": "#/$defs/step_group" },
+        "preserve_steps": { "$ref": "#/$defs/step_group" },
+        "preserve_tolerance_log10": { "type": "number", "minimum": 0 },
+        "sense": { "enum": ["positive", "negative"] },
+        "shared_shift": { "const": true }
+      }
+    },
+    "linear_witness_intent": {
+      "type": "object",
+      "required": ["id", "kind", "constraints", "objective"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "linear_witness" },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/linear_constraint" }
+        },
+        "objective": { "$ref": "#/$defs/linear_objective" }
+      }
+    },
+    "two_peak_metric_request": {
+      "type": "object",
+      "required": ["kind", "min_prominence_log10"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "two_peak" },
+        "min_prominence_log10": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -70,14 +70,17 @@ artifacts:
       - "schemas/designability-screen.schema.json"
       - "schemas/designability-spec.schema.json"
       - "schemas/latent-atlas-manifest.schema.json"
+      - "schemas/job-result-manifest.schema.json"
       - "schemas/reader-query.schema.json"
       - "schemas/reader-result.schema.json"
+      - "schemas/rop-shape-optimization.schema.json"
+      - "schemas/rop-shape-optimize-request.schema.json"
       - "schemas/result-artifact.schema.json"
       - "schemas/target-spec.schema.json"
     producer: "manual-with-runtime-owner"
     validator: "scripts/verify_repository.py --check"
     authority: "Each schema plus the runtime owner named in the contract catalog"
-    status: "mixed-coverage-design-screen-v0.3-directly-tested"
+    status: "mixed-coverage-design-screen-v0.3-and-rop-shape-v1-directly-tested"
 
   - id: "designability-screen-v0.3-responses"
     kind: "runtime-output"
@@ -90,6 +93,36 @@ artifacts:
     schema: "schemas/designability-screen.schema.json"
     authority: "The v0.3 response, including eligible_count, evaluated_count, and truncated, together with its evidence-graded candidate cards"
     status: "v0.3-backend-and-rendering-contract-tested"
+
+  - id: "rop-shape-cat-benchmark-result"
+    kind: "benchmark-result"
+    storage: "tracked repository artifact"
+    paths:
+      - "benchmarks/rop_shape_control/cat_fixed_topology.json"
+      - "benchmarks/rop_shape_control/cat_fixed_topology_results.json"
+      - "benchmarks/rop_shape_control/run_benchmark.jl"
+    producer: "benchmarks/rop_shape_control/run_benchmark.jl"
+    validator: "webapp/test/rop_shape_cat_benchmark.jl"
+    reproduce_command: "julia --project=webapp benchmarks/rop_shape_control/run_benchmark.jl"
+    authority: "The frozen JSON result is exhaustive only over the declared fixed-topology eligible path/cell population. Its canonical result_hash excludes the subsequently attached timestamped artifact envelope; the file hash locks the exact tracked bytes."
+    status: "tracked-read-only-contract-tested"
+    observed:
+      fixture_file_sha256: "a37a3f8562c7d82a4d08d6032c6b22a875c4e3e8f460ca1fba2232ee820dab5c"
+      producer_file_sha256: "7f920ab23f4a8981b2e2de1710e6109471650670598a8c769795ead866253dca"
+      result_file_sha256: "f91a319c1e8a9200503560daa02c40c07cf05c8d11e38f844e19b4bfee558d1b"
+      result_hash: "6eda30d093ea44cf841e1eefa87f51659b39e025719e70e109fdca6ddebd177f"
+      schema_version: "bne-rop-shape-benchmark-result/v1.0.0"
+      evidence_scope: "fixed-topology finite-window SISO ROP benchmark; not a global chemistry claim"
+      edit_count: 4
+      eligible_path_count_per_edit: 18
+      evaluated_path_count_per_edit: 18
+      eligible_cell_count_per_edit: 24
+      evaluated_cell_count_per_edit: 24
+      any_direct_search_truncated: false
+      all_direct_searches_exhaustive_over_declared_population: true
+      direct_geometric_success_count: 4
+      direct_replay_pass_count: 3
+      non_grid_optimum_count: 4
 
   - id: "behavior-benchmark-specs"
     kind: "benchmark-input"
@@ -155,3 +188,12 @@ artifacts:
     schema: "schemas/result-artifact.schema.json"
     authority: "The returned/stored envelope and its input hashes"
     status: "contract-tested"
+
+  - id: "asynchronous-job-result-manifests"
+    kind: "runtime-commit-marker"
+    storage: "job store or object storage beside result.json"
+    producer: "webapp/src/jobs.jl worker result publisher"
+    validator: "webapp/src/jobs.jl broker validator plus webapp/test/jobs_artifact_validity_contract.jl"
+    schema: "schemas/job-result-manifest.schema.json"
+    authority: "A manifest published after result.json whose job, kind, config hash, byte length, media type, payload count, and SHA-256 match the canonical job record and result object metadata"
+    status: "working-tree-contract-tested-live-object-storage-unverified"

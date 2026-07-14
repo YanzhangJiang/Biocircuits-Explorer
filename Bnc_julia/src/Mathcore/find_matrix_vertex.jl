@@ -1,5 +1,6 @@
 export find_all_regimes
 
+const _NO_CANCEL_CHECK = () -> nothing
 
 
 
@@ -188,13 +189,24 @@ end
 function _enumerate_all_regimes(
     helper::MatrixHelper,
     eps::Float64 = 1e-9,
+    ;
+    cancel_check=_NO_CANCEL_CHECK,
 )
+    cancel_check()
+    checkpoint_count = Ref(0)
+    function cancellation_checkpoint!()
+        checkpoint_count[] += 1
+        (checkpoint_count[] & 0xff) == 0 && cancel_check()
+        return nothing
+    end
+
     d = length(helper.J)
     n = helper.n
     order = sortperm(helper.J; by = length, rev = true)
 
     weighted_edges = Vector{Vector{Vector{Tuple{Int,Float64}}}}(undef, d)
     @inbounds for i in 1:d
+        cancellation_checkpoint!()
         by_choice = Vector{Vector{Tuple{Int,Float64}}}(undef, length(helper.J[i]))
         for t in eachindex(helper.J[i])
             refs = helper.choice_map[i][t]
@@ -231,6 +243,7 @@ function _enumerate_all_regimes(
         visited_stamp[start] = curstamp
 
         while top > 0
+            cancellation_checkpoint!()
             u = stack[top]
             top -= 1
             u == target && return true
@@ -265,6 +278,7 @@ function _enumerate_all_regimes(
 
         head = 1
         while head <= length(q)
+            cancellation_checkpoint!()
             u = q[head]
             head += 1
             inq[u] = false
@@ -300,6 +314,7 @@ function _enumerate_all_regimes(
         row_choices = helper.J[i]
 
         @inbounds for v in row_choices
+            cancellation_checkpoint!()
             t = helper.choice_slot[i][v]
 
             local_acyclic = still_acyclic
@@ -336,6 +351,7 @@ function _enumerate_all_regimes(
     end
 
     dfs(1, true)
+    cancel_check()
     return regimes, asymptotic
 end
 

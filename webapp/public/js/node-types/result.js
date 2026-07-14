@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+import { api, escapeHtml, renderNodeError } from '../api.js';
 import { setNodeLoading, getModelForNode, setupAutoUpdate, hasModelContextForNode, ensureModelSession } from '../nodes.js';
 import { executeRegimeGraph, updateRegimeGraphMode } from '../regime-graph.js';
 
@@ -20,17 +20,17 @@ export const RESULT_TYPES = {
       contentEl.innerHTML = `
         <table>
           <tr><th>Property</th><th>Value</th></tr>
-          <tr><td>Species (n)</td><td>${m.n}</td></tr>
-          <tr><td>Totals (d)</td><td>${m.d}</td></tr>
-          <tr><td>Reactions (r)</td><td>${m.r}</td></tr>
-          <tr><td>Species</td><td>${m.x_sym.join(', ')}</td></tr>
-          <tr><td>Totals</td><td>${m.q_sym.join(', ')}</td></tr>
-          <tr><td>Constants</td><td>${m.K_sym.join(', ')}</td></tr>
+          <tr><td>Species (n)</td><td>${escapeHtml(m.n)}</td></tr>
+          <tr><td>Totals (d)</td><td>${escapeHtml(m.d)}</td></tr>
+          <tr><td>Reactions (r)</td><td>${escapeHtml(m.r)}</td></tr>
+          <tr><td>Species</td><td>${escapeHtml(m.x_sym.join(', '))}</td></tr>
+          <tr><td>Totals</td><td>${escapeHtml(m.q_sym.join(', '))}</td></tr>
+          <tr><td>Constants</td><td>${escapeHtml(m.K_sym.join(', '))}</td></tr>
         </table>
         <div style="margin-top:8px;"><strong>N matrix:</strong></div>
-        <pre style="font-size:10px;color:#aaa;margin:4px 0;">${m.N.map(r => r.map(v => String(v).padStart(3)).join(' ')).join('\n')}</pre>
+        <pre style="font-size:10px;color:#aaa;margin:4px 0;">${escapeHtml(m.N.map(r => r.map(v => String(v).padStart(3)).join(' ')).join('\n'))}</pre>
         <div><strong>L matrix:</strong></div>
-        <pre style="font-size:10px;color:#aaa;margin:4px 0;">${m.L.map(r => r.map(v => String(v).padStart(3)).join(' ')).join('\n')}</pre>
+        <pre style="font-size:10px;color:#aaa;margin:4px 0;">${escapeHtml(m.L.map(r => r.map(v => String(v).padStart(3)).join(' ')).join('\n'))}</pre>
       `;
     },
   },
@@ -59,12 +59,12 @@ export const RESULT_TYPES = {
             ? ' <span class="tag tag-singular">Sing</span>'
             : ' <span class="tag tag-invertible">Inv</span>';
           const speciesStr = v.species ? v.species.join(', ') : '';
-          html += `<tr><td>${v.idx}</td><td>[${v.perm.join(',')}]</td><td style="font-family:monospace;font-size:10px;">${speciesStr}</td><td>${typeTag}${singTag}</td><td>${v.nullity}</td></tr>`;
+          html += `<tr><td>${escapeHtml(v.idx)}</td><td>[${escapeHtml(v.perm.join(','))}]</td><td style="font-family:monospace;font-size:10px;">${escapeHtml(speciesStr)}</td><td>${typeTag}${singTag}</td><td>${escapeHtml(v.nullity)}</td></tr>`;
         });
         html += '</tbody></table>';
         contentEl.innerHTML = html;
       } catch (e) {
-        contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+        renderNodeError(contentEl, e);
       }
       setNodeLoading(nodeId, false);
     },

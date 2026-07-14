@@ -22,6 +22,9 @@ export const PORT_TYPES = Object.freeze({
   AtlasQuery:    'AtlasQuery',     // an atlas query / inverse-design config
   AtlasNetwork:  'AtlasNetwork',   // a network feeding an atlas spec
   DesignabilitySpec: 'DesignabilitySpec', // an explicit behavior/constraint target
+  ROPShapeReferenceArtifact: 'ROPShapeReferenceArtifact', // pinned fixed-topology reference
+  ROPShapeRequestArtifact:   'ROPShapeRequestArtifact',   // canonical typed edit request
+  ROPShapeResultArtifact:    'ROPShapeResultArtifact',    // optimizer result + replay evidence
 });
 
 // port id → type: the single source of truth for what flows on each socket.
@@ -35,6 +38,9 @@ export const PORT_TYPE_OF = Object.freeze({
   'atlas-query':   PORT_TYPES.AtlasQuery,
   'atlas-network': PORT_TYPES.AtlasNetwork,
   'designability-spec': PORT_TYPES.DesignabilitySpec,
+  'rop-shape-reference': PORT_TYPES.ROPShapeReferenceArtifact,
+  'rop-shape-request':   PORT_TYPES.ROPShapeRequestArtifact,
+  'rop-shape-result':    PORT_TYPES.ROPShapeResultArtifact,
 });
 
 // Resolve a socket's type. A node may override per-port with a `type` field on

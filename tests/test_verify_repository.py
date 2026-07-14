@@ -507,6 +507,7 @@ class GeneratedReferenceTests(unittest.TestCase):
             "webapp/package-lock.json",
             "deploy/Dockerfile",
             "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj",
+            "frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift",
             "scripts/build_macos_dmg.sh",
             "packaging/macos_release_metadata.sh",
         )
@@ -530,6 +531,11 @@ class GeneratedReferenceTests(unittest.TestCase):
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO_ROOT / relative, destination)
+
+            shutil.copytree(
+                REPO_ROOT / "webapp/public/js/node-types",
+                root / "webapp/public/js/node-types",
+            )
 
             manifest_path = root / "webapp/Manifest.toml"
             text = manifest_path.read_text(encoding="utf-8")

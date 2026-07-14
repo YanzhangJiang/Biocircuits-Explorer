@@ -153,6 +153,16 @@ function renderMetricChips(metrics = {}) {
   ).join('');
 }
 
+function hasCanonicalShapeOptimizationHandoff(card) {
+  const handoff = card?.optimization_handoff_template;
+  return Boolean(handoff) &&
+    handoff.endpoint === '/api/v1/rop_shape_optimize' &&
+    handoff.method === 'POST' &&
+    handoff.body_template &&
+    typeof handoff.body_template === 'object' &&
+    !Array.isArray(handoff.body_template);
+}
+
 function renderCandidateRow(card, { selectedKey = null, minimalOnly = false, verified = false } = {}) {
   const nid = String(card.nid || '');
   const inp = String(card.inp || '');
@@ -177,6 +187,7 @@ function renderCandidateRow(card, { selectedKey = null, minimalOnly = false, ver
   const canBuildTune = !minimalOnly &&
     verified &&
     card.pass !== false;
+  const canOptimizeShape = canBuildTune && hasCanonicalShapeOptimizationHandoff(card);
   return `<div class="path-item design-net-row${isSel ? ' selected' : ''}" ` +
     `data-nid="${escapeHtml(nid)}" data-inp="${escapeHtml(inp)}" data-out="${escapeHtml(out)}" ` +
     `role="button" tabindex="0" title="Click to emit this network on the Reactions port">` +
@@ -188,6 +199,7 @@ function renderCandidateRow(card, { selectedKey = null, minimalOnly = false, ver
     `<div class="design-net-actions">` +
     `<span class="tag tag-atlas-ok design-emit-badge" style="${isSel ? '' : 'display:none;'}">emitting</span>` +
     `${minimalOnly ? '<span class="tag tag-atlas-muted">minimal</span>' : statusTag}` +
+    `${canOptimizeShape ? '<span class="tag tag-atlas-muted design-shape-optimization-ready">shape optimizable</span>' : ''}` +
     `${canBuildTune ? '<button class="btn btn-small design-build-btn">Build &amp; tune -></button>' : ''}` +
     `</div></div>`;
 }

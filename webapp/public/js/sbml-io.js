@@ -2,7 +2,8 @@
 // importSbml / exportSbml / loadSbmlFile.
 
 import { api, showToast, handleNodeError, escapeHtml } from './api.js';
-import { addReactionRow, getReactionsFromNode, triggerDownstreamNodes } from './model.js';
+import { addReactionRow, getReactionsFromNode } from './model.js';
+import { markReactionSourceDirty, triggerAutoModelBuild } from './nodes.js';
 import { connections } from './state.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
 
@@ -35,6 +36,16 @@ function renderWarnings(nodeId, warnings) {
     '</ul>';
 }
 
+export function applyImportedSbmlReactions(nodeId, reactions) {
+  markReactionSourceDirty(nodeId);
+  const list = document.getElementById(`${nodeId}-reactions-list`);
+  if (list) list.innerHTML = '';
+  for (const reaction of reactions) {
+    addReactionRow(nodeId, reaction.formula, reaction.kd);
+  }
+  triggerAutoModelBuild(nodeId, { invalidate: false });
+}
+
 // Import: POST the pasted/loaded SBML to the backend, then repopulate the
 // node's reaction list from the returned NetworkIR and surface any warnings.
 export async function importSbml(nodeId) {
@@ -42,13 +53,10 @@ export async function importSbml(nodeId) {
   const xml = (ta && ta.value ? ta.value : '').trim();
   if (!xml) { showToast('Paste or upload SBML first'); return; }
   try {
-    const res = await api('v1/import/sbml', { sbml: xml });
+    const res = await api('import/sbml', { sbml: xml });
     const reactions = (res.network_ir && res.network_ir.reactions) || [];
-    const list = document.getElementById(`${nodeId}-reactions-list`);
-    if (list) list.innerHTML = '';
-    reactions.forEach((rx) => addReactionRow(nodeId, rx.formula, rx.kd));
+    applyImportedSbmlReactions(nodeId, reactions);
     renderWarnings(nodeId, res.warnings || []);
-    triggerDownstreamNodes(nodeId);
     commitWorkspaceSnapshot('sbml-import');
     showToast(`Imported ${reactions.length} reaction(s)`);
   } catch (e) {
@@ -74,7 +82,7 @@ export async function exportSbml(nodeId) {
   const { reactions, kds } = getReactionsFromNode(conn.fromNode);
   if (!reactions.length) { showToast('Upstream node has no reactions'); return; }
   try {
-    const res = await api('v1/export/sbml', {
+    const res = await api('export/sbml', {
       reactions,
       // The backend requires positive Kd; default blanks to the usual 1e-3.
       kd: kds.map((k) => (k == null ? 1e-3 : k)),

@@ -75,6 +75,8 @@ function handle_health(req)
     uptime_s = initialized ? (time_ns() - _STARTUP_TIME_NS[]) / 1e9 : 0.0
     return json_response(Dict{String, Any}(
         "status"          => "ok",
+        "service"         => "biocircuits-explorer-backend",
+        "instance_nonce"  => Config.instance_nonce(),
         "version"         => biocircuits_explorer_version(),
         "revision"        => strip(get(ENV, "BIOCIRCUITS_EXPLORER_REVISION", "unknown")),
         "uptime_seconds"  => round(uptime_s; digits=3),
@@ -107,8 +109,10 @@ function handle_ready(req)
     )
     ready = initialized && static_ok && browser_entrypoint_ok && native_entrypoint_ok && job_store_ok
     return json_response(Dict{String, Any}(
-        "status" => ready ? "ready" : "not_ready",
-        "checks" => checks,
+        "status"         => ready ? "ready" : "not_ready",
+        "service"        => "biocircuits-explorer-backend",
+        "instance_nonce" => Config.instance_nonce(),
+        "checks"         => checks,
     ); status = ready ? 200 : 503)
 end
 
@@ -169,7 +173,13 @@ function handle_import_sbml(req)
     xml = _raw_get(body, :sbml, nothing)
     (xml isa AbstractString && !isempty(strip(xml))) ||
         return error_response("Missing required field `sbml` (the SBML document as a string)"; status = 400)
-    network, warnings = sbml_to_network_ir(String(xml))
+    network, warnings = try
+        sbml_to_network_ir(String(xml))
+    catch err
+        err isa IRValidationError &&
+            return error_response(sprint(showerror, err); status = 400)
+        rethrow(err)
+    end
     return json_response(Dict(
         "network_ir" => network_ir_to_dict(network),
         "warnings" => warnings,

@@ -71,11 +71,31 @@ let exportSpecBtnEl = null;  // exports the compiled DesignabilitySpec, when the
 let convoLog = [];           // re-renderable turn log {role:'user',text} | {role:'agent',res} —
                              // persisted WITH the workspace document so each project carries its
                              // own Design-Agent conversation (one project = one workspace + one chat).
+let conversationEpoch = 0;   // increments whenever a workspace conversation is restored/replaced
+let nextTurnId = 0;
+let pendingTurn = null;      // exactly one in-flight turn, owned by its conversation epoch
+let composerTextareaEl = null;
+let composerSendBtnEl = null;
 
 function setActiveCandidate(card) {
   activeCandidate = card || null;
   if (exportBtnEl) exportBtnEl.disabled = !isExportableAgentCard(card);
   if (exportSpecBtnEl) exportSpecBtnEl.disabled = !extractAgentDesignabilitySpec(card);
+}
+
+function clearActiveCandidateResults() {
+  setActiveCandidate(null);
+  if (resultsChartTitleEl) resultsChartTitleEl.textContent = 'Response curve';
+  if (resultsRulesEl) {
+    resultsRulesEl.replaceChildren(
+      placeholder('Reaction rules appear here once a candidate is found.'),
+    );
+  }
+  if (resultsChartEl) {
+    resultsChartEl.replaceChildren(
+      placeholder('Describe a behavior on the left — the top candidate’s response curve appears here.'),
+    );
+  }
 }
 
 function finiteNumber(value) {
@@ -1042,16 +1062,58 @@ function buildReplyMessage(res) {
   return el('div', { class: 'msg agent' }, parts);
 }
 
-async function sendToBackend(text) {
+async function sendToBackend(text, state, signal) {
   const res = await fetch(chatApiUrl(), {
     method: 'POST', headers: designChatRequestHeaders({ json: true }),
-    body: JSON.stringify({ message: text, state: chatState, llm: getLLMConfig(), top: 3 }),
+    body: JSON.stringify({ message: text, state, llm: getLLMConfig(), top: 3 }),
+    signal,
   });
   if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text()).slice(0, 140));
   return res.json();
 }
 
 /* ─── composer ─── */
+function pendingTurnIsOwned(turn) {
+  return pendingTurn === turn && turn.conversationEpoch === conversationEpoch;
+}
+
+function syncComposerAvailability() {
+  const busy = pendingTurn !== null;
+  if (composerTextareaEl) {
+    composerTextareaEl.disabled = busy;
+    composerTextareaEl.setAttribute('aria-busy', String(busy));
+  }
+  if (composerSendBtnEl) {
+    composerSendBtnEl.disabled = busy || !composerTextareaEl?.value.trim();
+  }
+}
+
+function retirePendingTurn() {
+  const retired = pendingTurn;
+  pendingTurn = null;
+  if (retired) retired.controller.abort();
+  syncComposerAvailability();
+}
+
+function beginPendingTurn(pendingEl) {
+  const turn = {
+    id: ++nextTurnId,
+    conversationEpoch,
+    controller: new AbortController(),
+    pendingEl,
+  };
+  pendingTurn = turn;
+  syncComposerAvailability();
+  return turn;
+}
+
+function finishPendingTurn(turn) {
+  if (!pendingTurnIsOwned(turn)) return false;
+  pendingTurn = null;
+  syncComposerAvailability();
+  return true;
+}
+
 function buildComposer() {
   const ta = el('textarea', {
     rows: '1',
@@ -1063,9 +1125,13 @@ function buildComposer() {
   const grow = () => {
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
-    sendBtn.disabled = !ta.value.trim();
+    syncComposerAvailability();
   };
   const submit = async () => {
+    // The backend state is a sequential conversation state machine. Starting a
+    // second turn before the first commits would send the same predecessor
+    // state twice, so the composer is deliberately single-flight.
+    if (pendingTurn !== null) return;
     const text = ta.value.trim();
     if (!text) return;
     appendMessage({ role: 'user', text });
@@ -1073,17 +1139,22 @@ function buildComposer() {
     ta.value = ''; ta.style.height = 'auto'; sendBtn.disabled = true;
     const pending = buildMessage({ role: 'agent', text: 'Searching the atlas…' });
     threadEl.appendChild(pending); scrollThreadToBottom();
+    const turn = beginPendingTurn(pending);
     try {
-      const res = await sendToBackend(text);
+      const res = await sendToBackend(text, chatState, turn.controller.signal);
+      // A workspace restore retires the turn before replacing the thread DOM.
+      // Never let a late or abort-ignoring transport mutate the new owner.
+      if (!pendingTurnIsOwned(turn)) return;
       chatState = res.state || chatState;
       threadEl.replaceChild(buildReplyMessage(res), pending);
       convoLog.push({ role: 'agent', res });
       if (convoLog.length > 60) convoLog = convoLog.slice(-60);
       const first = cardsWithAgentSpec(res)[0];
       if (first) { setActiveCandidate(first); showCandidateRules(first); showCandidateViz(first, first.family || res.family); }
-      else { setActiveCandidate(null); }
+      else { clearActiveCandidateResults(); }
       refreshBackendStatus();
     } catch (e) {
+      if (!pendingTurnIsOwned(turn)) return;
       // Guidance is trusted constant copy (html); the error detail can echo a
       // backend/proxy response body, so render it as textContent — never innerHTML.
       const errMsg = el('div', { class: 'msg agent' }, [
@@ -1093,8 +1164,10 @@ function buildComposer() {
       ]);
       threadEl.replaceChild(errMsg, pending);
       refreshBackendStatus();
+    } finally {
+      // A retired turn must not re-enable the composer owned by a newer turn.
+      if (finishPendingTurn(turn)) scrollThreadToBottom();
     }
-    scrollThreadToBottom();
   };
 
   ta.addEventListener('input', grow);
@@ -1102,6 +1175,10 @@ function buildComposer() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
   });
   sendBtn.addEventListener('click', submit);
+
+  composerTextareaEl = ta;
+  composerSendBtnEl = sendBtn;
+  syncComposerAvailability();
 
   return el('div', { class: 'agent-composer' }, el('div', { class: 'composer-box' }, [ta, sendBtn]));
 }
@@ -1178,13 +1255,21 @@ function ensureAgentBuilt() {
 // ─── Per-project conversation persistence ─────────────────────────────────────
 // The workspace document carries the Design-Agent conversation, so each project =
 // one workspace + one conversation. workspace.js serializeState()/applyState() call these.
-function getDesignAgentConversation() {
+export function getDesignAgentConversation() {
   return { convo: convoLog, chatState };
 }
-function setDesignAgentConversation(rec) {
+export function setDesignAgentConversation(rec) {
+  // A restore is a new workspace/conversation owner even when it happens to
+  // contain structurally identical data. Retire the old request before the
+  // thread's pending node can be detached by replaceChildren().
+  conversationEpoch += 1;
+  retirePendingTurn();
   ensureAgentBuilt();
   if (!threadEl) return;
-  convoLog = (rec && Array.isArray(rec.convo)) ? rec.convo : [];
+  // Clear the previous workspace's export target and evidence immediately.
+  // Only a valid card encountered in the restored conversation may rebuild it.
+  clearActiveCandidateResults();
+  convoLog = (rec && Array.isArray(rec.convo)) ? rec.convo.slice() : [];
   chatState = (rec && rec.chatState) ? rec.chatState : {};
   threadEl.replaceChildren();
   if (!convoLog.length) {
@@ -1195,16 +1280,15 @@ function setDesignAgentConversation(rec) {
       if (e.role === 'user') threadEl.appendChild(buildMessage({ role: 'user', text: e.text }));
       else if (e.role === 'agent' && e.res) {
         threadEl.appendChild(buildReplyMessage(e.res));
-        const f = cardsWithAgentSpec(e.res)[0];
-        if (f) { lastCard = f; lastFam = f.family || e.res.family; }
+        // Each agent response supersedes the prior result owner, including a
+        // response with no admissible card. This matches live-turn behavior,
+        // where a later no-card response clears the previous candidate.
+        const f = cardsWithAgentSpec(e.res)[0] || null;
+        lastCard = f;
+        lastFam = f ? (f.family || e.res.family) : null;
       }
     }
     if (lastCard) { setActiveCandidate(lastCard); showCandidateRules(lastCard); showCandidateViz(lastCard, lastFam); }
-  }
-  if (!convoLog.length || !activeCandidate) {
-    setActiveCandidate(null);
-    if (resultsRulesEl) resultsRulesEl.replaceChildren(placeholder('Reaction rules appear here once a candidate is found.'));
-    if (resultsChartEl) resultsChartEl.replaceChildren(placeholder('Describe a behavior on the left — the top candidate’s response curve appears here.'));
   }
   scrollThreadToBottom();
 }

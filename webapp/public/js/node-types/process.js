@@ -41,8 +41,8 @@ export const PROCESS_TYPES = {
         </div>
       `;
     },
-    async execute(nodeId) {
-      await executeAtlasBuilder(nodeId);
+    async execute(nodeId, options = {}) {
+      await executeAtlasBuilder(nodeId, options);
     },
   },
 };

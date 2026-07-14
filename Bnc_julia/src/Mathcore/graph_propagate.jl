@@ -382,13 +382,21 @@ function _initial_seed_ranges(n::Int, nt::Int)
     return [((k - 1) * chunk + 1):min(k * chunk, n) for k in 1:nt if (k - 1) * chunk + 1 <= n]
 end
 
-function _prefill_affine_cache!(model::Bnc; ensure_built::Bool=true)
-    ensure_built && find_all_regimes!(model)
+function _prefill_affine_cache!(
+    model::Bnc;
+    ensure_built::Bool=true,
+    cancel_check=_NO_CANCEL_CHECK,
+)
+    cancel_check()
+    ensure_built && find_all_regimes!(model; cancel_check=cancel_check)
+    cancel_check()
     model._regimes_affine_ready && return nothing
     lock(model._regimes_affine_lock)
     try
+        cancel_check()
         model._regimes_affine_ready && return nothing
-        _prefill_affine_cache_core!(model)
+        _prefill_affine_cache_core!(model; cancel_check=cancel_check)
+        cancel_check()
     finally
         unlock(model._regimes_affine_lock)
     end
@@ -396,7 +404,11 @@ function _prefill_affine_cache!(model::Bnc; ensure_built::Bool=true)
     return nothing
 end
 
-function _prefill_affine_cache_core!(model::Bnc)
+function _prefill_affine_cache_core!(
+    model::Bnc;
+    cancel_check=_NO_CANCEL_CHECK,
+)
+    cancel_check()
     regimes = _bind_regimes_data(model)
     grh = model.vertices_graph
     isnothing(grh) && error("Regime graph is not initialized.")
@@ -404,6 +416,7 @@ function _prefill_affine_cache_core!(model::Bnc)
     comps = connected_components(get_neighbor_graph_x(grh))
     comp_of = zeros(Int, length(regimes))
     for cid in eachindex(comps)
+        cancel_check()
         @inbounds for idx in comps[cid]
             comp_of[idx] = cid
         end
@@ -414,12 +427,13 @@ function _prefill_affine_cache_core!(model::Bnc)
     deferred_locals = [Int[] for _ in 1:Threads.maxthreadid()]
 
     ranges = _initial_seed_ranges(length(regimes), Threads.nthreads())
-    Threads.@threads for rid in eachindex(ranges)
+    function process_seed_range!(rid)
         tid = Threads.threadid()
         ws = workspaces[tid]
         deferred_local = deferred_locals[tid]
 
         for idx in ranges[rid]
+            cancel_check()
             cid = comp_of[idx]
             state.component_owner[cid][] == 0 || continue
 
@@ -436,13 +450,26 @@ function _prefill_affine_cache_core!(model::Bnc)
                     ws,
                     state;
                     frontier_parallel_threshold=256,
+                    cancel_check=cancel_check,
                 ),
             )
         end
     end
 
-    Threads.@threads :dynamic for cid in eachindex(comps)
-        _try_claim_component!(state.component_owner, cid) || continue
+    if cancel_check === _NO_CANCEL_CHECK
+        Threads.@threads for rid in eachindex(ranges)
+            process_seed_range!(rid)
+        end
+    else
+        for rid in eachindex(ranges)
+            process_seed_range!(rid)
+        end
+    end
+    cancel_check()
+
+    function process_unclaimed_component!(cid)
+        cancel_check()
+        _try_claim_component!(state.component_owner, cid) || return nothing
         tid = Threads.threadid()
         append!(
             deferred_locals[tid],
@@ -453,14 +480,29 @@ function _prefill_affine_cache_core!(model::Bnc)
                 workspaces[tid],
                 state;
                 frontier_parallel_threshold=256,
+                cancel_check=cancel_check,
             ),
         )
+        return nothing
     end
+
+    if cancel_check === _NO_CANCEL_CHECK
+        Threads.@threads :dynamic for cid in eachindex(comps)
+            process_unclaimed_component!(cid)
+        end
+    else
+        for cid in eachindex(comps)
+            process_unclaimed_component!(cid)
+        end
+    end
+    cancel_check()
 
     deferred_idxs = reduce(vcat, deferred_locals; init=Int[])
     model._vertices_Nρ_inv_dict = state.cache
-    _finalize_deferred_affine_and_nullity!(model, deferred_idxs, state)
+    _finalize_deferred_affine_and_nullity!(
+        model, deferred_idxs, state; cancel_check=cancel_check)
 
+    cancel_check()
     model._regimes_affine_ready = true
     return nothing
 end
@@ -473,6 +515,7 @@ function _process_component_from_seed_scan!(
     state::SeedAnalysisState;
     frontier_parallel_threshold::Int=256,
     drop_tol::Float64=1e-10,
+    cancel_check=_NO_CANCEL_CHECK,
 )
     remaining = ws.remaining
     _mark_component_remaining!(remaining, comp)
@@ -480,8 +523,10 @@ function _process_component_from_seed_scan!(
     deferred_idxs = Int[]
 
     while true
+        cancel_check()
         seed = 0
         @inbounds for idx in comp
+            cancel_check()
             remaining[idx] == 0x01 || continue
 
             status, _, _, _ = _ensure_seed_analysis!(state, idx, regimes, regimes[idx].network.N; drop_tol=drop_tol)
@@ -505,12 +550,14 @@ function _process_component_from_seed_scan!(
             ws,
             seed;
             frontier_parallel_threshold=frontier_parallel_threshold,
+            cancel_check=cancel_check,
         )
         _clear_vertices!(remaining, discovered)
         _reset_claims!(ws.claimed, discovered)
     end
 
     @inbounds for idx in comp
+        cancel_check()
         if remaining[idx] == 0x01
             status, _, _, _ = _ensure_seed_analysis!(state, idx, regimes, regimes[idx].network.N; drop_tol=drop_tol)
             remaining[idx] = 0x00
@@ -527,16 +574,19 @@ function _finalize_deferred_affine_and_nullity!(
     deferred_idxs::Vector{Int},
     state::SeedAnalysisState;
     drop_tol::Float64=1e-10,
+    cancel_check=_NO_CANCEL_CHECK,
 )
     isempty(deferred_idxs) && return nothing
 
     regimes = _bind_regimes_data(model)
 
     @inbounds for idx in deferred_idxs
+        cancel_check()
         regimes[idx].nullity = max(regimes[idx].nullity, state.total_nullities[idx])
     end
 
     for idx in deferred_idxs
+        cancel_check()
         rgm = regimes[idx]
         rgm.nullity == 1 || continue
         _affine_info_ready(rgm) && continue
@@ -565,6 +615,7 @@ function _propagate_from_regular_seed!(
     ws::AffinePropagateWorkspace,
     seed::Int;
     frontier_parallel_threshold::Int=256,
+    cancel_check=_NO_CANCEL_CHECK,
 )
     remaining = ws.remaining
     claimed = ws.claimed
@@ -582,10 +633,13 @@ function _propagate_from_regular_seed!(
     push!(frontier, seed)
 
     while !isempty(frontier)
+        cancel_check()
         empty!(next_frontier)
 
-        if nt == 1 || length(frontier) < frontier_parallel_threshold
+        if cancel_check !== _NO_CANCEL_CHECK ||
+           nt == 1 || length(frontier) < frontier_parallel_threshold
             for from_idx in frontier
+                cancel_check()
                 from_rgm = regimes[from_idx]
                 for edge in grh.neighbors[from_idx]
                     to_idx = edge.to

@@ -5,6 +5,7 @@ Base.@kwdef struct DesignabilityCellResult
     predicted_ro::Float64
     path_idx::Int = 0
     vertex_indices::Vector{Int} = Int[]
+    witness_vertex_indices::Vector{Int} = Int[]
     predicted_profile::Vector{Float64} = Float64[]
     qK_symbols::Vector{String} = String[]
     witness_input_log10::Vector{Float64} = Float64[]
@@ -32,6 +33,11 @@ Base.@kwdef struct DesignabilityCellResult
     sampled_shape_prominence_left_log10::Float64 = NaN
     sampled_shape_prominence_right_log10::Float64 = NaN
     chebyshev_radius::Float64
+    parameter_chebyshev_radius::Float64 = NaN
+    augmented_chebyshev_radius::Float64 = NaN
+    parameter_margin_dimension::Int = 0
+    parameter_margin_equality_rank::Int = 0
+    parameter_margin_basis::String = ""
     log_qK::Vector{Float64}
     kd::Vector{Float64}
     totals::Dict{String, Float64}
@@ -255,13 +261,102 @@ function _designability_path_projected_rows(siso, path_idx::Integer, n_bg::Integ
 end
 
 function _designability_vertex_choice_products(vertex_choices::Vector{Vector{Int}})
-    isempty(vertex_choices) && return Tuple{}[]
-    return collect(Iterators.product(vertex_choices...))
+    isempty(vertex_choices) && return ()
+    return Iterators.product(vertex_choices...)
+end
+
+function _designability_bounded_product_count(
+    choice_counts::AbstractVector{<:Integer};
+    limit::Integer=typemax(Int),
+)
+    limit >= 0 || throw(ArgumentError("Designability cell limit must be nonnegative."))
+    total = 1
+    for raw_count in choice_counts
+        raw_count >= 0 || throw(ArgumentError(
+            "Designability vertex-choice counts must be nonnegative."))
+        count = try
+            Int(raw_count)
+        catch
+            throw(SyncBudgetExceeded(
+                "Exact feasible-region cell count exceeds the supported integer range."))
+        end
+        count == 0 && return 0
+        total > Int(limit) ÷ count && throw(SyncBudgetExceeded(
+            "Exact feasible-region cell enumeration exceeds the limit of $(limit)."))
+        total *= count
+    end
+    return total
+end
+
+function _designability_add_cell_count(
+    current::Integer,
+    additional::Integer,
+    limit::Union{Nothing, Integer},
+)
+    current >= 0 && additional >= 0 || throw(ArgumentError(
+        "Designability cell counts must be nonnegative."))
+    effective_limit = limit === nothing ? typemax(Int) : Int(limit)
+    current > effective_limit - additional && throw(SyncBudgetExceeded(
+        "Exact feasible-region cell enumeration exceeds the limit of $(effective_limit)."))
+    return Int(current + additional)
 end
 
 function _designability_rows_matrix(rows::Vector{Vector{Float64}}, ncols::Integer)
     isempty(rows) && return zeros(0, Int(ncols))
     return reduce(vcat, (reshape(row, 1, Int(ncols)) for row in rows))
+end
+
+function _designability_conditional_parameter_margin(
+    eqC::AbstractMatrix,
+    eq_rhs::AbstractVector,
+    inC::AbstractMatrix,
+    in_rhs::AbstractVector,
+    parameter_symbols::AbstractVector,
+    witness_input_log10::AbstractVector,
+)
+    n_bg = length(parameter_symbols)
+    n_witness = length(witness_input_log10)
+    n_witness > 0 || return nothing
+    coordinates = vcat(Symbol.(parameter_symbols), [_rop_shape_tau(idx)
+                                                     for idx in 0:(n_witness - 1)])
+    geometry = ROPShapeOptimization.DesignabilityCellGeometry(
+        -Matrix{Float64}(eqC), Vector{Float64}(eq_rhs),
+        -Matrix{Float64}(inC), Vector{Float64}(in_rhs);
+        coordinates=coordinates,
+        parameter_coordinates=Symbol.(parameter_symbols),
+        witness_coordinates=coordinates[(n_bg + 1):end],
+        equality_row_ids=["legacy_augmented:eq:$idx" for idx in axes(eqC, 1)],
+        inequality_row_ids=["legacy_augmented:ineq:$idx" for idx in axes(inC, 1)],
+        path_identity="legacy_designability_augmented_cell",
+        witness_identity=["legacy_designability:witness:$idx"
+                          for idx in 0:(n_witness - 1)],
+    )
+    fixed_witnesses = ROPShapeOptimization.LinearWitnessConstraint[
+        ROPShapeOptimization.LinearWitnessConstraint(
+            "conditional_witness:$idx",
+            [ROPShapeOptimization.WitnessTerm(_rop_shape_tau(idx), 1.0)],
+            :eq,
+            Float64(witness_input_log10[idx + 1]),
+        ) for idx in 0:(n_witness - 1)
+    ]
+    objective = ROPShapeOptimization.LinearWitnessObjective(
+        "conditional_witness_anchor",
+        [ROPShapeOptimization.WitnessTerm(_rop_shape_tau(0), 1.0)];
+        sense=:maximize,
+    )
+    result = ROPShapeOptimization.conditional_parameter_margin(
+        geometry, objective, Float64(first(witness_input_log10));
+        constraints=fixed_witnesses)
+    result.status == ROPShapeOptimization.OPTIMAL || return nothing
+    result.solution === nothing && return nothing
+    solution = Float64.(result.solution)
+    return (
+        background_log_qK=solution[1:n_bg],
+        parameter_radius=Float64(something(result.parameter_margin)),
+        subspace=result.subspace,
+        solver_status=result.solver_status,
+        message=result.message,
+    )
 end
 
 function _designability_input_window_tuple(input_window)
@@ -883,6 +978,11 @@ function feasible_region_single_ro(rules::Vector{String}, input_sym, output_sym,
                 predicted_profile = Float64[Float64(ro)],
                 qK_symbols = String.(string.(qK_sym(model))),
                 chebyshev_radius = isfinite(radius) ? Float64(radius) : 0.0,
+                parameter_chebyshev_radius = isfinite(radius) ? Float64(radius) : 0.0,
+                augmented_chebyshev_radius = isfinite(radius) ? Float64(radius) : NaN,
+                parameter_margin_dimension = model.n - rank(Matrix{Float64}(eqC)),
+                parameter_margin_equality_rank = rank(Matrix{Float64}(eqC)),
+                parameter_margin_basis = "log10_qK_euclidean",
                 log_qK = Float64.(logqK),
                 kd = Float64.(kd),
                 totals = totals,
@@ -904,9 +1004,12 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
                                                 transition_order = nothing,
                                                 dynamic_range = nothing,
                                                 output_feature = nothing,
-                                                shape = nothing)
+                                                shape = nothing,
+                                                max_cells::Union{Nothing, Integer} = nothing)
     target = Float64.(collect(target_profile))
     isempty(target) && error("target reaction-order program must not be empty")
+    max_cells !== nothing && Int(max_cells) < 1 && throw(ArgumentError(
+        "max_cells must be positive or nothing"))
     model, _, _, _ = build_model(rules, fill(1.0, length(rules)))
     find_all_vertices!(model)
     input_idx = locate_sym_qK(model, Symbol(input_sym))
@@ -942,6 +1045,15 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
         reason = "invalid input_window.min_spacing_decades",
     )
     operating_points = _designability_operating_points(input_window, length(target))
+    operating_points_declared = input_window isa AbstractDict &&
+        _raw_haskey(input_window, :operating_points_log10)
+    if operating_points_declared && operating_points === nothing
+        return FeasibleRegionResult(
+            feasible = false,
+            certificate_grade = "exact-union-siso-rop-path",
+            reason = "invalid finite-window operating_points_log10",
+        )
+    end
     witness_order = transition_order === nothing ?
         collect(1:length(target)) :
         Int.(collect(transition_order))
@@ -954,13 +1066,36 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
             reason = "invalid transition_order program indices",
         )
     end
-    cells = DesignabilityCellResult[]
-
+    # First identify and count the complete declared cell population without
+    # materializing any witness Cartesian product, augmented matrix, polyhedron,
+    # or LP. Exact certificates are all-or-nothing: an over-budget candidate is
+    # left unevaluated by its caller instead of solving a prefix and calling it
+    # exact.
+    eligible_paths = NamedTuple[]
+    eligible_cell_count = 0
     for pr in bf.path_records
         pr.included || continue
         collapsed = _designability_collapse_profile_vertices(pr.exact_profile, pr.vertex_indices, target; tol = tol)
         collapsed === nothing && continue
         profile, vertex_choices = collapsed
+        path_cell_count = window_bounds === nothing ? 1 :
+            _designability_bounded_product_count(
+                length.(vertex_choices);
+                limit=max_cells === nothing ? typemax(Int) : Int(max_cells),
+            )
+        eligible_cell_count = _designability_add_cell_count(
+            eligible_cell_count,
+            path_cell_count,
+            max_cells,
+        )
+        push!(eligible_paths, (; pr, profile, vertex_choices))
+    end
+
+    cells = DesignabilityCellResult[]
+    for entry in eligible_paths
+        pr = entry.pr
+        profile = entry.profile
+        vertex_choices = entry.vertex_choices
         if window_bounds !== nothing
             pEqC, pEqC0, pInC, pInC0 = _designability_path_projected_rows(siso, pr.path_idx, length(projected_symbols))
             n_bg = length(projected_symbols)
@@ -1014,8 +1149,17 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
                 poly = get_polyhedron(vcat(eqC, inC), vcat(eq_rhs, in_rhs), size(eqC, 1))
                 isempty(poly) && continue
                 log_aug, radius, mode = _placer_most_interior_point(poly; extend = 3)
+                augmented_radius = isfinite(radius) ? Float64(radius) : NaN
                 background_logqK = Float64.(log_aug[1:n_bg])
                 witness_log_input = Float64.(log_aug[(n_bg + 1):end])
+                conditional_margin = _designability_conditional_parameter_margin(
+                    eqC, eq_rhs, inC, in_rhs, projected_symbols, witness_log_input)
+                parameter_radius = conditional_margin === nothing ? 0.0 :
+                    conditional_margin.parameter_radius
+                if conditional_margin !== nothing
+                    background_logqK = conditional_margin.background_log_qK
+                    mode = :conditional_parameter_chebyshev
+                end
                 sample_points = _designability_window_sample_points(dynamic_range, output_feature, shape)
                 sampled_curve = sample_points > 0 ? _designability_sample_window_curve(
                     model, input_idx, output_idx, projected_symbols, background_logqK,
@@ -1034,6 +1178,7 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
                     predicted_ro = isempty(profile) ? NaN : first(profile),
                     path_idx = Int(pr.path_idx),
                     vertex_indices = vertex_indices,
+                    witness_vertex_indices = witness_vertices,
                     predicted_profile = Float64.(profile),
                     qK_symbols = String.(string.(projected_symbols)),
                     witness_input_log10 = witness_log_input,
@@ -1060,7 +1205,15 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
                     sampled_shape_min_prominence_log10 = sampled_shape === nothing ? NaN : sampled_shape.min_prominence_log10,
                     sampled_shape_prominence_left_log10 = sampled_shape === nothing ? NaN : sampled_shape.prominence_left_log10,
                     sampled_shape_prominence_right_log10 = sampled_shape === nothing ? NaN : sampled_shape.prominence_right_log10,
-                    chebyshev_radius = isfinite(radius) ? Float64(radius) : 0.0,
+                    chebyshev_radius = parameter_radius,
+                    parameter_chebyshev_radius = parameter_radius,
+                    augmented_chebyshev_radius = augmented_radius,
+                    parameter_margin_dimension = conditional_margin === nothing ? 0 :
+                        conditional_margin.subspace.dimension,
+                    parameter_margin_equality_rank = conditional_margin === nothing ? 0 :
+                        conditional_margin.subspace.equality_rank,
+                    parameter_margin_basis =
+                        "equality_feasible_log10_qK_subspace",
                     log_qK = background_logqK,
                     kd = Float64.(kd),
                     totals = totals,
@@ -1089,6 +1242,12 @@ function feasible_region_reaction_order_program(rules::Vector{String}, input_sym
             predicted_profile = profile,
             qK_symbols = String.(string.(projected_symbols)),
             chebyshev_radius = isfinite(radius) ? Float64(radius) : 0.0,
+            parameter_chebyshev_radius = isfinite(radius) ? Float64(radius) : 0.0,
+            augmented_chebyshev_radius = isfinite(radius) ? Float64(radius) : NaN,
+            parameter_margin_dimension = length(projected_symbols) -
+                rank(Matrix{Float64}(eqC)),
+            parameter_margin_equality_rank = rank(Matrix{Float64}(eqC)),
+            parameter_margin_basis = "log10_qK_euclidean",
             log_qK = Float64.(logqK),
             kd = Float64.(kd),
             totals = totals,

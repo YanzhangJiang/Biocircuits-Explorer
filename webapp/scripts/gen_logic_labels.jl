@@ -12,7 +12,7 @@ using BindingAndCatalysis, JSON3
 include(joinpath(@__DIR__, "..", "src", "reaction_parser.jl"));            using .ReactionParser: build_model
 include(joinpath(@__DIR__, "..", "src", "latent_atlas", "evaluators.jl")); using .BehaviorEvaluators
 
-const EVAL_VERSION = "bne-logic-eval/v0.1.0"
+const EVAL_VERSION = "bne-logic-eval/v0.2.0"
 
 dspath   = length(ARGS) >= 1 ? ARGS[1] : error("need SISO dataset.jsonl path")
 outpath  = length(ARGS) >= 2 ? ARGS[2] : error("need output jsonl path")
@@ -38,7 +38,7 @@ pairs2(v) = [(v[i], v[j]) for i in 1:length(v) for j in (i+1):length(v)]
 
 mkpath(dirname(outpath))
 io = open(outpath, "w")
-nslice = 0; nok = 0; nerr = 0
+nslice = 0; nok = 0; nskipped = 0; nerr = 0
 gatehist = Dict{String,Int}()
 t0 = time()
 outer = false
@@ -59,11 +59,21 @@ for (nid, e) in nets
         try
             r = evaluate_logic(model, species, free; input_syms=[a, b], output_sym=out,
                                target=nothing, npoints=7, K=8)
-            support = count(==(r["realized_table"]), r["tables"]) / length(r["tables"])
+            if !is_complete_evaluator_evidence(r) ||
+               !(r["realized_gate"] isa AbstractString)
+                global nskipped += 1
+                continue
+            end
+            support = count(==(r["realized_table"]), r["tables"]) / r["valid_draw_count"]
             gate = r["realized_gate"]
             row = Dict("network_id" => nid, "rules" => e["rules"], "inputs" => [a, b], "output" => out,
                        "realized_gate" => gate, "gate_support" => round(support, digits=3),
                        "median_margin_decades" => round(r["median_margin_decades"], digits=3),
+                       "requested_draw_count" => r["requested_draw_count"],
+                       "valid_draw_count" => r["valid_draw_count"],
+                       "invalid_draw_count" => r["invalid_draw_count"],
+                       "partial" => r["partial"],
+                       "evidence_status" => r["evidence_status"],
                        "evaluator_version" => EVAL_VERSION)
             println(io, JSON3.write(row)); flush(io)
             global nok += 1
@@ -75,7 +85,7 @@ for (nid, e) in nets
 end
 close(io)
 dt = time() - t0
-println("LABELS=$nok  errors=$nerr  slices_seen=$nslice  wall=$(round(dt,digits=1))s  rate=$(round(nok/max(dt,1e-9),digits=1)) slices/s")
+println("LABELS=$nok  skipped_incomplete=$nskipped  errors=$nerr  slices_seen=$nslice  wall=$(round(dt,digits=1))s  rate=$(round(nok/max(dt,1e-9),digits=1)) slices/s")
 println("--- realized 2-input gate distribution (mu<=5 family) ---")
 for (g, c) in sort(collect(gatehist); by = x -> -x[2])
     println("  $(rpad(g,12)) $c  ($(round(100c/max(nok,1),digits=1))%)")

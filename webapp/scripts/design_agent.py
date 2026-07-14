@@ -16,7 +16,7 @@
 # returned identical canned cards with the engine down.)
 #
 # Requires an LLM key (provider-agnostic: OpenAI-compatible incl. a local proxy, or Anthropic).
-import os, sys, json, collections, hashlib, time, uuid, copy, math
+import os, sys, json, collections, hashlib, time, uuid, copy, math, tempfile, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import design_search as ds
 import cards as C
@@ -36,10 +36,42 @@ CONTEXTUAL_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-contextual-v0",
 
 # ── DesignAgentTrace: one replayable record per turn (large arrays → artifacts/<hash>.json). ──
 TRACE_SCHEMA_VERSION = "design-agent-trace/v0.1.0"
-COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.5.0"   # v0.5.0: exact Design Screen + Placer handoff
+COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.6.0"   # v0.6.0: canonical fixed-network ROP shape optimization
 TRACE_DIR = os.environ.get("BNE_TRACE_DIR", os.path.join(ROOT, "traces"))
+
+def _trace_integer_config(name, default, minimum, maximum):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if (not raw.isascii() or not raw.isdecimal() or
+            (len(raw) > 1 and raw.startswith("0"))):
+        raise ValueError(f"{name} must be a canonical decimal integer")
+    value = int(raw)
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be within [{minimum}, {maximum}]")
+    return value
+
+
+# Trace storage is diagnostic and best-effort, but it must not grow forever.
+# A single record may exceed the segment target; in that case it occupies one
+# segment by itself. Full-card artifacts are independently bounded and oldest
+# artifacts may be retired while their compact trace summaries remain.
+TRACE_MAX_BYTES = _trace_integer_config(
+    "BNE_TRACE_MAX_BYTES", 16 * 1024 * 1024, 64 * 1024, 1024 * 1024 * 1024,
+)
+TRACE_ARCHIVE_COUNT = _trace_integer_config("BNE_TRACE_ARCHIVE_COUNT", 3, 0, 32)
+TRACE_ARTIFACT_MAX_BYTES = _trace_integer_config(
+    "BNE_TRACE_ARTIFACT_MAX_BYTES", 256 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024 * 1024,
+)
+TRACE_ARTIFACT_MAX_FILES = _trace_integer_config(
+    "BNE_TRACE_ARTIFACT_MAX_FILES", 4096, 1, 65536,
+)
+_TRACE_STORE_LOCK = threading.RLock()
+
 DESIGNABILITY_SPEC_VERSION = "bne-designability/v1.0.0"
 DESIGN_SCREEN_SCHEMA_VERSION = "bne-design-screen/v0.3.0"
+ROP_SHAPE_OPTIMIZE_REQUEST_VERSION = "bne-rop-shape-optimize-request/v1.0.0"
+ROP_SHAPE_OPTIMIZATION_VERSION = "bne-rop-shape-optimization/v1.0.0"
 
 def _hash(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -69,15 +101,49 @@ def _spill_card(card):
     """Write a candidate card's FULL artifact (incl. computed_series / surface) keyed by content hash,
     so the trace can stay compact yet the heavy result is replayable. Returns the hash."""
     rh = _hash(card)
+    tmp_path = None
     try:
-        adir = os.path.join(TRACE_DIR, "artifacts")
-        os.makedirs(adir, exist_ok=True)
-        p = os.path.join(adir, rh + ".json")
-        if not os.path.exists(p):
-            with open(p, "w") as fh:
-                json.dump(card, fh, default=str)
+        payload = json.dumps(card, default=str).encode("utf-8")
+        canonical_payload = json.dumps(
+            card, sort_keys=True, default=str, separators=(",", ":"),
+        )
+        with _TRACE_STORE_LOCK:
+            adir = os.path.join(TRACE_DIR, "artifacts")
+            os.makedirs(adir, exist_ok=True)
+            path = os.path.join(adir, rh + ".json")
+            reusable = False
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        stored = json.load(fh)
+                    reusable = json.dumps(
+                        stored, sort_keys=True, default=str, separators=(",", ":"),
+                    ) == canonical_payload
+                except (OSError, ValueError, TypeError):
+                    reusable = False
+            if reusable:
+                # Content-addressed artifacts can be reused by later turns.
+                # Refresh their recency so retention behaves as LRU rather
+                # than deleting a card that the just-written trace needs.
+                os.utime(path, None)
+            else:
+                # Repair a truncated/invalid predecessor with the same key by
+                # publishing the complete payload through the same atomic path.
+                fd, tmp_path = tempfile.mkstemp(prefix=f".{rh}.", suffix=".tmp", dir=adir)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, path)
+                tmp_path = None
     except Exception:
         pass
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return rh
 
 def _card_summary(card, result_hash):
@@ -87,15 +153,132 @@ def _card_summary(card, result_hash):
     s["result_hash"] = result_hash
     return s
 
-def _write_trace(trace):
-    """Append the compact trace to traces/traces.jsonl. Best-effort — never breaks a turn.
-    The LLM api_key is never part of the trace (only provider/model/effort)."""
+def _trace_log_path(archive_index=0):
+    base = os.path.join(TRACE_DIR, "traces.jsonl")
+    return base if archive_index == 0 else f"{base}.{archive_index}"
+
+
+def _prune_trace_archives():
+    prefix = "traces.jsonl."
     try:
-        os.makedirs(TRACE_DIR, exist_ok=True)
-        with open(os.path.join(TRACE_DIR, "traces.jsonl"), "a") as fh:
-            fh.write(json.dumps(trace, default=str) + "\n")
+        names = os.listdir(TRACE_DIR)
+    except FileNotFoundError:
+        return
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix):]
+        if not suffix.isascii() or not suffix.isdecimal():
+            continue
+        index = int(suffix)
+        if index >= 1 and index <= TRACE_ARCHIVE_COUNT and str(index) == suffix:
+            continue
+        try:
+            os.unlink(os.path.join(TRACE_DIR, name))
+        except FileNotFoundError:
+            pass
+
+
+def _rotate_trace_log():
+    current = _trace_log_path()
+    if TRACE_ARCHIVE_COUNT == 0:
+        try:
+            os.unlink(current)
+        except FileNotFoundError:
+            pass
+        return
+    oldest = _trace_log_path(TRACE_ARCHIVE_COUNT)
+    try:
+        os.unlink(oldest)
+    except FileNotFoundError:
+        pass
+    for index in range(TRACE_ARCHIVE_COUNT - 1, 0, -1):
+        source = _trace_log_path(index)
+        if os.path.exists(source):
+            os.replace(source, _trace_log_path(index + 1))
+    if os.path.exists(current):
+        os.replace(current, _trace_log_path(1))
+
+
+def _enforce_trace_artifact_retention():
+    artifact_dir = os.path.join(TRACE_DIR, "artifacts")
+    try:
+        names = os.listdir(artifact_dir)
+    except FileNotFoundError:
+        return
+
+    now = time.time()
+    artifacts = []
+    for name in names:
+        path = os.path.join(artifact_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        if not os.path.isfile(path):
+            continue
+        if name.endswith(".tmp"):
+            if now - stat.st_mtime >= 3600:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            continue
+        if name.endswith(".json"):
+            artifacts.append((stat.st_mtime_ns, name, stat.st_size, path))
+
+    artifacts.sort()
+    total_bytes = sum(item[2] for item in artifacts)
+    while artifacts and (len(artifacts) > TRACE_ARTIFACT_MAX_FILES or
+                         total_bytes > TRACE_ARTIFACT_MAX_BYTES):
+        _, _, size, path = artifacts.pop(0)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        total_bytes -= size
+
+
+def _write_trace(trace):
+    """Append one compact trace to a bounded rotating store.
+
+    Persistence remains best-effort and never breaks an Agent turn. The LLM
+    api_key is never part of the trace (only provider/model/effort).
+    """
+    final_response = trace.get("final_response") if isinstance(trace, dict) else None
+    cards = final_response.get("cards") if isinstance(final_response, dict) else None
+    enforce_artifact_retention = bool(cards)
+    try:
+        line = json.dumps(trace, default=str) + "\n"
+        line_bytes = len(line.encode("utf-8"))
+        with _TRACE_STORE_LOCK:
+            os.makedirs(TRACE_DIR, exist_ok=True)
+            # Configuration can be reduced between helper launches. Prune
+            # stale higher-numbered archives even when this append does not
+            # itself cross the rotation threshold.
+            _prune_trace_archives()
+            path = _trace_log_path()
+            current_bytes = os.path.getsize(path) if os.path.exists(path) else 0
+            if current_bytes > 0 and current_bytes + line_bytes > TRACE_MAX_BYTES:
+                _rotate_trace_log()
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
     except Exception as e:
         sys.stderr.write(f"[trace] write failed (non-fatal): {e}\n")
+    finally:
+        # Artifact growth is independent of JSONL availability. Even if log
+        # rotation or append fails, a turn that spilled cards still runs the
+        # bounded-store cleanup in its own best-effort path.
+        if enforce_artifact_retention:
+            try:
+                with _TRACE_STORE_LOCK:
+                    _enforce_trace_artifact_retention()
+            except Exception as e:
+                sys.stderr.write(
+                    f"[trace] artifact retention failed (non-fatal): {e}\n"
+                )
 
 def _agent_finite_number(raw):
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -1268,6 +1451,428 @@ def reader_panel(prototype="bump", intent="typical", behavior_class=None, nl=Non
     return out
 
 
+_ROP_SHAPE_EDIT_KINDS = {
+    "broaden", "separate", "widen_center", "translate_group", "linear_witness",
+}
+_ROP_SHAPE_MATRIX_KEYS = {"matrix", "aeq", "beq", "aineq", "bineq"}
+
+
+def _rop_shape_reference(raw):
+    allowed = {
+        "reference_hash", "artifact_ref", "network_ir_hash", "operating_points_log10",
+        "kd", "totals", "path_identity", "cell_id",
+    }
+    if not _agent_keys_allowed(raw, allowed):
+        return None, "reference contains unsupported fields"
+    for key in ("reference_hash", "network_ir_hash"):
+        value = raw.get(key)
+        if (not isinstance(value, str) or len(value) != 64 or
+                any(char not in "0123456789abcdef" for char in value)):
+            return None, f"reference.{key} must contain exactly 64 lowercase hexadecimal characters"
+    artifact_ref = raw.get("artifact_ref")
+    if artifact_ref is not None and (not isinstance(artifact_ref, str) or not artifact_ref.strip()):
+        return None, "reference.artifact_ref must be a non-empty string"
+    for key in ("path_identity", "cell_id"):
+        value = raw.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            return None, f"reference.{key} must be a non-empty string"
+    points = raw.get("operating_points_log10")
+    if (not isinstance(points, list) or len(points) < 2 or
+            any(_agent_finite_number(value) is None for value in points)):
+        return None, "reference.operating_points_log10 must contain at least two finite numbers"
+    kd = raw.get("kd")
+    if (not isinstance(kd, list) or not kd or
+            any((_agent_finite_number(value) is None or float(value) <= 0.0) for value in kd)):
+        return None, "reference.kd must be a non-empty array of finite positive numbers"
+    totals = raw.get("totals")
+    if (not isinstance(totals, dict) or not totals or
+            any((not isinstance(key, str) or not key or
+                 _agent_finite_number(value) is None or float(value) <= 0.0)
+                for key, value in totals.items())):
+        return None, "reference.totals must contain at least one finite positive symbol value"
+    return copy.deepcopy(raw), None
+
+
+def _rop_shape_network(raw, reference_kd):
+    if not isinstance(raw, dict):
+        return None, None, "network must be an object"
+    allowed = {
+        "network_ir", "expected_network_ir_hash", "rules", "reactions",
+        "input_symbols", "output_symbols",
+    }
+    if not set(raw).issubset(allowed):
+        return None, None, "network contains unsupported fields"
+    expected_hash = raw.get("expected_network_ir_hash")
+    if expected_hash is not None and (
+            not isinstance(expected_hash, str) or len(expected_hash) != 64 or
+            any(char not in "0123456789abcdef" for char in expected_hash)):
+        return None, None, "network.expected_network_ir_hash must contain exactly 64 lowercase hexadecimal characters"
+
+    network_ir = raw.get("network_ir")
+    if network_ir is not None:
+        if not isinstance(network_ir, dict):
+            return None, None, "network.network_ir must be an object"
+        if expected_hash is None:
+            return None, None, "a full NetworkIR requires expected_network_ir_hash"
+        legacy_fields = {"rules", "reactions", "input_symbols", "output_symbols"}
+        if any(key in raw for key in legacy_fields):
+            return None, None, "network_ir cannot be combined with legacy network fields"
+        return copy.deepcopy(network_ir), expected_hash.strip(), None
+
+    has_rules = "rules" in raw
+    has_reactions = "reactions" in raw
+    if has_rules == has_reactions:
+        return None, None, "legacy network requires exactly one of rules or reactions"
+    reactions = raw.get("rules") if has_rules else raw.get("reactions")
+    if (not isinstance(reactions, list) or not reactions or
+            any(not isinstance(rule, str) or not rule.strip() for rule in reactions)):
+        return None, None, "legacy network reactions must be a non-empty string array"
+    if len(reference_kd) != len(reactions):
+        return None, None, "reference.kd must contain one value per legacy network reaction"
+    input_symbols = raw.get("input_symbols")
+    output_symbols = raw.get("output_symbols")
+    for name, values in (("input_symbols", input_symbols), ("output_symbols", output_symbols)):
+        if (not isinstance(values, list) or not values or
+                any(not isinstance(value, str) or not value.strip() for value in values) or
+                len(set(values)) != len(values)):
+            return None, None, f"legacy network {name} must be a non-empty unique string array"
+    legacy = {
+        "reactions": copy.deepcopy(reactions),
+        "kd": copy.deepcopy(reference_kd),
+        "input_symbols": copy.deepcopy(input_symbols),
+        "output_symbols": copy.deepcopy(output_symbols),
+    }
+    if expected_hash is not None:
+        return None, None, "expected_network_ir_hash must be null/omitted for a legacy network"
+    return legacy, None, None
+
+
+def _rop_shape_work_budget(raw):
+    required = {"max_paths", "max_cells", "max_replays", "require_exhaustive"}
+    if not _agent_keys_allowed(raw, required) or set(raw) != required:
+        return None, "work_budget requires max_paths, max_cells, max_replays, and require_exhaustive"
+    limits = {"max_paths": 2000, "max_cells": 10000, "max_replays": 16}
+    for key, maximum in limits.items():
+        value = _agent_positive_int(raw.get(key))
+        if value is None or value > maximum:
+            return None, f"work_budget.{key} must be an integer within [1, {maximum}]"
+    if raw.get("require_exhaustive") is not True:
+        return None, "work_budget.require_exhaustive must be literal true for verified optimization"
+    return copy.deepcopy(raw), None
+
+
+def _rop_shape_replay_policy(raw):
+    required = {"input_window_log10", "sample_points", "require_complete", "store_curve", "metrics"}
+    if not _agent_keys_allowed(raw, required) or set(raw) != required:
+        return None, "replay requires input_window_log10, sample_points, require_complete, store_curve, and metrics"
+    bounds = raw.get("input_window_log10")
+    if (not isinstance(bounds, list) or len(bounds) != 2 or
+            any(_agent_finite_number(value) is None for value in bounds) or
+            float(bounds[0]) >= float(bounds[1]) or
+            any(abs(float(value)) > 20.0 for value in bounds)):
+        return None, "replay.input_window_log10 must be two increasing numbers within [-20, 20]"
+    sample_points = _agent_integral_number(raw.get("sample_points"))
+    if sample_points is None or not 11 <= sample_points <= 1000:
+        return None, "replay.sample_points must be an integer within [11, 1000]"
+    if raw.get("require_complete") is not True or raw.get("store_curve") is not True:
+        return None, "verified optimization requires replay.require_complete and replay.store_curve literal true"
+    metrics = raw.get("metrics")
+    if (not isinstance(metrics, list) or len(metrics) != 1 or
+            not _agent_keys_allowed(metrics[0], {"kind", "min_prominence_log10"}) or
+            metrics[0].get("kind") != "two_peak" or
+            _agent_nonnegative_finite_number(metrics[0].get("min_prominence_log10")) is None):
+        return None, "replay.metrics must contain exactly one valid two_peak metric"
+    return copy.deepcopy(raw), None
+
+
+def _rop_shape_step(raw):
+    value = _agent_integral_number(raw)
+    return value if value is not None and value >= 0 else None
+
+
+def _rop_shape_steps(raw, count=None):
+    if not isinstance(raw, list) or (count is not None and len(raw) != count) or not raw:
+        return None
+    values = [_rop_shape_step(value) for value in raw]
+    if any(value is None for value in values) or len(set(values)) != len(values):
+        return None
+    return values
+
+
+def _rop_shape_linear_terms(raw):
+    if not isinstance(raw, list) or not raw:
+        return False
+    for term in raw:
+        if not _agent_keys_allowed(term, {"step", "coefficient"}) or set(term) != {"step", "coefficient"}:
+            return False
+        coefficient = _agent_finite_number(term.get("coefficient"))
+        if _rop_shape_step(term.get("step")) is None or coefficient is None or coefficient == 0.0:
+            return False
+    return True
+
+
+def _rop_shape_edit_intent(raw):
+    if not isinstance(raw, dict) or raw.get("kind") not in _ROP_SHAPE_EDIT_KINDS:
+        return None, "edit_intent.kind must be broaden, separate, widen_center, translate_group, or linear_witness"
+    if any(str(key).lower() in _ROP_SHAPE_MATRIX_KEYS for key in raw):
+        return None, "edit_intent must be typed intent/linear terms, not precompiled matrices"
+    if not isinstance(raw.get("id"), str) or not raw["id"].strip():
+        return None, "edit_intent.id must be a non-empty string"
+
+    kind = raw["kind"]
+    if kind == "broaden":
+        required = {"id", "kind", "left_span_steps", "right_span_steps", "shared_magnitude"}
+        valid = (
+            set(raw) == required and
+            _rop_shape_steps(raw.get("left_span_steps"), 2) is not None and
+            _rop_shape_steps(raw.get("right_span_steps"), 2) is not None and
+            raw.get("shared_magnitude") is True
+        )
+    elif kind == "separate":
+        required = {"id", "kind", "steps", "preserve_midpoint_tolerance_log10"}
+        valid = (
+            set(raw) == required and
+            _rop_shape_steps(raw.get("steps"), 2) is not None and
+            _agent_nonnegative_finite_number(raw.get("preserve_midpoint_tolerance_log10")) is not None
+        )
+    elif kind == "widen_center":
+        required = {"id", "kind", "steps", "anchor_step", "anchor_tolerance_log10"}
+        valid = (
+            set(raw) == required and
+            _rop_shape_steps(raw.get("steps"), 2) is not None and
+            _rop_shape_step(raw.get("anchor_step")) is not None and
+            _agent_nonnegative_finite_number(raw.get("anchor_tolerance_log10")) is not None
+        )
+    elif kind == "translate_group":
+        required = {
+            "id", "kind", "group_steps", "preserve_steps",
+            "preserve_tolerance_log10", "sense", "shared_shift",
+        }
+        valid = (
+            set(raw) == required and
+            _rop_shape_steps(raw.get("group_steps")) is not None and
+            _rop_shape_steps(raw.get("preserve_steps")) is not None and
+            _agent_nonnegative_finite_number(raw.get("preserve_tolerance_log10")) is not None and
+            raw.get("sense") in ("positive", "negative") and
+            raw.get("shared_shift") is True
+        )
+    else:
+        required = {"id", "kind", "constraints", "objective"}
+        constraints = raw.get("constraints")
+        objective = raw.get("objective")
+        valid_constraints = isinstance(constraints, list)
+        if valid_constraints:
+            for constraint in constraints:
+                constraint_keys = {"id", "terms", "operator", "rhs_log10", "hard"}
+                if (not _agent_keys_allowed(constraint, constraint_keys) or set(constraint) != constraint_keys or
+                        not isinstance(constraint.get("id"), str) or not constraint["id"].strip() or
+                        not _rop_shape_linear_terms(constraint.get("terms")) or
+                        constraint.get("operator") not in ("<=", ">=", "=") or
+                        _agent_finite_number(constraint.get("rhs_log10")) is None or
+                        constraint.get("hard") is not True):
+                    valid_constraints = False
+                    break
+        objective_keys = {"id", "terms", "sense"}
+        valid_objective = (
+            _agent_keys_allowed(objective, objective_keys) and set(objective) == objective_keys and
+            isinstance(objective.get("id"), str) and bool(objective["id"].strip()) and
+            _rop_shape_linear_terms(objective.get("terms")) and
+            objective.get("sense") in ("maximize", "minimize")
+        )
+        valid = set(raw) == required and valid_constraints and valid_objective
+
+    if not valid:
+        return None, f"edit_intent does not match the canonical {kind} contract"
+    return copy.deepcopy(raw), None
+
+
+def _rop_shape_withheld(response, reason):
+    out = copy.deepcopy(response) if isinstance(response, dict) else {}
+    out.pop("_card", None)
+    out["error"] = reason
+    out["admission_status"] = "withheld"
+    return out
+
+
+def _rop_shape_replay_card_fields(replay):
+    if not isinstance(replay, dict):
+        return None, "optimization response is missing replay evidence"
+    if replay.get("status") != "pass" or replay.get("complete") is not True or replay.get("pass") is not True:
+        return None, "backend replay must have complete=true and pass=true"
+    curve = replay.get("curve")
+    if not isinstance(curve, dict):
+        return None, "backend replay is missing its curve"
+    xs = curve.get("param_values")
+    rows = curve.get("output_traj")
+    valid = curve.get("valid")
+    if not isinstance(xs, list) or not isinstance(rows, list) or not isinstance(valid, list):
+        return None, "backend replay curve arrays are malformed"
+    if not xs or len(xs) != len(rows) or len(xs) != len(valid):
+        return None, "backend replay curve arrays must be non-empty and have equal lengths"
+    if curve.get("partial") is not False or any(value is not True for value in valid):
+        return None, "backend replay curve must have literal valid=true for every point and partial=false"
+    series = []
+    for x, row in zip(xs, rows):
+        if (_agent_finite_number(x) is None or not isinstance(row, list) or not row or
+                _agent_finite_number(row[0]) is None):
+            return None, "backend replay curve contains a non-finite or malformed point"
+        series.append({"x": float(x), "y": float(row[0])})
+    request = replay.get("request")
+    body = request.get("body") if isinstance(request, dict) else None
+    if (not isinstance(request, dict) or
+            request.get("endpoint") != "/api/v1/placer_curve" or
+            request.get("method") != "POST" or
+            not isinstance(body, dict)):
+        return None, "backend replay must contain canonical POST /api/v1/placer_curve evidence"
+    rules = body.get("rules")
+    kd = body.get("kd")
+    totals = body.get("totals")
+    if (not isinstance(rules, list) or not rules or
+            any(not isinstance(rule, str) or not rule for rule in rules)):
+        return None, "backend replay request is missing reaction rules"
+    if (not isinstance(kd, list) or len(kd) != len(rules) or
+            any((_agent_finite_number(value) is None or float(value) <= 0.0) for value in kd)):
+        return None, "backend replay request has invalid Kd values"
+    if not isinstance(totals, dict):
+        return None, "backend replay request has invalid totals"
+    input_sym = body.get("input_sym")
+    output_sym = body.get("output_sym")
+    if not isinstance(input_sym, str) or not input_sym or not isinstance(output_sym, str) or not output_sym:
+        return None, "backend replay request is missing input/output symbols"
+    return {
+        "series": series,
+        "rules": copy.deepcopy(rules),
+        "kd": copy.deepcopy(kd),
+        "totals": copy.deepcopy(totals),
+        "input_symbol": input_sym,
+        "output_symbol": output_sym,
+    }, None
+
+
+def optimize_rop_shape(network, designability_spec, reference, edit_intent,
+                       minimum_parameter_margin, effect_tolerance,
+                       work_budget, replay, **extra):
+    """Optimize one typed shape edit through the canonical Julia endpoint.
+
+    This adapter validates the allow-listed wire contract and card-admission
+    evidence only.  It never compiles witness matrices, computes slopes, or
+    derives visual metrics in Python.
+    """
+    if extra:
+        return {"error": "optimize_rop_shape contains unsupported fields: " +
+                ", ".join(sorted(str(key) for key in extra))}
+    if (not isinstance(designability_spec, dict) or
+            designability_spec.get("schema_version") != DESIGNABILITY_SPEC_VERSION or
+            not _agent_wrapped_designability_spec_valid(designability_spec)):
+        return {"error": "designability_spec must be a valid bne-designability/v1.0.0 object"}
+    reference_payload, error = _rop_shape_reference(reference)
+    if error:
+        return {"error": error}
+    network_payload, expected_hash, error = _rop_shape_network(network, reference_payload["kd"])
+    if error:
+        return {"error": error}
+    intent_payload, error = _rop_shape_edit_intent(edit_intent)
+    if error:
+        return {"error": error}
+    minimum_margin = _agent_nonnegative_finite_number(minimum_parameter_margin)
+    tolerance = _agent_nonnegative_finite_number(effect_tolerance)
+    if minimum_margin is None or tolerance is None:
+        return {"error": "minimum_parameter_margin and effect_tolerance must be finite nonnegative numbers"}
+    work_payload, error = _rop_shape_work_budget(work_budget)
+    if error:
+        return {"error": error}
+    replay_payload, error = _rop_shape_replay_policy(replay)
+    if error:
+        return {"error": error}
+
+    request = {
+        "schema_version": ROP_SHAPE_OPTIMIZE_REQUEST_VERSION,
+        "network": network_payload,
+        "expected_network_ir_hash": expected_hash,
+        "designability_spec": copy.deepcopy(designability_spec),
+        "reference": reference_payload,
+        "edit_intent": intent_payload,
+        "optimization": {
+            "minimum_parameter_margin": minimum_margin,
+            "effect_tolerance": tolerance,
+        },
+        "work_budget": work_payload,
+        "replay": replay_payload,
+    }
+    response = E.rop_shape_optimize(request)
+    if not isinstance(response, dict):
+        return {"error": "ROP shape optimizer returned a malformed response"}
+    if response.get("engine_offline") or response.get("error"):
+        return response
+    if response.get("schema_version") != ROP_SHAPE_OPTIMIZATION_VERSION:
+        return _rop_shape_withheld(response, "ROP shape optimizer returned an unsupported schema_version")
+    if response.get("feasible") is not True:
+        return _rop_shape_withheld(response, "ROP shape optimizer did not return feasible=true")
+    if response.get("geometric_status") != "global_optimal_over_declared_cells":
+        return _rop_shape_withheld(response, "geometric result is not global_optimal_over_declared_cells")
+    if response.get("certificate_grade") != "exact-window-siso-rop-path-optimization":
+        return _rop_shape_withheld(response, "optimization response has an unsupported certificate_grade")
+    if not isinstance(response.get("normalized_request"), dict):
+        return _rop_shape_withheld(response, "optimization response lacks its normalized request")
+    coverage = response.get("coverage")
+    if not isinstance(coverage, dict) or coverage.get("truncated") is not False:
+        return _rop_shape_withheld(response, "optimization coverage is missing or truncated")
+    selected = response.get("selected")
+    if not isinstance(selected, dict) or not selected:
+        return _rop_shape_withheld(response, "optimization response has no selected result")
+    fixed_topology = response.get("fixed_topology")
+    identity_semantics = fixed_topology.get("network_identity_semantics") \
+        if isinstance(fixed_topology, dict) else None
+    canonical_code = fixed_topology.get("network_canonical_code") \
+        if isinstance(fixed_topology, dict) else None
+    if (not isinstance(fixed_topology, dict) or
+            fixed_topology.get("topology_preserved") is not True or
+            not isinstance(fixed_topology.get("normalized_network"), dict) or
+            not isinstance(fixed_topology.get("network_ir_hash"), str) or
+            identity_semantics not in ("canonical_code_available", "positional_content_hash_only") or
+            (identity_semantics == "canonical_code_available" and
+             (not isinstance(canonical_code, str) or not canonical_code)) or
+            (identity_semantics == "positional_content_hash_only" and canonical_code is not None)):
+        return _rop_shape_withheld(response, "optimization response lacks normalized fixed-topology identity")
+    if not isinstance(response.get("compiled_edit"), dict):
+        return _rop_shape_withheld(response, "optimization response lacks compiled_edit provenance")
+    if not isinstance(response.get("artifact"), dict):
+        return _rop_shape_withheld(response, "optimization response lacks its result artifact")
+    replay_fields, error = _rop_shape_replay_card_fields(response.get("replay"))
+    if error:
+        return _rop_shape_withheld(response, error)
+
+    card = {
+        "family": "dose_shape",
+        "verdict": "verified_rop_shape_optimization",
+        "rules": replay_fields["rules"],
+        "kd": replay_fields["kd"],
+        "totals": replay_fields["totals"],
+        "input_symbol": replay_fields["input_symbol"],
+        "output_symbol": replay_fields["output_symbol"],
+        "n_reactions": len(replay_fields["rules"]),
+        "computed_series": replay_fields["series"],
+        "geometric_status": response["geometric_status"],
+        "coverage": copy.deepcopy(coverage),
+        "selected": copy.deepcopy(selected),
+        "compiled_edit": copy.deepcopy(response.get("compiled_edit")),
+        "artifact": copy.deepcopy(response.get("artifact")),
+        "network": copy.deepcopy(fixed_topology.get("normalized_network")),
+        "network_ir_hash": fixed_topology.get("network_ir_hash"),
+        "network_canonical_code": canonical_code,
+        "network_identity_semantics": identity_semantics,
+        "replay": copy.deepcopy(response.get("replay")),
+        "designability_spec": copy.deepcopy(designability_spec),
+        "certificate_grade": response.get("certificate_grade"),
+        "evidence_tier": "global ROP shape optimum over declared cells + complete backend replay",
+    }
+    result = copy.deepcopy(response)
+    result["designability_spec"] = copy.deepcopy(designability_spec)
+    result["admission_status"] = "verified_card"
+    result["_card"] = card
+    return result
+
+
 def _design_numeric_bounds(raw, default, name):
     values = default if raw is None else raw
     if not isinstance(values, (list, tuple)) or len(values) != 2:
@@ -1648,10 +2253,216 @@ TOOLS_DISPATCH = {"corpus_overview": corpus_overview, "retrieve_atlas_seed": ret
                   "retrieve_logic_seed": retrieve_logic_seed, "retrieve_analog_seed": retrieve_analog_seed,
                   "retrieve_multimodal_seed": retrieve_multimodal_seed, "reader_panel": reader_panel,
                   "design_from_behavior": design_from_behavior,
+                  "optimize_rop_shape": optimize_rop_shape,
                   "simulate": simulate, "simulate_2d": simulate_2d, "ro_behavior": ro_behavior}
 
 _DOSE_CLASSES = sorted(set(ds.CLASS_MAP))
+_ROP_SHAPE_STEP_TOOL_SCHEMA = {"type": "integer", "minimum": 0}
+_ROP_SHAPE_STEP_PAIR_TOOL_SCHEMA = {
+    "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": True,
+    "items": _ROP_SHAPE_STEP_TOOL_SCHEMA,
+}
+_ROP_SHAPE_STEP_GROUP_TOOL_SCHEMA = {
+    "type": "array", "minItems": 1, "uniqueItems": True,
+    "items": _ROP_SHAPE_STEP_TOOL_SCHEMA,
+}
+_ROP_SHAPE_LINEAR_TERM_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "step": _ROP_SHAPE_STEP_TOOL_SCHEMA,
+        "coefficient": {"type": "number", "not": {"const": 0}},
+    },
+    "required": ["step", "coefficient"],
+    "additionalProperties": False,
+}
+_ROP_SHAPE_LINEAR_CONSTRAINT_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "terms": {"type": "array", "minItems": 1, "items": _ROP_SHAPE_LINEAR_TERM_TOOL_SCHEMA},
+        "operator": {"type": "string", "enum": ["<=", ">=", "="]},
+        "rhs_log10": {"type": "number"},
+        "hard": {"const": True},
+    },
+    "required": ["id", "terms", "operator", "rhs_log10", "hard"],
+    "additionalProperties": False,
+}
+_ROP_SHAPE_LINEAR_OBJECTIVE_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "terms": {"type": "array", "minItems": 1, "items": _ROP_SHAPE_LINEAR_TERM_TOOL_SCHEMA},
+        "sense": {"type": "string", "enum": ["maximize", "minimize"]},
+    },
+    "required": ["id", "terms", "sense"],
+    "additionalProperties": False,
+}
+_ROP_SHAPE_EDIT_INTENT_TOOL_SCHEMA = {
+    "description": "One exact allow-listed edit. Program-step indices are zero-based; never send compiled matrices.",
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "broaden"},
+                "left_span_steps": _ROP_SHAPE_STEP_PAIR_TOOL_SCHEMA,
+                "right_span_steps": _ROP_SHAPE_STEP_PAIR_TOOL_SCHEMA,
+                "shared_magnitude": {"const": True},
+            },
+            "required": ["id", "kind", "left_span_steps", "right_span_steps", "shared_magnitude"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "separate"},
+                "steps": _ROP_SHAPE_STEP_PAIR_TOOL_SCHEMA,
+                "preserve_midpoint_tolerance_log10": {"type": "number", "minimum": 0},
+            },
+            "required": ["id", "kind", "steps", "preserve_midpoint_tolerance_log10"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "widen_center"},
+                "steps": _ROP_SHAPE_STEP_PAIR_TOOL_SCHEMA,
+                "anchor_step": _ROP_SHAPE_STEP_TOOL_SCHEMA,
+                "anchor_tolerance_log10": {"type": "number", "minimum": 0},
+            },
+            "required": ["id", "kind", "steps", "anchor_step", "anchor_tolerance_log10"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "translate_group"},
+                "group_steps": _ROP_SHAPE_STEP_GROUP_TOOL_SCHEMA,
+                "preserve_steps": _ROP_SHAPE_STEP_GROUP_TOOL_SCHEMA,
+                "preserve_tolerance_log10": {"type": "number", "minimum": 0},
+                "sense": {"type": "string", "enum": ["positive", "negative"]},
+                "shared_shift": {"const": True},
+            },
+            "required": [
+                "id", "kind", "group_steps", "preserve_steps",
+                "preserve_tolerance_log10", "sense", "shared_shift",
+            ],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "kind": {"const": "linear_witness"},
+                "constraints": {"type": "array", "items": _ROP_SHAPE_LINEAR_CONSTRAINT_TOOL_SCHEMA},
+                "objective": _ROP_SHAPE_LINEAR_OBJECTIVE_TOOL_SCHEMA,
+            },
+            "required": ["id", "kind", "constraints", "objective"],
+            "additionalProperties": False,
+        },
+    ],
+}
 TOOLSPEC = [
+    {"name": "optimize_rop_shape",
+     "description": "EDIT one FIXED, referenced 1-input ROP design through the canonical live Julia optimizer. Use only after a concrete network, DesignabilitySpec v1, and pinned reference design exist. Supply a full NetworkIR+expected hash, or a complete legacy network (rules/reactions plus input/output symbols; reference.kd supplies its Kd values), one allow-listed typed edit intent, explicit optimization/work/replay policies, and no precompiled matrices. The backend alone compiles witness constraints, optimizes declared cells, measures replay features, and returns evidence. A display card is admitted only for a non-truncated global optimum with complete passing replay; otherwise report the diagnostic without inventing a design.",
+     "parameters": {"type": "object", "properties": {
+         "network": {
+             "description": "Either {network_ir, expected_network_ir_hash} or a complete legacy network with exactly one of rules/reactions plus input_symbols and output_symbols.",
+             "oneOf": [
+                 {
+                     "type": "object",
+                     "properties": {
+                         "network_ir": {"type": "object"},
+                         "expected_network_ir_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                     },
+                     "required": ["network_ir", "expected_network_ir_hash"],
+                     "additionalProperties": False,
+                 },
+                 {
+                     "type": "object",
+                     "properties": {
+                         "rules": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                         "input_symbols": {"type": "array", "minItems": 1, "uniqueItems": True, "items": {"type": "string", "minLength": 1}},
+                         "output_symbols": {"type": "array", "minItems": 1, "uniqueItems": True, "items": {"type": "string", "minLength": 1}},
+                     },
+                     "required": ["rules", "input_symbols", "output_symbols"],
+                     "additionalProperties": False,
+                 },
+                 {
+                     "type": "object",
+                     "properties": {
+                         "reactions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                         "input_symbols": {"type": "array", "minItems": 1, "uniqueItems": True, "items": {"type": "string", "minLength": 1}},
+                         "output_symbols": {"type": "array", "minItems": 1, "uniqueItems": True, "items": {"type": "string", "minLength": 1}},
+                     },
+                     "required": ["reactions", "input_symbols", "output_symbols"],
+                     "additionalProperties": False,
+                 },
+             ],
+         },
+         "designability_spec": {"type": "object", "description": "the existing canonical bne-designability/v1.0.0 request"},
+         "reference": {
+             "type": "object",
+             "properties": {
+                 "reference_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                 "artifact_ref": {"type": "string", "minLength": 1},
+                 "network_ir_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                 "operating_points_log10": {"type": "array", "minItems": 2, "items": {"type": "number"}},
+                 "kd": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}},
+                 "totals": {"type": "object", "minProperties": 1,
+                            "additionalProperties": {"type": "number", "exclusiveMinimum": 0}},
+                 "path_identity": {"type": "string", "minLength": 1},
+                 "cell_id": {"type": "string", "minLength": 1},
+             },
+             "required": ["reference_hash", "network_ir_hash", "operating_points_log10", "kd", "totals"],
+             "additionalProperties": False,
+         },
+         "edit_intent": _ROP_SHAPE_EDIT_INTENT_TOOL_SCHEMA,
+         "minimum_parameter_margin": {"type": "number", "minimum": 0},
+         "effect_tolerance": {"type": "number", "minimum": 0},
+         "work_budget": {
+             "type": "object",
+             "properties": {
+                 "max_paths": {"type": "integer", "minimum": 1, "maximum": 2000},
+                 "max_cells": {"type": "integer", "minimum": 1, "maximum": 10000},
+                 "max_replays": {"type": "integer", "minimum": 1, "maximum": 16},
+                 "require_exhaustive": {"const": True},
+             },
+             "required": ["max_paths", "max_cells", "max_replays", "require_exhaustive"],
+             "additionalProperties": False,
+         },
+         "replay": {
+             "type": "object",
+             "properties": {
+                 "input_window_log10": {
+                     "type": "array", "minItems": 2, "maxItems": 2,
+                     "items": {"type": "number", "minimum": -20, "maximum": 20},
+                 },
+                 "sample_points": {"type": "integer", "minimum": 11, "maximum": 1000},
+                 "require_complete": {"const": True},
+                 "store_curve": {"const": True},
+                 "metrics": {
+                     "type": "array", "minItems": 1, "maxItems": 1,
+                     "items": {
+                         "type": "object",
+                         "properties": {
+                             "kind": {"const": "two_peak"},
+                             "min_prominence_log10": {"type": "number", "minimum": 0},
+                         },
+                         "required": ["kind", "min_prominence_log10"],
+                         "additionalProperties": False,
+                     },
+                 },
+             },
+             "required": ["input_window_log10", "sample_points", "require_complete", "store_curve", "metrics"],
+             "additionalProperties": False,
+         },
+     }, "required": ["network", "designability_spec", "reference", "edit_intent",
+                      "minimum_parameter_margin", "effect_tolerance", "work_budget", "replay"],
+        "additionalProperties": False}},
     {"name": "design_from_behavior",
      "description": "END-TO-END 1-input inverse design on the LIVE Julia engine. Translate the user's requested qualitative curve into an ordered reaction-order program (local log-log slopes such as [1,0,-1,0,1,0,-1]), without naming an input or output species. The tool validates a canonical DesignabilitySpec, searches candidate networks, binds candidate-specific I/O only after selection, computes an exact feasible-region Chebyshev/interior parameter vector, rebuilds that selected network, and returns a fresh finite forward curve. Use this first for a requested dose-response pattern or a refinement of its working-point locations. Returned cards are real designs; if no verified recommendation is found, report that bounded result honestly.",
      "parameters": {"type": "object", "properties": {
@@ -1750,6 +2561,13 @@ PRIMARY INVERSE-DESIGN PATH for a 1-input curve pattern:
   `operating_points_log10`. If they change the qualitative pattern, change the program.
 - A successful `design_from_behavior` result already includes exact Design Screen evidence plus a
   fresh finite forward curve. Present its selected network, I/O, Kd/totals, certificate, and curve.
+- When the user asks to modify a PINNED existing ROP design (broaden/separate/widen the center/
+  translate one group), use `optimize_rop_shape` with that design's full network identity,
+  DesignabilitySpec, and reference artifact. Never invent a reference, compile matrix rows, or
+  calculate replay slopes/visual metrics yourself; the canonical Julia response owns all of them.
+- `optimize_rop_shape` may contribute a card only when it reports a global optimum over all declared
+  cells, non-truncated coverage, and a complete passing replay. Otherwise report its returned
+  diagnostic and do not present a verified shape edit.
 - Never claim success from a compiled request alone. If validation, screening, or the fresh replay
   fails, explain the returned bounded failure and do not fabricate a design.
 
@@ -1940,7 +2758,9 @@ def run_turn(state, message, llm_cfg=None, top=3):
             if res.get("engine_offline"):
                 holder["engine_offline"] = True
             spec_payload_present, spec_payload = _agent_first_present_spec_payload(res)
-            card = res.pop("_card", None) if name in ("simulate", "simulate_2d", "design_from_behavior") else None
+            card = res.pop("_card", None) if name in (
+                "simulate", "simulate_2d", "design_from_behavior", "optimize_rop_shape",
+            ) else None
             designability_spec = _agent_designability_spec_from_payload(spec_payload, card)
             if designability_spec:
                 holder["designability_spec"] = holder["designability_spec"] or designability_spec

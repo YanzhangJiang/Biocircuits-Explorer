@@ -1312,9 +1312,10 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         <li>点击 <strong>Save</strong>。点击面板外任意位置，或按 <kbd>Esc</kbd>，即可关闭。</li>
       </ol>
       <p>
-        key 只保存在本浏览器内（localStorage），仅随每次设计请求发送，再由后端转发给你
-        配置的 LLM。没有 key 时，内置的关键词编译器仍能处理简单请求；填入 key 才能解锁
-        任意措辞，包括中文。
+        key 只保存在当前页面内存中，刷新或关闭页面即清除；它仅随每次设计请求发送，
+        再由后端转发给你配置的 LLM。Provider 和模型等非敏感偏好仍可保存在浏览器中。
+        没有 key 时，内置的关键词编译器仍能处理简单请求；填入 key 才能解锁任意措辞，
+        包括中文。
       </p>
 
       <h3><span class="sec-num">8.7</span>实例</h3>
@@ -1607,16 +1608,17 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
           <li>
             <h4>回到原页面</h4>
             <p>
-              Token 写入 <code>localStorage</code>，SPA 跳回触发登录的那个页面。之后
-              每次云任务提交都会附上
+              ID token 和 refresh token 只保存在当前标签页的
+              <code>sessionStorage</code> 中，未使用的 access token 会被丢弃。SPA 随后
+              跳回触发登录的页面；之后每次云任务提交都会附上
               <code>Authorization: Bearer &lt;id_token&gt;</code>。
             </p>
           </li>
         </ol>
         <p>
-          ID token 在过期前 5 分钟自动用 refresh token 续签。登出会清空本地 token，
-          并访问 Cognito 的 <code>/logout</code> 端点，让下一次登录回到干净的
-          Hosted UI。
+          ID token 在过期前 5 分钟自动用 refresh token 续签。关闭标签页或 macOS
+          应用会清除该会话；主动登出会立即清空 token，并访问 Cognito 的
+          <code>/logout</code> 端点，让下一次登录回到干净的 Hosted UI。
         </p>
       </section>
 
@@ -1624,10 +1626,9 @@ julia --project=webapp webapp/run_inverse_design.jl spec.json inverse_result.jso
         <h3><span class="sec-num">10.3</span>macOS 同一套流程</h3>
         <p>
           Swift 版 macOS 应用在 <code>WKWebView</code> 内运行同一份
-          <code>auth.js</code>。Token 存在 WebView 自带的
-          <code>localStorage</code> 里。当前没有原生 Keychain 集成 —— 后续如果要换成
-          <code>ASWebAuthenticationSession</code> + Keychain，这只是 Swift 侧的改动，
-          不会影响 Web 代码。
+          <code>auth.js</code>。认证状态只在本次 WebView 会话中存在，关闭应用即清除；
+          它不会写入 WebView 的 <code>localStorage</code>。当前也没有原生 Keychain
+          集成，因此重新打开应用后需要再次登录。
         </p>
         <p>
           Cognito app client 必须同时注册 macOS WebView 的回环回调

@@ -2291,13 +2291,6 @@ function designability_spec_to_dict(spec::NormalizedDesignabilitySpec)
         "candidate_budget" => spec.candidate_budget,
         "ranking_policy" => spec.ranking_policy,
         "audit_policy" => spec.audit_policy,
-        "has_legacy_target" => spec.has_legacy_target,
-        "has_search_target" => spec.has_search_target,
-        "legacy_target_kind" => spec.legacy_target_kind,
-        "legacy_target" => spec.legacy_target,
-        "target_source_path" => spec.target_source_path,
-        "required_input" => spec.required_input,
-        "required_output" => spec.required_output,
     )
 end
 
@@ -2560,8 +2553,8 @@ function _design_unit_ball_volume(d::Integer)
 end
 
 function _design_tunable_volume_lower_bound(cell::DesignabilityCellResult)
-    d = length(cell.log_qK)
-    r = Float64(cell.chebyshev_radius)
+    d = cell.parameter_margin_dimension
+    r = Float64(cell.parameter_chebyshev_radius)
     (d <= 0 || !isfinite(r) || r <= 0.0) && return 0.0
     volume = _design_unit_ball_volume(d) * r^d
     return isfinite(volume) && volume > 0.0 ? volume : 0.0
@@ -2570,7 +2563,7 @@ end
 function _design_attach_tunable_volume_metrics!(metrics::AbstractDict, cell::DesignabilityCellResult)
     metrics["tunable_volume"] = _design_tunable_volume_lower_bound(cell)
     metrics["tunable_volume_source"] = "chebyshev_ball_lower_bound"
-    metrics["tunable_volume_dimension"] = length(cell.log_qK)
+    metrics["tunable_volume_dimension"] = cell.parameter_margin_dimension
     metrics["tunable_volume_units"] = "log10_qK_euclidean_ball"
     return metrics
 end
@@ -2822,7 +2815,7 @@ function _design_attach_exact_placer_handoff!(card; verification_status::Abstrac
         "pass" => true,
     )
     card["agent_handoff"] = Dict(
-        "endpoint" => "/api/design_screen",
+        "endpoint" => "/api/v1/design_screen",
         "role" => "verified_design_result",
         "next_actions" => ["rerun_fresh_forward_curve"],
         "agent_should_not" => ["promote proxy-only candidates", "claim a finite curve without replay"],
@@ -2841,6 +2834,129 @@ function _design_attach_exact_placer_handoff!(card; verification_status::Abstrac
     return card
 end
 
+function _design_attach_shape_optimization_handoff!(
+    card,
+    best::DesignabilityCellResult,
+    spec::NormalizedDesignabilitySpec,
+)
+    length(best.witness_input_log10) >= 2 || return card
+    length(best.kd) == length(_design_nid_to_rules(card["nid"])) || return card
+    all(isfinite, best.witness_input_log10) || return card
+    all(value -> isfinite(value) && value > 0, best.kd) || return card
+    all(value -> isfinite(value) && value > 0, values(best.totals)) || return card
+    input_window = _design_effective_behavior_input_window(spec)
+    window_bounds = _designability_finite_input_window_tuple(input_window)
+    window_bounds === nothing && return card
+
+    rules = _design_nid_to_rules(card["nid"])
+    network = network_ir_from_legacy(
+        rules, Float64.(best.kd);
+        label="design-screen-fixed-topology",
+        input_symbols=[String(card["inp"])],
+        output_symbols=[String(card["out"])],
+    )
+    network_dict = network_ir_to_dict(network)
+    network_hash = network_ir_hash(network)
+    path_identity = "path:$(best.path_idx)"
+    cell_id = "sha256:$(_canonical_hash(Dict(
+        "network_ir_hash" => network_hash,
+        "path_idx" => best.path_idx,
+        "witness_vertices" => best.witness_vertex_indices,
+    )))"
+    reference = Dict{String, Any}(
+        "network_ir_hash" => network_hash,
+        "operating_points_log10" => Float64.(best.witness_input_log10),
+        "kd" => Float64.(best.kd),
+        "totals" => Dict{String, Float64}(
+            String(key) => Float64(value) for (key, value) in pairs(best.totals)),
+        "path_identity" => path_identity,
+        "cell_id" => cell_id,
+    )
+    reference_payload = Dict{String, Any}(
+        "network_ir_hash" => reference["network_ir_hash"],
+        "operating_points_log10" => reference["operating_points_log10"],
+        "kd" => reference["kd"],
+        "totals" => reference["totals"],
+        "path_identity" => reference["path_identity"],
+        "cell_id" => reference["cell_id"],
+    )
+    reference["reference_hash"] = _canonical_hash(reference_payload)
+
+    # The Design Screen radius is a filter on the reference cell that was
+    # selected above.  In the optimizer contract the same parameter-only floor
+    # is owned by optimization.minimum_parameter_margin, not by the ambiguous
+    # compatibility field in DesignabilitySpec.
+    # Project the already-audited screen spec into the downstream contract
+    # instead of copying that ambiguous field into an otherwise executable
+    # handoff.  Keep the source spec/card untouched so their screen evidence
+    # continues to state exactly what was enforced during candidate selection.
+    optimization_spec = deepcopy(designability_spec_to_dict(spec))
+    optimization_constraints = _raw_get(optimization_spec, :constraints, nothing)
+    if optimization_constraints isa AbstractDict
+        robustness = _raw_get(optimization_constraints, :robustness, nothing)
+        if robustness isa AbstractDict &&
+           _raw_haskey(robustness, :min_chebyshev_radius)
+            _design_delete_raw_key!(robustness, "min_chebyshev_radius")
+            remaining = Set(String(key) for key in keys(robustness))
+            isempty(setdiff(remaining, Set(["hard"]))) &&
+                _design_delete_raw_key!(optimization_constraints, "robustness")
+        end
+    end
+    minimum_parameter_margin = _design_min_chebyshev_radius(spec)
+    behavior = _raw_get(optimization_spec["target"], :behavior_spec, nothing)
+    if behavior isa AbstractDict
+        window = _raw_get(behavior, :input_window, nothing)
+        window isa AbstractDict &&
+            _design_delete_raw_key!(window, "operating_points_log10")
+    end
+    replay_window = [Float64(window_bounds[1]), Float64(window_bounds[2])]
+    body_template = Dict{String, Any}(
+        "schema_version" => "bne-rop-shape-optimize-request/v1.0.0",
+        "network" => network_dict,
+        "expected_network_ir_hash" => network_hash,
+        "designability_spec" => optimization_spec,
+        "reference" => reference,
+        "edit_intent" => nothing,
+        "optimization" => Dict{String, Any}(
+            "minimum_parameter_margin" => minimum_parameter_margin,
+            "effect_tolerance" => 0.02,
+        ),
+        "work_budget" => Dict{String, Any}(
+            "max_paths" => 2000,
+            "max_cells" => 256,
+            "max_replays" => 1,
+            "require_exhaustive" => false,
+        ),
+        "replay" => Dict{String, Any}(
+            "input_window_log10" => replay_window,
+            "sample_points" => 281,
+            "require_complete" => true,
+            "store_curve" => true,
+            "metrics" => [Dict{String, Any}(
+                "kind" => "two_peak",
+                "min_prominence_log10" => 0.5,
+            )],
+        ),
+    )
+    card["fixed_topology_reference"] = Dict{String, Any}(
+        "network" => network_dict,
+        "network_ir_hash" => network_hash,
+        "network_canonical_code" => network_canonical_code(network),
+        "input" => String(card["inp"]),
+        "output" => String(card["out"]),
+        "reference" => reference,
+        "evidence_scope" =>
+            "selected exact-window Design Screen cell; optimization remains fixed-topology",
+    )
+    card["optimization_handoff_template"] = Dict{String, Any}(
+        "endpoint" => "/api/v1/rop_shape_optimize",
+        "method" => "POST",
+        "body_template" => body_template,
+        "required_fill" => ["edit_intent"],
+    )
+    return card
+end
+
 function _design_exact_union_card(card, region::FeasibleRegionResult, spec::NormalizedDesignabilitySpec)
     best = first(region.cells)
     min_radius = _design_min_chebyshev_radius(spec)
@@ -2855,6 +2971,10 @@ function _design_exact_union_card(card, region::FeasibleRegionResult, spec::Norm
         "chebyshev_radius" => round(best.chebyshev_radius; digits = 4),
         "chebyshev_radius_source" => "theta_union_cell",
         "chebyshev_units" => "log10_qK_euclidean",
+        "parameter_chebyshev_radius" => best.parameter_chebyshev_radius,
+        "parameter_margin_basis" => best.parameter_margin_basis,
+        "parameter_margin_dimension" => best.parameter_margin_dimension,
+        "parameter_margin_equality_rank" => best.parameter_margin_equality_rank,
         "feasible_cell_count" => length(region.cells),
         "exact_vertex_idx" => best.vertex_idx,
         "predicted_RO" => round(best.predicted_ro; digits = 4),
@@ -2928,7 +3048,13 @@ function _design_exact_program_card(card, region::FeasibleRegionResult, spec::No
     card["metrics"] = Dict(
         "chebyshev_radius" => round(best.chebyshev_radius; digits = 4),
         "chebyshev_radius_source" => "theta_union_path",
-        "chebyshev_units" => "projected_log10_qK_euclidean",
+        "chebyshev_units" => "equality_feasible_log10_qK_subspace_euclidean",
+        "parameter_chebyshev_radius" => best.parameter_chebyshev_radius,
+        "parameter_margin_basis" => best.parameter_margin_basis,
+        "parameter_margin_dimension" => best.parameter_margin_dimension,
+        "parameter_margin_equality_rank" => best.parameter_margin_equality_rank,
+        "augmented_chebyshev_radius" => best.augmented_chebyshev_radius,
+        "augmented_margin_basis" => "joint_log10_qK_and_witness_input_space",
         "feasible_path_count" => length(region.cells),
         "exact_path_idx" => best.path_idx,
         "exact_vertex_indices" => best.vertex_indices,
@@ -3147,6 +3273,7 @@ function _design_exact_program_card(card, region::FeasibleRegionResult, spec::No
     )]
     _design_attach_exact_placer_handoff!(card;
         verification_status = sampled_forward_verified ? "verified_exact+sampled_forward" : "verified_exact")
+    window_verified && _design_attach_shape_optimization_handoff!(card, best, spec)
     return card
 end
 
@@ -3179,15 +3306,27 @@ function _design_verified_cards_from_spec(spec::NormalizedDesignabilitySpec, rec
         use_program_solver = input_window !== nothing || target_ro === nothing
         region = try
             use_program_solver ?
-                feasible_region_reaction_order_program(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_program, bounds; input_window = input_window, transition_order = transition_order, dynamic_range = dynamic_range, output_feature = output_feature, shape = shape) :
+                feasible_region_reaction_order_program(
+                    _design_nid_to_rules(rec.nid), rec.inp, rec.out,
+                    target_program, bounds;
+                    input_window = input_window,
+                    transition_order = transition_order,
+                    dynamic_range = dynamic_range,
+                    output_feature = output_feature,
+                    shape = shape,
+                    max_cells = MAX_SYNC_DESIGNABILITY_FEASIBLE_CELLS,
+                ) :
                 feasible_region_single_ro(_design_nid_to_rules(rec.nid), rec.inp, rec.out, target_ro, bounds)
         catch err
             # One catalogue record may have more regime paths than the bounded Web
             # runtime permits.  Exact evaluation is already capped to eight records;
             # treat this record as unevaluated and continue rather than turning a
             # candidate-local complexity limit into a false target-wide failure.
+            diagnostic = sprint(showerror, err)
             (err isa SyncBudgetExceeded &&
-             occursin("Regime-path materialization exceeds", sprint(showerror, err))) || rethrow(err)
+             (occursin("Regime-path materialization exceeds", diagnostic) ||
+              occursin("Exact feasible-region cell enumeration exceeds", diagnostic))) ||
+                rethrow(err)
             continue
         end
         region.feasible || continue

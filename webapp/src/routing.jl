@@ -168,6 +168,16 @@ function _api_response_with_error_mapping(handler, path::AbstractString)
     catch e
         if e isa QuotaExceeded
             return error_response(sprint(showerror, e); status=429)
+        elseif e isa LocalJobCapacityExceeded
+            response = json_response(Dict(
+                "error" => sprint(showerror, e),
+                "code" => "local_job_capacity_exhausted",
+                "limit" => e.limit,
+                "retry_after_seconds" => 1,
+                "retryable" => true,
+            ); status=429)
+            push!(response.headers, "Retry-After" => "1")
+            return response
         elseif e isa RequestBodyTooLarge
             return json_response(Dict(
                 "error" => sprint(showerror, e),
@@ -206,6 +216,14 @@ function _router_impl(req)
 
     raw_path = HTTP.URI(req.target).path
     canonical, is_legacy = _canonicalize_api_path(raw_path)
+
+    # A route with no declared legacy alias is intentionally v1-only. The
+    # canonicalizer still maps the syntactic bare path to the internal owner,
+    # so enforce the metadata boundary before dispatch.
+    matched_route = _match_api_route(canonical)
+    if is_legacy && matched_route !== nothing && matched_route.legacy_alias === nothing
+        return error_response("API route is available only under /api/v1"; status=404)
+    end
 
     response = _dispatch_api(req, canonical)
     if response === nothing

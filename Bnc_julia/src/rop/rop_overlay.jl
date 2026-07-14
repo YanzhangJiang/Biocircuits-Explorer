@@ -7,6 +7,24 @@
 #-----------------------------------------------------------------
 
 """
+    _scan_observable(coeffs, x_linear, output_logspace) -> (value, valid)
+
+Evaluate one linear observable for a parameter scan. A logarithmic observable
+is defined only for a finite, strictly positive linear value. Invalid output
+domains are represented as `NaN` rather than a finite floor so downstream
+consumers cannot plot or rank them as computed evidence.
+"""
+@inline function _scan_observable(output_coeffs::Vector{Float64},
+                                  x_linear::Vector{Float64},
+                                  output_logspace::Bool)
+    output_value = dot(output_coeffs, x_linear)
+    output_valid = isfinite(output_value) && (!output_logspace || output_value > 0.0)
+    output_valid || return (NaN, false)
+    value = output_logspace ? log10(output_value) : output_value
+    return isfinite(value) ? (value, true) : (NaN, false)
+end
+
+"""
     scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float64},
                       output_coeffs::Vector{Vector{Float64}}, fixed_params::Vector{Float64};
                       input_logspace::Bool=true, output_logspace::Bool=true)
@@ -25,20 +43,31 @@ Scan a single parameter (q or K) and compute output trajectory.
 - `param_values`: Scanned parameter values
 - `output_traj`: Output values (n_points × n_outputs)
 - `regimes`: Regime index at each point
+- With `track_validity=true`, `valid[i]` is true only when the equilibrium solve
+  succeeded and every requested observable at point `i` is in its output
+  domain. An invalid observable is `NaN` only in its own output column. Output
+  domain failures do not discard a successful equilibrium warm-start seed.
 """
 function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float64},
                            output_coeffs::Vector{Vector{Float64}}, fixed_params::Vector{Float64};
                            input_logspace::Bool=true, output_logspace::Bool=true,
-                           track_validity::Bool=false, warm_start::Bool=true)
+                           track_validity::Bool=false, warm_start::Bool=true,
+                           cancel_check=_NO_CANCEL_CHECK)
+    cancel_check()
+    # Build the mutable regime caches before sampling so cancellation can reach
+    # exact candidate enumeration instead of first entering it indirectly from
+    # `assign_vertex_qK` inside a broad error-catching block.
+    find_all_regimes!(model; cancel_check=cancel_check)
+    cancel_check()
     n_points = length(param_range)
     n_outputs = length(output_coeffs)
 
     output_traj = Matrix{Float64}(undef, n_points, n_outputs)
     regimes = Vector{Int}(undef, n_points)
-    # Per-point solve validity. `qK2x` previously returned a non-converged ODE
-    # state silently; with `track_validity=true` the caller gets a Bool vector so
-    # it can discard unreliable points (the phenotyper treats any invalid point as
-    # a failed draw). The status Ref is allocated once and reused per point.
+    # Per-point numerical validity. `qK2x` previously returned a non-converged
+    # ODE state silently; with `track_validity=true` the caller gets a Bool
+    # vector that also rejects any requested output outside its declared domain.
+    # The status Ref is allocated once and reused per point.
     valid = track_validity ? Vector{Bool}(undef, n_points) : Bool[]
     st = track_validity ? Ref(:success) : nothing
 
@@ -57,6 +86,7 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
     prev_regime = -1
 
     for (i, param_val) in enumerate(param_range)
+        cancel_check()
         # Construct full qK vector
         qK = copy(fixed_params)
         insert!(qK, param_idx, param_val)
@@ -84,29 +114,31 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
             qK2x(model, qK; input_logspace=input_logspace, output_logspace=output_logspace,
                  status=st)
         end
-        converged = !track_validity || (st[] === :success)
-        track_validity && (valid[i] = converged)
+        solver_valid = !track_validity || (st[] === :success)
 
         # Invalid solves are explicit when validity tracking is requested; do
-        # not expose their terminal ODE state as a trustworthy sample. Compute
-        # exp10(x) once per point rather than once per output expression.
-        if track_validity && !converged
+        # not expose their terminal ODE state as a trustworthy sample. Solver
+        # validity and observable-domain validity are deliberately separate: a
+        # successful equilibrium remains a useful warm-start even when one
+        # requested logarithmic expression is non-positive. Compute exp10(x)
+        # once per point rather than once per output expression.
+        outputs_valid = solver_valid
+        if track_validity && !solver_valid
             output_traj[i, :] .= NaN
         else
             x_linear = output_logspace ? exp10.(x) : x
             for j in 1:n_outputs
-                if output_logspace
-                    output_val = dot(output_coeffs[j], x_linear)
-                    output_traj[i, j] = log10(max(output_val, 1e-100))  # Avoid log(0)
-                else
-                    output_traj[i, j] = dot(output_coeffs[j], x_linear)
-                end
+                value, output_valid = _scan_observable(
+                    output_coeffs[j], x_linear, output_logspace)
+                output_traj[i, j] = value
+                outputs_valid &= output_valid
             end
         end
+        track_validity && (valid[i] = solver_valid && outputs_valid)
 
         # Cache this point as the next warm-start seed (only if it converged); the seed
         # is always kept in log space regardless of the caller's output_logspace flag.
-        if converged
+        if solver_valid
             prev_logx = output_logspace ? x : log10.(max.(x, 1e-100))
             prev_logqK = input_logspace ? qK : log10.(qK)
             prev_regime = regime_i
@@ -116,6 +148,7 @@ function scan_parameter_1d(model::Bnc, param_idx::Int, param_range::Vector{Float
         end
     end
 
+    cancel_check()
     return track_validity ? (param_range, output_traj, regimes, valid) :
                             (param_range, output_traj, regimes)
 end
@@ -135,6 +168,10 @@ Scan two parameters and compute output heatmap.
 - `param2_values`: Second parameter values
 - `output_grid`: Output values (n1 × n2)
 - `regime_grid`: Regime indices (n1 × n2)
+- With `track_validity=true`, a grid point is valid only when the equilibrium
+  solve succeeds and the requested observable is finite (and strictly positive
+  for logarithmic output). Observable-domain failures are `NaN` gaps but do not
+  prevent a successful equilibrium from seeding the next point in the row.
 """
 function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
                            param_range1::Vector{Float64}, param_range2::Vector{Float64},
@@ -191,21 +228,21 @@ function scan_parameter_2d(model::Bnc, param_idx1::Int, param_idx2::Int,
                 qK2x(model, qK; input_logspace=input_logspace, output_logspace=output_logspace, status=st)
             end
 
-            converged = st[] === :success
-            track_validity && (valid[i, j] = converged)
+            solver_valid = st[] === :success
 
             # Extract output using linear combination
-            if track_validity && !converged
+            output_valid = solver_valid
+            if track_validity && !solver_valid
                 output_grid[i, j] = NaN
-            elseif output_logspace
-                x_linear = exp10.(x)
-                output_grid[i, j] = log10(max(dot(output_coeffs, x_linear), 1e-100))
             else
-                output_grid[i, j] = dot(output_coeffs, x)
+                x_linear = output_logspace ? exp10.(x) : x
+                output_grid[i, j], output_valid = _scan_observable(
+                    output_coeffs, x_linear, output_logspace)
             end
+            track_validity && (valid[i, j] = solver_valid && output_valid)
 
             # Cache as the next-in-row warm-start seed (log space) only if it converged.
-            if converged
+            if solver_valid
                 prev_logx = output_logspace ? x : log10.(max.(x, 1e-100))
                 prev_logqK = input_logspace ? qK : log10.(qK)
                 prev_regime = regime_ij

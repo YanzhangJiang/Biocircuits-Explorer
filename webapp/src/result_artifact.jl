@@ -98,3 +98,76 @@ function wrap_artifact(kind::AbstractString, result; kwargs...)
     env["result"] = result
     return env
 end
+
+# Runtime validation mirrors the draft-07 shape owned by
+# `schemas/result-artifact.schema.json`.  The schema remains the public source
+# of truth; this narrow validator lets the job broker reject a corrupt or
+# unrelated remote result before publishing a terminal `succeeded` state.
+function _validate_result_artifact_metadata(metadata)
+    metadata isa AbstractDict ||
+        throw(ArgumentError("Result artifact metadata must be an object."))
+
+    required = ("artifact_schema_version", "kind", "input_hashes", "algorithm", "created_at")
+    for key in required
+        haskey(metadata, key) ||
+            throw(ArgumentError("Result artifact metadata is missing `$(key)`."))
+    end
+
+    version = metadata["artifact_schema_version"]
+    version isa AbstractString ||
+        throw(ArgumentError("Result artifact `artifact_schema_version` must be a string."))
+    String(version) == RESULT_ARTIFACT_SCHEMA_VERSION ||
+        throw(ArgumentError(
+            "Unsupported result artifact schema version: $(version). Expected $(RESULT_ARTIFACT_SCHEMA_VERSION).",
+        ))
+    metadata["kind"] isa AbstractString ||
+        throw(ArgumentError("Result artifact `kind` must be a string."))
+    input_hashes = metadata["input_hashes"]
+    input_hashes isa AbstractDict ||
+        throw(ArgumentError("Result artifact `input_hashes` must be an object."))
+    for key in ("network_ir_hash", "design_spec_hash")
+        if haskey(input_hashes, key)
+            input_hashes[key] isa AbstractString ||
+                throw(ArgumentError("Result artifact `input_hashes.$(key)` must be a string."))
+        end
+    end
+    if haskey(input_hashes, "network_ir_hashes")
+        network_hashes = input_hashes["network_ir_hashes"]
+        network_hashes isa AbstractVector ||
+            throw(ArgumentError("Result artifact `input_hashes.network_ir_hashes` must be an array."))
+        all(item -> item isa AbstractString, network_hashes) ||
+            throw(ArgumentError("Every `input_hashes.network_ir_hashes` item must be a string."))
+    end
+    metadata["created_at"] isa AbstractString ||
+        throw(ArgumentError("Result artifact `created_at` must be a string."))
+
+    algorithm = metadata["algorithm"]
+    algorithm isa AbstractDict ||
+        throw(ArgumentError("Result artifact `algorithm` must be an object."))
+    for key in ("name", "version")
+        haskey(algorithm, key) ||
+            throw(ArgumentError("Result artifact `algorithm` is missing `$(key)`."))
+        algorithm[key] isa AbstractString ||
+            throw(ArgumentError("Result artifact `algorithm.$(key)` must be a string."))
+    end
+    allowed_algorithm_keys = Set(("name", "version", "config_hash"))
+    for key in keys(algorithm)
+        String(key) in allowed_algorithm_keys ||
+            throw(ArgumentError("Result artifact `algorithm` contains unsupported field `$(key)`."))
+    end
+    if haskey(algorithm, "config_hash")
+        config_hash = algorithm["config_hash"]
+        (config_hash === nothing || config_hash isa AbstractString) ||
+            throw(ArgumentError("Result artifact `algorithm.config_hash` must be a string or null."))
+    end
+
+    if haskey(metadata, "warnings")
+        warnings = metadata["warnings"]
+        warnings isa AbstractVector ||
+            throw(ArgumentError("Result artifact `warnings` must be an array."))
+        all(item -> item isa AbstractString, warnings) ||
+            throw(ArgumentError("Every result artifact warning must be a string."))
+    end
+
+    return metadata
+end

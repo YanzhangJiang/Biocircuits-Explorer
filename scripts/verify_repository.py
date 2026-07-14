@@ -933,11 +933,92 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
     audit.require(len(swift_marketing) == 1, f"Swift marketing versions disagree: {swift_marketing}")
     audit.require(len(swift_build) == 1, f"Swift build versions disagree: {swift_build}")
     audit.require(len(swift_macos_target) == 1, f"Swift macOS deployment targets disagree: {swift_macos_target}")
+
+    workspace_document = (
+        root / "frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift"
+    ).read_text(encoding="utf-8")
+    swift_node_type_block = re.search(
+        r"private static let supportedNodeTypes: Set<String> = \[(.*?)\n    \]",
+        workspace_document,
+        re.DOTALL,
+    )
+    audit.require(
+        swift_node_type_block is not None,
+        "Swift workspace decoder has no statically auditable supported-node set",
+    )
+    swift_node_types = (
+        set(re.findall(r'^\s*"([a-z0-9-]+)",\s*$', swift_node_type_block.group(1), re.MULTILINE))
+        if swift_node_type_block is not None
+        else set()
+    )
+    web_node_types: set[str] = set()
+    for path in sorted((root / "webapp/public/js/node-types").glob("*.js")):
+        web_node_types.update(
+            re.findall(
+                r"(?m)^  '([a-z0-9-]+)': \{$",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+    audit.require(bool(web_node_types), "Web workspace node registry could not be audited")
+    audit.require(
+        swift_node_types == web_node_types,
+        "Swift workspace supported-node set disagrees with Web NODE_TYPES "
+        f"(Swift-only: {sorted(swift_node_types - web_node_types)}; "
+        f"Web-only: {sorted(web_node_types - swift_node_types)})",
+    )
+
     audit.require(
         'MARKETING_VERSION="${APPLE_MARKETING_VERSION}"' in macos_build
         and 'apple_marketing_version "${VERSION}"' in macos_build
         and 'numeric_core="${full_version%%[-+]*}"' in macos_metadata,
         "macOS release marketing version is not derived from the application SemVer numeric core",
+    )
+    audit.require(
+        'CURRENT_PROJECT_VERSION="${APPLE_BUILD_NUMBER}"' in macos_build
+        and 'apple_bundle_build_version "${VERSION}" "${APPLE_BUILD_NUMBER_OVERRIDE}"' in macos_build
+        and "apple_build_number()" in macos_metadata
+        and "major > 8998" in macos_metadata
+        and "major + 1001" in macos_metadata
+        and "strictly greater than the derived build" in macos_metadata
+        and "A formal prerelease/build-metadata VERSION requires" in macos_build
+        and "[1-9][0-9]{0,3}" in macos_metadata,
+        "macOS release build number does not preserve the build-1000 baseline or validate release overrides",
+    )
+    audit.require(
+        'JULIA_CHANNEL="${JULIA_CHANNEL-}"' in macos_build
+        and 'julia_cmd+=("+${JULIA_CHANNEL}")' in macos_build
+        and "julia_cmd+=(--startup-file=no)" in macos_build
+        and "validate_julia_1_12" in macos_build
+        and "macOS packaging requires Julia 1.12" in macos_build
+        and "PREBUILT_BACKEND_SHA256" in macos_build
+        and "backend_payload_sha256" in macos_build,
+        "macOS packaging must isolate Julia 1.12 and authenticate skipped backend payloads",
+    )
+    audit.require(
+        "Contents/Helpers/BiocircuitsExplorerBackend" in macos_build
+        or "Helpers/BiocircuitsExplorerBackend" in (
+            root / "frontend-swift/scripts/copy_backend_into_app.sh"
+        ).read_text(encoding="utf-8"),
+        "macOS backend is not staged in the standard Contents/Helpers location",
+    )
+    audit.require(
+        "notarytool submit" in macos_build
+        and "stapler staple" in macos_build
+        and "spctl --assess" in macos_build
+        and "RELEASE_MODE=release requires SIGN_IDENTITY" in macos_build,
+        "macOS release mode lacks a fail-closed signing/notarization/Gatekeeper gate",
+    )
+    audit.require(
+        "RELEASE_MODE=release requires DESIGN_PYTHON_SOURCE" in macos_build
+        and 'DESIGN_PYTHON_ROOT="${BACKEND_ROOT}/python"' in macos_build
+        and "validate_design_python_symlinks" in macos_build
+        and 'validate_macho_architectures "${runtime_root}"' in macos_build
+        and 'validate_macho_load_paths "${runtime_root}"' in macos_build
+        and "require_within(sys.prefix, runtime_root" in macos_build
+        and "require_within(chat_api.__file__, script_directory" in macos_build
+        and "Probing signed Design Chat Python runtime" in macos_build
+        and "import chat_api" in macos_build,
+        "macOS release mode lacks a bundled relocatable Design Chat Python gate",
     )
 
     try:
@@ -1176,8 +1257,11 @@ def render_reference(
             "",
             "A version configured in CI is not, by itself, evidence that an external CI run passed.",
             "The Xcode project defaults are reported separately from the application version. The DMG",
-            "release script overrides MARKETING_VERSION with the application's three-part numeric core;",
-            "prerelease/build metadata remains in VERSION, backend responses, and artifact filenames.",
+            "release script derives MARKETING_VERSION and CURRENT_PROJECT_VERSION from the application's",
+            "three-part numeric core; formal release mode also requires Developer ID signing, notarization,",
+            "stapling, and Gatekeeper assessment. Local mode remains explicitly ad-hoc signed;",
+            "prerelease/build metadata remains in VERSION, backend responses, and artifact filenames, while",
+            "formal qualified versions require an explicitly increasing Apple build-number override.",
             "",
         ]
     )

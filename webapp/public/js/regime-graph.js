@@ -1,5 +1,5 @@
 import { nodeRegistry, ensureNodeData } from './state.js';
-import { api, showToast, handleNodeError, syncSelectOptions } from './api.js';
+import { api, showToast, handleNodeError, renderNodeError, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themeAxisTitle } from './theme.js';
 import { setNodeLoading, setupPlotResize, getQKSymbolsForNode, getModelContextForNode, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
@@ -55,7 +55,7 @@ export async function executeRegimeGraph(nodeId) {
     }, 50);
   } catch (e) {
     handleNodeError(e, nodeId, 'Regime graph');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   }
   setNodeLoading(nodeId, false);
 }

@@ -44,6 +44,9 @@ inverse-design candidates.
   [`request_support.jl`](../../webapp/src/request_support.jl)
 - Behavior-program identity:
   [`behavior_program_codec.jl`](../../webapp/src/behavior_program_codec.jl)
+- Offline latent logic, analog-surface, and contextual label evaluators:
+  [`evaluators.jl`](../../webapp/src/latent_atlas/evaluators.jl), with dataset
+  producers under [`webapp/scripts`](../../webapp/scripts)
 - Engine path primitives: [`SISO.jl`](../../Bnc_julia/src/SISO.jl) and
   [`Bnc_julia/src/rop/`](../../Bnc_julia/src/rop/)
 
@@ -172,6 +175,24 @@ refined candidate is partial/invalid, selection falls back to the original query
 ranking. A gap in a curve is not evidence for a motif, dynamic range, or regime
 transition.
 
+## Working-tree latent-label numerical validity
+
+The offline two-input label evaluators request the engine's explicit validity
+matrix for every scan. A logic draw is usable only when its four truth-table
+corners are valid and finite. An analog draw is usable only when its complete
+grid is valid and finite, because every point participates in the maximum,
+dynamic-range, or correlation metrics. Invalid draws are excluded from metric
+denominators and reported through requested, valid, and invalid draw counts plus
+`partial` and `evidence_status`.
+
+A contextual label counts a context only when all requested logic draws for
+that context are valid. Partial and no-evidence contexts carry no gate and
+cannot establish the `reprogrammable` label. The version-0.2 logic, analog, and
+contextual dataset generators write only complete evaluator results; skipped
+partial results remain visible in producer counters rather than becoming
+formal dataset rows. Existing generated v0.1 datasets are not silently upgraded
+and require explicit regeneration with the v0.2 producer.
+
 ## Invariants
 
 - Canonical network identity is stable across supported reaction ordering and
@@ -193,6 +214,10 @@ transition.
   versions; they are not reusable across incompatible semantics.
 - An Atlas miss is relative to its grammar, profile, corpus, and build
   completeness. It is not a universal theorem.
+- A latent logic draw cannot form a gate from an invalid corner; an analog draw
+  cannot form a metric from an invalid grid point. Contextual versatility uses
+  only complete logic contexts, and offline label producers persist only
+  complete evaluator evidence.
 
 ## Contract sources and tests
 
@@ -209,6 +234,8 @@ transition.
   [`webapp/test/runtests.jl`](../../webapp/test/runtests.jl)
 - Budget, capacity, invalid-refinement, and concurrent SQLite contracts:
   [`concurrency_and_budget_contract.jl`](../../webapp/test/concurrency_and_budget_contract.jl)
+- Deterministic grid/mask and complete-scan latent evaluator contracts:
+  [`latent_evaluator_validity_contract.jl`](../../webapp/test/latent_evaluator_validity_contract.jl)
 - HTTP path containment and default-deny contracts:
   [`input_validation_contract.jl`](../../webapp/test/input_validation_contract.jl)
 - Browser double-opt-in contract:

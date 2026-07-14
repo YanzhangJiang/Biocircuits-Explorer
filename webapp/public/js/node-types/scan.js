@@ -1,6 +1,9 @@
 import { api, syncSelectOptions } from '../api.js';
 import { setNodeLoading, getModelForNode, getSessionIdForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
-import { executeScan1DResult, executeScan2DResult, runParameterScan1D, runParameterScan2D, insertSpecies1D, insertSpecies2D } from '../scan.js';
+import {
+  executeScan1DResult, executeScan2DResult, runParameterScan1D, runParameterScan2D,
+  insertSpecies1D, insertSpecies2D, setupLegacyScanInputInvalidation,
+} from '../scan.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
 import { plotHeatmap } from '../plotting.js';
 import { setupPlotResize } from '../nodes.js';
@@ -200,6 +203,9 @@ export const SCAN_TYPES = {
         </div>
       `;
     },
+    onInit(nodeId) {
+      setupLegacyScanInputInvalidation(nodeId);
+    },
     async execute(nodeId) {
       const model = getModelForNode(nodeId);
       if (!model) return;
@@ -258,6 +264,9 @@ export const SCAN_TYPES = {
           <span class="text-dim">Connect to model and configure scan.</span>
         </div>
       `;
+    },
+    onInit(nodeId) {
+      setupLegacyScanInputInvalidation(nodeId);
     },
     async execute(nodeId) {
       const model = getModelForNode(nodeId);

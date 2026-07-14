@@ -27,6 +27,7 @@
         "s3:GetBucketLocation",
         "s3:PutEncryptionConfiguration",
         "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketCORS",
         "s3:ListBucket",
         "s3:GetObject",
         "s3:PutObject",

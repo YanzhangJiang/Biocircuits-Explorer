@@ -1,7 +1,7 @@
 ---
 module: designability
-status: verified
-verified_against: 1177a3d
+status: implemented-working-tree
+verified_against: working-tree-2026-07-11
 ---
 
 # Designability specification and screening
@@ -31,6 +31,8 @@ clearly labeled sampled evidence.
   response: [`designability.jl`](../../webapp/src/designability.jl)
 - Exact feasible-region and sampled-forward calculations:
   [`designability_feasible_regions.jl`](../../webapp/src/designability_feasible_regions.jl)
+- Fixed-topology shape optimization is a separate downstream owner; see
+  [`rop-shape-optimization.md`](rop-shape-optimization.md).
 - Request schema:
   [`designability-spec.schema.json`](../../schemas/designability-spec.schema.json)
 - Response schema:
@@ -61,6 +63,9 @@ clearly labeled sampled evidence.
 - `screened_candidates`, always downgraded to proxy-only evidence.
 - `verified_recommendations` containing exact feasible-region evidence and,
   when requested and supported, labeled sampled-forward evidence.
+- For a pinned exact finite-window recommendation, a hash-bound fixed-topology
+  reference and an `optimization_handoff_template` whose edit is intentionally
+  unset until a user or Agent supplies typed intent.
 - A screen summary that distinguishes verified, screened-only, blocked, and
   not-designable outcomes.
 
@@ -92,9 +97,39 @@ is skipped for exact promotion. That candidate-local limit does not abort later
 bounded candidates; it also does not turn the skipped record into a failure or
 verified recommendation.
 
+Finite-window witness choices have a separate per-candidate limit of 256 exact
+cells. The solver first computes the complete Cartesian-product count with
+overflow-safe integer arithmetic, before it creates any witness tuple,
+augmented matrix, polyhedron, or LP. Products are iterated lazily only after the
+whole declared population fits. An over-limit candidate remains unevaluated and
+cannot receive an exact certificate; later candidates in the bounded prefix may
+still be evaluated.
+
 A v0.2-only renderer may display `screened_count` for a historical artifact,
 but it cannot infer truncation. Current consumers require v0.3 and display
 eligible, evaluated, and truncation together.
+
+## Parameter margin and shape-optimization handoff
+
+Finite-window cells now name two different radii. The
+`parameter_chebyshev_radius` fixes the selected witness inputs and measures
+only the equality-feasible background `log10(q,K)` subspace. The
+`augmented_chebyshev_radius` measures the joint parameter/witness space and is
+diagnostic only. The compatibility `chebyshev_radius` and tunable-volume lower
+bound use the parameter-only value and its affine dimension. A zero-dimensional
+parameter subspace has margin zero.
+
+An exact finite-window card may advertise that its pinned topology is ready for
+shape optimization. This handoff is not itself an optimizer result and is not a
+new member of `verified_recommendations`. The downstream v1 optimizer must
+match the network, reference, spec, and hashes, and must report its own path/cell
+coverage and finite replay evidence. The screen's parameter-only
+`min_chebyshev_radius` remains in the screen spec/audit, while the generated
+optimizer handoff carries the same positive floor only as
+`optimization.minimum_parameter_margin`; downstream clients cannot lower it.
+Full semantics are owned by the
+[shape-optimization module](rop-shape-optimization.md) and
+[decision 0002](../decisions/0002-rop-shape-margin-and-evidence.md).
 
 ## Complete-evidence rule
 
@@ -128,6 +163,9 @@ by the clause.
   inherited exact parameter claims.
 - Exact recommendations require a nonempty SISO ROP feasible region intersecting
   the effective declared bounds and passing requested exact thresholds.
+- Exact finite-window recommendation requires the complete witness-cell
+  population to fit the 256-cell preflight. A solved prefix is never promoted
+  as an exact union.
 - Finite-window programs use augmented path polyhedra with explicit input
   witnesses. Transition order and spacing are enforced only when their audit
   records say `enforced_exact`.
@@ -143,6 +181,9 @@ by the clause.
   the selected reaction rules, candidate-specific I/O, Kd values, and totals.
   Proxy cards never carry this request. A consumer must still execute the
   handoff and require a complete finite curve before displaying a fresh result.
+- Only exact finite-window cards with a complete pinned reference may carry an
+  `/api/v1/rop_shape_optimize` template. The template cannot carry a guessed
+  edit or imply that optimization/replay has already passed.
 
 ## Contract sources and tests
 
@@ -157,6 +198,9 @@ by the clause.
 - [`designability_spec_contract.jl`](../../webapp/test/designability_spec_contract.jl):
   schema normalization, unknown keys, ambiguous targets, support audit, hard vs
   soft clauses, and endpoint behavior.
+- [`designability_cell_budget_contract.jl`](../../webapp/test/designability_cell_budget_contract.jl):
+  lazy witness products, overflow-safe counts, pre-materialization rejection,
+  and Design Screen wiring of the fixed exact-cell limit.
 - [`design_screen_contract.jl`](../../webapp/test/design_screen_contract.jl):
   v0.3 coverage counts, verified/proxy separation, exact parameter placement,
   finite windows, transitions, robustness, sampled features/shapes, invalid
@@ -164,6 +208,10 @@ by the clause.
 - [`design-target-render.test.mjs`](../../webapp/test/design-target-render.test.mjs):
   browser rendering of eligible/evaluated/truncated coverage and verified
   evidence.
+- [`rop_shape_api_contract.jl`](../../webapp/test/rop_shape_api_contract.jl) and
+  [`design_screen_schema_instance_contract.jl`](../../webapp/test/design_screen_schema_instance_contract.jl):
+  hash-bound optimization handoff, explicit radius fields, and schema-instance
+  compatibility.
 
 Both dedicated Julia contracts run at the start of the main backend suite.
 JavaScript and Python jobs exercise frontend and agent consumers. The
@@ -182,6 +230,9 @@ semantic changes must update schema, runtime, tests, and renderer together.
   lowering.
 - `truncated=true` reports bounded evaluation but is not a continuation-token or
   pagination contract.
+- The optimization handoff is fixed-topology only and does not make the
+  catalogue complete. Nonlinear shape optimization beyond the downstream
+  sampled replay is not owned by Design Screen.
 
 ## Change protocol
 
@@ -202,7 +253,10 @@ See [data provenance](../architecture/data-provenance.md),
 
 ## Verified against
 
-- Current source commit: `1177a3d`.
+- Current implementation: uncommitted working tree on 2026-07-11; exact local
+  commands are recorded in the goal completion report. No remote CI run is
+  claimed.
+- Last committed implementation anchor: `1177a3d`.
 - Historical baseline: the proxy/verified and exact/sampled evidence audit at
   `f9c65a5` remains historical context. It predates v0.3 coverage counts,
   synchronous card budgets, and complete-validity placement behavior.

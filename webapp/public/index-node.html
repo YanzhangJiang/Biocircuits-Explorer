@@ -5,43 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Biocircuits Explorer - Node Edition</title>
 <link rel="icon" href="data:,">
-<style>
-html, body {
-  background: #1c1c1c;
-  margin: 0;
-  width: 100%;
-  height: 100%;
-}
-</style>
 <script src="vendor/plotly-2.27.0.min.js"></script>
-<script>
-if (!window.Plotly) {
-  document.write('<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"><\\/script>');
-}
-</script>
 <script src="vendor/jszip-3.10.1.min.js"></script>
-<script>
-if (!window.JSZip) {
-  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\\/script>');
-}
-</script>
 <link rel="stylesheet" href="style-node-base.css">
 <link rel="stylesheet" href="style-node.css">
 <link rel="stylesheet" href="style-node-agent.css">
-<script>
-/* Resolve the active surface (Workspace ⇄ Design Agent) before first paint to
-   avoid a flash. #agent → agent, #workspace → workspace, else last choice. */
-(function () {
-  try {
-    var h = location.hash;
-    var v = h === '#agent' ? 'agent' : h === '#workspace' ? 'workspace'
-      : (localStorage.getItem('bcx-node-view') || 'workspace');
-    document.documentElement.dataset.nodeView = v === 'agent' ? 'agent' : 'workspace';
-  } catch (e) {
-    document.documentElement.dataset.nodeView = 'workspace';
-  }
-})();
-</script>
+<script src="js/initial-surface.js"></script>
 </head>
 <body>
 
@@ -108,6 +77,9 @@ if (!window.JSZip) {
           <div class="menu-item" data-type="rop-poly-params">
             <span class="menu-color color-parameter"></span> ROP Polyhedron Config
           </div>
+          <div class="menu-item" data-type="rop-shape-edit-config">
+            <span class="menu-color color-parameter"></span> ROP Shape Edit Config
+          </div>
           <div class="menu-item" data-type="atlas-spec">
             <span class="menu-color color-parameter"></span> Atlas Spec
           </div>
@@ -154,6 +126,9 @@ if (!window.JSZip) {
           </div>
           <div class="menu-item" data-type="rop-poly-result">
             <span class="menu-color color-result"></span> ROP Polyhedron Result
+          </div>
+          <div class="menu-item" data-type="rop-shape-result">
+            <span class="menu-color color-result"></span> ROP Shape Optimization Result
           </div>
           <div class="menu-item" data-type="atlas-query-result">
             <span class="menu-color color-result"></span> Atlas Search Result

@@ -9,6 +9,8 @@ NAME="${BIOCIRCUITS_EXPLORER_AWS_STACK_NAME:-biocircuits-explorer}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
 BUCKET="${BIOCIRCUITS_EXPLORER_AWS_BUCKET:-}"
 ARTIFACT_KEY_PREFIX="${BIOCIRCUITS_EXPLORER_AWS_ARTIFACT_KEY_PREFIX:-jobs}"
+DEFAULT_ARTIFACT_CORS_ORIGINS="http://127.0.0.1:8088,http://localhost:8088,http://127.0.0.1:18088"
+ARTIFACT_CORS_ORIGINS="${BIOCIRCUITS_EXPLORER_AWS_ARTIFACT_CORS_ORIGINS:-${BIOCIRCUITS_EXPLORER_ARTIFACT_CORS_ORIGINS:-$DEFAULT_ARTIFACT_CORS_ORIGINS}}"
 IMAGE="${BIOCIRCUITS_EXPLORER_IMAGE:-}"
 MAX_VCPUS="${BIOCIRCUITS_EXPLORER_AWS_BATCH_MAX_VCPUS:-16}"
 JOB_VCPUS="${BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_VCPUS:-4}"
@@ -47,6 +49,9 @@ Options:
   --region <region>          AWS region. Defaults to AWS_REGION/AWS_DEFAULT_REGION/aws config.
   --bucket <bucket>          S3 bucket. Default: <name>-<account>-<region>.
   --artifact-prefix <prefix> S3 key prefix. Default: jobs.
+  --artifact-cors-origins <csv>
+                             Browser origins allowed to GET/HEAD result
+                             artifacts. Defaults to local Web/macOS origins.
   --image <uri:tag|digest>   Digest or version-commit worker image. Required
                              unless --skip-compute.
   --max-vcpus <n>            Max AWS Batch EC2 vCPUs. Default: 16.
@@ -146,6 +151,27 @@ csv_to_json_array() {
     printf '%s' "$out"
 }
 
+merge_csv_unique() {
+    local merged=""
+    local csv item
+    local -a items
+    for csv in "$@"; do
+        IFS=',' read -r -a items <<< "$csv"
+        for item in "${items[@]-}"; do
+            item="$(printf '%s' "$item" | xargs)"
+            [ -z "$item" ] && continue
+            case ",$merged," in
+                *",$item,"*) continue ;;
+            esac
+            if [ -n "$merged" ]; then
+                merged+=","
+            fi
+            merged+="$item"
+        done
+    done
+    printf '%s' "$merged"
+}
+
 words_to_csv() {
     local out=""
     local first=1
@@ -185,6 +211,11 @@ while [ "$#" -gt 0 ]; do
         --artifact-prefix)
             require_option_value "$@"
             ARTIFACT_KEY_PREFIX="$2"
+            shift 2
+            ;;
+        --artifact-cors-origins)
+            require_option_value "$@"
+            ARTIFACT_CORS_ORIGINS="$2"
             shift 2
             ;;
         --image)
@@ -297,8 +328,8 @@ export AWS_REGION="$REGION"
 export AWS_DEFAULT_REGION="$REGION"
 
 ACCOUNT_ID="$(aws_text sts get-caller-identity --query Account)"
-if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
-    echo "Unable to resolve AWS account id." >&2
+if [[ ! "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+    echo "Unable to resolve a 12-digit AWS account id." >&2
     exit 1
 fi
 
@@ -309,6 +340,15 @@ fi
 ARTIFACT_KEY_PREFIX="${ARTIFACT_KEY_PREFIX#/}"
 ARTIFACT_KEY_PREFIX="${ARTIFACT_KEY_PREFIX%/}"
 ARTIFACT_PREFIX="s3://${BUCKET}/${ARTIFACT_KEY_PREFIX}"
+if [ "$WITH_COGNITO" -eq 1 ]; then
+    ARTIFACT_CORS_ORIGINS="$(merge_csv_unique "$ARTIFACT_CORS_ORIGINS" "$COGNITO_LOGOUT_URLS")"
+else
+    ARTIFACT_CORS_ORIGINS="$(merge_csv_unique "$ARTIFACT_CORS_ORIGINS")"
+fi
+if [ -z "$ARTIFACT_CORS_ORIGINS" ]; then
+    echo "--artifact-cors-origins must contain at least one origin" >&2
+    exit 2
+fi
 
 if [ -z "$IMAGE" ] && [ "$SKIP_COMPUTE" -eq 0 ]; then
     echo "--image <uri:version-commit|uri@sha256:digest> is required unless --skip-compute is set." >&2
@@ -337,9 +377,19 @@ echo "AWS region:        $REGION"
 echo "AWS account:       $ACCOUNT_ID"
 echo "Image:             ${IMAGE:-<not configured; compute skipped>}"
 echo "S3 artifact prefix:$ARTIFACT_PREFIX"
+echo "Artifact CORS:     $ARTIFACT_CORS_ORIGINS"
 echo "Batch queue:       $JOB_QUEUE"
 echo "Job definition:    $JOB_DEFINITION"
 echo "Compute env:       $COMPUTE_ENVIRONMENT"
+
+put_artifact_bucket_cors() {
+    local allowed_origins cors_configuration
+    allowed_origins="$(csv_to_json_array "$ARTIFACT_CORS_ORIGINS")"
+    cors_configuration="{\"CORSRules\":[{\"AllowedOrigins\":$allowed_origins,\"AllowedMethods\":[\"GET\",\"HEAD\"],\"MaxAgeSeconds\":3600}]}"
+    run_cmd aws s3api put-bucket-cors \
+        --bucket "$BUCKET" \
+        --cors-configuration "$cors_configuration"
+}
 
 ensure_bucket() {
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -357,6 +407,7 @@ ensure_bucket() {
         run_cmd aws s3api put-bucket-encryption \
             --bucket "$BUCKET" \
             --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+        put_artifact_bucket_cors
         return
     fi
 
@@ -379,6 +430,7 @@ ensure_bucket() {
     run_cmd aws s3api put-bucket-encryption \
         --bucket "$BUCKET" \
         --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+    put_artifact_bucket_cors
 }
 
 assume_role_policy_file() {
@@ -514,6 +566,7 @@ ensure_submitter_policy() {
       "Effect": "Allow",
       "Action": [
         "batch:SubmitJob",
+        "batch:ListJobs",
         "batch:DescribeJobs",
         "batch:CancelJob",
         "batch:TerminateJob"
@@ -1088,7 +1141,7 @@ write_runtime_env() {
     if [ -f "$OUTPUT_ENV_FILE" ]; then
         # Preserve operator-owned settings (TLS paths, domains, limits, etc.)
         # while replacing only the keys owned by this generator.
-        grep -Ev '^(# Generated by deploy/setup_aws_batch\.sh|AWS_REGION=|AWS_DEFAULT_REGION=|BIOCIRCUITS_EXPLORER_IMAGE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=|BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX=|BIOCIRCUITS_EXPLORER_COGNITO_REGION=|BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID=|BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID=|BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN=|BIOCIRCUITS_EXPLORER_QUOTA_TABLE=)' \
+        grep -Ev '^(# Generated by deploy/setup_aws_batch\.sh|AWS_REGION=|AWS_DEFAULT_REGION=|BIOCIRCUITS_EXPLORER_IMAGE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION=|BIOCIRCUITS_EXPLORER_AWS_ACCOUNT_ID=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=|BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=|BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX=|BIOCIRCUITS_EXPLORER_COGNITO_REGION=|BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID=|BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID=|BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN=|BIOCIRCUITS_EXPLORER_QUOTA_TABLE=)' \
             "$OUTPUT_ENV_FILE" > "$temporary_env" || true
         printf '\n' >> "$temporary_env"
     fi
@@ -1097,6 +1150,8 @@ write_runtime_env() {
 AWS_REGION=$REGION
 AWS_DEFAULT_REGION=$REGION
 BIOCIRCUITS_EXPLORER_IMAGE=$IMAGE
+BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION=$REGION
+BIOCIRCUITS_EXPLORER_AWS_ACCOUNT_ID=$ACCOUNT_ID
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE=$runtime_job_queue
 BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION=$runtime_job_definition
 BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX=$ARTIFACT_PREFIX

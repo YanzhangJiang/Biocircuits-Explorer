@@ -2,6 +2,7 @@
 import json
 import sys
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from http.client import HTTPConnection
@@ -18,13 +19,20 @@ class _BrokenStderr:
 
 TEST_ORIGIN = "http://127.0.0.1:18088"
 TEST_TOKEN = "a" * 64
+TEST_NONCE = "b" * 64
 
 
 @contextmanager
-def _running_server(*, token=TEST_TOKEN, allow_unauthenticated=False):
+def _running_server(
+    *,
+    token=TEST_TOKEN,
+    allow_unauthenticated=False,
+    max_concurrent_turns=2,
+):
     with (
         mock.patch.object(chat_api, "ALLOWED_ORIGIN", TEST_ORIGIN),
         mock.patch.object(chat_api, "BEARER_TOKEN", token),
+        mock.patch.object(chat_api, "INSTANCE_NONCE", TEST_NONCE),
         mock.patch.object(
             chat_api,
             "ALLOW_UNAUTHENTICATED_LOOPBACK",
@@ -32,6 +40,16 @@ def _running_server(*, token=TEST_TOKEN, allow_unauthenticated=False):
         ),
         mock.patch.object(chat_api.engine, "engine_ready", return_value=True),
         mock.patch.object(chat_api.engine, "engine_base_url", return_value=TEST_ORIGIN),
+        mock.patch.object(
+            chat_api,
+            "CHAT_TURN_MAX_CONCURRENCY",
+            max_concurrent_turns,
+        ),
+        mock.patch.object(
+            chat_api,
+            "CHAT_TURN_SEMAPHORE",
+            threading.BoundedSemaphore(max_concurrent_turns),
+        ),
     ):
         server = ThreadingHTTPServer(("127.0.0.1", 0), chat_api.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -85,9 +103,105 @@ class ChatApiProcessLifecycleTests(unittest.TestCase):
         )
 
 
+class ChatApiCapacityContractTests(unittest.TestCase):
+    def _authorized_post(self, port, message="hello"):
+        return _request(
+            port,
+            "POST",
+            "/design-chat",
+            headers={
+                "Origin": TEST_ORIGIN,
+                "Authorization": f"Bearer {TEST_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            payload={"message": message, "state": {}, "top": 1},
+        )
+
+    def test_concurrency_setting_is_strict_and_bounded(self):
+        self.assertEqual(chat_api._chat_turn_max_concurrency(""), 2)
+        self.assertEqual(chat_api._chat_turn_max_concurrency("1"), 1)
+        self.assertEqual(chat_api._chat_turn_max_concurrency("32"), 32)
+        for invalid in ("0", "-1", "+1", "01", "1.0", "many", "33"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    chat_api._chat_turn_max_concurrency(invalid)
+
+    def test_expensive_turns_fail_fast_at_capacity_and_permit_is_reusable(self):
+        entered = threading.Event()
+        release = threading.Event()
+        active = 0
+        peak = 0
+        counter_lock = threading.Lock()
+
+        def blocking_turn(*_args, **_kwargs):
+            nonlocal active, peak
+            with counter_lock:
+                active += 1
+                peak = max(peak, active)
+            entered.set()
+            try:
+                self.assertTrue(release.wait(timeout=2), "blocked turn was not released")
+                return {"kind": "chat", "reply": "ok", "cards": []}
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        with mock.patch.object(chat_api.agent, "run_turn", side_effect=blocking_turn):
+            with _running_server(max_concurrent_turns=1) as port:
+                first_result = []
+                first = threading.Thread(
+                    target=lambda: first_result.append(
+                        self._authorized_post(port, "first")
+                    ),
+                    daemon=True,
+                )
+                first.start()
+                self.assertTrue(entered.wait(timeout=1), "first turn did not enter")
+
+                started_at = time.monotonic()
+                status, headers, body = self._authorized_post(port, "over-capacity")
+                elapsed = time.monotonic() - started_at
+                self.assertEqual(status, 429)
+                self.assertLess(elapsed, 0.75, "capacity failure must not queue")
+                self.assertEqual(headers.get("retry-after"), "1")
+                payload = json.loads(body)
+                self.assertEqual(payload["code"], "chat_capacity_exhausted")
+                self.assertTrue(payload["retryable"])
+                self.assertEqual(peak, 1)
+
+                release.set()
+                first.join(timeout=2)
+                self.assertFalse(first.is_alive())
+                self.assertEqual(first_result[0][0], 200)
+
+                # The first request's finally block must release the sole permit.
+                status, _, _ = self._authorized_post(port, "after-release")
+                self.assertEqual(status, 200)
+                self.assertEqual(peak, 1)
+
+    def test_agent_failure_also_releases_the_permit(self):
+        responses = [RuntimeError("injected failure"), {"kind": "chat", "reply": "ok", "cards": []}]
+
+        def next_turn(*_args, **_kwargs):
+            outcome = responses.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with mock.patch.object(chat_api.agent, "run_turn", side_effect=next_turn):
+            with _running_server(max_concurrent_turns=1) as port:
+                failed, _, body = self._authorized_post(port, "fails")
+                recovered, _, _ = self._authorized_post(port, "recovers")
+        self.assertEqual(failed, 500)
+        self.assertIn("injected failure", json.loads(body)["error"])
+        self.assertEqual(recovered, 200)
+
+
 class ChatApiSecurityContractTests(unittest.TestCase):
     def test_runtime_contract_requires_loopback_origin_and_native_token(self):
-        chat_api._validate_runtime_contract(TEST_ORIGIN, TEST_TOKEN, False)
+        chat_api._validate_runtime_contract(
+            TEST_ORIGIN, TEST_TOKEN, False, instance_nonce=TEST_NONCE
+        )
         chat_api._validate_runtime_contract(TEST_ORIGIN, "", True)
 
         for origin in (
@@ -103,9 +217,30 @@ class ChatApiSecurityContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             chat_api._validate_runtime_contract(TEST_ORIGIN, "short", False)
         with self.assertRaises(ValueError):
+            chat_api._validate_runtime_contract(
+                TEST_ORIGIN, TEST_TOKEN, False, instance_nonce=""
+            )
+        with self.assertRaises(ValueError):
             chat_api._validate_runtime_contract(TEST_ORIGIN, TEST_TOKEN, False, "0.0.0.0")
         with self.assertRaises(ValueError):
             chat_api._validate_runtime_contract(TEST_ORIGIN, "", True, "0.0.0.0")
+        with self.assertRaises(ValueError):
+            chat_api._validate_runtime_contract(
+                TEST_ORIGIN, TEST_TOKEN, False, instance_nonce="short"
+            )
+
+    def test_identity_handshake_requires_no_bearer_and_returns_only_launch_identity(self):
+        with _running_server() as port:
+            status, headers, body = _request(port, "GET", "/identity")
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", headers)
+        self.assertEqual(
+            json.loads(body),
+            {
+                "service": chat_api.SERVICE_IDENTITY,
+                "instance_nonce": TEST_NONCE,
+            },
+        )
 
     def test_preflight_only_echoes_the_exact_allowed_origin(self):
         with _running_server() as port:
@@ -177,7 +312,10 @@ class ChatApiSecurityContractTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {TEST_TOKEN}"},
             )
             self.assertEqual(status, 200)
-            self.assertTrue(json.loads(body)["ok"])
+            payload = json.loads(body)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["service"], chat_api.SERVICE_IDENTITY)
+            self.assertEqual(payload["instance_nonce"], TEST_NONCE)
 
     def test_authorized_native_post_reaches_agent_once(self):
         response = {"kind": "chat", "reply": "ok", "cards": []}

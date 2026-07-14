@@ -1,0 +1,97 @@
+{
+  "schema_version": "bne-rop-shape-benchmark/v1.0.0",
+  "id": "cat-fixed-topology-v1",
+  "evidence_scope": "fixed-topology finite-window SISO ROP benchmark; not a global chemistry claim",
+  "source": {
+    "atlas_snapshot": "paper_rop_periodic_table/data/slices.jsonl.gz",
+    "atlas_sha256": "38d05fc7a219e3b0ef85c15777311713fd6916da6a9e8b592660e88a9824708f",
+    "network_id": "[1,2,3]+[1]<->[1,1,2,3]|[1]+[2,3]<->[1,2,3]|[2,3]+[2]<->[2,2,3]|[2]+[3]<->[2,3]"
+  },
+  "network": {
+    "rules": [
+      "C_A_B_C + A <-> C_A_A_B_C",
+      "A + C_B_C <-> C_A_B_C",
+      "C_B_C + B <-> C_B_B_C",
+      "B + C <-> C_B_C"
+    ],
+    "input": "tB",
+    "output": "C_A_A_B_C"
+  },
+  "target": {
+    "reaction_order_program": [1, 0, -1, 0, 1, 0, -1],
+    "input_window_log10": [-7, 7],
+    "min_spacing_decades": 0.1
+  },
+  "parameter_bounds": {
+    "basis": "log10_qK",
+    "by_class": {
+      "kd": [-10, 10],
+      "total": [-5, 5]
+    }
+  },
+  "reference": {
+    "artifact_id": "sha256:cd728088d2075311134d207b32f98c2ac4638157f9ff1a2261a599af1dea1c8b",
+    "selection": "highest augmented-radius cell returned by the pre-optimizer exact-window baseline",
+    "path_idx": 287,
+    "operating_points_log10": [
+      -5.510855924283655,
+      -4.078074861822007,
+      -2.0518164513774075,
+      -0.39133979598500895,
+      1.0414412664766413,
+      4.011785801082799,
+      6.493435397388876
+    ],
+    "kd": [
+      2.1009819967799024e-6,
+      2.817617760140604e-5,
+      2.1137359567421274,
+      0.014992675509871217
+    ],
+    "totals": {
+      "tA": 3.210440331353802e-5,
+      "tC": 0.07803144921383995
+    },
+    "replay": {
+      "input_window_log10": [-7, 7],
+      "sample_points": 281,
+      "valid_points": 281,
+      "partial": false,
+      "sampled_peak_input_log10": [-4.3, 3.75],
+      "sampled_output_log10_range": [-7.055022026818455, -4.95074302524364]
+    }
+  },
+  "edit_intents": [
+    {
+      "id": "broaden_both_ears",
+      "kind": "broaden",
+      "left_span_steps": [0, 2],
+      "right_span_steps": [4, 6],
+      "candidate_magnitudes_log10": [0.25, 0.5, 0.75]
+    },
+    {
+      "id": "separate_ear_tops",
+      "kind": "separate",
+      "steps": [1, 5],
+      "preserve_midpoint_tolerance_log10": 0.2,
+      "candidate_magnitudes_log10": [0.25, 0.5, 0.75]
+    },
+    {
+      "id": "widen_center",
+      "kind": "widen_center",
+      "steps": [2, 4],
+      "anchor_step": 3,
+      "anchor_tolerance_log10": 0.2,
+      "candidate_magnitudes_log10": [0.25, 0.5, 0.75]
+    },
+    {
+      "id": "translate_right_ear",
+      "kind": "translate_group",
+      "group_steps": [4, 5, 6],
+      "preserve_steps": [0, 1, 2, 3],
+      "preserve_tolerance_log10": 0.1,
+      "sense": "positive",
+      "candidate_magnitudes_log10": [0.25, 0.5, 0.75]
+    }
+  ]
+}

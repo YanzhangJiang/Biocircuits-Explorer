@@ -23,4 +23,7 @@ function _check_cancelled(token::LocalJobCancelToken)
     return nothing
 end
 
-_no_cancel_check() = nothing
+# Use the engine's sentinel object, not a second no-op function. Engine paths
+# can then retain their parallel fast path for ordinary Web calls while a real
+# job callback selects cancellable parent-task traversal.
+const _no_cancel_check = BindingAndCatalysis._NO_CANCEL_CHECK

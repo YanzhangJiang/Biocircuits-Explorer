@@ -52,6 +52,9 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
     APIRouteContract("/api/v1/placer_level", "/api/placer_level", ("POST",), :handle_placer_level, "/api/placer_level", :exact),
     APIRouteContract("/api/v1/design_search", "/api/design_search", ("POST",), :handle_design_search, "/api/design_search", :exact),
     APIRouteContract("/api/v1/design_screen", "/api/design_screen", ("POST",), :handle_design_screen, "/api/design_screen", :exact),
+    # Shape optimization is introduced as v1-only. It has no bare-/api alias,
+    # so new clients cannot acquire a dependency on the sunset surface.
+    APIRouteContract("/api/v1/rop_shape_optimize", "/api/rop_shape_optimize", ("POST",), :handle_rop_shape_optimize, nothing, :exact),
     APIRouteContract("/api/v1/validate_designability_spec", "/api/validate_designability_spec", ("POST",), :handle_validate_designability_spec, "/api/validate_designability_spec", :exact),
     APIRouteContract("/api/v1/design_labels", "/api/design_labels", ("POST",), :handle_design_labels, "/api/design_labels", :exact),
     APIRouteContract("/api/v1/atlas_landscape_2d", "/api/atlas_landscape_2d", ("POST",), :handle_atlas_landscape_2d, "/api/atlas_landscape_2d", :exact),

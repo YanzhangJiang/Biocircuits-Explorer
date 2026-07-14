@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import copy
+import io
+import json
 import os
+import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 import chat_api
@@ -29,13 +33,817 @@ EXECUTABLE_BEHAVIOR_SPEC = {
     },
 }
 
+ROP_SHAPE_SPEC = {
+    "schema_version": "bne-designability/v1.0.0",
+    "source": {"kind": "agent_design"},
+    "target": {
+        "behavior_spec": {
+            "feature_space": "reaction_order",
+            "input": "tA",
+            "output": "C_A_B",
+            "program": [
+                {"kind": "reaction_order", "operator": "=", "value": 1.0},
+                {"kind": "reaction_order", "operator": "=", "value": 0.0},
+                {"kind": "reaction_order", "operator": "=", "value": -1.0},
+            ],
+            "input_window": {"input_log10": [-5.0, 5.0], "hard": True},
+        },
+    },
+    "constraints": {
+        "parameter_bounds": {
+            "basis": "log10_qK",
+            "by_class": {"kd": [-10.0, 10.0], "total": [-5.0, 5.0]},
+        },
+    },
+    "candidate_budget": {
+        "max_screened": 8,
+        "max_verified_recommendations": 2,
+        "max_exact_placements": 2,
+    },
+    "ranking_policy": {"verified_only": True},
+    "audit_policy": {
+        "unsupported": "block_if_hard",
+        "path_format": "json_pointer",
+        "include_supported": True,
+    },
+}
+
+ROP_SHAPE_REFERENCE = {
+    "reference_hash": "a" * 64,
+    "artifact_ref": "sha256:" + "a" * 64,
+    "network_ir_hash": "b" * 64,
+    "operating_points_log10": [-3.0, 0.0, 3.0],
+    "kd": [1.0],
+    "totals": {"tA": 1.0, "tB": 1.0},
+}
+
+ROP_SHAPE_NETWORK = {
+    "rules": ["A + B <-> C_A_B"],
+    "input_symbols": ["tA"],
+    "output_symbols": ["C_A_B"],
+}
+
+ROP_SHAPE_WORK_BUDGET = {
+    "max_paths": 32,
+    "max_cells": 128,
+    "max_replays": 4,
+    "require_exhaustive": True,
+}
+
+ROP_SHAPE_REPLAY = {
+    "input_window_log10": [-5.0, 5.0],
+    "sample_points": 21,
+    "require_complete": True,
+    "store_curve": True,
+    "metrics": [{"kind": "two_peak", "min_prominence_log10": 0.2}],
+}
+
+ROP_SHAPE_INTENT = {
+    "id": "separate-outer-witnesses",
+    "kind": "separate",
+    "steps": [0, 2],
+    "preserve_midpoint_tolerance_log10": 0.1,
+}
+
+
+class TraceRetentionContractTests(unittest.TestCase):
+    @staticmethod
+    def _trace(trace_id, message_size=120, cards=None):
+        return {
+            "trace_schema_version": design_agent.TRACE_SCHEMA_VERSION,
+            "trace_id": trace_id,
+            "raw_user_message": "x" * message_size,
+            "compiler": {"provider": "test", "model": "test"},
+            "tool_calls": [],
+            "final_response": {"kind": "agent", "cards": cards or []},
+        }
+
+    def test_trace_segments_rotate_and_drop_only_the_oldest_archive(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.multiple(
+                 design_agent,
+                 TRACE_DIR=tmpdir,
+                 TRACE_MAX_BYTES=256,
+                 TRACE_ARCHIVE_COUNT=2,
+                 TRACE_ARTIFACT_MAX_BYTES=1024,
+                 TRACE_ARTIFACT_MAX_FILES=8,
+             ):
+            for index in range(5):
+                design_agent._write_trace(self._trace(f"trace-{index}"))
+
+            paths = [os.path.join(tmpdir, "traces.jsonl")]
+            paths.extend(os.path.join(tmpdir, f"traces.jsonl.{index}") for index in (1, 2))
+            self.assertTrue(all(os.path.exists(path) for path in paths))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "traces.jsonl.3")))
+            retained = []
+            for path in paths:
+                with open(path, encoding="utf-8") as fh:
+                    retained.extend(json.loads(line)["trace_id"] for line in fh if line.strip())
+            self.assertEqual(set(retained), {"trace-2", "trace-3", "trace-4"})
+
+    def test_reduced_or_zero_archive_count_prunes_stale_higher_segments(self):
+        for archive_count in (1, 0):
+            with self.subTest(archive_count=archive_count), \
+                 tempfile.TemporaryDirectory() as tmpdir, \
+                 mock.patch.multiple(
+                     design_agent,
+                     TRACE_DIR=tmpdir,
+                     TRACE_MAX_BYTES=1024 * 1024,
+                     TRACE_ARCHIVE_COUNT=archive_count,
+                     TRACE_ARTIFACT_MAX_BYTES=1024,
+                     TRACE_ARTIFACT_MAX_FILES=8,
+                 ):
+                for index in (1, 2, 3):
+                    with open(
+                        os.path.join(tmpdir, f"traces.jsonl.{index}"),
+                        "w",
+                        encoding="utf-8",
+                    ) as fh:
+                        fh.write("{}\n")
+
+                design_agent._write_trace(self._trace("trace-after-reconfigure", 8))
+
+                self.assertEqual(
+                    sorted(
+                        name for name in os.listdir(tmpdir)
+                        if name.startswith("traces.jsonl.")
+                    ),
+                    ["traces.jsonl.1"] if archive_count == 1 else [],
+                )
+
+    def test_trace_append_is_thread_serialized_and_jsonl_stays_parseable(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.multiple(
+                 design_agent,
+                 TRACE_DIR=tmpdir,
+                 TRACE_MAX_BYTES=1024 * 1024,
+                 TRACE_ARCHIVE_COUNT=1,
+                 TRACE_ARTIFACT_MAX_BYTES=1024,
+                 TRACE_ARTIFACT_MAX_FILES=8,
+             ):
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(
+                    lambda index: design_agent._write_trace(self._trace(f"trace-{index}", 8)),
+                    range(64),
+                ))
+            with open(os.path.join(tmpdir, "traces.jsonl"), encoding="utf-8") as fh:
+                records = [json.loads(line) for line in fh if line.strip()]
+            self.assertEqual(len(records), 64)
+            self.assertEqual(len({record["trace_id"] for record in records}), 64)
+
+    def test_card_artifacts_publish_atomically_and_oldest_files_are_pruned(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.multiple(
+                 design_agent,
+                 TRACE_DIR=tmpdir,
+                 TRACE_MAX_BYTES=1024 * 1024,
+                 TRACE_ARCHIVE_COUNT=1,
+                 TRACE_ARTIFACT_MAX_BYTES=9,
+                 TRACE_ARTIFACT_MAX_FILES=2,
+             ):
+            artifact_dir = os.path.join(tmpdir, "artifacts")
+            os.makedirs(artifact_dir)
+            for index, name in enumerate(("old.json", "middle.json", "new.json")):
+                path = os.path.join(artifact_dir, name)
+                with open(path, "wb") as fh:
+                    fh.write(b"data")
+                os.utime(path, (100 + index, 100 + index))
+            stale_tmp = os.path.join(artifact_dir, ".orphan.tmp")
+            with open(stale_tmp, "wb") as fh:
+                fh.write(b"orphan")
+            os.utime(stale_tmp, (0, 0))
+
+            design_agent._write_trace(self._trace(
+                "trace-with-card", cards=[{"result_hash": "new"}],
+            ))
+
+            self.assertFalse(os.path.exists(os.path.join(artifact_dir, "old.json")))
+            self.assertTrue(os.path.exists(os.path.join(artifact_dir, "middle.json")))
+            self.assertTrue(os.path.exists(os.path.join(artifact_dir, "new.json")))
+            self.assertFalse(os.path.exists(stale_tmp))
+            self.assertLessEqual(sum(
+                os.path.getsize(os.path.join(artifact_dir, name))
+                for name in os.listdir(artifact_dir)
+            ), 9)
+
+            card = {"family": "dose_shape", "computed_series": [{"x": 0.0, "y": 1.0}]}
+            result_hash = design_agent._spill_card(card)
+            stored_path = os.path.join(artifact_dir, result_hash + ".json")
+            with open(stored_path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), card)
+            self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(artifact_dir)))
+
+    def test_artifact_retention_runs_even_when_trace_append_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.multiple(
+                 design_agent,
+                 TRACE_DIR=tmpdir,
+                 TRACE_MAX_BYTES=1024 * 1024,
+                 TRACE_ARCHIVE_COUNT=1,
+                 TRACE_ARTIFACT_MAX_BYTES=1024 * 1024,
+                 TRACE_ARTIFACT_MAX_FILES=1,
+             ), \
+             mock.patch.object(design_agent.sys, "stderr", io.StringIO()):
+            for index in range(3):
+                card = {
+                    "family": "dose_shape",
+                    "computed_series": [{"x": index, "y": index + 1}],
+                }
+                result_hash = design_agent._spill_card(card)
+                with mock.patch.object(
+                    design_agent,
+                    "_trace_log_path",
+                    side_effect=OSError("injected trace append failure"),
+                ):
+                    design_agent._write_trace(self._trace(
+                        f"trace-failure-{index}",
+                        cards=[{"result_hash": result_hash}],
+                    ))
+
+            artifact_dir = os.path.join(tmpdir, "artifacts")
+            self.assertEqual(
+                [name for name in os.listdir(artifact_dir) if name.endswith(".json")],
+                [result_hash + ".json"],
+            )
+
+    def test_spill_repairs_a_truncated_content_addressed_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.object(design_agent, "TRACE_DIR", tmpdir):
+            card = {
+                "family": "dose_shape",
+                "computed_series": [{"x": 0.0, "y": 1.0}],
+            }
+            result_hash = design_agent._hash(card)
+            artifact_dir = os.path.join(tmpdir, "artifacts")
+            os.makedirs(artifact_dir)
+            artifact_path = os.path.join(artifact_dir, result_hash + ".json")
+            with open(artifact_path, "w", encoding="utf-8") as fh:
+                fh.write("{broken")
+
+            self.assertEqual(design_agent._spill_card(card), result_hash)
+
+            with open(artifact_path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), card)
+            self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(artifact_dir)))
+
+    def test_reused_card_artifact_becomes_recent_before_retention(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.multiple(
+                 design_agent,
+                 TRACE_DIR=tmpdir,
+                 TRACE_MAX_BYTES=1024 * 1024,
+                 TRACE_ARCHIVE_COUNT=1,
+                 TRACE_ARTIFACT_MAX_BYTES=1024 * 1024,
+                 TRACE_ARTIFACT_MAX_FILES=1,
+             ):
+            artifact_dir = os.path.join(tmpdir, "artifacts")
+            os.makedirs(artifact_dir)
+            card = {"family": "dose_shape", "computed_series": [{"x": 0.0, "y": 1.0}]}
+            result_hash = design_agent._hash(card)
+            reused_path = os.path.join(artifact_dir, result_hash + ".json")
+            with open(reused_path, "w", encoding="utf-8") as fh:
+                json.dump(card, fh)
+            os.utime(reused_path, (100, 100))
+            other_path = os.path.join(artifact_dir, "other.json")
+            with open(other_path, "w", encoding="utf-8") as fh:
+                json.dump({"other": True}, fh)
+            os.utime(other_path, (200, 200))
+
+            self.assertEqual(design_agent._spill_card(card), result_hash)
+            design_agent._write_trace(self._trace(
+                "trace-reuses-card", cards=[{"result_hash": result_hash}],
+            ))
+
+            self.assertTrue(os.path.exists(reused_path))
+            self.assertFalse(os.path.exists(other_path))
+
+    def test_trace_integer_config_rejects_noncanonical_or_out_of_range_values(self):
+        for raw in ("", "+1", "01", " 1", "1.0", "-1"):
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {"TRACE_TEST_VALUE": raw}):
+                with self.assertRaises(ValueError):
+                    design_agent._trace_integer_config("TRACE_TEST_VALUE", 2, 0, 4)
+        with mock.patch.dict(os.environ, {"TRACE_TEST_VALUE": "5"}):
+            with self.assertRaises(ValueError):
+                design_agent._trace_integer_config("TRACE_TEST_VALUE", 2, 0, 4)
+        with mock.patch.dict(os.environ, {"TRACE_TEST_VALUE": "0"}):
+            self.assertEqual(design_agent._trace_integer_config("TRACE_TEST_VALUE", 2, 0, 4), 0)
+
+
+def rop_shape_backend_response():
+    xs = [-5.0 + 0.5 * index for index in range(21)]
+    ys = [-2.0 + 0.1 * index for index in range(21)]
+    return {
+        "schema_version": "bne-rop-shape-optimization/v1.0.0",
+        "request_hash": "c" * 64,
+        "normalized_request": {"schema_version": "bne-rop-shape-optimize-request/v1.0.0"},
+        "geometric_status": "global_optimal_over_declared_cells",
+        "feasible": True,
+        "coverage": {
+            "eligible_path_count": 2,
+            "evaluated_path_count": 2,
+            "eligible_cell_count": 4,
+            "evaluated_cell_count": 4,
+            "feasible_cell_count": 2,
+            "replay_candidate_count": 1,
+            "replayed_count": 1,
+            "truncated": False,
+            "truncation_reasons": [],
+        },
+        "compiled_edit": {
+            "compiler_version": "rop-shape-edit/v1",
+            "kind": "separate",
+            "constraints": [{"id": "ear_separation", "terms": []}],
+        },
+        "selected": {
+            "path_identity": "path-1",
+            "witness_identity": [1, 2, 3],
+            "objective_values": {"effect": 1.25, "parameter_margin": 0.3},
+        },
+        "fixed_topology": {
+            "normalized_network": {
+                "ir_schema_version": "bne-ir/v1.0.0",
+                "species": [],
+                "reactions": [],
+                "observables": [],
+            },
+            "network_ir_hash": "b" * 64,
+            "network_canonical_code": "[1]+[2]<->[1,2]",
+            "network_identity_semantics": "canonical_code_available",
+            "input": "tA",
+            "output": "C_A_B",
+            "topology_preserved": True,
+        },
+        "replay": {
+            "status": "pass",
+            "complete": True,
+            "pass": True,
+            "request": {
+                "endpoint": "/api/v1/placer_curve",
+                "method": "POST",
+                "body": {
+                    "rules": ["A + B <-> C_A_B"],
+                    "input_sym": "tA",
+                    "output_sym": "C_A_B",
+                    "kd": [0.5],
+                    "totals": {"tA": 1.0, "tB": 2.0},
+                    "param_min": -5.0,
+                    "param_max": 5.0,
+                    "n_points": 21,
+                },
+            },
+            "curve": {
+                "param_values": xs,
+                "output_traj": [[value] for value in ys],
+                "valid": [True] * len(xs),
+                "partial": False,
+            },
+            "request_hash": "d" * 64,
+            "result_hash": "e" * 64,
+            "metrics": {
+                "schema_version": "bne-rop-shape-replay/v1.0.0",
+                "status": "pass",
+                "sample_points": 21,
+                "complete": True,
+                "pass": True,
+            },
+        },
+        "certificate_grade": "exact-window-siso-rop-path-optimization",
+        "artifact": {
+            "artifact_schema_version": "bne-result/v1.0.0",
+            "kind": "rop_shape_optimize",
+            "input_hashes": {"network_ir_hash": "b" * 64},
+            "algorithm": {"name": "rop_shape_optimization", "version": "0.1.0", "config_hash": "f" * 64},
+            "created_at": "2026-07-11T00:00:00Z",
+        },
+        "warnings": [],
+    }
+
 
 class DesignAgentContractTests(unittest.TestCase):
+    def test_engine_client_uses_canonical_routes_and_materializes_reactions_once(self):
+        calls = []
+
+        def record(path, payload, timeout):
+            calls.append((path, copy.deepcopy(payload), timeout))
+            return {"ok": True}
+
+        reactions = (rule for rule in ("A + B <-> AB", "AB + C <-> ABC"))
+        with mock.patch.object(design_agent.E, "_post", side_effect=record):
+            design_agent.E.build_model(reactions=reactions, timeout=11)
+            design_agent.E.dose_response(
+                "session", param_symbol="tA", output_exprs=["AB"], timeout=12)
+            design_agent.E.scan_2d(
+                "session", param1_symbol="tA", param2_symbol="tB",
+                output_expr="AB", timeout=13)
+            design_agent.E.phenotype_classify(
+                "session", input_symbol="tA", output_expr="AB", timeout=14)
+            design_agent.E.phenotype(
+                "session", change_qK="tA", observe_x="AB", timeout=15)
+
+        self.assertEqual([call[0] for call in calls], [
+            "/api/v1/build_model",
+            "/api/v1/parameter_scan_1d",
+            "/api/v1/parameter_scan_2d",
+            "/api/v1/phenotype_classify",
+            "/api/v1/behavior_families",
+        ])
+        self.assertEqual(calls[0][1]["reactions"], [
+            "A + B <-> AB", "AB + C <-> ABC",
+        ])
+        self.assertEqual(calls[0][1]["kd"], [1.0, 1.0])
+
+    def test_engine_ready_requires_exact_ready_payload(self):
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def getcode(self):
+                return self.status
+
+        for payload, expected in (
+            ({"status": "ready"}, True),
+            ({"status": "starting"}, False),
+            ({"ok": True}, False),
+        ):
+            response = Response(json.dumps(payload).encode("utf-8"))
+            with self.subTest(payload=payload), mock.patch.object(
+                    design_agent.E.urllib.request, "urlopen", return_value=response):
+                self.assertEqual(design_agent.E.engine_ready(), expected)
+
+    def test_engine_post_returns_typed_error_for_invalid_success_json(self):
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def getcode(self):
+                return self.status
+
+        response = Response(b"not-json")
+        with mock.patch.object(
+                design_agent.E.urllib.request, "urlopen", return_value=response):
+            result = design_agent.E._post("/api/v1/build_model", {}, 1)
+
+        self.assertEqual(result["_status"], 200)
+        self.assertIn("returned invalid JSON", result["error"])
+
     def test_end_to_end_design_tool_is_exposed_to_both_provider_protocols(self):
         self.assertIn("design_from_behavior", design_agent.TOOLS_DISPATCH)
         self.assertIn("design_from_behavior", [tool["name"] for tool in design_agent.TOOLSPEC])
         self.assertIn("design_from_behavior", [tool["function"]["name"] for tool in design_agent.OPENAI_TOOLS])
         self.assertIn("design_from_behavior", [tool["name"] for tool in design_agent.ANTHROPIC_TOOLS])
+
+    def test_rop_shape_optimizer_tool_is_exposed_and_client_uses_canonical_endpoint(self):
+        self.assertIn("optimize_rop_shape", design_agent.TOOLS_DISPATCH)
+        self.assertIn("optimize_rop_shape", [tool["name"] for tool in design_agent.TOOLSPEC])
+        self.assertIn("optimize_rop_shape", [tool["function"]["name"] for tool in design_agent.OPENAI_TOOLS])
+        self.assertIn("optimize_rop_shape", [tool["name"] for tool in design_agent.ANTHROPIC_TOOLS])
+
+        request = {"schema_version": "bne-rop-shape-optimize-request/v1.0.0"}
+        with mock.patch.object(design_agent.E, "_post", return_value={"ok": True}) as post:
+            response = design_agent.E.rop_shape_optimize(request, timeout=123)
+
+        self.assertEqual(response, {"ok": True})
+        post.assert_called_once_with("/api/v1/rop_shape_optimize", request, 123)
+
+    def test_optimize_rop_shape_forwards_typed_request_and_admits_only_backend_evidence(self):
+        seen = {}
+
+        def fake_optimize(request):
+            seen["request"] = copy.deepcopy(request)
+            return rop_shape_backend_response()
+
+        with mock.patch.object(design_agent.E, "rop_shape_optimize", fake_optimize), \
+             mock.patch.object(design_agent, "_design_finite_slopes", side_effect=AssertionError("Python slope verifier must not run")):
+            result = design_agent.optimize_rop_shape(
+                copy.deepcopy(ROP_SHAPE_NETWORK),
+                copy.deepcopy(ROP_SHAPE_SPEC),
+                copy.deepcopy(ROP_SHAPE_REFERENCE),
+                copy.deepcopy(ROP_SHAPE_INTENT),
+                0.1,
+                0.02,
+                copy.deepcopy(ROP_SHAPE_WORK_BUDGET),
+                copy.deepcopy(ROP_SHAPE_REPLAY),
+            )
+
+        request = seen["request"]
+        self.assertEqual(request["schema_version"], "bne-rop-shape-optimize-request/v1.0.0")
+        self.assertEqual(request["network"], {
+            "reactions": ["A + B <-> C_A_B"],
+            "kd": [1.0],
+            "input_symbols": ["tA"],
+            "output_symbols": ["C_A_B"],
+        })
+        self.assertIsNone(request["expected_network_ir_hash"])
+        self.assertEqual(request["designability_spec"], ROP_SHAPE_SPEC)
+        self.assertEqual(request["reference"], ROP_SHAPE_REFERENCE)
+        self.assertEqual(request["edit_intent"], ROP_SHAPE_INTENT)
+        self.assertNotIn("matrix", request["edit_intent"])
+        self.assertEqual(request["optimization"], {
+            "minimum_parameter_margin": 0.1,
+            "effect_tolerance": 0.02,
+        })
+        self.assertEqual(request["work_budget"], ROP_SHAPE_WORK_BUDGET)
+        self.assertEqual(request["replay"], ROP_SHAPE_REPLAY)
+
+        self.assertEqual(result["admission_status"], "verified_card")
+        self.assertEqual(result["compiled_edit"], rop_shape_backend_response()["compiled_edit"])
+        self.assertEqual(result["artifact"], rop_shape_backend_response()["artifact"])
+        card = result["_card"]
+        self.assertEqual(card["verdict"], "verified_rop_shape_optimization")
+        self.assertEqual(card["rules"], ["A + B <-> C_A_B"])
+        self.assertEqual(card["kd"], [0.5])
+        self.assertEqual(card["input_symbol"], "tA")
+        self.assertEqual(card["output_symbol"], "C_A_B")
+        self.assertEqual(len(card["computed_series"]), 21)
+        self.assertEqual(card["compiled_edit"], result["compiled_edit"])
+        self.assertEqual(card["artifact"], result["artifact"])
+
+    def test_optimize_rop_shape_accepts_schema_valid_positional_network_identity(self):
+        response = rop_shape_backend_response()
+        response["fixed_topology"]["network_canonical_code"] = None
+        response["fixed_topology"]["network_identity_semantics"] = "positional_content_hash_only"
+
+        with mock.patch.object(design_agent.E, "rop_shape_optimize", return_value=response):
+            result = design_agent.optimize_rop_shape(
+                copy.deepcopy(ROP_SHAPE_NETWORK),
+                copy.deepcopy(ROP_SHAPE_SPEC),
+                copy.deepcopy(ROP_SHAPE_REFERENCE),
+                copy.deepcopy(ROP_SHAPE_INTENT),
+                0.1,
+                0.02,
+                copy.deepcopy(ROP_SHAPE_WORK_BUDGET),
+                copy.deepcopy(ROP_SHAPE_REPLAY),
+            )
+
+        self.assertEqual(result["admission_status"], "verified_card")
+        self.assertIsNone(result["_card"]["network_canonical_code"])
+        self.assertEqual(result["_card"]["network_identity_semantics"], "positional_content_hash_only")
+
+    def test_optimize_rop_shape_forwards_full_network_ir_without_lowering_it(self):
+        network_ir = {
+            "ir_schema_version": "bne-ir/v1.0.0",
+            "label": "caller-owned-network",
+            "species": [{"id": "A"}],
+            "reactions": [{"id": "r1"}],
+            "observables": [{"id": "C_A_B"}],
+            "parameter_distributions": [{"id": "kd1"}],
+            "compartments": [],
+            "provenance": {},
+            "extensions": {},
+        }
+        wrapped_network = {
+            "network_ir": network_ir,
+            "expected_network_ir_hash": "b" * 64,
+        }
+        seen = {}
+
+        def fake_optimize(request):
+            seen["request"] = copy.deepcopy(request)
+            return rop_shape_backend_response()
+
+        with mock.patch.object(design_agent.E, "rop_shape_optimize", fake_optimize):
+            result = design_agent.optimize_rop_shape(
+                copy.deepcopy(wrapped_network),
+                copy.deepcopy(ROP_SHAPE_SPEC),
+                copy.deepcopy(ROP_SHAPE_REFERENCE),
+                copy.deepcopy(ROP_SHAPE_INTENT),
+                0.1,
+                0.02,
+                copy.deepcopy(ROP_SHAPE_WORK_BUDGET),
+                copy.deepcopy(ROP_SHAPE_REPLAY),
+            )
+
+        self.assertEqual(seen["request"]["network"], network_ir)
+        self.assertEqual(seen["request"]["expected_network_ir_hash"], "b" * 64)
+        self.assertNotIn("rules", seen["request"]["network"])
+        self.assertEqual(result["admission_status"], "verified_card")
+
+    def test_optimize_rop_shape_withholds_cards_for_noncanonical_or_incomplete_evidence(self):
+        base = rop_shape_backend_response()
+        cases = []
+
+        stale = copy.deepcopy(base)
+        stale["schema_version"] = "bne-rop-shape-optimization/v0.9.0"
+        cases.append(("stale_schema", stale))
+
+        local_only = copy.deepcopy(base)
+        local_only["geometric_status"] = "optimal_over_evaluated_cells"
+        cases.append(("not_global", local_only))
+
+        truncated = copy.deepcopy(base)
+        truncated["coverage"]["truncated"] = True
+        cases.append(("truncated", truncated))
+
+        no_selected = copy.deepcopy(base)
+        no_selected["selected"] = None
+        cases.append(("missing_selected", no_selected))
+
+        incomplete = copy.deepcopy(base)
+        incomplete["replay"]["complete"] = False
+        cases.append(("incomplete_replay", incomplete))
+
+        failed = copy.deepcopy(base)
+        failed["replay"]["pass"] = False
+        cases.append(("failed_replay", failed))
+
+        loose_validity = copy.deepcopy(base)
+        loose_validity["replay"]["curve"]["valid"][-1] = 1
+        cases.append(("nonliteral_validity", loose_validity))
+
+        partial = copy.deepcopy(base)
+        partial["replay"]["curve"]["partial"] = True
+        cases.append(("partial_curve", partial))
+
+        legacy_replay_request = copy.deepcopy(base)
+        legacy_replay_request["replay"]["request"] = {
+            "endpoint": "/api/v1/placer_curve",
+            **legacy_replay_request["replay"]["request"]["body"],
+        }
+        cases.append(("legacy_flat_replay_request", legacy_replay_request))
+
+        noncanonical_replay_endpoint = copy.deepcopy(base)
+        noncanonical_replay_endpoint["replay"]["request"]["endpoint"] = "/api/placer_curve"
+        cases.append(("noncanonical_replay_endpoint", noncanonical_replay_endpoint))
+
+        legacy_fixed_topology = copy.deepcopy(base)
+        legacy_fixed_topology["fixed_topology"]["network"] = \
+            legacy_fixed_topology["fixed_topology"].pop("normalized_network")
+        legacy_fixed_topology["fixed_topology"].pop("topology_preserved")
+        cases.append(("legacy_fixed_topology", legacy_fixed_topology))
+
+        for name, response in cases:
+            with self.subTest(name=name), \
+                 mock.patch.object(design_agent.E, "rop_shape_optimize", return_value=response):
+                result = design_agent.optimize_rop_shape(
+                    copy.deepcopy(ROP_SHAPE_NETWORK),
+                    copy.deepcopy(ROP_SHAPE_SPEC),
+                    copy.deepcopy(ROP_SHAPE_REFERENCE),
+                    copy.deepcopy(ROP_SHAPE_INTENT),
+                    0.1,
+                    0.02,
+                    copy.deepcopy(ROP_SHAPE_WORK_BUDGET),
+                    copy.deepcopy(ROP_SHAPE_REPLAY),
+                )
+
+            self.assertEqual(result["admission_status"], "withheld")
+            self.assertIn("error", result)
+            self.assertNotIn("_card", result)
+            self.assertEqual(result.get("compiled_edit"), response.get("compiled_edit"))
+            self.assertEqual(result.get("artifact"), response.get("artifact"))
+
+    def test_optimize_rop_shape_rejects_unpinned_or_precompiled_requests_before_backend(self):
+        invalid_cases = [
+            {
+                "name": "unknown_edit",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": {"kind": "make_pretty"},
+            },
+            {
+                "name": "precompiled_matrix",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": {"kind": "linear_witness", "Aeq": [[1, 0]]},
+            },
+            {
+                "name": "incomplete_typed_intent",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": {
+                    "id": "missing-preservation-contract",
+                    "kind": "separate",
+                    "steps": [0, 2],
+                },
+            },
+            {
+                "name": "unpinned_reference",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": {
+                    "operating_points_log10": [-3.0, 0.0, 3.0],
+                    "kd": [1.0],
+                    "totals": {"tA": 1.0, "tB": 1.0},
+                },
+                "edit_intent": ROP_SHAPE_INTENT,
+            },
+            {
+                "name": "rules_without_io_identity",
+                "network": {"rules": ["A + B <-> C_A_B"]},
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": ROP_SHAPE_INTENT,
+            },
+            {
+                "name": "empty_reference_totals",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": {**ROP_SHAPE_REFERENCE, "totals": {}},
+                "edit_intent": ROP_SHAPE_INTENT,
+            },
+            {
+                "name": "job_cell_cap_exceeded",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": ROP_SHAPE_INTENT,
+                "work_budget": {**ROP_SHAPE_WORK_BUDGET, "max_cells": 10001},
+            },
+            {
+                "name": "job_replay_cap_exceeded",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": ROP_SHAPE_INTENT,
+                "work_budget": {**ROP_SHAPE_WORK_BUDGET, "max_replays": 17},
+            },
+            {
+                "name": "replay_window_outside_supported_domain",
+                "network": ROP_SHAPE_NETWORK,
+                "reference": ROP_SHAPE_REFERENCE,
+                "edit_intent": ROP_SHAPE_INTENT,
+                "replay": {**ROP_SHAPE_REPLAY, "input_window_log10": [-20.1, 5.0]},
+            },
+        ]
+        for case in invalid_cases:
+            with self.subTest(name=case["name"]), \
+                 mock.patch.object(design_agent.E, "rop_shape_optimize") as optimize:
+                result = design_agent.optimize_rop_shape(
+                    copy.deepcopy(case["network"]),
+                    copy.deepcopy(ROP_SHAPE_SPEC),
+                    copy.deepcopy(case["reference"]),
+                    copy.deepcopy(case["edit_intent"]),
+                    0.1,
+                    0.02,
+                    copy.deepcopy(case.get("work_budget", ROP_SHAPE_WORK_BUDGET)),
+                    copy.deepcopy(case.get("replay", ROP_SHAPE_REPLAY)),
+                )
+
+            self.assertIn("error", result)
+            self.assertNotIn("_card", result)
+            optimize.assert_not_called()
+
+        with mock.patch.object(design_agent.E, "rop_shape_optimize") as optimize:
+            result = design_agent.optimize_rop_shape(
+                copy.deepcopy(ROP_SHAPE_NETWORK),
+                copy.deepcopy(ROP_SHAPE_SPEC),
+                copy.deepcopy(ROP_SHAPE_REFERENCE),
+                copy.deepcopy(ROP_SHAPE_INTENT),
+                0.1,
+                0.02,
+                copy.deepcopy(ROP_SHAPE_WORK_BUDGET),
+                copy.deepcopy(ROP_SHAPE_REPLAY),
+                endpoint="/api/rop_shape_optimize",
+            )
+
+        self.assertIn("unsupported fields", result["error"])
+        self.assertNotIn("_card", result)
+        optimize.assert_not_called()
+
+    def test_run_turn_admits_verified_rop_shape_card_from_allowlisted_tool(self):
+        card = {
+            "family": "dose_shape",
+            "verdict": "verified_rop_shape_optimization",
+            "rules": ["A + B <-> C_A_B"],
+            "kd": [0.5],
+            "totals": {"tA": 1.0, "tB": 2.0},
+            "input_symbol": "tA",
+            "output_symbol": "C_A_B",
+            "computed_series": [{"x": -5.0, "y": -2.0}, {"x": 5.0, "y": 0.0}],
+            "compiled_edit": {"compiler_version": "rop-shape-edit/v1"},
+            "artifact": {"kind": "rop_shape_optimize"},
+            "designability_spec": copy.deepcopy(ROP_SHAPE_SPEC),
+        }
+
+        def fake_optimize(**_kwargs):
+            return {
+                "designability_spec": copy.deepcopy(ROP_SHAPE_SPEC),
+                "_card": copy.deepcopy(card),
+            }
+
+        def fake_runner(_history, _message, dispatch, _cfg, max_iters=12):
+            dispatch("optimize_rop_shape", {})
+            return "优化完成", [{"role": "user", "content": "拉开两个峰"}]
+
+        with mock.patch.dict(design_agent.TOOLS_DISPATCH, {"optimize_rop_shape": fake_optimize}, clear=False), \
+             mock.patch.object(design_agent, "_run_anthropic", fake_runner), \
+             mock.patch.object(design_agent, "_write_trace", lambda _trace: None), \
+             mock.patch.object(design_agent, "_spill_card", lambda _card: "cardhash"):
+            result = design_agent.run_turn(
+                {}, "拉开两个峰",
+                {"provider": "anthropic", "api_key": "test-key", "base_url": "https://example.invalid", "model": "test"},
+                top=1,
+            )
+
+        self.assertEqual(result["reply"], "优化完成")
+        self.assertEqual(len(result["cards"]), 1)
+        self.assertEqual(result["cards"][0]["verdict"], "verified_rop_shape_optimization")
+        self.assertEqual(result["cards"][0]["compiled_edit"], card["compiled_edit"])
+        self.assertEqual(result["cards"][0]["artifact"], card["artifact"])
 
     def test_anthropic_compatible_env_aliases_configure_glm(self):
         with mock.patch.dict(os.environ, {

@@ -1,7 +1,7 @@
 ---
 title: Scientific evidence contract
-status: verified
-verified_against: 1177a3d
+status: implemented-working-tree
+verified_against: working-tree-2026-07-11
 ---
 
 # Scientific evidence contract
@@ -46,6 +46,36 @@ offline, the agent must abstain rather than reuse the prior as an answer.
 A computation verifies only the declared run. It does not prove robustness over
 an unscanned region, global optimality, biological implementability, or a
 theorem.
+
+### Fixed-topology shape optimization
+
+An ROP shape result contains several evidence layers that must remain separate:
+
+1. exact path-cell geometry under one pinned topology, finite-window program,
+   parameter bounds, compiler version, and evaluated population;
+2. the selected biochemical realization and its parameter-only margin in a
+   named log-coordinate subspace; and
+3. a sampled finite replay of those returned parameters.
+
+`global_optimal_over_declared_cells` is permitted only when every eligible cell
+in that declared population was evaluated. A truncated run is best over its
+evaluated subset; omitted cells remain unknown. Neither label extends to other
+topologies, path builders, bounds, or chemical grammars.
+
+The geometric support limit and selected margin-preserving realization are
+different values. A parameter-only radius fixes witness locations and varies
+only equality-feasible background `log10(q,K)` coordinates. A joint augmented
+radius mixes request-location and parameter slack and cannot be called
+biochemical robustness. Active-row shadow prices describe compiled right-hand-
+side objective sensitivity, not a parameter derivative.
+
+A finite-shape pass additionally requires the replay's complete Boolean
+validity vector and declared sampled metrics. A feasible geometric result with
+failed replay remains exact path evidence plus failed finite validation. The
+cat benchmark observes this mismatch for one edit, so consumers must not infer
+nonlinear peak width or prominence from witness span alone. The accepted
+semantics are recorded in
+[`0002-rop-shape-margin-and-evidence`](../decisions/0002-rop-shape-margin-and-evidence.md).
 
 ### Complete and partial numerical evidence
 
@@ -172,6 +202,11 @@ bounds B,” or “no candidate was found by bounded search S.”
   semantics.
 - `webapp/test/concurrency_and_budget_contract.jl` checks invalid-refinement
   selection, synchronous work limits, and machine-readable failures.
+- `webapp/test/rop_shape_optimization_contract.jl`,
+  `rop_shape_api_contract.jl`, `rop_shape_replay_contract.jl`, and
+  `rop_shape_cat_benchmark.jl` check coordinate-basis separation, bounded
+  population language, direct LP semantics, complete replay, and the frozen
+  surrogate mismatch.
 - scan, placement, and frontend validity contracts check that invalid points are
   exposed and rendered as gaps.
 - `tests/test_periodic_table.py` checks result statuses and small/trivial witness
@@ -182,7 +217,10 @@ certify a manuscript claim that has no pinned artifact and claim entry.
 
 ## Verified against
 
-- Current source commit: `1177a3d`.
+- Shape-optimization evidence extension: uncommitted working tree on
+  2026-07-11; local contract commands and boundaries are recorded in the goal
+  completion report.
+- Last committed implementation anchor: `1177a3d`.
 - Historical baseline: retrieval-versus-verification and provenance wording was
   audited at `f9c65a5`; that historical evidence predates the explicit
   validity/partial contracts and cannot establish them.

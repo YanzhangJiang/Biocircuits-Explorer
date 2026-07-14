@@ -32,6 +32,8 @@ export run_biocircuits_job_payload, run_biocircuits_job_from_uri
 export biocircuits_explorer_version, biocircuits_explorer_build_info
 export RESULT_ARTIFACT_SCHEMA_VERSION, artifact_metadata, attach_artifact!, wrap_artifact
 export DESIGNABILITY_SPEC_VERSION, normalize_designability_spec, design_screen_from_spec
+export ROP_SHAPE_OPTIMIZE_REQUEST_VERSION, ROP_SHAPE_OPTIMIZATION_VERSION
+export ROP_SHAPE_REPLAY_VERSION, analyze_two_peak_curve, optimize_rop_shape_request
 
 using HTTP
 using JSON3
@@ -126,6 +128,10 @@ include(joinpath(@__DIR__, "model_handlers.jl"))
 
 include(joinpath(@__DIR__, "parameter_placement.jl"))
 
+include(joinpath(@__DIR__, "rop_shape_replay.jl"))
+
+include(joinpath(@__DIR__, "rop_shape_optimization.jl"))
+
 include(joinpath(@__DIR__, "design_search.jl"))
 
 include(joinpath(@__DIR__, "parameter_level.jl"))
@@ -135,6 +141,7 @@ include(joinpath(@__DIR__, "rop_geometry_handlers.jl"))
 
 include(joinpath(@__DIR__, "designability_feasible_regions.jl"))
 include(joinpath(@__DIR__, "designability.jl"))
+include(joinpath(@__DIR__, "rop_shape_api.jl"))
 include(joinpath(@__DIR__, "routing.jl"))
 
 end # module

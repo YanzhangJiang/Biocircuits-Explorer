@@ -41,6 +41,8 @@ using Test
 using BindingAndCatalysis
 using Graphs
 
+struct EngineCancelProbe <: Exception end
+
 # Keep the heavy progress meters quiet during the suite.
 ENV["BNC_NO_PROGRESS"] = "1"
 
@@ -68,6 +70,18 @@ ENV["BNC_NO_PROGRESS"] = "1"
         graph; sources=[1], sinks=[current], max_paths=32)
     @test_throws PathEnumerationLimitExceeded BindingAndCatalysis._enumerate_paths(
         graph; sources=[1], sinks=[current], max_total_nodes=100)
+
+    cancel_checks = Ref(0)
+    @test_throws ErrorException BindingAndCatalysis._enumerate_paths(
+        graph;
+        sources=[1],
+        sinks=[current],
+        cancel_check=() -> begin
+            cancel_checks[] += 1
+            cancel_checks[] >= 5 && error("cancel path enumeration")
+        end,
+    )
+    @test cancel_checks[] == 5
 end
 
 # -----------------------------------------------------------------------------
@@ -137,6 +151,128 @@ function build_model(rules::Vector{String})
     return model, species, free_syms, prod_syms
 end
 
+@testset "Regime construction cancellation rolls back only partial builds" begin
+    rules = [
+        "A + B <-> AB",
+        "A + C <-> AC",
+        "A + D <-> AD",
+        "A + E <-> AE",
+        "A + F <-> AF",
+        "A + G <-> AG",
+    ]
+    model, _, _, _ = build_model(rules)
+    cancel_checks = Ref(0)
+    @test_throws ErrorException find_all_regimes!(
+        model;
+        cancel_check=() -> begin
+            cancel_checks[] += 1
+            cancel_checks[] >= 4 && error("cancel regime enumeration")
+        end,
+    )
+    @test cancel_checks[] == 4
+    @test model.BindRegimes === nothing
+    @test model.vertices_graph === nothing
+    @test model._regimes_build_complete === false
+
+    # The cancellation path releases the construction lock and a later caller
+    # can build a complete cache.
+    find_all_regimes!(model)
+    @test model._regimes_build_complete === true
+    cached_regimes = model.BindRegimes
+    cached_graph = model.vertices_graph
+
+    # An already-cancelled caller observing a hot shared model must not erase
+    # the completed cache while unwinding.
+    @test_throws ErrorException find_all_regimes!(
+        model; cancel_check=() -> error("cancel hot cache lookup"))
+    @test model._regimes_build_complete === true
+    @test model.BindRegimes === cached_regimes
+    @test model.vertices_graph === cached_graph
+
+    locked_hot_checks = Ref(0)
+    @test_throws EngineCancelProbe find_all_regimes!(
+        model;
+        cancel_check=() -> begin
+            locked_hot_checks[] += 1
+            locked_hot_checks[] == 2 && throw(EngineCancelProbe())
+        end,
+    )
+    @test locked_hot_checks[] == 2
+    @test model._regimes_build_complete === true
+    @test model.BindRegimes === cached_regimes
+    @test model.vertices_graph === cached_graph
+
+    affine_model, _, _, _ = build_model(rules)
+    affine_checks = Ref(0)
+    @test_throws EngineCancelProbe find_all_regimes!(
+        affine_model;
+        cancel_check=() -> begin
+            if affine_model.BindRegimes !== nothing &&
+               !affine_model._regimes_affine_ready
+                affine_checks[] += 1
+                affine_checks[] == 6 && throw(EngineCancelProbe())
+            end
+        end,
+    )
+    @test affine_checks[] == 6
+    @test affine_model.BindRegimes === nothing
+    @test affine_model.vertices_graph === nothing
+    @test affine_model._regimes_affine_ready === false
+    @test affine_model._regimes_build_complete === false
+
+    full_graph_model, _, _, _ = build_model(rules)
+    graph_checks = Ref(0)
+    @test_throws EngineCancelProbe find_all_regimes!(
+        full_graph_model;
+        cancel_check=() -> begin
+            if full_graph_model._regimes_affine_ready &&
+               full_graph_model.vertices_graph !== nothing &&
+               !full_graph_model.vertices_graph.change_dir_qK_computed
+                graph_checks[] += 1
+                graph_checks[] == 5 && throw(EngineCancelProbe())
+            end
+        end,
+    )
+    @test graph_checks[] == 5
+    @test full_graph_model.BindRegimes === nothing
+    @test full_graph_model.vertices_graph === nothing
+    @test full_graph_model._regimes_affine_ready === false
+    @test full_graph_model._regimes_build_complete === false
+
+    # One conservation row with 40 choices produces a single 40-entry graph
+    # bucket (780 candidate pairs). Cancel at the first 256-pair checkpoint and
+    # prove the exception came from inside bucket pairing, not a phase boundary.
+    choice_count = 40
+    large_bucket_N = zeros(Int, choice_count - 1, choice_count)
+    for i in 1:(choice_count - 1)
+        large_bucket_N[i, i] = 1
+        large_bucket_N[i, end] = -1
+    end
+    large_bucket_model = Bnc(
+        N=large_bucket_N,
+        L=ones(Int, 1, choice_count),
+    )
+    bucket_pair_checkpoints = Ref(0)
+    @test_throws EngineCancelProbe find_all_regimes!(
+        large_bucket_model;
+        cancel_check=() -> begin
+            inside_pairing = any(
+                frame -> occursin("append_group_edges!", string(frame.func)),
+                stacktrace(),
+            )
+            if inside_pairing
+                bucket_pair_checkpoints[] += 1
+                throw(EngineCancelProbe())
+            end
+        end,
+    )
+    @test bucket_pair_checkpoints[] == 1
+    @test large_bucket_model.BindRegimes === nothing
+    @test large_bucket_model.vertices_graph === nothing
+    @test large_bucket_model._regimes_affine_ready === false
+    @test large_bucket_model._regimes_build_complete === false
+end
+
 # Small helpers for golden assertions.
 const RTOL = 1e-6
 approxeq(a, b; rtol=RTOL) = isapprox(a, b; rtol=rtol)
@@ -192,6 +328,8 @@ end
     @test isapprox(vol.mean, 0.75; atol=0.03)
     @test vol.var >= 0.0
 end
+
+include(joinpath(@__DIR__, "volume_reproducibility_contract.jl"))
 
 # =============================================================================
 @testset "BindingAndCatalysis golden-value suite" begin
@@ -294,6 +432,67 @@ end
     @test length(valid) == 7
     @test traj2 ≈ traj rtol=1e-6                            # same numbers, extra return value
 
+    scan_cancel_checks = Ref(0)
+    @test_throws ErrorException scan_parameter_1d(
+        model, 2, rng, outcoef, fixed;
+        input_logspace=true,
+        output_logspace=true,
+        cancel_check=() -> begin
+            scan_cancel_checks[] += 1
+            scan_cancel_checks[] >= 6 && error("cancel parameter replay")
+        end,
+    )
+    @test scan_cancel_checks[] == 6
+
+    # A successful equilibrium solve is not sufficient for a logarithmic
+    # observable: each requested linear combination must also be finite and
+    # strictly positive. Invalid output domains remain per-output NaN gaps,
+    # while the legacy point-level `valid` vector is the conjunction across all
+    # requested outputs. In particular, no invalid expression is fabricated as
+    # the old log10(1e-100) == -100 floor.
+    negative_out = Float64[0, 0, -1]                         # -AL < 0
+    zero_out = zeros(Float64, model.n)
+    cancelled_out = parse_linear_combination(model, "A - A")
+    nonfinite_out = Float64[0, 0, Inf]
+    _, mixed_traj, _, mixed_valid = scan_parameter_1d(
+        model, 2, rng,
+        [outcoef[1], negative_out, zero_out, cancelled_out, nonfinite_out],
+        fixed;
+        input_logspace=true, output_logspace=true, track_validity=true)
+    @test all(isfinite, mixed_traj[:, 1])
+    @test all(isnan, mixed_traj[:, 2])
+    @test all(isnan, mixed_traj[:, 3])
+    @test all(isnan, mixed_traj[:, 4])
+    @test all(isnan, mixed_traj[:, 5])
+    @test mixed_traj[:, 1] ≈ traj[:, 1] rtol=1e-6
+    @test !any(==(-100.0), mixed_traj)
+    @test mixed_valid == falses(length(rng))
+
+    # A single invalid logarithmic output marks the tracked point invalid.
+    # The same output-domain rule applies without validity tracking too: NaN is
+    # the only honest representation when no Bool mask was requested.
+    _, negative_traj, _, negative_valid = scan_parameter_1d(
+        model, 2, rng, [negative_out], fixed;
+        input_logspace=true, output_logspace=true, track_validity=true)
+    @test all(isnan, negative_traj)
+    @test !any(negative_valid)
+    _, untracked_zero_traj, _ = scan_parameter_1d(
+        model, 2, rng, [zero_out], fixed;
+        input_logspace=true, output_logspace=true, track_validity=false)
+    @test all(isnan, untracked_zero_traj)
+
+    # Linear-space observables have a different domain: finite zero and
+    # negative values are meaningful data and must not be rejected merely
+    # because logarithmic output would be undefined.
+    linear_fixed = exp10.(fixed)
+    linear_rng = exp10.(rng)
+    _, linear_traj, _, linear_valid = scan_parameter_1d(
+        model, 2, linear_rng, [negative_out, zero_out], linear_fixed;
+        input_logspace=false, output_logspace=false, track_validity=true)
+    @test all(linear_valid)
+    @test all(<(0.0), linear_traj[:, 1])
+    @test all(==(0.0), linear_traj[:, 2])
+
     # --- locate_sym_qK / parse_linear_combination ---
     @test locate_sym_qK(model, :tA)  == 1                   # SANITY-CHECKED [q;K] layout
     @test locate_sym_qK(model, :tL)  == 2
@@ -304,7 +503,7 @@ end
     @test_throws ErrorException parse_linear_combination(model, "1e200*AL")
 
     # --- calc_volume (Monte-Carlo) on the asymptotic regimes ---
-    # Generous ±15% band (header explains the fixed per-thread RNG seed). The
+    # Generous ±15% band (the estimator uses a fixed counter-based stream). The
     # three non-singular asymptotic regimes each carry ~1/3 of the gaussian
     # probability mass and the singular one carries ~0; the masses sum to ~1.
     vols  = get_volumes(model; asymptotic=true, rel_tol=0.01, batch_size=50_000)
@@ -366,6 +565,31 @@ end
         input_logspace=true, output_logspace=true, track_validity=true)
     @test size(grid2d) == size(regimes2d) == size(valid2d) == (3, 3)
     @test all(valid2d)
+
+    # The 2D tracked scan has the same finite-and-positive logarithmic output
+    # contract. Negative and cancelling expressions are invalid gaps, not a
+    # finite -100 heatmap that can be plotted or ranked as evidence.
+    negative_2d = -outc[1]
+    _, _, negative_grid2d, _, negative_valid2d = scan_parameter_2d(
+        model, 1, 2, grid_rng, grid_rng, negative_2d, fixed2d;
+        input_logspace=true, output_logspace=true, track_validity=true)
+    @test all(isnan, negative_grid2d)
+    @test !any(negative_valid2d)
+    @test !any(==(-100.0), negative_grid2d)
+
+    cancelled_2d = parse_linear_combination(model, "AL - AL")
+    _, _, cancelled_grid2d, _, cancelled_valid2d = scan_parameter_2d(
+        model, 1, 2, grid_rng, grid_rng, cancelled_2d, fixed2d;
+        input_logspace=true, output_logspace=true, track_validity=true)
+    @test all(isnan, cancelled_grid2d)
+    @test !any(cancelled_valid2d)
+
+    # The untracked compatibility return shape has no Bool mask, so an invalid
+    # logarithmic observable still has to remain an explicit NaN gap.
+    _, _, untracked_negative_grid2d, _ = scan_parameter_2d(
+        model, 1, 2, grid_rng, grid_rng, negative_2d, fixed2d;
+        input_logspace=true, output_logspace=true, track_validity=false)
+    @test all(isnan, untracked_negative_grid2d)
 end
 
 # -----------------------------------------------------------------------------

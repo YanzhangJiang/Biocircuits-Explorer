@@ -1,5 +1,5 @@
 // Biocircuits Explorer — Canvas Panning, Zooming & Node Interaction Events
-import { canvasState, dragState, resizeState, wiringState, scale, setScale, MIN_SCALE, MAX_SCALE, ZOOM_SENSITIVITY } from './state.js';
+import { canvasState, dragState, resizeState, wiringState, scale, setScale, MIN_SCALE, MAX_SCALE, MAX_CANVAS_PAN, ZOOM_SENSITIVITY } from './state.js';
 import { updateConnections, scheduleUpdateConnections, getSocketCenter, bezierPath } from './connections.js';
 import { record, MoveNodeCommand } from './commands.js';
 import {
@@ -30,6 +30,33 @@ let themeChangeListenerInstalled = false;
 const GRID_SPACING = 50;
 const MIN_GRID_PIXEL_STEP = 12;
 
+// Compute a bounded set of screen-space grid coordinates. Using the pan phase
+// avoids incrementing enormous world-grid indices, which can stop changing at
+// IEEE-754 magnitudes and otherwise create a non-terminating loop.
+export function gridLineScreenPositions(viewportSize, pan, pixelStep) {
+  if (!Number.isFinite(viewportSize) || viewportSize < 0 ||
+      !Number.isFinite(pan) || !Number.isFinite(pixelStep) || pixelStep < MIN_GRID_PIXEL_STEP) {
+    return [];
+  }
+  const phase = ((pan % pixelStep) + pixelStep) % pixelStep;
+  const maxLines = Math.ceil(viewportSize / MIN_GRID_PIXEL_STEP) + 2;
+  const positions = [];
+  for (let index = 0; index < maxLines; index += 1) {
+    const position = phase + index * pixelStep;
+    if (position > viewportSize) break;
+    positions.push(position);
+  }
+  return positions;
+}
+
+function setBoundedCanvasPan(panX, panY) {
+  const bounded = value => Number.isFinite(value)
+    ? Math.max(-MAX_CANVAS_PAN, Math.min(MAX_CANVAS_PAN, value))
+    : 0;
+  canvasState.panX = bounded(panX);
+  canvasState.panY = bounded(panY);
+}
+
 function getVisibleWorldBounds() {
   const viewportWidth = Math.max(editor.clientWidth, 1);
   const viewportHeight = Math.max(editor.clientHeight, 1);
@@ -50,6 +77,9 @@ function getVisibleWorldBounds() {
 
 function renderGrid() {
   if (!editor || !gridBg) return;
+  // setScale() enforces this invariant. Keep a local guard as a final defense
+  // because a non-positive scale makes the adaptive-grid loop non-terminating.
+  if (!Number.isFinite(scale) || scale < MIN_SCALE || scale > MAX_SCALE) return;
 
   const width = Math.max(editor.clientWidth, 1);
   const height = Math.max(editor.clientHeight, 1);
@@ -69,30 +99,23 @@ function renderGrid() {
   ctx.clearRect(0, 0, pixelWidth, pixelHeight);
 
   const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--grid-color').trim() || '#2b2b2b';
-  const worldBounds = getVisibleWorldBounds();
   let displayedGridStep = GRID_SPACING;
   while (displayedGridStep * scale < MIN_GRID_PIXEL_STEP) {
     displayedGridStep *= 2;
   }
-
-  const startCol = Math.floor(worldBounds.visibleLeft / displayedGridStep) - 1;
-  const endCol = Math.ceil(worldBounds.visibleRight / displayedGridStep) + 1;
-  const startRow = Math.floor(worldBounds.visibleTop / displayedGridStep) - 1;
-  const endRow = Math.ceil(worldBounds.visibleBottom / displayedGridStep) + 1;
+  const pixelStep = displayedGridStep * scale;
 
   ctx.beginPath();
   ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
 
-  for (let col = startCol; col <= endCol; col += 1) {
-    const screenX = col * displayedGridStep * scale + canvasState.panX;
+  for (const screenX of gridLineScreenPositions(width, canvasState.panX, pixelStep)) {
     const x = Math.round(screenX * dpr) + 0.5;
     ctx.moveTo(x, 0);
     ctx.lineTo(x, pixelHeight);
   }
 
-  for (let row = startRow; row <= endRow; row += 1) {
-    const screenY = row * displayedGridStep * scale + canvasState.panY;
+  for (const screenY of gridLineScreenPositions(height, canvasState.panY, pixelStep)) {
     const y = Math.round(screenY * dpr) + 0.5;
     ctx.moveTo(0, y);
     ctx.lineTo(pixelWidth, y);
@@ -196,8 +219,7 @@ export function computeZoomFactor(e) {
 }
 
 export function resetView() {
-  canvasState.panX = 0;
-  canvasState.panY = 0;
+  setBoundedCanvasPan(0, 0);
   setScale(1.0);
   applyViewportTransform();
   updateConnections();
@@ -280,12 +302,13 @@ export function initCanvasEvents() {
 
       // Adjust pan to keep mouse position fixed
       const scaleDiff = scale / oldScale;
-      canvasState.panX = mouseX - (mouseX - canvasState.panX) * scaleDiff;
-      canvasState.panY = mouseY - (mouseY - canvasState.panY) * scaleDiff;
+      setBoundedCanvasPan(
+        mouseX - (mouseX - canvasState.panX) * scaleDiff,
+        mouseY - (mouseY - canvasState.panY) * scaleDiff,
+      );
     } else {
       // Pan mode
-      canvasState.panX -= e.deltaX;
-      canvasState.panY -= e.deltaY;
+      setBoundedCanvasPan(canvasState.panX - e.deltaX, canvasState.panY - e.deltaY);
     }
 
     applyViewportTransform();
@@ -294,8 +317,7 @@ export function initCanvasEvents() {
 
   window.addEventListener('mousemove', (e) => {
     if (canvasState.isPanning) {
-      canvasState.panX = e.clientX - canvasState.startPanX;
-      canvasState.panY = e.clientY - canvasState.startPanY;
+      setBoundedCanvasPan(e.clientX - canvasState.startPanX, e.clientY - canvasState.startPanY);
       applyViewportTransform();
       scheduleUpdateConnections();
     }

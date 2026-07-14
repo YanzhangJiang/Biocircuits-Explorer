@@ -556,7 +556,7 @@ function _design_screen_card(rec, pareto_cell_set, tuning, ranking_policy)
                 "placement_status" => "not_attempted",
                 "verification_status" => "not_attempted",
                 "source_type" => "seed",
-                "source_endpoint" => "/api/design_screen",
+                "source_endpoint" => "/api/v1/design_screen",
                 "bounds_verified" => false,
                 "log_qK" => log_qK,
                 "kd" => kd,
@@ -572,7 +572,7 @@ function _design_screen_card(rec, pareto_cell_set, tuning, ranking_policy)
         "placement_attempt" => Dict(
             "attempted" => false,
             "status" => "not_attempted",
-            "endpoint" => "/api/design_screen",
+            "endpoint" => "/api/v1/design_screen",
             "mode" => "none",
         ),
         "certificate_stack" => Any[
@@ -592,7 +592,7 @@ function _design_screen_card(rec, pareto_cell_set, tuning, ranking_policy)
             for failure in active_failures
         ],
         "agent_handoff" => Dict(
-            "endpoint" => "/api/design_screen",
+            "endpoint" => "/api/v1/design_screen",
             "role" => "candidate_screen_result",
             "next_actions" => ["select_network", "build_model", "run_parameter_placer"],
             "agent_should_not" => ["invent_curve", "treat_proxy_radius_as_exact_linear_certificate"],
@@ -731,7 +731,7 @@ function _design_try_exact_linear_card(card, rec, target_ro::Real, tuning)
         updated["placement_attempt"] = Dict(
             "attempted" => true,
             "status" => placement.feasible ? "unverified" : "infeasible",
-            "endpoint" => "/api/design_screen",
+            "endpoint" => "/api/v1/design_screen",
             "mode" => "single_ro",
             "target_ro" => Float64(target_ro),
             "kd_bounds_used" => [kd_bounds[1], kd_bounds[2]],
@@ -773,7 +773,7 @@ function _design_try_exact_linear_card(card, rec, target_ro::Real, tuning)
             theta["placement_status"] = "success"
             theta["verification_status"] = "verified"
             theta["source_type"] = "exact_solver"
-            theta["source_endpoint"] = "/api/design_screen"
+            theta["source_endpoint"] = "/api/v1/design_screen"
             theta["bounds_verified"] = true
             theta["solver_version"] = "placer_place_bounded/v1"
             theta["log_qK_basis"] = "log10_qK"
@@ -831,7 +831,7 @@ function _design_try_exact_linear_card(card, rec, target_ro::Real, tuning)
         updated["placement_attempt"] = Dict(
             "attempted" => true,
             "status" => "error",
-            "endpoint" => "/api/design_screen",
+            "endpoint" => "/api/v1/design_screen",
             "mode" => "single_ro",
             "target_ro" => Float64(target_ro),
             "kd_bounds_used" => [kd_bounds[1], kd_bounds[2]],
@@ -894,7 +894,7 @@ function handle_design_search(req)
     return json_response(res)
 end
 
-# POST /api/design_screen — tunability-aware wrapper around design_search.
+# POST /api/v1/design_screen — tunability-aware wrapper around design_search.
 function handle_design_screen(req)
     body = read_json(req)
     res = try

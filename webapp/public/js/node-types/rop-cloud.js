@@ -1,5 +1,5 @@
 import { connections, nodeRegistry, ensureNodeData } from '../state.js';
-import { api } from '../api.js';
+import { api, renderNodeError } from '../api.js';
 import { setNodeLoading, getModelForNode, setupAutoUpdate, ensureModelSession } from '../nodes.js';
 import { getReactionsFromNode } from '../model.js';
 import { executeROPCloudResult, updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, executeFRETResult } from '../rop-cloud.js';
@@ -174,7 +174,7 @@ export const ROP_CLOUD_TYPES = {
         }
         renderROPCloudOutput(nodeId, contentEl, data);
       } catch (e) {
-        contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+        renderNodeError(contentEl, e);
       }
       setNodeLoading(nodeId, false);
     },
@@ -275,7 +275,7 @@ export const ROP_CLOUD_TYPES = {
           setupPlotResize(nodeId, `${nodeId}-plot`);
         }, 50);
       } catch (e) {
-        contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+        renderNodeError(contentEl, e);
       }
       setNodeLoading(nodeId, false);
     },

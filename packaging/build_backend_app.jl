@@ -7,14 +7,13 @@ const DIST_DIR = joinpath(REPO_ROOT, "dist")
 const APP_DIR = joinpath(DIST_DIR, "BiocircuitsExplorerBackend")
 const RESOURCE_DIR = joinpath(APP_DIR, "share", "biocircuits-explorer")
 const HOMEBREW_PREFIX = get(ENV, "HOMEBREW_PREFIX", "/opt/homebrew")
-const DEPOT_SEPARATOR = Sys.iswindows() ? ";" : ":"
 const LOCAL_DEPOT = joinpath(REPO_ROOT, ".julia_packaging_depot")
 
 mkpath(LOCAL_DEPOT)
 rm(joinpath(LOCAL_DEPOT, "compiled"); recursive=true, force=true)
 
-depot_entries = unique(vcat(LOCAL_DEPOT, DEPOT_PATH))
-ENV["JULIA_DEPOT_PATH"] = join(depot_entries, DEPOT_SEPARATOR)
+depot_entries = [LOCAL_DEPOT]
+ENV["JULIA_DEPOT_PATH"] = LOCAL_DEPOT
 empty!(DEPOT_PATH)
 append!(DEPOT_PATH, depot_entries)
 
@@ -80,12 +79,9 @@ function materialize_external_symlinks!(root_dir::AbstractString)
 end
 
 Pkg.activate(PACKAGING_DIR)
-Pkg.resolve()
 Pkg.instantiate()
 Pkg.activate(WEBAPP_DIR)
 cd(WEBAPP_DIR) do
-    Pkg.develop(Pkg.PackageSpec(path=joinpath("..", "Bnc_julia")))
-    Pkg.resolve()
     Pkg.instantiate()
 end
 Pkg.activate(PACKAGING_DIR)

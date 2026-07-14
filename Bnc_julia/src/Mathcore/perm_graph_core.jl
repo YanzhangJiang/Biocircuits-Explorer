@@ -75,7 +75,12 @@ end
 Build a `VertexGraph` from regime permutations, connecting regimes that differ
 in exactly one row.
 """
-function _calc_regimes_graph(helper::MatrixHelper, perms::Vector{<:AbstractVector{T}}) where {T<:Integer}
+function _calc_regimes_graph(
+    helper::MatrixHelper,
+    perms::Vector{<:AbstractVector{T}};
+    cancel_check=_NO_CANCEL_CHECK,
+) where {T<:Integer}
+    cancel_check()
     # n = helper.n
     n_vtxs = length(perms)
     d = length(perms[1])
@@ -83,8 +88,10 @@ function _calc_regimes_graph(helper::MatrixHelper, perms::Vector{<:AbstractVecto
 
     # 按行分桶：key 为去掉该行后的签名（Tuple），值为该签名下的 (regime idx, row choice)
     @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") for i in 1:d
+        cancel_check()
         buckets = Dict{Tuple{Vararg{T}}, Vector{Tuple{Int,T}}}()
         @inbounds for q in 1:n_vtxs
+            (q & 0xff) == 0 && cancel_check()
             v = perms[q]
             sig = if i == 1
                     Tuple(v[2:end])
@@ -101,16 +108,18 @@ function _calc_regimes_graph(helper::MatrixHelper, perms::Vector{<:AbstractVecto
         groups = collect(values(buckets))
 
         # 同桶内两两相连：沿边方向表示“增加 target dominant term，减少 source dominant term”
-        Threads.@threads for gi in eachindex(groups)
-            tid = Threads.threadid()
-            local_edges = thread_edges[tid]
-            group = groups[gi]
+        function append_group_edges!(local_edges, group; cancellable::Bool)
             m = length(group)
-            m <= 1 && continue
+            m <= 1 && return nothing
+            pair_count = 0
 
             @inbounds for a in 1:m-1
                 from_idx, j_from = group[a]
                 for b in a+1:m
+                    if cancellable
+                        pair_count += 1
+                        (pair_count & 0xff) == 0 && cancel_check()
+                    end
                     to_idx, j_to = group[b]
                     j_from == j_to && continue
 
@@ -119,7 +128,27 @@ function _calc_regimes_graph(helper::MatrixHelper, perms::Vector{<:AbstractVecto
                     push!(local_edges, (to_idx, VertexEdge(from_idx, i, hp_id.hid, -hp_id.sign)))
                 end
             end
+            return nothing
         end
+
+        if cancel_check === _NO_CANCEL_CHECK
+            Threads.@threads for gi in eachindex(groups)
+                tid = Threads.threadid()
+                append_group_edges!(
+                    thread_edges[tid], groups[gi]; cancellable=false)
+            end
+        else
+            # A real cancellation callback may throw a caller-owned typed
+            # exception. Keep cancellable O(m²) pairing on the parent task so
+            # the exception is not wrapped by a threaded task failure.
+            local_edges = thread_edges[Threads.threadid()]
+            for group in groups
+                cancel_check()
+                append_group_edges!(local_edges, group; cancellable=true)
+            end
+            cancel_check()
+        end
+        cancel_check()
     end
 
     all_edges = reduce(vcat, thread_edges; init=Tuple{Int, VertexEdge}[])
@@ -127,6 +156,7 @@ function _calc_regimes_graph(helper::MatrixHelper, perms::Vector{<:AbstractVecto
     for (from, e) in all_edges
         push!(neighbors[from], e)
     end
+    cancel_check()
     return VertexGraph(helper, neighbors)
 end
 #=============================================================================================#
@@ -209,13 +239,18 @@ end
 
 Compute qK-space change directions for edges in the vertex graph.
 """
-function _fulfill_regimes_graph!(vtx_graph::VertexGraph)
+function _fulfill_regimes_graph!(
+    vtx_graph::VertexGraph;
+    cancel_check=_NO_CANCEL_CHECK,
+)
+    cancel_check()
     Bnc = vtx_graph.bn
     regimes = _bind_regimes_data(Bnc)
     empty!(vtx_graph.qK_interface_pool)
     key_to_id = Dict{Any,Int}()
 
     for edges in vtx_graph.neighbors
+        cancel_check()
         for e in edges
             e.qK_interface_idx = 0
             e.qK_interface_sign = 0
@@ -223,6 +258,7 @@ function _fulfill_regimes_graph!(vtx_graph::VertexGraph)
     end
 
     @showprogress enabled=!haskey(ENV, "BNC_NO_PROGRESS") for p1 in eachindex(vtx_graph.neighbors)
+        cancel_check()
         edges = vtx_graph.neighbors[p1]
         for e in edges
             p2 = e.to
@@ -265,6 +301,7 @@ function _fulfill_regimes_graph!(vtx_graph::VertexGraph)
             dst_edge.qK_interface_sign = Int8(-sign)
         end
     end
+    cancel_check()
     return nothing
 end
 

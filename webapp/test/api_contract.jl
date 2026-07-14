@@ -10,10 +10,10 @@ const Backend = BiocircuitsExplorerBackend
 @testset "Executable API route contract" begin
     routes = Backend.API_ROUTE_CONTRACTS
 
-    @test length(routes) == 48
-    @test length(filter(Backend._is_ordinary_post_route, routes)) == 36
+    @test length(routes) == 49
+    @test length(filter(Backend._is_ordinary_post_route, routes)) == 37
     @test count(route -> route.match_kind === :template, routes) == 5
-    @test length(Backend.API_ROUTES) == 36
+    @test length(Backend.API_ROUTES) == 37
 
     canonical_paths = getfield.(routes, :canonical_path)
     internal_paths = getfield.(routes, :internal_path)
@@ -36,9 +36,13 @@ const Backend = BiocircuitsExplorerBackend
         if startswith(route.canonical_path, Backend.API_V1_PREFIX * "/")
             @test Backend._canonicalize_api_path(route.canonical_path) ==
                   (route.internal_path, false)
-            @test route.legacy_alias !== nothing
-            @test Backend._canonicalize_api_path(route.legacy_alias) ==
-                  (route.internal_path, true)
+            if route.canonical_path == "/api/v1/rop_shape_optimize"
+                @test route.legacy_alias === nothing
+            else
+                @test route.legacy_alias !== nothing
+                @test Backend._canonicalize_api_path(route.legacy_alias) ==
+                      (route.internal_path, true)
+            end
         end
     end
 
@@ -66,6 +70,7 @@ const Backend = BiocircuitsExplorerBackend
     @test Backend.router(HTTP.Request("POST", "/api/v1/local-image")).status == 405
     @test Backend.router(HTTP.Request("DELETE", "/api/v1/jobs/job-123")).status == 405
     @test Backend.router(HTTP.Request("OPTIONS", "/any/path")).status == 204
+    @test Backend.router(HTTP.Request("POST", "/api/rop_shape_optimize")).status == 404
 
     first_json = Backend.api_contract_reference_json()
     second_json = Backend.api_contract_reference_json()
@@ -75,8 +80,8 @@ const Backend = BiocircuitsExplorerBackend
 
     reference = JSON3.read(first_json)
     @test reference["schema_version"] == "1"
-    @test reference["route_count"] == 48
-    @test length(reference["routes"]) == 48
+    @test reference["route_count"] == 49
+    @test length(reference["routes"]) == 49
     @test reference["routes"][1]["canonical_path"] == "/api/v1"
     @test reference["routes"][1]["methods"] == ["GET", "POST"]
 end

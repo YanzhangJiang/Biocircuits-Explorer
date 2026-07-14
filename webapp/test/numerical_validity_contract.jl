@@ -2,6 +2,27 @@ using Test
 using HTTP
 using JSON3
 
+@testset "Placement pass requires complete numerical verification" begin
+    backend = BiocircuitsExplorerBackend
+    @test backend._placer_verification_complete(Bool[true, true])
+    @test !backend._placer_verification_complete(Bool[true, false, true])
+    @test !backend._placer_verification_complete(Bool[])
+    @test !backend._placer_verification_complete(Any[true, 1])
+
+    @test backend._placer_verified_pass(true, Bool[true, true])
+    @test !backend._placer_verified_pass(true, Bool[true, false])
+    @test !backend._placer_verified_pass(false, Bool[true, true])
+
+    complete_curve = Dict("valid" => Bool[true, true], "partial" => false)
+    partial_curve = Dict("valid" => Bool[true, false], "partial" => true)
+    @test backend._placer_curve_verification(true, complete_curve).pass
+    @test !backend._placer_curve_verification(true, partial_curve).pass
+    @test backend._placer_curve_verification(true, partial_curve).partial
+    @test backend._placer_curve_verification(true, partial_curve).reason == "partial_dose_response"
+    @test !backend._placer_curve_verification(false, complete_curve).pass
+    @test backend._placer_curve_verification(false, complete_curve).reason == "local_reaction_order_mismatch"
+end
+
 @testset "Numerical endpoints expose solver validity without corrupting plots" begin
     network = Dict(
         "reactions" => Any["A + B <-> AB"],
@@ -39,6 +60,23 @@ using JSON3
     @test all(row -> length(row) == 20, fret["validity_grid"])
     validity = collect(Iterators.flatten(fret["validity_grid"]))
     @test fret["partial"] == !all(==(true), validity)
+
+    placement_response = post("/api/v1/place_parameters", Dict(
+        "rules" => Any["A + B <-> AB"],
+        "input_sym" => "tA",
+        "output_sym" => "AB",
+        "target_ro" => 1.0,
+        "kd_bounds" => Any[-3.0, 3.0],
+    ))
+    @test placement_response.status == 200
+    placement = JSON3.read(String(placement_response.body))
+    @test placement["pass"] === true
+    @test placement["local_reaction_order_pass"] === true
+    @test placement["verification_partial"] === false
+    @test placement["verification_reason"] == "complete"
+    @test length(placement["verification_validity"]) ==
+        length(placement["dose_response_curve"]["param_values"])
+    @test all(==(true), placement["verification_validity"])
 
     valid_candidate = Dict(
         "refinement_status" => "ok",

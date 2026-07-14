@@ -3,11 +3,12 @@
 // that spec, screens the atlas, and emits the selected reaction network downstream.
 //
 // The Design Target node is a reaction source: selecting a verified or exploratory
-// candidate emits that network downstream like reaction-network / network-id-definition.
+// candidate emits that network downstream like reaction-network / network-id-definition;
+// an exact finite-window card also emits its pinned ROP shape reference artifact.
 // "Build & tune ->" is a convenience on verified candidates only; Model Builder and
 // Placer remain separate nodes in the graph.
 //   spec -> design target -> model-builder -> placer
-//   [/api/design_screen]
+//   [/api/v1/design_screen]
 import { api, escapeHtml, showToast, syncSelectOptions } from '../api.js';
 import {
   setNodeLoading, createNode, getNodePosition, getNodeSize, resolveOverlap,
@@ -29,6 +30,303 @@ import {
 
 const DESIGN_CONFIG_OUTPUT_FEATURES = new Set(['threshold', 'fold_change', 'level']);
 const DESIGN_CONFIG_SHAPES = new Set(['monotonic', 'bell_shaped']);
+const WORKSPACE_ROP_SHAPE_REFERENCE_VERSION = 'bne-workspace-rop-shape-reference/v1.0.0';
+const ROP_SHAPE_REQUEST_VERSION = 'bne-rop-shape-optimize-request/v1.0.0';
+const NETWORK_IR_VERSION = 'bne-ir/v1.0.0';
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const CELL_ID = /^sha256:[0-9a-f]{64}$/;
+const PATH_IDENTITY = /^path:[1-9][0-9]*$/;
+const EXACT_WINDOW_EVIDENCE_GRADES = new Set([
+  'enforced_exact',
+  'enforced_exact+sampled_forward',
+]);
+
+function deepCloneJson(value) {
+  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function hasExactObjectKeys(value, required, optional = []) {
+  if (!isPlainObject(value)) return false;
+  const requiredSet = new Set(required);
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every(key => Object.prototype.hasOwnProperty.call(value, key)) &&
+    keys.every(key => allowed.has(key)) &&
+    keys.length >= requiredSet.size;
+}
+
+function jsonValuesEqual(left, right) {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+      left.every((value, index) => jsonValuesEqual(value, right[index]));
+  }
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && jsonValuesEqual(left[key], right[key]));
+}
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveNumber(value) {
+  return isFiniteNumber(value) && value > 0;
+}
+
+function isSha256Hex(value) {
+  return typeof value === 'string' && SHA256_HEX.test(value);
+}
+
+function isCanonicalFullNetworkIR(network) {
+  const keys = [
+    'ir_schema_version', 'label', 'species', 'reactions', 'observables',
+    'parameter_distributions', 'compartments', 'provenance', 'extensions',
+  ];
+  return hasExactObjectKeys(network, keys) &&
+    network.ir_schema_version === NETWORK_IR_VERSION &&
+    typeof network.label === 'string' &&
+    Array.isArray(network.species) && network.species.length > 0 &&
+    Array.isArray(network.reactions) && network.reactions.length > 0 &&
+    Array.isArray(network.observables) && network.observables.length > 0 &&
+    Array.isArray(network.parameter_distributions) && network.parameter_distributions.length > 0 &&
+    Array.isArray(network.compartments) &&
+    isPlainObject(network.provenance) &&
+    isPlainObject(network.extensions);
+}
+
+function isCompletePinnedReference(reference, networkHash, reactionCount) {
+  const required = [
+    'reference_hash', 'network_ir_hash', 'operating_points_log10', 'kd', 'totals',
+    'path_identity', 'cell_id',
+  ];
+  if (!hasExactObjectKeys(reference, required, ['artifact_ref'])) return false;
+  if (!isSha256Hex(reference.reference_hash) || reference.network_ir_hash !== networkHash) return false;
+  if (!Array.isArray(reference.operating_points_log10) || reference.operating_points_log10.length < 2 ||
+      !reference.operating_points_log10.every(isFiniteNumber)) return false;
+  if (!Array.isArray(reference.kd) || reference.kd.length !== reactionCount ||
+      !reference.kd.every(isPositiveNumber)) return false;
+  if (!isPlainObject(reference.totals) || Object.keys(reference.totals).length === 0 ||
+      !Object.entries(reference.totals).every(([key, value]) => key.length > 0 && isPositiveNumber(value))) {
+    return false;
+  }
+  return typeof reference.path_identity === 'string' && PATH_IDENTITY.test(reference.path_identity) &&
+    typeof reference.cell_id === 'string' && CELL_ID.test(reference.cell_id) &&
+    (reference.artifact_ref == null ||
+      (typeof reference.artifact_ref === 'string' && reference.artifact_ref.length > 0));
+}
+
+function isExactFiniteWindowSpec(spec, input, output) {
+  const behavior = spec?.target?.behavior_spec;
+  const window = behavior?.input_window?.input_log10;
+  const robustness = spec?.constraints?.robustness;
+  const hasAmbiguousRadius = isPlainObject(robustness) &&
+    Object.prototype.hasOwnProperty.call(robustness, 'min_chebyshev_radius');
+  return isPlainObject(spec) && spec.schema_version === DESIGNABILITY_SPEC_VERSION &&
+    !hasAmbiguousRadius &&
+    isPlainObject(behavior) && behavior.feature_space === 'reaction_order' &&
+    behavior.input === input && behavior.output === output &&
+    Array.isArray(behavior.program) && behavior.program.length >= 2 &&
+    behavior.program.every(item => isPlainObject(item) &&
+      item.kind === 'reaction_order' && item.operator === '=' && isFiniteNumber(item.value)) &&
+    isPlainObject(spec.constraints?.parameter_bounds) &&
+    Array.isArray(window) && window.length === 2 && window.every(isFiniteNumber) && window[0] < window[1];
+}
+
+function isCompleteOptimizationPolicy(policy) {
+  return hasExactObjectKeys(policy, ['minimum_parameter_margin', 'effect_tolerance']) &&
+    isFiniteNumber(policy.minimum_parameter_margin) && policy.minimum_parameter_margin >= 0 &&
+    isFiniteNumber(policy.effect_tolerance) && policy.effect_tolerance >= 0;
+}
+
+function isCompleteWorkBudget(budget) {
+  return hasExactObjectKeys(budget, ['max_paths', 'max_cells', 'max_replays', 'require_exhaustive']) &&
+    Number.isInteger(budget.max_paths) && budget.max_paths >= 1 && budget.max_paths <= 2000 &&
+    Number.isInteger(budget.max_cells) && budget.max_cells >= 1 && budget.max_cells <= 10000 &&
+    Number.isInteger(budget.max_replays) && budget.max_replays >= 1 && budget.max_replays <= 16 &&
+    typeof budget.require_exhaustive === 'boolean';
+}
+
+function isCompleteReplayPolicy(replay) {
+  if (!hasExactObjectKeys(replay, [
+    'input_window_log10', 'sample_points', 'require_complete', 'store_curve', 'metrics',
+  ])) return false;
+  const window = replay.input_window_log10;
+  const metrics = replay.metrics;
+  return Array.isArray(window) && window.length === 2 && window.every(isFiniteNumber) &&
+    window[0] >= -20 && window[1] <= 20 && window[0] < window[1] &&
+    Number.isInteger(replay.sample_points) && replay.sample_points >= 11 && replay.sample_points <= 1000 &&
+    replay.require_complete === true && replay.store_curve === true &&
+    Array.isArray(metrics) && metrics.length === 1 &&
+    hasExactObjectKeys(metrics[0], ['kind', 'min_prominence_log10']) &&
+    metrics[0].kind === 'two_peak' && isFiniteNumber(metrics[0].min_prominence_log10) &&
+    metrics[0].min_prominence_log10 >= 0;
+}
+
+function candidateEntries(response) {
+  if (!isPlainObject(response)) return [];
+  const entries = [];
+  for (const card of Array.isArray(response.verified_recommendations) ? response.verified_recommendations : []) {
+    entries.push({ source: 'verified', card });
+  }
+  const exploratory = Array.isArray(response.screened_candidates)
+    ? response.screened_candidates
+    : (Array.isArray(response.near_misses) ? response.near_misses : []);
+  for (const card of exploratory) entries.push({ source: 'exploratory', card });
+  for (const cell of Array.isArray(response.minimal_certificates) ? response.minimal_certificates : []) {
+    for (const card of Array.isArray(cell?.networks) ? cell.networks : []) {
+      entries.push({ source: 'minimal', card });
+    }
+  }
+  return entries;
+}
+
+export function extractRopShapeReferenceFromCard(card) {
+  if (!isPlainObject(card) || card.pass !== true || card.screen_status !== 'verified_exact' ||
+      card.certificate_grade !== 'exact-window-siso-rop-path' ||
+      !EXACT_WINDOW_EVIDENCE_GRADES.has(card.evidence_grade)) return null;
+
+  const nid = typeof card.nid === 'string' ? card.nid : '';
+  const input = typeof card.inp === 'string' ? card.inp : '';
+  const output = typeof card.out === 'string' ? card.out : '';
+  if (!nid || !input || !output) return null;
+
+  const handoff = card.optimization_handoff_template;
+  const fixed = card.fixed_topology_reference;
+  if (!hasExactObjectKeys(handoff, ['endpoint', 'method', 'body_template', 'required_fill']) ||
+      handoff.endpoint !== '/api/v1/rop_shape_optimize' || handoff.method !== 'POST' ||
+      !Array.isArray(handoff.required_fill) || handoff.required_fill.length !== 1 ||
+      handoff.required_fill[0] !== 'edit_intent') return null;
+  if (!hasExactObjectKeys(fixed, [
+    'network', 'network_ir_hash', 'network_canonical_code', 'input', 'output',
+    'reference', 'evidence_scope',
+  ])) return null;
+
+  const body = handoff.body_template;
+  const bodyKeys = [
+    'schema_version', 'network', 'expected_network_ir_hash', 'designability_spec',
+    'reference', 'edit_intent', 'optimization', 'work_budget', 'replay',
+  ];
+  if (!hasExactObjectKeys(body, bodyKeys) || body.schema_version !== ROP_SHAPE_REQUEST_VERSION ||
+      body.edit_intent !== null || !isCanonicalFullNetworkIR(body.network) ||
+      !isSha256Hex(body.expected_network_ir_hash)) return null;
+  if (!isExactFiniteWindowSpec(body.designability_spec, input, output) ||
+      !isCompleteOptimizationPolicy(body.optimization) ||
+      !isCompleteWorkBudget(body.work_budget) || !isCompleteReplayPolicy(body.replay)) return null;
+  if (!isCompletePinnedReference(body.reference, body.expected_network_ir_hash, body.network.reactions.length)) {
+    return null;
+  }
+  const specWindow = body.designability_spec.target.behavior_spec.input_window.input_log10;
+  const programLength = body.designability_spec.target.behavior_spec.program.length;
+  if (body.reference.operating_points_log10.length !== programLength ||
+      !body.reference.operating_points_log10.every(value => value >= specWindow[0] && value <= specWindow[1]) ||
+      !jsonValuesEqual(body.replay.input_window_log10, specWindow)) return null;
+
+  if (fixed.network_ir_hash !== body.expected_network_ir_hash ||
+      fixed.network_canonical_code !== nid || fixed.input !== input || fixed.output !== output ||
+      typeof fixed.evidence_scope !== 'string' || fixed.evidence_scope.length === 0 ||
+      !jsonValuesEqual(fixed.network, body.network) ||
+      !jsonValuesEqual(fixed.reference, body.reference)) return null;
+
+  const artifact = {
+    schema_version: WORKSPACE_ROP_SHAPE_REFERENCE_VERSION,
+    selected_candidate_key: designCandidateKey(nid, input, output),
+    fixed_topology_reference: fixed,
+    optimization_handoff_template: handoff,
+    evidence_scope: fixed.evidence_scope,
+  };
+  return deepCloneJson(artifact);
+}
+
+export function refreshRopShapeReferenceForSelection(config, response) {
+  if (!isPlainObject(config)) return null;
+  const selectedKey = typeof config.selectedCandidateKey === 'string'
+    ? config.selectedCandidateKey
+    : '';
+  const matches = selectedKey
+    ? candidateEntries(response).filter(({ card }) =>
+        isPlainObject(card) && designCandidateKey(card.nid, card.inp, card.out) === selectedKey)
+    : [];
+  const artifact = matches.length === 1 && matches[0].source === 'verified'
+    ? extractRopShapeReferenceFromCard(matches[0].card)
+    : null;
+  if (artifact && artifact.selected_candidate_key === selectedKey) {
+    config.ropShapeReference = artifact;
+    return artifact;
+  }
+  delete config.ropShapeReference;
+  return null;
+}
+
+export function invalidateConnectedRopShapeArtifacts(designNodeId) {
+  const configNodeIds = new Set(connections
+    .filter(connection =>
+      connection.fromNode === designNodeId &&
+      connection.fromPort === 'rop-shape-reference' &&
+      connection.toPort === 'rop-shape-reference')
+    .map(connection => connection.toNode));
+  const resultNodeIds = new Set();
+
+  for (const configNodeId of configNodeIds) {
+    const configInfo = nodeRegistry[configNodeId];
+    if (!configInfo || configInfo.type !== 'rop-shape-edit-config') continue;
+    configInfo.data = configInfo.data || {};
+    delete configInfo.data.ropShapeRequest;
+    if (isPlainObject(configInfo.data.config)) {
+      delete configInfo.data.config.ropShapeRequest;
+    }
+    const status = document.getElementById(`${configNodeId}-rop-shape-status`);
+    if (status) {
+      status.innerHTML = '<div class="node-info"><strong>Needs Prepare.</strong> ' +
+        'The upstream Design Target reference changed; validate and prepare again.</div>';
+    }
+
+    connections
+      .filter(connection =>
+        connection.fromNode === configNodeId &&
+        connection.fromPort === 'rop-shape-request' &&
+        connection.toPort === 'rop-shape-request')
+      .forEach(connection => resultNodeIds.add(connection.toNode));
+  }
+
+  for (const resultNodeId of resultNodeIds) {
+    const resultInfo = nodeRegistry[resultNodeId];
+    if (!resultInfo || resultInfo.type !== 'rop-shape-result') continue;
+    resultInfo.data = resultInfo.data || {};
+    const currentToken = Number.isSafeInteger(resultInfo.data.ropShapeRunToken)
+      ? resultInfo.data.ropShapeRunToken
+      : 0;
+    resultInfo.data.ropShapeRunToken = currentToken + 1;
+    delete resultInfo.data.ropShapeRequest;
+    delete resultInfo.data.ropShapeResult;
+    setNodeLoading(resultNodeId, false);
+    const content = document.getElementById(`${resultNodeId}-content`);
+    if (content) {
+      content.innerHTML = '<div class="node-info"><strong>Upstream changed.</strong> ' +
+        'Run ROP shape optimization again for the current Design Target reference.</div>';
+    }
+  }
+
+  return {
+    configNodeCount: configNodeIds.size,
+    resultNodeCount: resultNodeIds.size,
+  };
+}
+
+export function didRopShapeReferenceChange(
+  previousSelectedKey,
+  previousReference,
+  currentSelectedKey,
+  currentReference,
+) {
+  const previousKey = typeof previousSelectedKey === 'string' ? previousSelectedKey : null;
+  const currentKey = typeof currentSelectedKey === 'string' ? currentSelectedKey : null;
+  return previousKey !== currentKey ||
+    !jsonValuesEqual(previousReference ?? null, currentReference ?? null);
+}
 
 export const DESIGN_TARGET_TYPES = {
   'design-spec-config': {
@@ -166,7 +464,10 @@ export const DESIGN_TARGET_TYPES = {
     headerClass: 'header-viewer',
     title: 'Design Target',
     inputs: [{ port: 'designability-spec', label: 'DesignabilitySpec' }],
-    outputs: [{ port: 'reactions', label: 'Reactions' }],
+    outputs: [
+      { port: 'reactions', label: 'Reactions' },
+      { port: 'rop-shape-reference', label: 'ROP Shape Reference' },
+    ],
     defaultWidth: 460,
     createBody(nodeId) {
       return `
@@ -1287,7 +1588,7 @@ export async function validateDesignSpecConfig(nodeId) {
 }
 
 // Behavior labels (the 16 base-motifs) with a representative RO program each,
-// fetched once from /api/design_labels and cached. Powers the label picker.
+// fetched once from /api/v1/design_labels and cached. Powers the label picker.
 let _DESIGN_LABELS = null;
 let _DESIGN_LABELS_PROMISE = null;
 export async function loadDesignLabels() {
@@ -1374,7 +1675,29 @@ export async function runDesignSearch(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
   try {
     const data = await api('design_screen', request);
-    const cfg = nodeRegistry[nodeId]?.data?.config || {};
+    const info = nodeRegistry[nodeId];
+    if (info) {
+      info.data = info.data || {};
+      // Search results are runtime evidence for resolving the selected card.
+      // Keep them outside config so workspace serialization stays compact.
+      info.data.designSearchResponse = deepCloneJson(data);
+    }
+    const cfg = info?.data?.config || {};
+    const previousSelectedKey = cfg.selectedCandidateKey;
+    const previousReference = cfg.ropShapeReference;
+    const currentReference = refreshRopShapeReferenceForSelection(
+      cfg,
+      info?.data?.designSearchResponse,
+    );
+    if (info && didRopShapeReferenceChange(
+      previousSelectedKey,
+      previousReference,
+      cfg.selectedCandidateKey,
+      currentReference,
+    )) {
+      invalidateConnectedRopShapeArtifacts(nodeId);
+      commitWorkspaceSnapshot('design-target-reference-refresh');
+    }
     contentEl.innerHTML = renderDesignScreenResults(nodeId, data, {
       selectedNid: cfg.selectedNid || null,
       selectedInput: cfg.suggestedInput || null,
@@ -1431,7 +1754,7 @@ function shortNid(nid) {
   return s.length > 28 ? s.slice(0, 26) + '…' : s;
 }
 
-// ── SELECT → emit on the Reactions output port ─────────────────────────────
+// ── SELECT → emit Reactions and, when exact, a ROP shape reference ─────────
 // Publishes the chosen network's rules as config.resolvedDefinition.raw_rules —
 // the same shape getReactionsFromNode reads for network-id-definition — so any
 // model-builder wired to this node's Reactions port rebuilds from it.
@@ -1443,11 +1766,25 @@ function selectNetwork(designNodeId, nid, inp, out) {
   if (!info) return null;
   info.data = info.data || {};
   const cfg = info.data.config = info.data.config || {};
+  const previousSelectedKey = cfg.selectedCandidateKey;
+  const previousReference = cfg.ropShapeReference;
   cfg.resolvedDefinition = { raw_rules: rules };
   cfg.selectedNid = nid;
   cfg.suggestedInput = inp;
   cfg.suggestedOutput = out;
   cfg.selectedCandidateKey = designCandidateKey(nid, inp, out);
+  const currentReference = refreshRopShapeReferenceForSelection(
+    cfg,
+    info.data.designSearchResponse,
+  );
+  if (didRopShapeReferenceChange(
+    previousSelectedKey,
+    previousReference,
+    cfg.selectedCandidateKey,
+    currentReference,
+  )) {
+    invalidateConnectedRopShapeArtifacts(designNodeId);
+  }
 
   const contentEl = document.getElementById(`${designNodeId}-content`);
   if (contentEl) {

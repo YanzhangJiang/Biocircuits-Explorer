@@ -69,7 +69,7 @@ function _calc_constrained_polyhedra_for_path(
     constraint_C,
     constraint_C0,
     constraint_nullity::Int,
-    cancel_check::Function=()->nothing,
+    cancel_check::Function=_NO_CANCEL_CHECK,
 )::Vector{Any}
     cancel_check()
     el_dim = BitSet(Int[idx for idx in change_qK_indices])
@@ -177,7 +177,7 @@ function _constrained_polyhedra(
     constraint_C,
     constraint_C0,
     constraint_nullity::Int,
-    cancel_check::Function=()->nothing,
+    cancel_check::Function=_NO_CANCEL_CHECK,
 )::Vector{Any}
     return _calc_constrained_polyhedra_for_path(
         get_binding_network(grh),
@@ -482,7 +482,7 @@ function get_behavior_families(
     constraint_C=nothing,
     constraint_C0=nothing,
     constraint_nullity::Int=0,
-    cancel_check::Function=()->nothing,
+    cancel_check::Function=_NO_CANCEL_CHECK,
     volume_kwargs...,
 )
     cancel_check()
@@ -498,6 +498,7 @@ function get_behavior_families(
         deduplicate=deduplicate,
         keep_singular=keep_singular,
         keep_nonasymptotic=keep_nonasymptotic,
+        cancel_check=cancel_check,
     )
     cancel_check()
 
@@ -768,7 +769,17 @@ end
 
 Convenience wrapper that constructs `SISOPaths` first.
 """
-get_behavior_families(model::Bnc, change_qK; kwargs...) = get_behavior_families(SISOPaths(model, change_qK); kwargs...)
+function get_behavior_families(
+    model::Bnc,
+    change_qK;
+    cancel_check=_NO_CANCEL_CHECK,
+    kwargs...,
+)
+    cancel_check()
+    paths = SISOPaths(model, change_qK; cancel_check=cancel_check)
+    return get_behavior_families(
+        paths; cancel_check=cancel_check, kwargs...)
+end
 
 """
     summary_behavior_families(grh::AbstractChangePaths; observe_x, level=:exact, kwargs...) -> nothing

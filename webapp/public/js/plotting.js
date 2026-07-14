@@ -7,6 +7,15 @@ import {
   prepareFretHeatmapPlotData,
 } from './plot-validity.js';
 
+function escapeMarkup(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function formatPolyNumber(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return String(value);
@@ -23,19 +32,19 @@ export function formatPolyConstraint(row, rhs, symbols, isEquality = false) {
     const absCoeff = Math.abs(num);
     const coeffStr = Math.abs(absCoeff - 1) < 1e-9 ? '' : `${formatPolyNumber(absCoeff)}*`;
     const sign = num < 0 ? '-' : (terms.length ? '+' : '');
-    terms.push(`${sign}${coeffStr}${symbols[idx]}`);
+    terms.push(`${sign}${coeffStr}${escapeMarkup(symbols[idx])}`);
   });
   const lhs = terms.length ? terms.join(' ') : '0';
-  return `${lhs} ${isEquality ? '=' : '≤'} ${formatPolyNumber(rhs)}`;
+  return `${lhs} ${isEquality ? '=' : '≤'} ${escapeMarkup(formatPolyNumber(rhs))}`;
 }
 
 export function renderPolyCoordinateTable(rows, symbols, kind, linealitySet = new Set()) {
   if (!rows || !rows.length) return '';
-  const header = symbols.map(sym => `<th>${sym}</th>`).join('');
+  const header = symbols.map(sym => `<th>${escapeMarkup(sym)}</th>`).join('');
   const label = kind === 'rays' ? 'R' : 'V';
   const extraHeader = kind === 'rays' ? '<th>Type</th>' : '';
   const body = rows.map((row, idx) => {
-    const cells = row.map(value => `<td class="siso-profile-cell">${formatPolyNumber(value)}</td>`).join('');
+    const cells = row.map(value => `<td class="siso-profile-cell">${escapeMarkup(formatPolyNumber(value))}</td>`).join('');
     const extraCell = kind === 'rays'
       ? `<td>${linealitySet.has(idx + 1) ? '<span class="tag tag-nonasym">lineality</span>' : '<span class="tag tag-asym">ray</span>'}</td>`
       : '';

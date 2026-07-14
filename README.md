@@ -40,9 +40,10 @@ knowledge catalog.
   loopback, and checks health, readiness, version reporting, the browser entry
   page, and a writable job store. It does not start the full Compose, Nginx, or
   TLS stack.
-- The seven targeted macOS unit tests passed locally at `01a01be`. No
-  checked-in CI job runs Xcode, so this is point-in-time local evidence rather
-  than a macOS CI claim.
+- The current working tree configures no-sign macOS host builds and unit tests
+  on Intel macOS 15 and Apple-silicon macOS 26 runners. A local macOS 27 arm64
+  run passed the build-for-testing step and all 47 unit tests on 2026-07-14;
+  no remote workflow run, UI automation, or signed/notarized package is claimed.
 
 The configured versions and their owners are listed in the
 [generated reference](knowledge/generated/reference.md#versions-and-configured-toolchains).

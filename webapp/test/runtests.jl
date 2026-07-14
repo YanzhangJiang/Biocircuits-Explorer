@@ -11,7 +11,15 @@ include("api_contract.jl")
 include("backend_assembly_contract.jl")
 include("concurrency_and_budget_contract.jl")
 include("input_validation_contract.jl")
+include("static_security_contract.jl")
+include("sbml_validation_contract.jl")
 include("numerical_validity_contract.jl")
+include("latent_evaluator_validity_contract.jl")
+include("rop_shape_replay_contract.jl")
+include("rop_shape_optimization_contract.jl")
+include("rop_shape_cat_benchmark.jl")
+include("rop_shape_api_contract.jl")
+include("rop_shape_schema_contract.jl")
 
 function _configure_design_index_fixture!()
     dir = mktempdir()
@@ -64,8 +72,13 @@ _configure_design_index_fixture!()
 # entry as well as directly; these run before the older atlas @test_broken gate
 # below.
 include("designability_spec_contract.jl")
+include("designability_cell_budget_contract.jl")
 include("design_screen_contract.jl")
+include("design_screen_schema_instance_contract.jl")
 include("jobs_cancellation_contract.jl")
+include("jobs_cache_concurrency_contract.jl")
+include("jobs_submission_reconciliation_contract.jl")
+include("jobs_artifact_validity_contract.jl")
 include("cooperative_cancel_checkpoints_contract.jl")
 include("inverse_config_contract.jl")
 include("d1_atlas_contract.jl")
@@ -201,32 +214,76 @@ function Logging.handle_message(::ThrowingLogger, level, message, _module, group
     throw(IOError("write", Base.UV_EPIPE))
 end
 
+function drain_and_reset_job_runtime!()
+    tasks = lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
+        collect(values(BiocircuitsExplorerBackend.JOB_TASKS))
+    end
+    if !isempty(tasks)
+        timedwait(() -> all(istaskdone, tasks), 60.0; pollint=0.01) == :ok ||
+            error("Timed out draining local job tasks in test fixture.")
+        for task in tasks
+            try
+                wait(task)
+            catch err
+                err isa TaskFailedException || rethrow()
+            end
+        end
+    end
+    lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
+        isempty(BiocircuitsExplorerBackend.LOCAL_JOB_ADMISSIONS) ||
+            error("Local job admission reservations leaked across test fixtures.")
+        isempty(BiocircuitsExplorerBackend.JOB_DESCRIBE_IN_FLIGHT) ||
+            error("AWS describe claims leaked across test fixtures.")
+        empty!(BiocircuitsExplorerBackend.JOBS)
+        empty!(BiocircuitsExplorerBackend.JOB_CACHE_LAST_ACCESS)
+        BiocircuitsExplorerBackend.JOB_CACHE_ACCESS_CLOCK[] = UInt64(0)
+        BiocircuitsExplorerBackend.JOB_CACHE_CAPACITY[] = nothing
+        empty!(BiocircuitsExplorerBackend.JOB_TASKS)
+        empty!(BiocircuitsExplorerBackend.LOCAL_JOB_CANCEL_TOKENS)
+        empty!(BiocircuitsExplorerBackend.JOB_DESCRIBE_LAST_AT)
+        empty!(BiocircuitsExplorerBackend.JOB_DESCRIBE_IN_FLIGHT)
+        empty!(BiocircuitsExplorerBackend.AWS_BATCH_INITIAL_SUBMISSIONS)
+        empty!(BiocircuitsExplorerBackend.JOB_STATUS_PROJECTION_DIRTY)
+        BiocircuitsExplorerBackend.LOCAL_JOB_LIMITS[] = nothing
+        BiocircuitsExplorerBackend.LOCAL_JOB_RUN_SEMAPHORE[] = nothing
+    end
+    lock(BiocircuitsExplorerBackend.JOB_STORE_DURABILITY_LOCK) do
+        empty!(BiocircuitsExplorerBackend.JOB_STORE_PENDING_DIR_FSYNC)
+        BiocircuitsExplorerBackend.JOB_STORE_DURABILITY_GENERATION[] = UInt64(0)
+    end
+    return nothing
+end
+
 function with_isolated_job_store(f::Function)
     previous_env = haskey(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE") ? ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] : nothing
+    previous_batch_region = get(
+        ENV,
+        "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION",
+        nothing,
+    )
     previous_store_dir = BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[]
 
     mktempdir() do dir
         try
+            drain_and_reset_job_runtime!()
             ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = dir
+            ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] = "us-west-2"
             BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = nothing
-            lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
-                empty!(BiocircuitsExplorerBackend.JOBS)
-                empty!(BiocircuitsExplorerBackend.JOB_TASKS)
-                empty!(BiocircuitsExplorerBackend.LOCAL_JOB_CANCEL_TOKENS)
-            end
             f(dir)
         finally
+            drain_and_reset_job_runtime!()
             if previous_env === nothing
                 delete!(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE")
             else
                 ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = previous_env
             end
-            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
-            lock(BiocircuitsExplorerBackend.JOBS_LOCK) do
-                empty!(BiocircuitsExplorerBackend.JOBS)
-                empty!(BiocircuitsExplorerBackend.JOB_TASKS)
-                empty!(BiocircuitsExplorerBackend.LOCAL_JOB_CANCEL_TOKENS)
+            if previous_batch_region === nothing
+                delete!(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION")
+            else
+                ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] =
+                    previous_batch_region
             end
+            BiocircuitsExplorerBackend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
         end
     end
 end
@@ -268,6 +325,19 @@ if [ "\$1" = "s3" ] && [ "\$2" = "cp" ]; then
     target="\$(s3_path "\$dst")"
     mkdir -p "\$(dirname "\$target")"
     cp "\$src" "\$target"
+    shift 4
+    while [ "\$#" -gt 0 ]; do
+      case "\$1" in
+        --metadata)
+          metadata="\$2"
+          if [[ "\$metadata" == bne-result-sha256=* ]]; then
+            printf '%s' "\${metadata#bne-result-sha256=}" > "\$target.bne-sha256"
+          fi
+          shift 2
+          ;;
+        *) shift ;;
+      esac
+    done
   else
     cp "\$src" "\$dst"
   fi
@@ -287,15 +357,28 @@ if [ "\$1" = "s3api" ] && [ "\$2" = "head-object" ]; then
   done
   target="\$AWS_MOCK_S3_ROOT/\$bucket/\$key"
   if [ -f "\$target" ]; then
-    printf '{"ContentLength":%s}\\n' "\$(wc -c <"\$target" | tr -d ' ')"
+    sha256=""
+    if [ -f "\$target.bne-sha256" ]; then
+      sha256="\$(cat "\$target.bne-sha256")"
+    fi
+    printf '{"ContentLength":%s,"ContentType":"application/json","Metadata":{"bne-result-sha256":"%s"}}\\n' \
+      "\$(wc -c <"\$target" | tr -d ' ')" "\$sha256"
     exit 0
   fi
-  printf 'mock head-object: 404 %s\\n' "\$target" >&2
+  printf 'An error occurred (404) when calling the HeadObject operation: Not Found (%s)\\n' "\$target" >&2
   exit 254
 fi
 
 if [ "\$1" = "batch" ] && [ "\$2" = "submit-job" ]; then
-  printf '{"jobId":"mock-batch-job-123","jobName":"mock-biocircuits-job"}\\n'
+  job_name=""
+  shift 2
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --job-name) job_name="\$2"; shift 2 ;;
+      *)          shift ;;
+    esac
+  done
+  printf '{"jobId":"mock-batch-job-123","jobName":"%s"}\\n' "\$job_name"
   exit 0
 fi
 
@@ -349,6 +432,35 @@ end
 
 function read_json_file(path::AbstractString)
     return BiocircuitsExplorerBackend._materialize(JSON3.read(read(path, String)))
+end
+
+function stage_mock_committed_job_result(root::AbstractString,
+                                         record::AbstractDict,
+                                         result::AbstractDict)
+    result_path = mock_s3_path(root, String(record["result_uri"]))
+    mkpath(dirname(result_path))
+    open(result_path, "w") do io
+        JSON3.pretty(io, result)
+        write(io, "\n")
+    end
+    sha256_hex = BiocircuitsExplorerBackend._file_sha256_hex(result_path)
+    write("$(result_path).bne-sha256", sha256_hex)
+    manifest = BiocircuitsExplorerBackend._job_result_manifest_payload(
+        result,
+        String(record["job_id"]),
+        String(record["kind"]),
+        String(record["expected_artifact_config_hash"]),
+        String(record["result_uri"]),
+        filesize(result_path),
+        sha256_hex,
+    )
+    manifest_path = mock_s3_path(root, String(record["result_manifest_uri"]))
+    mkpath(dirname(manifest_path))
+    open(manifest_path, "w") do io
+        JSON3.pretty(io, manifest)
+        write(io, "\n")
+    end
+    return manifest
 end
 
 _b64url_encode(bytes) = replace(replace(replace(base64encode(bytes), "+" => "-"), "/" => "_"), "=" => "")
@@ -580,6 +692,9 @@ end
                 @test startswith(String(record["input_uri"]), user_prefix)
                 @test startswith(String(record["status_uri"]), user_prefix)
                 @test startswith(String(record["result_uri"]), user_prefix)
+                @test startswith(String(record["result_manifest_uri"]), user_prefix)
+                @test record["result_protocol_version"] ==
+                      BiocircuitsExplorerBackend.JOB_RESULT_PROTOCOL_VERSION
 
                 uploaded_input = read_json_file(mock_s3_path(s3_root, String(record["input_uri"])))
                 @test uploaded_input["executor"] == "aws_batch"
@@ -587,6 +702,10 @@ end
                 @test uploaded_input["user_sub"] == "anonymous"
                 @test uploaded_input["artifacts"]["status"] == record["status_uri"]
                 @test uploaded_input["artifacts"]["result"] == record["result_uri"]
+                @test uploaded_input["artifacts"]["result_manifest"] ==
+                      record["result_manifest_uri"]
+                @test uploaded_input["expected_artifact_config_hash"] ==
+                      record["expected_artifact_config_hash"]
 
                 log_text = read(aws_log, String)
                 @test occursin("s3 cp ", log_text)
@@ -598,12 +717,16 @@ end
                 @test occursin("--tags User=anonymous,JobKind=build_atlas", log_text)
                 @test occursin("--propagate-tags", log_text)
 
-                result_path = mock_s3_path(s3_root, String(record["result_uri"]))
-                mkpath(dirname(result_path))
-                open(result_path, "w") do io
-                    JSON3.pretty(io, Dict("ok" => true, "job_id" => job_id))
-                    write(io, "\n")
-                end
+                result = Dict{String, Any}("ok" => true, "job_id" => job_id)
+                attach_artifact!(
+                    result,
+                    String(record["kind"]);
+                    input_hashes=Dict{String, Any}(
+                        "network_ir_hashes" => BiocircuitsExplorerBackend.artifact_network_hashes(record["spec"]),
+                    ),
+                    config=record["spec"],
+                )
+                stage_mock_committed_job_result(s3_root, record, result)
 
                 ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
                 refreshed = get_biocircuits_job(job_id)
@@ -644,13 +767,17 @@ end
                 record = BiocircuitsExplorerBackend._job_record(job_id)
                 @test startswith(String(record["result_uri"]), "s3://mock-bucket/jobs/users/anonymous/jobs/$(job_id)/")
 
-                # AWS Batch reports SUCCEEDED but the worker never uploaded
-                # result.json — the backend must downgrade the public status.
+                # A committed manifest whose result object disappeared must
+                # still downgrade remote SUCCEEDED to application failure.
+                result = Dict{String, Any}("ok" => true)
+                attach_artifact!(result, String(record["kind"]); config=record["spec"])
+                stage_mock_committed_job_result(s3_root, record, result)
+                rm(mock_s3_path(s3_root, String(record["result_uri"])); force=true)
                 ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
                 refreshed = get_biocircuits_job(job_id)
                 @test refreshed["status"] == "failed"
                 @test refreshed["result_available"] == false
-                @test occursin("result artifact is missing", String(get(refreshed, "error", "")))
+                @test occursin("missing result artifact", String(get(refreshed, "error", "")))
 
                 # Host must not have written the S3 status.json (the worker
                 # owns it for aws_batch jobs).
@@ -859,6 +986,13 @@ end
                 @test authed.status == 202
                 submitted = response_json(authed)
                 @test submitted["user_sub"] == "bob-sub"
+                submitted_job_id = String(submitted["job_id"])
+                @test timedwait(() -> String(get_biocircuits_job(
+                    submitted_job_id; user_sub="bob-sub")["status"]) in
+                    ("succeeded", "failed", "cancelled"), 10.0; pollint=0.02) == :ok
+                finished = get_biocircuits_job(
+                    submitted_job_id; user_sub="bob-sub")
+                @test finished["status"] == "succeeded"
             end
         end
     end
@@ -950,12 +1084,18 @@ end
                 job_id = String(submitted["job_id"])
                 record = BiocircuitsExplorerBackend._job_record(job_id)
 
-                # Pre-stage result.json so the SUCCEEDED transition is clean.
-                result_path = mock_s3_path(s3_root, String(record["result_uri"]))
-                mkpath(dirname(result_path))
-                open(result_path, "w") do io
-                    JSON3.pretty(io, Dict("ok" => true))
-                end
+                # Pre-stage the committed result + bounded manifest so the
+                # SUCCEEDED transition is clean without broker-side download.
+                result = Dict{String, Any}("ok" => true)
+                attach_artifact!(
+                    result,
+                    String(record["kind"]);
+                    input_hashes=Dict{String, Any}(
+                        "network_ir_hashes" => BiocircuitsExplorerBackend.artifact_network_hashes(record["spec"]),
+                    ),
+                    config=record["spec"],
+                )
+                stage_mock_committed_job_result(s3_root, record, result)
                 ENV["AWS_MOCK_DESCRIBE_STATUS"] = "SUCCEEDED"
 
                 presign_resp = router(HTTP.Request(
@@ -1179,6 +1319,16 @@ end
     end
     withenv("BIOCIRCUITS_EXPLORER_HOST" => "127.0.0.1:8088") do
         @test_throws ArgumentError BiocircuitsExplorerBackend.resolve_host(nothing)
+    end
+end
+
+@testset "Native Runtime Store Overrides Bundle-relative Atlas Default" begin
+    mktempdir() do application_support_root
+        atlas_root = joinpath(application_support_root, "Biocircuits Explorer", "Runtime", "Atlas")
+        withenv("BIOCIRCUITS_EXPLORER_ATLAS_STORE_ROOT" => atlas_root) do
+            @test BiocircuitsExplorerBackend.atlas_sqlite_default_path() ==
+                normpath(joinpath(atlas_root, "atlas.sqlite"))
+        end
     end
 end
 
@@ -1424,6 +1574,8 @@ end
     @test health.status == 200
     health_body = JSON3.read(health.body)
     @test health_body["status"] == "ok"
+    @test health_body["service"] == "biocircuits-explorer-backend"
+    @test haskey(health_body, "instance_nonce")
     @test haskey(health_body, "version")
     @test haskey(health_body, "uptime_seconds")
     @test health_body["uptime_seconds"] isa Real
@@ -1439,6 +1591,8 @@ end
     @test ready.status == 200
     ready_body = JSON3.read(ready.body)
     @test ready_body["status"] == "ready"
+    @test ready_body["service"] == "biocircuits-explorer-backend"
+    @test haskey(ready_body, "instance_nonce")
     @test haskey(ready_body, "checks")
     @test haskey(ready_body["checks"], "module_initialized")
     @test haskey(ready_body["checks"], "static_assets")
@@ -1450,6 +1604,13 @@ end
     @test ready_body["checks"]["browser_entrypoint"] == true
     @test ready_body["checks"]["native_entrypoint"] == true
     @test ready_body["checks"]["job_store"] == true
+
+    withenv("BIOCIRCUITS_EXPLORER_INSTANCE_NONCE" => "native-launch-nonce-0123456789abcdef") do
+        identified_health = JSON3.read(router(HTTP.Request("GET", "/health")).body)
+        identified_ready = JSON3.read(router(HTTP.Request("GET", "/ready")).body)
+        @test identified_health["instance_nonce"] == "native-launch-nonce-0123456789abcdef"
+        @test identified_ready["instance_nonce"] == "native-launch-nonce-0123456789abcdef"
+    end
 
     previous_static_dir = BiocircuitsExplorerBackend.StaticAssets.STATIC_DIR[]
     mktempdir() do empty_static_dir
@@ -3387,6 +3548,7 @@ end
         ("network-ir.schema.json", NETWORK_IR_SCHEMA_VERSION),
         ("design-spec.schema.json", DESIGN_SPEC_SCHEMA_VERSION),
         ("result-artifact.schema.json", RESULT_ARTIFACT_SCHEMA_VERSION),
+        ("job-result-manifest.schema.json", "bne-job-result-manifest/v1.0.0"),
         ("designability-spec.schema.json", "bne-designability/v1.0.0"),
         ("designability-screen.schema.json", "bne-design-screen/v0.3.0"),
     ]
@@ -3394,7 +3556,8 @@ end
         @test isfile(path)
         schema = JSON3.read(read(path, String))
         key = file == "result-artifact.schema.json" ? "artifact_schema_version" :
-              startswith(file, "designability-") ? "schema_version" : "ir_schema_version"
+              file in ("network-ir.schema.json", "design-spec.schema.json") ?
+                  "ir_schema_version" : "schema_version"
         @test schema["properties"][key]["const"] == version
     end
 end
@@ -3459,7 +3622,7 @@ end
     @test !haskey(rec["metrics"], "tunable_volume")
     @test !haskey(rec["metrics"], "condition_number")
     @test !haskey(rec["metrics"], "parameter_breakpoint_sensitivity")
-    @test rec["agent_handoff"]["endpoint"] == "/api/design_screen"
+    @test rec["agent_handoff"]["endpoint"] == "/api/v1/design_screen"
     bad_kind_req = HTTP.Request("POST", "/api/design_screen", [],
         JSON3.write(Dict("target_kind" => "unknown", "target" => Any[1.0])))
     @test BEB.router(bad_kind_req).status == 400

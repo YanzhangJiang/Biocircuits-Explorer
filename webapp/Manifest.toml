@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "1faddfdcf87c69fb2d766e7c912725cd525b05eb"
+project_hash = "e8ae9ee5aae7aa58c78b74c3b15f719884f51474"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f7304359109c768cf32dc5fa2d371565bb63b68a"
@@ -200,7 +200,7 @@ uuid = "b532a4b1-2c45-4c12-bcaf-8695372aa40c"
 version = "1.0.0-DEV"
 
 [[deps.BiocircuitsExplorerBackend]]
-deps = ["Base64", "BindingAndCatalysis", "CDDLib", "DBInterface", "Dates", "EzXML", "Graphs", "HTTP", "JSON3", "LinearAlgebra", "Logging", "Polyhedra", "Printf", "Random", "SHA", "SQLite", "SparseArrays", "Statistics"]
+deps = ["Base64", "BindingAndCatalysis", "CDDLib", "Clarabel", "DBInterface", "Dates", "EzXML", "Graphs", "HTTP", "JSON3", "JuMP", "LinearAlgebra", "Logging", "MathOptInterface", "Polyhedra", "Printf", "Random", "SHA", "SQLite", "SparseArrays", "Statistics"]
 path = "."
 uuid = "67d10611-6cfe-4cce-80b3-3428f29739d0"
 version = "0.1.0"

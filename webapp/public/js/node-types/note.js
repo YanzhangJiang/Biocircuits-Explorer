@@ -1,4 +1,5 @@
 import { nodeRegistry } from '../state.js';
+import { renderSafeMarkdown } from '../safe-markdown.js';
 
 // ===== Markdown-note helpers (module-private) =====
 
@@ -8,84 +9,7 @@ function renderMarkdown(nodeId) {
 
   if (!textarea || !preview) return;
 
-  const markdown = textarea.value;
-  preview.innerHTML = simpleMarkdownToHTML(markdown);
-}
-
-function resolveMarkdownImageSrc(rawSrc) {
-  // simpleMarkdownToHTML escapes & → &amp; before this regex runs; undo for URLs.
-  const src = rawSrc.trim().replace(/&amp;/g, '&');
-  if (!src) return '';
-
-  if (/^https?:\/\//i.test(src)) return src;
-  if (/^data:image\//i.test(src)) return src;
-
-  let local = null;
-  if (/^file:\/\//i.test(src)) {
-    try { local = decodeURIComponent(src.replace(/^file:\/\//i, '')); }
-    catch { local = src.replace(/^file:\/\//i, ''); }
-  } else if (src.startsWith('/') || src.startsWith('~')) {
-    local = src;
-  }
-
-  if (local !== null) {
-    return `/api/local-image?path=${encodeURIComponent(local)}`;
-  }
-
-  // Reject anything with an unknown scheme (e.g., javascript:); allow plain relative paths.
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src)) return '';
-  return src;
-}
-
-function simpleMarkdownToHTML(markdown) {
-  if (!markdown) return '<p class="text-dim">No content yet.</p>';
-
-  let html = markdown;
-
-  // Escape HTML
-  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  // Headers
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-
-  // Bold
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-
-  // Italic
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  html = html.replace(/_(.+?)_/g, '<em>$1</em>');
-
-  // Code inline
-  html = html.replace(/`(.+?)`/g, '<code>$1</code>');
-
-  // Images — must precede links so ![alt](src) isn't consumed by the link rule.
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, src) => {
-    const resolved = resolveMarkdownImageSrc(src);
-    if (!resolved) return '';
-    return `<img alt="${alt}" src="${resolved}" style="max-width:100%;height:auto;">`;
-  });
-
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-
-  // Lists
-  html = html.replace(/^\* (.+)$/gim, '<li>$1</li>');
-  html = html.replace(/^- (.+)$/gim, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
-
-  // Line breaks
-  html = html.replace(/\n\n/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-
-  // Wrap in paragraphs
-  if (!html.startsWith('<h') && !html.startsWith('<ul>')) {
-    html = '<p>' + html + '</p>';
-  }
-
-  return html;
+  renderSafeMarkdown(preview, textarea.value);
 }
 
 export function switchNoteTab(nodeId, tab) {

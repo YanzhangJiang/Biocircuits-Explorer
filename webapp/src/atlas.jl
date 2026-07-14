@@ -1840,16 +1840,28 @@ function _resolve_change_specs(raw_network, model, profile::AtlasSearchProfile, 
     return _generated_change_specs(model, input_symbols, expansion)
 end
 
-function _build_change_paths(model, change_spec)
+function _build_change_paths(
+    model,
+    change_spec;
+    cancel_check::Function=_no_cancel_check,
+)
+    cancel_check()
     kind = Symbol(String(_raw_get(change_spec, :kind, "axis")))
     qk_symbols = Symbol.(String.(_raw_get(change_spec, :qk_symbols, String[])))
     qk_signs = Int8.(Int.(_raw_get(change_spec, :qk_signs, Int[])))
     label = String(_raw_get(change_spec, :label, _raw_get(change_spec, :input_symbol, "")))
     if kind == :axis && length(qk_symbols) == 1 && qk_signs == Int8[1]
-        return _bounded_siso_paths(model, only(qk_symbols))
+        return _hard_bounded_siso_paths(
+            model, only(qk_symbols);
+            label="Atlas axis-path job",
+            cancel_check=cancel_check)
     elseif kind in (:axis, :orthant)
-        return _bounded_change_paths(
-            model, qk_symbols; signs=qk_signs, label=label, kind=kind)
+        return _hard_bounded_change_paths(
+            model, qk_symbols;
+            signs=qk_signs,
+            label=label,
+            kind=kind,
+            cancel_check=cancel_check)
     else
         error("Unsupported change_spec kind for atlas path construction: $(kind)")
     end
@@ -2986,7 +2998,8 @@ function _build_single_network_atlas(job;
 
             change_paths = get!(change_path_cache, change_cache_key) do
                 cancel_check()
-                _build_change_paths(model, change_spec)
+                _build_change_paths(
+                    model, change_spec; cancel_check=cancel_check)
             end
             cancel_check()
             graph_slice = get!(graph_slice_cache, change_cache_key) do

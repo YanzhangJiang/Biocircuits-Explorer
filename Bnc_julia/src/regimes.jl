@@ -88,7 +88,11 @@ end
 # ------------------------------------------------------------------------------
 
 
-find_bind_regimes!(model::Bnc{T}; H_mode::Symbol=_affine_mode(model)) where T = find_all_regimes!(model; H_mode=H_mode)
+find_bind_regimes!(
+    model::Bnc{T};
+    H_mode::Symbol=_affine_mode(model),
+    cancel_check=_NO_CANCEL_CHECK,
+) where T = find_all_regimes!(model; H_mode=H_mode, cancel_check=cancel_check)
 """
     find_all_regimes!(bnc::Bnc) -> Vector{Vector{Int}}
 
@@ -100,60 +104,78 @@ Keyword `H_mode` controls how binding-regime affine coefficients are stored:
 - `:float`    uses floating-point `H` / `C_qK`
 - `:rational` uses exact rational coefficients for `H` / `C_qK`
 """
-function find_all_regimes!(model::Bnc{T}; H_mode::Symbol=_affine_mode(model)) where T
+function find_all_regimes!(
+    model::Bnc{T};
+    H_mode::Symbol=_affine_mode(model),
+    cancel_check=_NO_CANCEL_CHECK,
+) where T
     # Decide what type should we used to store H.
     H_mode = _normalize_affine_mode(H_mode)
     # Regime construction publishes several interdependent mutable caches. A
     # partial `BindRegimes` value must never become a false fast-path for a
     # concurrent caller, so the check and the complete build share one lock.
+    cancel_check()
     lock(model._regimes_affine_lock)
+    build_started = false
     try
+        cancel_check()
         is_bind_regimes_built(model) && model._regimes_build_complete &&
             model.affine_coeff_mode == H_mode && return nothing
-    
-    _remove_regime_data!(model)
-    model.affine_coeff_mode = H_mode
 
-    
-    @info "---------------------Start finding all regimes--------------------"
-    
-    (all_perms, is_asymptotic) =  let
-        perms, is_asymp  = _enumerate_all_regimes(model._L_helper)
-        perms = [Vector{T}(v) for v in perms]
-        (perms, is_asymp)
-    end
+        build_started = true
+        _remove_regime_data!(model)
+        model.affine_coeff_mode = H_mode
+
+        @info "---------------------Start finding all regimes--------------------"
+
+        (all_perms, is_asymptotic) = let
+            perms, is_asymp = _enumerate_all_regimes(
+                model._L_helper; cancel_check=cancel_check)
+            perms = [Vector{T}(v) for v in perms]
+            (perms, is_asymp)
+        end
+        cancel_check()
 
 
-    n_vertices = length(all_perms)
-    n_asym_rgms = sum(is_asymptotic)
-    @info "Finished, with $(n_vertices) regimes found and $(n_asym_rgms) asymptotic regimes."
+        n_vertices = length(all_perms)
+        n_asym_rgms = sum(is_asymptotic)
+        @info "Finished, with $(n_vertices) regimes found and $(n_asym_rgms) asymptotic regimes."
 
-    @info "2.Building x-neighbor regime graph..."
-    model.vertices_graph = let
-        grh = _calc_regimes_graph(model._L_helper, all_perms)
-        grh.bn = model
-        grh
-    end
-        
+        @info "2.Building x-neighbor regime graph..."
+        model.vertices_graph = let
+            grh = _calc_regimes_graph(
+                model._L_helper, all_perms; cancel_check=cancel_check)
+            grh.bn = model
+            grh
+        end
+        cancel_check()
 
-    @info "3.Building regime objects..."
-    model.BindRegimes = let
-        regimes = _build_bind_regimes(model, all_perms, is_asymptotic, fill(T(-1), n_vertices))
-        vertices_perm_dict = Dict(perm => idx for (idx, perm) in enumerate(all_perms))
-        Regimes(vertices_perm_dict, regimes)
-    end
+        @info "3.Building regime objects..."
+        model.BindRegimes = let
+            regimes = _build_bind_regimes(
+                model, all_perms, is_asymptotic, fill(T(-1), n_vertices))
+            vertices_perm_dict =
+                Dict(perm => idx for (idx, perm) in enumerate(all_perms))
+            Regimes(vertices_perm_dict, regimes)
+        end
+        cancel_check()
 
-    @info "4.Propagating affine data and deferred nullity labels..."
-    _prefill_affine_cache!(model; ensure_built=false)
+        @info "4.Propagating affine data and deferred nullity labels..."
+        _prefill_affine_cache!(
+            model; ensure_built=false, cancel_check=cancel_check)
+        cancel_check()
 
-    _ensure_full_regimes_graph!(model)
+        _ensure_full_regimes_graph!(model; cancel_check=cancel_check)
+        cancel_check()
 
-    model._regimes_build_complete = true
-    @info "Finished."
+        model._regimes_build_complete = true
+        @info "Finished."
         return nothing
     catch
-        # Never leave a partially published graph as a future fast-path.
-        _remove_regime_data!(model)
+        # Never leave a partially published graph as a future fast-path. A
+        # cancellation observed before a rebuild starts must not destroy an
+        # already complete cache shared by other callers.
+        build_started && _remove_regime_data!(model)
         rethrow()
     finally
         unlock(model._regimes_affine_lock)
@@ -371,7 +393,11 @@ get_regimes_neighbor_mat(args...;kwargs...) =  get_regimes_neighbor_mat_qK(args.
 """
     get_volumes(bnc::Bnc, vtxs=nothing; recalculate=false, kwargs...) -> Vector{Volume}
 
-Return volumes for selected vertices, computing missing volumes as needed.
+Return volumes for selected vertices, computing missing volumes as needed. Only
+the unrebased estimator with no explicit estimator keywords uses the legacy
+single-value vertex cache. Rebased or customized estimates are returned
+ephemerally so they cannot reuse or overwrite a result with different sampling
+semantics.
 """
 function get_volumes(Bnc::Bnc,vtxs::Union{AbstractVector,Nothing}=nothing; 
     recalculate::Bool=false, 
@@ -380,13 +406,15 @@ function get_volumes(Bnc::Bnc,vtxs::Union{AbstractVector,Nothing}=nothing;
     kwargs...)
 
     all_vtxs = isnothing(vtxs) ? get_regimes(Bnc;return_idx=true) : [get_idx(Bnc, vtx) for vtx in vtxs]
+    unique_vtxs = unique(all_vtxs)
 
-    vtxs_to_calc = 
-        if recalculate
-            all_vtxs
+    use_volume_cache = _volume_request_is_cacheable(rebase_K, rebase_mat, kwargs)
+    vtxs_to_calc =
+        if !use_volume_cache || recalculate
+            unique_vtxs
         else
             vertices = _bind_regimes_data(Bnc)
-            filter(i -> isnothing(vertices[i].volume), all_vtxs)
+            filter(i -> isnothing(vertices[i].volume), unique_vtxs)
         end
     
     if !isempty(vtxs_to_calc)
@@ -408,11 +436,17 @@ function get_volumes(Bnc::Bnc,vtxs::Union{AbstractVector,Nothing}=nothing;
         
         vtx_data = @view _bind_regimes_data(Bnc)[vtxs_to_calc]
         rlts = calc_volume(vtx_data; rebase_mat=rebase_mat, kwargs...)
-        for (i,idx) in enumerate(vtxs_to_calc)
-            vtx = get_regime(Bnc,idx; inv_info=false)
-            vtx.volume = rlts[i]
+        if use_volume_cache
+            for (i,idx) in enumerate(vtxs_to_calc)
+                vtx = get_regime(Bnc,idx; inv_info=false)
+                vtx.volume = rlts[i]
+            end
+        else
+            result_by_vertex = Dict(zip(vtxs_to_calc, rlts))
+            return [result_by_vertex[idx] for idx in all_vtxs]
         end
     end
+    use_volume_cache || return Volume[]
     return [vtx.volume for vtx in _bind_regimes_data(Bnc)[all_vtxs]]
 end
 

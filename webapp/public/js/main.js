@@ -48,6 +48,11 @@ import {
 import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
 import { executePlacerResult, loadPlacerMenu, realizePlacerProgram } from './node-types/placer.js';
 import {
+  executeRopShapeResult,
+  prepareRopShapeRequest,
+  updateRopShapeIntentVisibility,
+} from './node-types/rop-shape.js';
+import {
   runDesignSearch,
   onDesignTargetKindChange,
   onDesignSpecKindChange,
@@ -98,6 +103,9 @@ const ACTION_HANDLERS = {
   designTargetKindChange: (el) => onDesignTargetKindChange(el.dataset.node),
   designSpecKindChange: (el) => onDesignSpecKindChange(el.dataset.node),
   validateDesignSpecConfig: (el) => validateDesignSpecConfig(el.dataset.node),
+  updateRopShapeIntentVisibility: (el) => updateRopShapeIntentVisibility(el.dataset.node),
+  prepareRopShapeRequest: (el) => prepareRopShapeRequest(el.dataset.node),
+  executeRopShapeResult: (el) => executeRopShapeResult(el.dataset.node),
   // ROP Polyhedron
   runROPPolyhedron: (el) => runROPPolyhedron(el.dataset.node),
   executeROPPolyResult: (el) => executeROPPolyResult(el.dataset.node),

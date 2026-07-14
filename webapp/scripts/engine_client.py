@@ -22,7 +22,13 @@ def _post(path, payload, timeout):
                                  headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
+            try:
+                return json.load(r)
+            except (json.JSONDecodeError, UnicodeError, ValueError) as e:
+                return {
+                    "error": f"compute engine returned invalid JSON for {path}: {e}",
+                    "_status": getattr(r, "status", r.getcode()),
+                }
     except urllib.error.HTTPError as e:                      # engine answered but rejected
         try: body = json.load(e)
         except Exception: body = {}
@@ -34,11 +40,14 @@ def _post(path, payload, timeout):
         return {"engine_offline": True, "error": f"compute engine unreachable at {url}: {e}"}
 
 def engine_ready(timeout=3):
-    """True only if the Julia engine answers GET /ready with 2xx (module initialised)."""
+    """True only for the backend's exact HTTP-200 ``{"status":"ready"}`` contract."""
     url = engine_base_url().rstrip("/") + "/ready"
     try:
         with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=timeout) as r:
-            return 200 <= getattr(r, "status", r.getcode()) < 300
+            if getattr(r, "status", r.getcode()) != 200:
+                return False
+            payload = json.load(r)
+            return isinstance(payload, dict) and payload.get("status") == "ready"
     except Exception:
         return False
 
@@ -50,13 +59,14 @@ def build_model(reactions=None, kd=None, network=None, session_id=None, timeout=
     if network is not None:
         payload["network"] = network
     elif reactions is not None:
-        payload["reactions"] = list(reactions)
-        payload["kd"] = [float(x) for x in kd] if kd is not None else [1.0] * len(list(reactions))
+        reaction_list = list(reactions)
+        payload["reactions"] = reaction_list
+        payload["kd"] = [float(x) for x in kd] if kd is not None else [1.0] * len(reaction_list)
     else:
         return {"error": "build_model needs reactions+kd or a network"}
     if session_id:
         payload["session_id"] = session_id
-    return _post("/api/build_model", payload, timeout)
+    return _post("/api/v1/build_model", payload, timeout)
 
 def dose_response(session_id=None, *, network=None, param_symbol, output_exprs,
                   param_min=-6.0, param_max=6.0, n_points=160, fixed_qK=None, timeout=180):
@@ -69,7 +79,7 @@ def dose_response(session_id=None, *, network=None, param_symbol, output_exprs,
     if session_id: payload["session_id"] = session_id
     if network is not None: payload["network"] = network
     if fixed_qK is not None: payload["fixed_qK"] = fixed_qK
-    return _post("/api/parameter_scan_1d", payload, timeout)
+    return _post("/api/v1/parameter_scan_1d", payload, timeout)
 
 def scan_2d(session_id=None, *, network=None, param1_symbol, param2_symbol, output_expr,
             param1_min=-6.0, param1_max=6.0, param2_min=-6.0, param2_max=6.0, n_grid=48,
@@ -83,7 +93,7 @@ def scan_2d(session_id=None, *, network=None, param1_symbol, param2_symbol, outp
     if session_id: payload["session_id"] = session_id
     if network is not None: payload["network"] = network
     if fixed_qK is not None: payload["fixed_qK"] = fixed_qK
-    return _post("/api/parameter_scan_2d", payload, timeout)
+    return _post("/api/v1/parameter_scan_2d", payload, timeout)
 
 def phenotype_classify(session_id=None, *, network=None, input_symbol, output_expr, K=8, timeout=300):
     """Faithful verification: classify the 1-input dose-response with the SAME SISO phenotyper that
@@ -92,7 +102,7 @@ def phenotype_classify(session_id=None, *, network=None, input_symbol, output_ex
     payload = {"input_symbol": input_symbol, "output_expr": output_expr, "K": K}
     if session_id: payload["session_id"] = session_id
     if network is not None: payload["network"] = network
-    return _post("/api/phenotype_classify", payload, timeout)
+    return _post("/api/v1/phenotype_classify", payload, timeout)
 
 def phenotype(session_id=None, *, network=None, change_qK, observe_x, path_scope="feasible",
               compute_volume=True, timeout=240):
@@ -103,7 +113,7 @@ def phenotype(session_id=None, *, network=None, change_qK, observe_x, path_scope
                "path_scope": path_scope, "compute_volume": compute_volume}
     if session_id: payload["session_id"] = session_id
     if network is not None: payload["network"] = network
-    return _post("/api/behavior_families", payload, timeout)
+    return _post("/api/v1/behavior_families", payload, timeout)
 
 def validate_designability_spec(spec, timeout=60):
     """Validate the canonical Agent/Design Screen handoff against the live Julia owner.
@@ -120,6 +130,17 @@ def design_screen(spec, timeout=900):
     if not isinstance(spec, dict):
         return {"error": "design_screen needs a JSON object"}
     return _post("/api/v1/design_screen", spec, timeout)
+
+def rop_shape_optimize(request, timeout=900):
+    """Run one canonical, fixed-network ROP shape-optimization request.
+
+    The Python Agent deliberately does not lower typed edits to matrices or
+    interpret replay metrics.  The Julia endpoint owns compilation,
+    optimization, coverage, and replay evidence.
+    """
+    if not isinstance(request, dict):
+        return {"error": "rop_shape_optimize needs a JSON object"}
+    return _post("/api/v1/rop_shape_optimize", request, timeout)
 
 def placer_curve(*, rules, input_sym, output_sym, kd, totals=None,
                  param_min=-6.0, param_max=6.0, n_points=200, timeout=300):
