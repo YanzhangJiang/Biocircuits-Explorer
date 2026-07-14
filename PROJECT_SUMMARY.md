@@ -6,10 +6,11 @@ desired response. The central result is not merely a list of candidates: the
 product keeps a retrieved or suggested candidate separate from a result
 recomputed by the mathematics engine.
 
-The current implementation evidence anchor is `f2ca13c`. Revision `f9c65a5`
+The current implementation evidence anchor is `b91cf41`. Revision `f9c65a5`
 remains the historical evidence baseline for the maintained knowledge catalog.
-Later documentation commits may advance the branch without changing which
-implementation revision these runtime claims inspected.
+Later documentation
+commits may advance the branch without changing which implementation revision
+these runtime claims inspected.
 
 ## What the current revision establishes
 
@@ -24,6 +25,20 @@ implementation revision these runtime claims inspected.
 - Parameter scans, FRET heatmaps, ROP clouds, placement verification, and
   inverse refinement preserve failed-solver points as explicit partial/invalid
   evidence; those points are not plotted or promoted as best designs.
+- The browser workspace is a versioned typed workflow runtime. Its exhaustive
+  node inventory separates preparation from computation, its serial scheduler
+  accepts only structured terminal outcomes, and strict configuration ports
+  reject cross-family wires.
+- Executable derived results bind freshness to node ownership, graph inputs,
+  endpoint, and workspace epoch. Quick Add, Design Target, and Design Agent
+  graph construction publish atomically through one undoable GraphPatch.
+- Workspace v2 has a complete JSON Schema and shared JavaScript/Swift migration
+  fixtures. V1 merged nodes expand deterministically, restored computation is
+  historical, nested session/ticket state is stripped, and future versions
+  fail before replacing the current document.
+- All tracked first-party clients call `/api/v1/*`. Declared bare `/api/*`
+  compatibility calls remain available through their sunset and increment a
+  bounded Prometheus counter so removal can be based on observed use.
 - Raw HTTP `sqlite_path` access is disabled by default. An operator must enable
   it explicitly on both client and server, and the server confines paths to a
   configured store root.
@@ -39,10 +54,16 @@ implementation revision these runtime claims inspected.
   a live scheduler.
 - The Docker workflow is configured to build and start one application image and probe its
   runtime behavior. It does not exercise Compose, Nginx, or TLS.
-- The current committed revision configures no-sign macOS host builds and unit tests
-  on `macos-15-intel` and `macos-26`. A local macOS 27 arm64 run passed the
-  build-for-testing step and all unit tests on 2026-07-15; this does not
+- The current CI configuration contains no-sign macOS host builds and unit
+  tests on `macos-15-intel` and `macos-26`. A local macOS 27 arm64 run passed the
+  build-for-testing step and 51/51 unit tests on 2026-07-15, including shared
+  Workspace v2 fixture parity; this does not
   prove a remote workflow, UI automation, or a signed/notarized package.
+- Local real-Chromium Playwright checks exercise atomic Quick Add/Undo/Redo,
+  structured workflow reports, Workspace v2 fail-closed restore, an axe
+  serious/critical gate, and one deterministic topology baseline against mocked
+  loopback `/api/v1` responses. Zero-warning ESLint is configured. Neither
+  configured CI nor this local gate proves a live backend or external service.
 - Version and packaging checks keep the application version, packaged
   resources, image labels, and tag rules synchronized and fail closed on
   inconsistent release input.
@@ -84,12 +105,13 @@ feedback, and paper-side data are deliberately kept outside it.
 
 ## What remains unverified
 
-The current checkout does not establish live registry publication or pull,
-image signing, signature verification, an SBOM release lane, live AWS services,
-live Slurm execution, a signed and notarized DMG, or the full Compose/Nginx/TLS
-stack. It also does not resolve the recorded periodic-table population and
-producer-lineage conflicts. Scripts and contract tests exist for parts of these
-paths, but they do not upgrade an external result from unknown to verified.
+The release-candidate evidence Schema, untracked-run template, and operator
+runbook are prepared, but none of their external lanes has been executed. The
+current checkout therefore does not establish live registry publication/pull,
+SBOM/signature verification, live AWS services, live Slurm execution, a signed
+and notarized DMG, or the full Compose/Nginx/TLS stack. It also does not resolve
+the recorded periodic-table population and producer-lineage conflicts. Scripts
+and local contracts do not upgrade an external result from unknown to verified.
 
 For local work: inspect `git status`, read
 [the current status](knowledge/status/current.md), choose the relevant module

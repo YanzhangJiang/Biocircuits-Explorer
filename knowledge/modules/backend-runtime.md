@@ -1,7 +1,7 @@
 ---
 module: backend-runtime
 status: verified
-verified_against: f2ca13c
+verified_against: b91cf41
 ---
 
 # Backend runtime
@@ -70,6 +70,11 @@ override wins in either mode.
 - Exact relabel-invariant topology hashing stops at seven free species. Larger
   inputs fall back to the positional `NetworkIR` content hash; cache identity is
   deterministic but no longer guaranteed invariant to renaming or ordering.
+- Every tracked first-party browser, native, and Python request path uses the
+  canonical `/api/v1/*` surface. Declared bare `/api/*` aliases remain available
+  through their executable sunset metadata, and actual alias requests increment
+  the bounded `bcx_http_legacy_requests_total` counter by method, canonicalized
+  route, and status. Canonical v1, unknown, and v1-only paths do not increment it.
 
 ## Non-goals
 
@@ -191,8 +196,8 @@ override wins in either mode.
 - [`webapp/test/runtests.jl`](../../webapp/test/runtests.jl) covers bind defaults
   and override validation; liveness/readiness checks; same-origin, wrong-port,
   DNS-rebinding, loopback, public-bind, and explicit local-image cases; AWS
-  request override opt-in; routing, auth/quota, jobs, SBML/IR, handlers, and
-  serialization.
+  request override opt-in; routing, bounded legacy-alias metrics, auth/quota,
+  jobs, SBML/IR, handlers, and serialization.
 - [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl)
   covers local/AWS cancellation, finish, submit, and dispatch races.
 - [`webapp/test/jobs_submission_reconciliation_contract.jl`](../../webapp/test/jobs_submission_reconciliation_contract.jl)
@@ -255,6 +260,10 @@ stack or a real AWS worker.
   settings unless `BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG` is true.
 - `/api/v1` is canonical. Known bare `/api` aliases reach the same handler and
   carry deprecation metadata; probes and static assets are not legacy API calls.
+  Tracked first-party clients use only the canonical surface. The bounded legacy
+  counter measures declared aliases, collapses variable job paths, and excludes
+  canonical, unknown, and v1-only routes; removal additionally requires an
+  inventory of deployed and rollback clients.
 - Application version and build revision remain distinct from API protocol
   identity. Bundle builders copy `VERSION` to
   `share/biocircuits-explorer/VERSION`, and runtime lookup supports that
@@ -342,10 +351,10 @@ stack or a real AWS worker.
   shell, live AWS Batch/S3/Cognito/quota path, or broker/worker lifecycle.
 - P2 — The bundle version/resource contract does not build and launch a complete
   macOS bundle in CI.
-- P2 — Ordinary browser compute calls and the Python engine client use
-  canonical `/api/v1/*` routes. Browser broker/auth configuration and
-  local-image transport still retain compatibility paths, so complete alias
-  removal remains a coordinated deployment change.
+- P2 — Tracked first-party clients are canonical, but this checkout cannot
+  inventory every deployed or rollback client and has no production traffic
+  sample. The measured compatibility aliases therefore remain until their
+  declared sunset and an operator-reviewed removal decision.
 - P2 — Result-envelope adoption remains additive rather than uniform across all
   synchronous historical handlers.
 - P2 — Admission, build locks, bundle locks, and LRU tables are process-local;
@@ -400,12 +409,12 @@ See [runtime topology](../architecture/runtime.md) and
 
 ## Verified against
 
-- Current source commit: `f2ca13c`
+- Current source commit: `b91cf41`
 - Evidence inspected: module assembly; bind/configuration and readiness;
   per-bundle and same-hash locking; independent cache/session LRU clocks; heavy
   admission and typed budgets; path context propagation; body limits; numerical
-  validity; jobs/persistence; focused Julia/JavaScript/Python tests; and both CI
-  workflows.
+  validity; jobs/persistence; canonical first-party callers; bounded legacy
+  request metrics; focused Julia/JavaScript/Python tests; and both CI workflows.
 - Historical baseline: `f9c65a5` remains evidence for the pre-P6 service shape
   and compatibility behavior. It does not describe the current shared-runtime,
   synchronous-budget, or numerical-validity contract.

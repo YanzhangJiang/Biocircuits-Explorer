@@ -1,6 +1,6 @@
 schema_version: "bcx-knowledge-manifest/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "f2ca13c"
+current_verified_revision: "b91cf41"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"
@@ -143,7 +143,7 @@ documents:
     path: "knowledge/contracts/workflow-execution.md"
     kind: "contract"
     owner: "web-workspace"
-    status: "working-tree"
+    status: "active"
 
   - id: "runbook-release-candidate-external-verification"
     path: "knowledge/runbooks/release-candidate-external-verification.md"

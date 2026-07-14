@@ -2,7 +2,7 @@
 
 - Snapshot date: 2026-07-15
 - Component-split revision inspected: `603635d`
-- Current implementation revision inspected: `f2ca13c`
+- Current implementation revision inspected: `b91cf41`
 - Historical knowledge baseline retained: `f9c65a5`
 - Current-tree contract inventory:
   `python3 scripts/verify_repository.py --check`
@@ -11,9 +11,10 @@
 - Scope: repository runtime and local verification evidence, not manuscript
   claims, a remote CI result, or proof that an external deployment succeeded
 
-The current committed evidence anchor is `f2ca13c`. It integrates the larger
-fixed-topology ROP shape-optimization implementation, runtime/job hardening,
-browser lifecycle contracts, and macOS host maintenance described below.
+The current implementation evidence anchor is `b91cf41`. It retains the fixed-topology ROP
+shape-optimization and runtime/job hardening at `f2ca13c`, then adds the typed
+browser workflow, Workspace v2, measured API migration, real-browser local
+quality gate, and external release-evidence preparation described below.
 Revision `1177a3d` remains the earlier bounded-runtime evidence anchor.
 
 ## Result in plain language
@@ -37,6 +38,66 @@ Revision `603635d` only split the large backend module into focused component
 files. It was not intended to change behavior. Revision `1177a3d` then added the
 concurrency, work-boundary, validation, and numerical-result changes to those
 owners.
+
+## Integrated browser workflow and Workspace v2
+
+The node canvas now has one exhaustive architecture inventory for its 40 node
+types. Five roles distinguish sources, configurations, compute, manual gates,
+and viewers. Seven parameter/configuration families have exact artifact types;
+the former universal `ParamsConfig` type is removed, and the 7-by-7 contract
+accepts only the seven same-family pairs. Six merged v1 compute nodes remain
+restore-only and migrate to explicit config/result pairs; they are neither
+creatable nor scheduler-runnable in Workspace v2.
+
+Every scheduled operation returns `bne-execution-outcome/v1`. The planner
+rejects a cycle before executing, then runs the selected connected component in
+serial topological order. Failed, blocked, cancelled, stale, missing, or
+historical upstream output blocks only its descendants. Result freshness is a
+separate axis from scientific evidence: shared lifecycle tickets bind the node
+owner, revision, workspace epoch, input fingerprint, and exact endpoint. This
+boundary now covers the executable derived families, including Atlas,
+Placer, scans, and Vertices, so an obsolete response or delayed renderer cannot
+publish as current.
+
+Quick Add, Design Target Build & Tune, and Design Agent graph construction use
+one GraphPatch transaction. Planning assigns stable IDs without mutating the
+editor; validation/staging/commit either publishes the whole chain as one Undo
+item or restores the previous graph, node counter, workspace snapshot, and Undo
+depth. Redo retains the planned identities.
+
+Workspace v2 is jointly consumed by the JavaScript migration/loader, the
+complete `schemas/workspace.schema.json`, and the Swift decoder. Shared fixtures
+prove exact v1-to-v2 structural parity: invalid cross-family wires are dropped,
+runtime session/ticket fields are recursively stripped, and persisted current
+results restore as historical without changing their evidence grade. A future
+document version fails before replacing the active browser or native project.
+
+All tracked first-party clients now use `/api/v1/*`. Declared compatibility
+aliases remain through their sunset, while
+`bcx_http_legacy_requests_total` measures actual bounded route/method/status
+usage; canonical, unknown, and v1-only paths are excluded. This is local
+contract evidence, not production traffic evidence.
+
+| Workflow check | Local result | Boundary |
+|---|---|---|
+| Browser lint and unit contracts | Zero-warning ESLint and the full listed JavaScript suite passed | Source/harness coverage; no live provider or cloud path |
+| Real-browser gate | Chromium Playwright passed atomic Quick Add/Undo/Redo, exact structured reports, historical/future Workspace v2 behavior, an axe serious/critical check, and one deterministic topology screenshot with zero captured console/page errors | Static loopback server with mocked canonical API responses; not browser-to-live-Julia evidence |
+| Workspace parity | The complete v2 Schema accepted the shared expected fixture; JavaScript migration and the Swift decoder produced the same structure | Shared finite fixtures, not every possible extension document |
+| macOS host | Local no-sign build and 51/51 Swift unit tests passed on macOS 27 arm64 | No remote CI, UI automation, packaged-process, signature, notarization, or clean-host claim |
+
+The canonical composition and change rules are in the
+[browser workflow execution contract](../contracts/workflow-execution.md); the
+[Web](../modules/web-workspace.md) and
+[macOS](../modules/macos-host.md) module cards retain the owner/test routing.
+
+## Prepared release-candidate evidence boundary
+
+The repository now contains a fail-closed release-candidate evidence Schema,
+template, validation tests, and operator runbook. A passed record must pin one
+clean commit, configuration hash, OCI digest, and macOS artifact hash and must
+carry hashed, redacted observations plus rollback evidence for Registry,
+Compose/TLS, AWS, Slurm, and macOS. This pack is prepared but unexecuted: all
+five external outcomes remain unknown until an authorized run records them.
 
 ## Integrated extension: direct fixed-topology shape control
 
@@ -93,7 +154,8 @@ packaging. The configured CI matrix now builds and runs the Swift unit target on
 Xcode 26.6 passed `build-for-testing` and all unit tests. Browser, Design Chat,
 packaged-resource, and release-metadata contracts also passed locally.
 
-This is local evidence for revision `f2ca13c`. No remote
+This is local evidence retained from revision `f2ca13c` and extended at
+`b91cf41`. No remote
 CI result, real Cognito flow, packaged helper launch, relocatable Python input,
 Developer ID signature, notarization, stapling, Gatekeeper install, or clean-host
 qualification is claimed.
@@ -104,11 +166,14 @@ signed application was installed.
 
 ## Evidence recorded for this snapshot
 
-| Check | Local result at `f2ca13c` | Boundary |
+| Check | Local result through `b91cf41` | Boundary |
 |---|---|---|
 | Full Julia web suite | Completed with no failing tests; one pre-existing `@test_broken` remains explicitly recorded | Local process only; not evidence of a remote CI run or production traffic |
 | `BindingAndCatalysis` suite | All testsets passed; golden-value set 145/145 | Numerical regression coverage is conditional on the tested models and solver policies |
 | Browser JavaScript suite | `npm run test:js` passed, including scan-validity, SQLite-policy, and Design Screen rendering contracts | No full browser-to-live-provider Design Agent conversation was exercised |
+| Browser quality gate | `npm run lint` passed with zero warnings; local real-Chromium `npm run test:e2e` passed its workflow, v2, axe, and visual contracts | Mocked loopback `/api/v1` endpoints; no remote CI or live Julia/provider/cloud call |
+| Native Workspace v2 | Local no-sign build and 51/51 Swift unit tests passed, including shared migration fixtures | No WebView UI automation, packaged-process launch, signing, or clean-host install |
+| Release evidence contract | Evidence Schema/template tests passed and the five-lane runbook is prepared | Registry, Compose/TLS, AWS, Slurm, signing/notarization, and rollback lanes were not executed |
 | Generated schema check | `julia --project=webapp webapp/scripts/gen_schemas.jl --check` passed | Confirms generated NetworkIR/DesignSpec drift only; hand-authored schemas retain their cataloged coverage levels |
 | Deployment contract suite | `python3 tests/test_deployment_contract.py -q` passed, 15/15 | Static and mocked checks do not prove a registry, TLS endpoint, AWS account, or rollback was exercised |
 
@@ -122,7 +187,8 @@ signed application was installed.
 | `01a01be` | Added fail-closed container, image, Compose, TLS, AWS setup, and rollback contracts |
 | `603635d` | Moved the backend monolith into focused runtime, model, analysis, placement, scan, geometry, and service files; an assembly contract checks the dependency order and exported surface |
 | `1177a3d` | Bounded shared runtime work, serialized mutable state, tightened request validation, preserved numerical failure information, and promoted Design Screen to v0.3 |
-| `f2ca13c` | Integrated fixed-topology ROP shape control, durable job ownership, browser lifecycle hardening, deterministic volume contracts, and macOS host maintenance; this is the current inspected revision |
+| `f2ca13c` | Integrated fixed-topology ROP shape control, durable job ownership, browser lifecycle hardening, deterministic volume contracts, and macOS host maintenance; this is the prior integrated revision |
+| `b91cf41` | Added strict typed workflow scheduling, shared result freshness, atomic GraphPatch construction, Workspace v2 JavaScript/Swift parity, measured API aliases, local Chromium/axe/visual gates, and the prepared external release-evidence pack |
 
 ## What `1177a3d` establishes
 
@@ -199,7 +265,9 @@ checks that these files remain included once and in dependency order.
 
 - `/api/v1/*` is canonical. Bare `/api/*` routes remain compatibility aliases
   until the sunset projected from executable route metadata into the
-  [generated reference](../generated/reference.md#api-routes).
+  [generated reference](../generated/reference.md#api-routes). All tracked
+  first-party clients are canonical; the bounded legacy-request counter informs
+  but does not itself authorize alias removal.
 - Liveness, readiness, and Prometheus endpoints remain `/health`, `/ready`, and
   `/metrics`.
 - The local Design Chat helper remains loopback-only with exact-origin and
@@ -236,8 +304,8 @@ they do not rewrite the catalog's baseline identifier or historical
 
 ## Known unknowns and unverified surfaces
 
-1. No remote CI run is claimed for `f2ca13c`; the evidence table records local
-   commands only.
+1. No remote CI run is claimed for `b91cf41`; the
+   evidence table records local commands and configured workflow ownership only.
 2. No current evidence establishes publishing to or pulling from a live image
    registry. Image signing, signature verification, and an SBOM release lane
    are also unverified.
@@ -272,9 +340,11 @@ Run commands from the repository root:
 ```bash
 JULIA_NUM_THREADS=auto julia --project=webapp webapp/test/runtests.jl
 julia --project=Bnc_julia Bnc_julia/test/runtests.jl
-cd webapp && npm run test:js
-cd ..
+(cd webapp && npm run lint && npm run test:js)
+(cd webapp && npm run test:e2e && npm run check-i18n-sync)
 julia --project=webapp webapp/scripts/gen_schemas.jl --check
+python3 tests/test_workspace_schema.py
+python3 tests/test_release_candidate_evidence.py
 python3 tests/test_deployment_contract.py -q
 python3 scripts/verify_repository.py --check
 ```

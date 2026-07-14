@@ -1,7 +1,7 @@
 ---
 title: HTTP API contract
 status: verified
-verified_against: 1177a3d
+verified_against: b91cf41
 ---
 
 # HTTP API contract
@@ -267,7 +267,9 @@ a client begins to depend on a field.
 
 ## Verified against
 
-- Current source commit: `1177a3d`.
+- Current source commit: `b91cf41`; canonical first-party callers and bounded
+  legacy-alias metrics were verified locally on 2026-07-15.
+- Earlier bounded-runtime anchor: `1177a3d`.
 - Historical baseline: the route/version/provenance contract was previously
   audited at `f9c65a5`; that evidence remains historical and does not cover the
   synchronous budgets, SQLite HTTP policy, Design Screen v0.3, or numerical
