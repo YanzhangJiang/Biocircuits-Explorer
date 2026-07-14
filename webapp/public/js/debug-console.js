@@ -40,7 +40,7 @@ export async function refreshAppVersion() {
     const buildInfo = await apiSilent('version', {});
     debugConsoleState.buildInfo = buildInfo;
     renderAppVersionBadge(buildInfo);
-  } catch (_) {
+  } catch {
     renderAppVersionBadge(null);
   } finally {
     debugConsoleState.versionFetchInFlight = false;

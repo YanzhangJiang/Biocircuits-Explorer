@@ -139,6 +139,18 @@ documents:
     owner: "cross-module"
     status: "active"
 
+  - id: "contract-browser-workflow-execution"
+    path: "knowledge/contracts/workflow-execution.md"
+    kind: "contract"
+    owner: "web-workspace"
+    status: "working-tree"
+
+  - id: "runbook-release-candidate-external-verification"
+    path: "knowledge/runbooks/release-candidate-external-verification.md"
+    kind: "runbook"
+    owner: "cross-release"
+    status: "prepared-not-executed"
+
   - id: "research-repository-roles"
     path: "knowledge/research/repositories.md"
     kind: "research-governance"

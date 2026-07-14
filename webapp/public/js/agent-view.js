@@ -31,11 +31,11 @@ let chatBearerToken = '';
 function chatApiUrl() {
   if (typeof window !== 'undefined' && window.__BCX_CHAT_API__) return window.__BCX_CHAT_API__;
   try { return localStorage.getItem(CHAT_API_KEY) || DEFAULT_CHAT_API; }
-  catch (_) { return DEFAULT_CHAT_API; }
+  catch { return DEFAULT_CHAT_API; }
 }
 function healthUrl() {
   try { return new URL('/health', chatApiUrl()).toString(); }
-  catch (_) { return DEFAULT_CHAT_API.replace('/design-chat', '/health'); }
+  catch { return DEFAULT_CHAT_API.replace('/design-chat', '/health'); }
 }
 
 // Let the native shell (or the dev console) point the agent at a specific backend.
@@ -45,7 +45,7 @@ export function setDesignChatEndpoint(url, bearerToken = '') {
   if (!url) return;
   window.__BCX_CHAT_API__ = String(url);
   chatBearerToken = bearerToken ? String(bearerToken) : '';
-  try { localStorage.setItem(CHAT_API_KEY, String(url)); } catch (_) { /* ignore */ }
+  try { localStorage.setItem(CHAT_API_KEY, String(url)); } catch { /* ignore */ }
   refreshBackendStatus();   // re-probe so the status pill reflects the new target
 }
 if (typeof window !== 'undefined') window.setDesignChatEndpoint = setDesignChatEndpoint;
@@ -804,7 +804,7 @@ async function refreshBackendStatus() {
       statusDotEl.className = 'agent-status-dot checking';
       if (statusTextEl) statusTextEl.textContent = 'Chat up, but COMPUTE ENGINE OFFLINE — start the node Workspace server to get verified designs';
     }
-  } catch (_) {
+  } catch {
     statusDotEl.className = 'agent-status-dot offline';
     if (statusTextEl) statusTextEl.textContent = 'Backend offline — run “cd webapp && ./start.sh”, or set BNE_CHAT_ALLOWED_ORIGIN and BNE_CHAT_BEARER_TOKEN before chat_api.py';
   }
@@ -1192,7 +1192,7 @@ function clampChatWidth(w, host) {
 
 function readChatWidth() {
   let saved = 0;
-  try { saved = Number(localStorage.getItem(CHATW_KEY)); } catch (_) { /* ignore */ }
+  try { saved = Number(localStorage.getItem(CHATW_KEY)); } catch { /* ignore */ }
   return saved && saved > 300 ? saved : DEFAULT_CHATW;
 }
 
@@ -1208,7 +1208,7 @@ function installSplitter(host, chat, split) {
     dragging = false;
     split.classList.remove('dragging');
     const w = parseInt(chat.style.width, 10);
-    if (w) { try { localStorage.setItem(CHATW_KEY, String(w)); } catch (_) { /* ignore */ } }
+    if (w) { try { localStorage.setItem(CHATW_KEY, String(w)); } catch { /* ignore */ } }
   };
   split.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -1310,7 +1310,7 @@ export function setNodeView(view) {
   if (agentBtn) { agentBtn.classList.toggle('active', v === 'agent'); agentBtn.setAttribute('aria-pressed', String(v === 'agent')); }
   if (wsBtn) { wsBtn.classList.toggle('active', v === 'workspace'); wsBtn.setAttribute('aria-pressed', String(v === 'workspace')); }
 
-  try { localStorage.setItem(VIEW_KEY, v); } catch (_) { /* ignore */ }
+  try { localStorage.setItem(VIEW_KEY, v); } catch { /* ignore */ }
 
   if (v === 'agent') {
     scrollThreadToBottom();

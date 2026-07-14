@@ -206,14 +206,10 @@ async function readFileAsBase64(file) {
   return btoa(binary);
 }
 
-async function readFileAsText(file) {
-  return await file.text();
-}
-
 function extractIpynbText(rawJson) {
   let nb;
   try { nb = JSON.parse(rawJson); }
-  catch (e) { throw new Error('Notebook is not valid JSON'); }
+  catch { throw new Error('Notebook is not valid JSON'); }
   const cells = Array.isArray(nb.cells) ? nb.cells : [];
   const parts = [];
   cells.forEach((cell, i) => {
@@ -415,8 +411,8 @@ async function readErrorBody(response) {
   try {
     const errBody = await response.json();
     return errBody?.error?.message || JSON.stringify(errBody);
-  } catch (_) {
-    try { return await response.text(); } catch (__) { return response.statusText || ''; }
+  } catch {
+    try { return await response.text(); } catch { return response.statusText || ''; }
   }
 }
 
@@ -455,11 +451,11 @@ function tryParseJson(raw) {
   // Some models smart-quote keys/values; normalise the common offenders.
   s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
   // First attempt: parse as-is (post-fence-strip).
-  try { return JSON.parse(s); } catch (_) { /* fall through */ }
+  try { return JSON.parse(s); } catch { /* fall through */ }
   // Second attempt: pull the largest balanced top-level object.
   const balanced = extractBalancedJson(s);
   if (balanced) {
-    try { return JSON.parse(balanced); } catch (_) { /* fall through */ }
+    try { return JSON.parse(balanced); } catch { /* fall through */ }
   }
   // Final throw includes a parseable error.
   return JSON.parse(s);

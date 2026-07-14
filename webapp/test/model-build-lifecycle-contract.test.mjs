@@ -73,11 +73,20 @@ global.fetch = (url, options) => new Promise((resolve) => {
 });
 
 const stateModule = await import('../public/js/state.js');
-const { state, nodeRegistry, setConnections } = stateModule;
+const { advanceWorkspaceRuntimeEpoch, state, nodeRegistry, setConnections } = stateModule;
 const { buildModel } = await import('../public/js/model.js');
 const {
-  ensureModelSession, markReactionSourceDirty,
+  ensureModelSession, getModelContextFromBuilder, markReactionSourceDirty,
 } = await import('../public/js/nodes.js');
+const {
+  MODEL_BUILD_ENDPOINT,
+  beginModelBuild,
+  commitModelBuild,
+  inspectModelBuildLifecycle,
+  modelBuildContext,
+  releaseModelBuild,
+} = await import('../public/js/model-lifecycle.js');
+const { restoreCachedNodeRuntime, serializeState } = await import('../public/js/workspace.js');
 
 let passed = 0;
 async function test(name, fn) {
@@ -107,6 +116,16 @@ function respond(request, json, status = 200) {
     headers: { get: () => 'application/json; charset=utf-8' },
     json: async () => json,
   });
+}
+
+function containsSessionIdentifier(value, visited = new Set()) {
+  if (!value || typeof value !== 'object') return false;
+  if (visited.has(value)) return false;
+  visited.add(value);
+  if (!Array.isArray(value) && Object.keys(value).some(key => /^session_?id$/i.test(key))) {
+    return true;
+  }
+  return Object.values(value).some(entry => containsSessionIdentifier(entry, visited));
 }
 
 function resetHarness({ withViewer = false } = {}) {
@@ -374,6 +393,104 @@ await test('ensureModelSession starts a new single-flight build for a new input 
   assert.equal(await newEnsure, 'new-session');
   assert.equal(await trackedOldEnsure, 'new-session');
   assert.equal(nodeRegistry.builder.data.modelContext.sessionId, 'new-session');
+});
+
+await test('Model Builder shared lifecycle is current only after the exact owner context commits', async () => {
+  resetHarness();
+  const pending = buildModel('builder');
+  assert.deepEqual(nodeRegistry.builder.data.lifecycle, {
+    state: 'running', freshness: 'empty', evidence: null,
+  });
+  respond(requests[0], modelResponse('current-session', 'current'));
+  assert.equal(await pending, true);
+
+  const runtime = inspectModelBuildLifecycle('builder');
+  assert.equal(runtime.state, 'current');
+  assert.equal(runtime.freshness, 'current');
+  assert.equal(runtime.endpoint, MODEL_BUILD_ENDPOINT);
+  assert.equal(runtime.owner, nodeRegistry.builder);
+  assert.equal(runtime.result, nodeRegistry.builder.data.modelContext);
+  assert.equal(getModelContextFromBuilder('builder'), runtime.result);
+  assert.deepEqual(nodeRegistry.builder.data.lifecycle, {
+    state: 'current',
+    freshness: 'current',
+    evidence: {
+      source_endpoint: MODEL_BUILD_ENDPOINT,
+      network_ir_hash: 'hash-current',
+    },
+  });
+});
+
+await test('workspace epoch and endpoint drift invalidate a Model Builder ticket', async () => {
+  resetHarness();
+  const pending = buildModel('builder');
+  advanceWorkspaceRuntimeEpoch();
+  respond(requests[0], modelResponse('obsolete-session', 'obsolete'));
+  assert.equal(await pending, false);
+  assert.equal(inspectModelBuildLifecycle('builder').state, 'invalidated');
+  assert.equal(nodeRegistry.builder.data.lifecycle.freshness, 'invalidated');
+  assert.equal(getModelContextFromBuilder('builder'), null);
+
+  resetHarness();
+  const beginContext = modelBuildContext('builder', 'fingerprint-a');
+  const ticket = beginModelBuild('builder', beginContext);
+  const endpointDrift = { ...beginContext, endpoint: '/api/v1/not-build-model' };
+  assert.equal(commitModelBuild('builder', ticket, endpointDrift, {
+    modelContext: { sessionId: 'must-not-commit', model: {} },
+  }), false);
+  assert.equal(inspectModelBuildLifecycle('builder').state, 'invalidated');
+  assert.equal(getModelContextFromBuilder('builder'), null);
+  assert.equal(releaseModelBuild('builder', ticket), true);
+});
+
+await test('restored Model Builder output is historical, session-free, and unavailable downstream', async () => {
+  resetHarness();
+  const savedModel = modelResponse('nested-backend-session', 'saved');
+  savedModel.nested = {
+    sessionId: 'nested-camel-session',
+    deeper: [{ session_id: 'nested-snake-session', value: 1 }],
+  };
+  restoreCachedNodeRuntime('builder', 'model-builder', {
+    modelContext: {
+      sessionId: 'outer-session',
+      model: savedModel,
+      qK_syms: ['A_tot', 'Kd_1'],
+      inputFingerprint: 'saved-fingerprint',
+      nested: { session_id: 'another-session' },
+    },
+    lifecycle: {
+      state: 'current',
+      freshness: 'current',
+      evidence: { source_endpoint: MODEL_BUILD_ENDPOINT },
+    },
+  });
+
+  assert.equal(nodeRegistry.builder.data.built, false);
+  assert.equal(containsSessionIdentifier(nodeRegistry.builder.data.modelContext), false);
+  assert.equal(nodeRegistry.builder.data.lifecycle.state, 'historical');
+  assert.equal(nodeRegistry.builder.data.lifecycle.freshness, 'historical');
+  assert.equal(inspectModelBuildLifecycle('builder').sessionId, null);
+  assert.equal(getModelContextFromBuilder('builder'), null);
+});
+
+await test('Workspace serialization recursively strips Model Builder session identifiers', async () => {
+  resetHarness();
+  const pending = buildModel('builder');
+  const response = modelResponse('live-session', 'serialized');
+  response.deep = { sessionId: 'deep-session', list: [{ session_id: 'deeper-session' }] };
+  respond(requests[0], response);
+  assert.equal(await pending, true);
+  nodeRegistry.builder.data.modelContext.provenance = {
+    nested: { sessionId: 'provenance-session', session_id: 'provenance-snake' },
+  };
+
+  const document = serializeState();
+  const savedBuilder = document.nodes.find(node => node.id === 'builder');
+  assert.ok(savedBuilder);
+  assert.equal(savedBuilder.data.lifecycle.state, 'current');
+  assert.equal(containsSessionIdentifier(savedBuilder.data), false);
+  assert.equal(savedBuilder.data.modelContext.sessionId, undefined);
+  assert.equal(savedBuilder.data.modelContext.model.session_id, undefined);
 });
 
 console.log(`\nAll ${passed} model build lifecycle contract tests passed.`);

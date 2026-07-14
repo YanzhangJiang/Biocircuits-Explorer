@@ -5,7 +5,7 @@ const cloudComputeBtn = document.getElementById('cloud-compute-btn');
 function readStoredCloudComputeEnabled() {
   try {
     return window.localStorage.getItem(CLOUD_COMPUTE_STORAGE_KEY) === 'true';
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -13,7 +13,7 @@ function readStoredCloudComputeEnabled() {
 function persistCloudComputeEnabled(enabled) {
   try {
     window.localStorage.setItem(CLOUD_COMPUTE_STORAGE_KEY, enabled ? 'true' : 'false');
-  } catch (_) {}
+  } catch {}
 }
 
 function renderCloudComputeToggle() {

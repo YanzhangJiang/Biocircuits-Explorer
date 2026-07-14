@@ -1,23 +1,44 @@
 // Biocircuits Explorer — Parameter Scan & ROP Polyhedron Functions
 
-import { nodeRegistry, connections, ensureNodeData, getNodeData } from './state.js';
-import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable, splitCommaList, parseOptionalFloat, parseOptionalInteger, syncSelectOptions } from './api.js';
-import { applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, hexToRgba, themedColorbar, prefersLightTheme } from './theme.js';
-import { convexHull2D } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelForNode, getQKSymbolsForNode, getModelContextForNode, getModelContextFromBuilder, findUpstreamNodeByType, triggerConfigUpdate, ensureModelSession } from './nodes.js';
-import { getConnectedSISOConfig, getConnectedSISOSelection, normalizeSISOConfig } from './siso.js';
+import {
+  nodeRegistry,
+  connections,
+  ensureNodeData,
+  getNodeData,
+  getWorkspaceRuntimeEpoch,
+} from './state.js';
+import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable } from './api.js';
+import { applyPlotLayoutTheme, getPlotTheme, themedColorbar, prefersLightTheme } from './theme.js';
+import { setNodeLoading, setupPlotResize, getModelContextFromBuilder, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { formatPartialValidityNotice, prepareScan1DPlotData, prepareScan2DPlotData } from './plot-validity.js';
 import {
   beginScanExecution,
+  blockScanExecution,
   clearStoredScanResult,
+  commitScanExecution,
   executionDependencyConnections,
+  failScanExecution,
+  inspectScanExecution,
   invalidateScanExecution,
   isCurrentScanExecution,
   releaseScanExecution,
   scanUpstreamSignature,
   scheduleCurrentScanPlot,
 } from './execution-lifecycle.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from './execution-lifecycle-core.js';
 
 function syncScanValidityNotice(plotId, prepared) {
   if (typeof document === 'undefined') return;
@@ -64,13 +85,51 @@ function scanModelIdentity(nodeId) {
   };
 }
 
-function scanDependencyFingerprint(nodeId, endpoint, config) {
+function scanDependencyFingerprint(
+  nodeId,
+  endpoint,
+  config,
+  modelIdentity = scanModelIdentity(nodeId),
+) {
   return JSON.stringify({
     endpoint,
     config,
-    model: scanModelIdentity(nodeId),
+    model: modelIdentity,
     upstream: scanUpstreamSignature(nodeId),
   });
+}
+
+function canonicalScanEndpoint(endpoint) {
+  return `/api/v1/${String(endpoint || '').replace(/^\/?(?:api\/v1\/)?/, '')}`;
+}
+
+function scanTicketContext(nodeId, ticket) {
+  const owner = nodeRegistry[nodeId];
+  if (!ticket || owner !== ticket.owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: ticket.inputFingerprint,
+    endpoint: ticket.endpoint,
+  };
+}
+
+function scanExecutionContext(nodeId, definition, config, modelIdentity = scanModelIdentity(nodeId)) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || !config || !modelIdentity) return null;
+  const endpoint = canonicalScanEndpoint(definition.endpoint);
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: scanDependencyFingerprint(nodeId, endpoint, config, modelIdentity),
+    endpoint,
+  };
+}
+
+function invalidateOwnedScanTicket(nodeId, ticket, reason) {
+  const runtime = inspectScanExecution(nodeId);
+  if (nodeRegistry[nodeId] !== ticket?.owner || runtime?.currentTicket !== ticket) return false;
+  return invalidateScanExecution(nodeId, reason);
 }
 
 function setScanAttemptMessage(nodeId, message) {
@@ -82,9 +141,9 @@ function setScanAttemptMessage(nodeId, message) {
 
 function invalidScanAttempt(nodeId, ticket, message) {
   if (message) alert(message);
-  if (isCurrentScanExecution(nodeId, ticket)) {
-    clearStoredScanResult(nodeId, 'Scan did not run — fix the inputs and try again.');
-    releaseScanExecution(nodeId, ticket);
+  const context = scanTicketContext(nodeId, ticket);
+  if (context && isCurrentScanExecution(nodeId, ticket, context)) {
+    blockScanExecution(nodeId, ticket, context, message || 'invalid-scan-input');
   }
   return null;
 }
@@ -162,7 +221,7 @@ function validateScanConfig(nodeId, ticket, dimension, config) {
 }
 
 async function executeScanRequest(nodeId, definition) {
-  const ticket = beginScanExecution(nodeId, definition.endpoint);
+  let ticket = beginScanExecution(nodeId, definition.endpoint);
   if (!ticket) return false;
   clearStoredScanResult(nodeId, 'Preparing scan...');
 
@@ -177,6 +236,7 @@ async function executeScanRequest(nodeId, definition) {
   setNodeLoading(nodeId, true);
   setScanAttemptMessage(nodeId, 'Computing scan...');
   let requestIsCurrent = null;
+  let executionContext = scanTicketContext(nodeId, ticket);
   try {
     const sessionId = await ensureModelSession(nodeId, {
       connectionResolver: executionDependencyConnections,
@@ -189,35 +249,28 @@ async function executeScanRequest(nodeId, definition) {
       invalidateScanExecution(nodeId, 'scan-dependency-missing-before-request');
       return false;
     }
-    const dependencyFingerprint = scanDependencyFingerprint(
-      nodeId,
-      definition.endpoint,
-      currentConfig,
-    );
-    ticket.dependencyFingerprint = dependencyFingerprint;
+    executionContext = scanExecutionContext(nodeId, definition, currentConfig, modelIdentity);
+    ticket = beginScanExecution(nodeId, definition.endpoint, executionContext);
+    if (!ticket) return false;
+    setNodeLoading(nodeId, true);
+    const dependencyFingerprint = executionContext.inputFingerprint;
     const request = { session_id: sessionId, ...currentConfig };
     requestIsCurrent = () => {
-      if (!isCurrentScanExecution(nodeId, ticket)) return false;
       const liveConfig = definition.readCurrentConfig();
-      if (!liveConfig) return false;
-      return scanDependencyFingerprint(nodeId, definition.endpoint, liveConfig) ===
-        ticket.dependencyFingerprint;
+      const context = scanExecutionContext(nodeId, definition, liveConfig);
+      return !!context && isCurrentScanExecution(nodeId, ticket, context);
     };
 
     const data = await api(definition.endpoint, request, { statusIsCurrent: requestIsCurrent });
     if (!requestIsCurrent()) {
-      if (isCurrentScanExecution(nodeId, ticket)) {
-        invalidateScanExecution(nodeId, 'scan-dependency-changed-during-request');
-      }
+      invalidateOwnedScanTicket(nodeId, ticket, 'scan-dependency-changed-during-request');
       return false;
     }
 
-    const info = nodeRegistry[nodeId];
-    info.data = info.data || {};
-    info.data[definition.resultKey] = data;
-    info.data[definition.metaKey] = {
+    const committedContext = scanExecutionContext(nodeId, definition, definition.readCurrentConfig());
+    const meta = {
       contract: 'bne-scan-execution/v1',
-      endpoint: definition.endpoint,
+      endpoint: executionContext.endpoint,
       request: cloneSerializable(request),
       requestFingerprint: dependencyFingerprint,
       model: cloneSerializable(modelIdentity),
@@ -225,6 +278,19 @@ async function executeScanRequest(nodeId, definition) {
       executedAt: new Date().toISOString(),
       historical: false,
     };
+    if (!committedContext || !commitScanExecution(nodeId, ticket, committedContext, {
+      result: { result: data, meta },
+      evidence: {
+        class: 'current-computation',
+        endpoint: executionContext.endpoint,
+        partial: data?.partial === true,
+      },
+    })) return false;
+
+    const info = nodeRegistry[nodeId];
+    info.data = info.data || {};
+    info.data[definition.resultKey] = data;
+    info.data[definition.metaKey] = meta;
 
     const contentEl = document.getElementById(`${nodeId}-content`);
     if (!contentEl || !requestIsCurrent()) return false;
@@ -243,19 +309,20 @@ async function executeScanRequest(nodeId, definition) {
     });
     return true;
   } catch (error) {
-    if (!isCurrentScanExecution(nodeId, ticket)) return false;
     if (requestIsCurrent && !requestIsCurrent()) {
-      invalidateScanExecution(nodeId, 'scan-dependency-changed-during-request');
+      invalidateOwnedScanTicket(nodeId, ticket, 'scan-dependency-changed-during-request');
       return false;
     }
+    const failureContext = requestIsCurrent
+      ? scanExecutionContext(nodeId, definition, definition.readCurrentConfig())
+      : scanTicketContext(nodeId, ticket);
+    if (!failureContext || !failScanExecution(nodeId, ticket, failureContext, error)) return false;
     handleNodeError(error, nodeId, definition.operationLabel);
     const contentEl = document.getElementById(`${nodeId}-content`);
     renderNodeError(contentEl, error);
     return false;
   } finally {
-    if (releaseScanExecution(nodeId, ticket)) {
-      setNodeLoading(nodeId, false);
-    }
+    releaseScanExecution(nodeId, ticket);
   }
 }
 
@@ -482,6 +549,136 @@ export function plotParameterScan2D(data, plotId) {
 
 // ===== ROP Polyhedron Config & Execution =====
 
+const ROP_POLY_ENDPOINT = '/api/v1/rop_polyhedron';
+const ROP_POLY_LIFECYCLE_KEY = '_ropPolyResultLifecycle';
+
+function canonicalROPPolyValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalROPPolyValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) normalized[key] = canonicalROPPolyValue(value[key]);
+  return normalized;
+}
+
+function currentROPPolyContext(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  const connection = connections.find(candidate =>
+    candidate.toNode === nodeId && candidate.toPort === 'params');
+  let config = null;
+  try {
+    config = connection ? getNodeSerialData(connection.fromNode, 'rop-poly-params') : null;
+  } catch {
+    config = null;
+  }
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: JSON.stringify(canonicalROPPolyValue({
+      endpoint: ROP_POLY_ENDPOINT,
+      config,
+      model: scanModelIdentity(nodeId),
+      upstream: scanUpstreamSignature(nodeId),
+    })),
+    endpoint: ROP_POLY_ENDPOINT,
+  };
+}
+
+function syncROPPolyLifecycle(info, lifecycle) {
+  if (!info || !lifecycle) return;
+  info.data = info.data || {};
+  info.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function ropPolyLifecycleFor(info) {
+  if (!info[ROP_POLY_LIFECYCLE_KEY]) {
+    const lifecycle = createExecutionLifecycle();
+    info[ROP_POLY_LIFECYCLE_KEY] = lifecycle;
+    if (info.data?.ropPlotData) {
+      const nodeId = Object.keys(nodeRegistry).find(id => nodeRegistry[id] === info);
+      const context = nodeId ? currentROPPolyContext(nodeId) : null;
+      if (context) {
+        restoreHistoricalLifecycle(lifecycle, {
+          context,
+          result: info.data.ropPlotData,
+          evidence: info.data?.lifecycle?.evidence || null,
+        });
+        syncROPPolyLifecycle(info, lifecycle);
+      }
+    }
+  }
+  return info[ROP_POLY_LIFECYCLE_KEY];
+}
+
+function clearROPPolyPlotTimer(info) {
+  if (info?._ropPolyPlotTimer == null) return;
+  clearTimeout(info._ropPolyPlotTimer);
+  delete info._ropPolyPlotTimer;
+}
+
+function settleROPPolyLoading(nodeId, lifecycle, ticket) {
+  if (!ticket || nodeRegistry[nodeId] !== ticket.owner) return;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.currentTicket === ticket ||
+      (runtime.currentTicket == null && runtime.loading === false)) {
+    setNodeLoading(nodeId, false);
+  }
+}
+
+export function invalidateROPPolyResult(nodeId, reason = 'rop-poly-input-changed') {
+  const info = nodeRegistry[nodeId];
+  if (!info || info.type !== 'rop-poly-result') return false;
+  const lifecycle = ropPolyLifecycleFor(info);
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.owner === info && runtime.workspaceEpoch != null) {
+    invalidateLifecycle(lifecycle, {
+      owner: info,
+      workspaceEpoch: runtime.workspaceEpoch,
+      reason,
+    });
+  }
+  clearROPPolyPlotTimer(info);
+  info.data = info.data || {};
+  delete info.data.ropPlotData;
+  delete info.data.fitInnerPoints;
+  syncROPPolyLifecycle(info, lifecycle);
+  setNodeLoading(nodeId, false);
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  if (contentEl) {
+    contentEl.dataset.resultState = 'invalidated';
+    contentEl.innerHTML = '<span class="text-dim">Inputs changed — run ROP Polyhedron again.</span>';
+  }
+  return true;
+}
+
+export function invalidateROPPolyResultsDownstreamOf(sourceNodeId, reason = 'rop-poly-config-changed') {
+  const invalidated = [];
+  for (const connection of connections) {
+    if (connection?.fromNode !== sourceNodeId) continue;
+    if (nodeRegistry[connection.toNode]?.type !== 'rop-poly-result') continue;
+    if (invalidateROPPolyResult(connection.toNode, reason)) invalidated.push(connection.toNode);
+  }
+  return invalidated;
+}
+
+export function installROPPolyConfigInvalidation(nodeId) {
+  const node = document.getElementById(nodeId);
+  if (!node) return;
+  node.querySelectorAll('.auto-update').forEach(control => {
+    const eventType = control.tagName === 'SELECT' || control.type === 'checkbox' ? 'change' : 'input';
+    control.addEventListener(eventType, () => {
+      invalidateROPPolyResultsDownstreamOf(nodeId, 'rop-poly-config-input-changed');
+    });
+  });
+}
+
+export function inspectROPPolyResultLifecycle(nodeId) {
+  const info = nodeRegistry[nodeId];
+  return info?.type === 'rop-poly-result'
+    ? inspectExecutionLifecycle(ropPolyLifecycleFor(info))
+    : null;
+}
+
 export function updateROPPolyConfig(nodeId) {
   const expr = document.getElementById(`${nodeId}-expr`).value.trim();
   const param1 = document.getElementById(`${nodeId}-param1`).value;
@@ -511,8 +708,21 @@ export function updateROPPolyConfig(nodeId) {
 }
 
 export async function executeROPPolyResult(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'rop-poly-result') return false;
+  const lifecycle = ropPolyLifecycleFor(owner);
+  invalidateROPPolyResult(nodeId, 'rop-poly-execution-restarted');
   const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!conn) {
+    const context = currentROPPolyContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, {
+        context,
+        reason: 'Connect to a ROP Polyhedron Config node',
+      });
+      syncROPPolyLifecycle(owner, lifecycle);
+    }
     alert('Please connect to a ROP Polyhedron Config node');
     return false;
   }
@@ -520,6 +730,15 @@ export async function executeROPPolyResult(nodeId) {
   const paramsNode = nodeRegistry[conn.fromNode];
   const config = getNodeSerialData(conn.fromNode, 'rop-poly-params');
   if (!paramsNode || !config || !(config.pairs || []).length) {
+    const context = currentROPPolyContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, {
+        context,
+        reason: 'ROP Polyhedron Config node has no complete axis configuration',
+      });
+      syncROPPolyLifecycle(owner, lifecycle);
+    }
     alert('Config node has no configuration. Please configure it first.');
     return false;
   }
@@ -527,21 +746,72 @@ export async function executeROPPolyResult(nodeId) {
   paramsNode.data.config = config;
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
+  const attemptRevision = (owner._ropPolyAttemptRevision || 0) + 1;
+  owner._ropPolyAttemptRevision = attemptRevision;
+  let ticket = null;
 
   try {
     const sessionId = await ensureModelSession(nodeId);
+    if (nodeRegistry[nodeId] !== owner || owner._ropPolyAttemptRevision !== attemptRevision) return false;
+    const beginContext = currentROPPolyContext(nodeId);
+    if (!beginContext) return false;
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncROPPolyLifecycle(owner, lifecycle);
     const data = await api('rop_polyhedron', {
       session_id: sessionId,
       ...config
+    }, {
+      statusIsCurrent: () => {
+        const context = currentROPPolyContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
     });
-    renderROPPolyhedronOutput(nodeId, contentEl, data, config);
+    const currentContext = currentROPPolyContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: data,
+      evidence: { source_endpoint: ROP_POLY_ENDPOINT },
+      sessionId,
+    })) {
+      syncROPPolyLifecycle(owner, lifecycle);
+      return false;
+    }
+    syncROPPolyLifecycle(owner, lifecycle);
+    if (nodeRegistry[nodeId] !== owner) return false;
+    renderROPPolyhedronOutput(nodeId, contentEl, data, config, {
+      timerOwner: owner,
+      plotGuard: () => {
+        const context = currentROPPolyContext(nodeId);
+        return nodeRegistry[nodeId] === owner && !!context &&
+          isCurrentLifecycle(lifecycle, ticket, context);
+      },
+    });
     return true;
   } catch (e) {
+    let current = false;
+    const context = currentROPPolyContext(nodeId);
+    if (ticket && context) {
+      current = failLifecycle(lifecycle, ticket, { context, error: e });
+    } else if (context && nodeRegistry[nodeId] === owner &&
+               owner._ropPolyAttemptRevision === attemptRevision) {
+      ticket = beginLifecycle(lifecycle, context);
+      current = failLifecycle(lifecycle, ticket, { context, error: e });
+    }
+    syncROPPolyLifecycle(owner, lifecycle);
+    if (!current) return false;
     handleNodeError(e, nodeId, 'ROP polyhedron');
-    renderNodeError(contentEl, e);
+    if (nodeRegistry[nodeId] === owner) renderNodeError(contentEl, e);
     return false;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (ticket) {
+      releaseLifecycle(lifecycle, ticket);
+      if (owner._ropPolyAttemptRevision === attemptRevision) {
+        settleROPPolyLoading(nodeId, lifecycle, ticket);
+      }
+    } else if (nodeRegistry[nodeId] === owner &&
+               owner._ropPolyAttemptRevision === attemptRevision) {
+      setNodeLoading(nodeId, false);
+    }
   }
 }
 
@@ -582,7 +852,10 @@ export async function runROPPolyhedron(nodeId) {
   }
 }
 
-export function renderROPPolyhedronOutput(nodeId, contentEl, data, config = {}) {
+export function renderROPPolyhedronOutput(nodeId, contentEl, data, config = {}, {
+  plotGuard = null,
+  timerOwner = null,
+} = {}) {
   const axisSummary = (data.pairs || config.pairs || []).map((pair, idx) => {
     const xSymbol = pair.x_symbol || pair.xSymbol || '?';
     const qkSymbol = pair.qk_symbol || pair.qkSymbol || '?';
@@ -609,10 +882,14 @@ export function renderROPPolyhedronOutput(nodeId, contentEl, data, config = {}) 
   `;
 
   commitWorkspaceSnapshot('rop-polyhedron');
-  setTimeout(() => {
+  if (timerOwner) clearROPPolyPlotTimer(timerOwner);
+  const timer = setTimeout(() => {
+    if (timerOwner?._ropPolyPlotTimer === timer) delete timerOwner._ropPolyPlotTimer;
+    if (plotGuard && !plotGuard()) return;
     refreshROPPolyhedronPlot(nodeId);
     setupPlotResize(nodeId, `${nodeId}-plot`);
   }, 50);
+  if (timerOwner) timerOwner._ropPolyPlotTimer = timer;
 }
 
 export function refreshROPPolyhedronPlot(nodeId) {

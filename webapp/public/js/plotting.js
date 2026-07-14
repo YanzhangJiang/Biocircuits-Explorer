@@ -1,4 +1,4 @@
-import { applyPlotLayoutTheme, getPlotTheme, themeAxisTitle, applyPlotAxisTheme, themedColorbar, hexToRgba } from './theme.js';
+import { applyPlotLayoutTheme, getPlotTheme, themedColorbar, hexToRgba } from './theme.js';
 import { setupPlotInteractionGuard } from './nodes.js';
 import {
   formatPartialValidityNotice,

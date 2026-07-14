@@ -570,7 +570,7 @@ export function parseOptionalJson(value, fallback, label) {
   if (!text) return fallback;
   try {
     return JSON.parse(text);
-  } catch (error) {
+  } catch {
     throw new Error(`${label} must be valid JSON.`);
   }
 }
@@ -611,7 +611,7 @@ export function handleNodeError(error, nodeId, operation) {
   try {
     const loadingEl = nodeId ? document.querySelector(`#${nodeId} .node-loading`) : null;
     if (loadingEl) loadingEl.style.display = 'none';
-  } catch (_) {}
+  } catch {}
 }
 
 // ===== Serialization =====

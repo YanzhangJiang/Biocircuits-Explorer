@@ -7,13 +7,16 @@
 // + model-builder + analysis chains, then step out of the way.
 
 import { runAgent, detectProvider } from './agent.js';
-import { createNode, resolveOverlap, getNodePosition, getNodeSize } from './nodes.js';
+import {
+  captureEditorGraphPlanningGraph,
+  createEditorGraphPatchCommand,
+} from './nodes.js';
 import { addReactionRow } from './model.js';
-import { commitWorkspaceSnapshot } from './workspace.js';
-import { connections, nodeRegistry } from './state.js';
-import { updateConnections } from './connections.js';
+import { nodeIdCounter, nodeRegistry } from './state.js';
 import { showToast } from './api.js';
 import { writeClipboardText } from './native-clipboard.js';
+import { dispatch } from './commands.js';
+import { planAgentAutoSpawnWorkflow } from './graph-patch.js';
 
 const SESSION_KEY_STORAGE = 'biocircuits.agent.apiKey';
 const SESSION_PROVIDER_STORAGE = 'biocircuits.agent.provider';
@@ -28,21 +31,6 @@ export const AGENT_MODEL_OPTIONS = [
   { value: '__custom__',                 label: 'Custom…',                                 provider: null },
 ];
 
-// Each spawnable analysis maps to one or two real node types.
-// 'simple' kinds attach directly to the model-builder output.
-// 'pair' kinds need a params node between the model and the result.
-const CHAIN_MAP = {
-  'model-summary':     { kind: 'simple', result: 'model-summary' },
-  'vertices-table':    { kind: 'simple', result: 'vertices-table' },
-  'regime-graph':      { kind: 'simple', result: 'regime-graph' },
-  'siso-analysis':     { kind: 'pair',   params: 'siso-params',    result: 'siso-result' },
-  'parameter-scan-1d': { kind: 'pair',   params: 'scan-1d-params', result: 'scan-1d-result' },
-  'parameter-scan-2d': { kind: 'pair',   params: 'scan-2d-params', result: 'scan-2d-result' },
-  'rop-cloud':         { kind: 'pair',   params: 'rop-cloud-params', result: 'rop-cloud-result', needsReactions: true },
-  'rop-polyhedron':    { kind: 'pair',   params: 'rop-poly-params',  result: 'rop-poly-result',  modelOnly: true },
-  'fret-heatmap':      { kind: 'pair',   params: 'fret-params',      result: 'fret-result' },
-};
-
 // Per-node transient state. Never serialised.
 const nodeRuntime = new WeakMap();
 function rt(nodeId) {
@@ -53,7 +41,6 @@ function rt(nodeId) {
   return s;
 }
 
-function $(id) { return document.getElementById(id); }
 function $$(nodeId, suffix) { return document.getElementById(`${nodeId}${suffix}`); }
 
 function escapeHtml(s) {
@@ -162,7 +149,7 @@ export function setupAgentNode(nodeId) {
         custom.style.display = '';
       }
     }
-  } catch (_) { /* sessionStorage unavailable */ }
+  } catch { /* sessionStorage unavailable */ }
 
   sel.addEventListener('change', () => {
     custom.style.display = sel.value === '__custom__' ? '' : 'none';
@@ -238,7 +225,7 @@ export async function executeAgentNode(nodeId) {
       sessionStorage.removeItem(SESSION_PROVIDER_STORAGE);
       sessionStorage.removeItem(SESSION_MODEL_STORAGE);
     }
-  } catch (_) { /* sessionStorage unavailable */ }
+  } catch { /* sessionStorage unavailable */ }
 
   setThinking(nodeId, true);
   const sourceSummary = files.length > 0
@@ -253,7 +240,11 @@ export async function executeAgentNode(nodeId) {
     renderResult(nodeId, result);
     if (result.networks.length > 0) {
       setStatus(nodeId, `Done. ${result.networks.length} network(s), ${result.warnings.length} warning(s). Auto-spawning…`, 'ok');
-      autoSpawn(nodeId, result);
+      const spawn = autoSpawn(nodeId, result);
+      if (!spawn.ok) {
+        setStatus(nodeId, `Agent output was not added: ${spawn.diagnostic.message}`, 'error');
+        return false;
+      }
     } else {
       setStatus(nodeId, `Done, but no extractable equilibrium binding networks were found. See summary.`, 'warn');
     }
@@ -335,23 +326,6 @@ function renderResult(nodeId, result) {
 
 // ===== Auto-spawn =====
 
-const COL_GAP = 60;
-const NODE_W = { rxn: 280, mb: 260, simple: 320, params: 320, result: 420 };
-const DEFAULT_NODE_H = { rxn: 240, mb: 180, simple: 260, params: 280, result: 360 };
-
-function getNodeXY(nodeId) {
-  const el = document.getElementById(nodeId);
-  if (!el) return { x: 0, y: 0 };
-  return { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0 };
-}
-
-// Place a node at the given x with overlap avoidance applied to y.
-function safeCreate(type, x, desiredY, w, h) {
-  const safeY = resolveOverlap(x, desiredY, w, h, null);
-  const id = createNode(type, x, safeY);
-  return id ? { id, x, y: safeY } : null;
-}
-
 function setNodeField(nodeId, suffix, value) {
   if (!value) return;
   const el = document.getElementById(`${nodeId}${suffix}`);
@@ -392,91 +366,61 @@ function applyAnalysisConfig(paramsId, analysisName, analysis) {
   }
 }
 
-function placeReactionNetwork(x, y, network) {
-  const placed = safeCreate('reaction-network', x, y, NODE_W.rxn, DEFAULT_NODE_H.rxn);
-  if (!placed) return null;
-  const list = document.getElementById(`${placed.id}-reactions-list`);
-  if (list) list.innerHTML = '';
-  network.reactions.forEach(r => addReactionRow(placed.id, r.rule, r.kd));
-  return placed;
-}
+function initializeAgentSpawnNode(spec) {
+  const initialization = spec.initialization;
+  if (!initialization) return;
 
-function placeModelBuilder(x, y, rnId) {
-  const placed = safeCreate('model-builder', x, y, NODE_W.mb, DEFAULT_NODE_H.mb);
-  if (!placed) return null;
-  connections.push({ fromNode: rnId, fromPort: 'reactions', toNode: placed.id, toPort: 'reactions' });
-  return placed;
-}
-
-function placeAnalysis(x, y, rnId, mbId, analysis) {
-  const def = CHAIN_MAP[analysis.name];
-  if (!def) return null;
-  if (def.kind === 'simple') {
-    const placed = safeCreate(def.result, x, y, NODE_W.simple, DEFAULT_NODE_H.simple);
-    if (!placed) return null;
-    connections.push({ fromNode: mbId, fromPort: 'model', toNode: placed.id, toPort: 'model' });
-    const size = getNodeSize(placed.id);
-    return { bottom: placed.y + (size?.h || DEFAULT_NODE_H.simple), ids: [placed.id] };
-  }
-  // pair: params + result
-  const params = safeCreate(def.params, x, y, NODE_W.params, DEFAULT_NODE_H.params);
-  if (!params) return null;
-  applyAnalysisConfig(params.id, analysis.name, analysis);
-  const result = safeCreate(def.result, x + NODE_W.params + COL_GAP, params.y, NODE_W.result, DEFAULT_NODE_H.result);
-  if (!result) return null;
-  connections.push({ fromNode: mbId, fromPort: 'model', toNode: params.id, toPort: 'model' });
-  connections.push({ fromNode: params.id, fromPort: 'params', toNode: result.id, toPort: 'params' });
-  if (def.needsReactions) {
-    connections.push({ fromNode: rnId, fromPort: 'reactions', toNode: params.id, toPort: 'reactions' });
-  }
-  const psize = getNodeSize(params.id);
-  const rsize = getNodeSize(result.id);
-  const bottom = Math.max(
-    params.y + (psize?.h || DEFAULT_NODE_H.params),
-    result.y + (rsize?.h || DEFAULT_NODE_H.result),
-  );
-  return { bottom, ids: [params.id, result.id] };
-}
-
-function autoSpawn(nodeId, result) {
-  if (!nodeRegistry[nodeId] || !document.getElementById(nodeId)) return;
-  const aiOrigin = getNodeXY(nodeId);
-  const aiSize = getNodeSize(nodeId) || { w: 340, h: 600 };
-
-  // First band starts level with the AI node, columns step rightward from it.
-  const rxnX = aiOrigin.x + aiSize.w + COL_GAP;
-  const mbX = rxnX + NODE_W.rxn + COL_GAP;
-  const analysisX = mbX + NODE_W.mb + COL_GAP;
-
-  let bandTopY = aiOrigin.y;
-  let spawnedTotal = 0;
-  const modelBuilderIds = [];
-
-  result.networks.forEach((network) => {
-    const rn = placeReactionNetwork(rxnX, bandTopY, network);
-    if (!rn) return;
-    const mb = placeModelBuilder(mbX, rn.y, rn.id);
-    if (!mb) return;
-    modelBuilderIds.push(mb.id);
-    spawnedTotal += 2;
-
-    let analysisY = mb.y;
-    let bandBottomY = Math.max(rn.y + DEFAULT_NODE_H.rxn, mb.y + DEFAULT_NODE_H.mb);
-    network.recommended_analyses.forEach((analysis) => {
-      const placed = placeAnalysis(analysisX, analysisY, rn.id, mb.id, analysis);
-      if (!placed) return;
-      spawnedTotal += placed.ids.length;
-      analysisY = placed.bottom + 30;
-      bandBottomY = Math.max(bandBottomY, placed.bottom);
+  if (initialization.kind === 'reaction-network-rules') {
+    if (spec.type !== 'reaction-network' || !Array.isArray(initialization.reactions)) {
+      throw new Error(`Invalid reaction initialization for ${spec.id}`);
+    }
+    const list = document.getElementById(`${spec.id}-reactions-list`);
+    if (list) list.innerHTML = '';
+    initialization.reactions.forEach(reaction => {
+      addReactionRow(spec.id, reaction.rule, reaction.kd);
     });
+    return;
+  }
 
-    bandTopY = bandBottomY + 60;
-  });
+  if (initialization.kind === 'analysis-config') {
+    applyAnalysisConfig(
+      spec.id,
+      initialization.analysisName,
+      initialization.analysis,
+    );
+    return;
+  }
 
-  updateConnections();
-  modelBuilderIds.forEach(mbId => {
-    setTimeout(() => nodeRegistry[mbId]?._autoBuildCheck?.(), 100);
+  throw new Error(`Unknown Agent node initialization: ${String(initialization.kind)}`);
+}
+
+export function autoSpawn(nodeId, result) {
+  const plan = planAgentAutoSpawnWorkflow({
+    graph: captureEditorGraphPlanningGraph(),
+    nextNodeOrdinal: nodeIdCounter + 1,
+    agentNodeId: nodeId,
+    result,
   });
-  commitWorkspaceSnapshot('agent-spawn');
-  showToast(`Spawned ${spawnedTotal} nodes from agent output`);
+  if (!plan.ok) {
+    showToast(plan.diagnostic.message);
+    return plan;
+  }
+
+  try {
+    const command = createEditorGraphPatchCommand(plan, {
+      initializeNode: initializeAgentSpawnNode,
+    });
+    dispatch(command);
+    showToast(`Spawned ${plan.patch.metadata.spawnedNodeCount} nodes from agent output`);
+    return { ...plan, command };
+  } catch (error) {
+    const diagnostic = {
+      kind: 'error',
+      code: error?.code || 'agent-auto-spawn-failed',
+      message: error?.message || String(error),
+    };
+    console.error('[agent-auto-spawn] Graph patch failed', error);
+    showToast(`Agent auto-spawn failed: ${diagnostic.message}`);
+    return { ok: false, patch: null, diagnostic };
+  }
 }

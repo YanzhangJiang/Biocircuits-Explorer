@@ -31,6 +31,47 @@ The contract catalog distinguishes four kinds of evidence:
 invalid.” Upgrade such a claim only after adding an identified producer fixture
 and a validator that actually loads it.
 
+## Workspace document v2
+
+The complete browser/native document identity is `bne-workspace/v2.0.0` and is
+owned by `schemas/workspace.schema.json`. Unlike the earlier partial schemas,
+this document schema covers canvas state, node identity/type/position/data,
+typed connections, the optional Design Agent conversation, and supported
+extension fields.
+
+Version 1 documents are input to a deterministic migrator, not an alternate
+current schema. The migrator expands the six merged legacy workflow nodes into
+typed config/result nodes, resolves all restored endpoints through the strict
+port registry, drops cross-family or otherwise invalid wires with diagnostics,
+removes runtime/session fields, and marks restored derived results historical.
+The browser and Swift decoder consume shared v1/v2/future fixtures. Unknown
+future versions fail before replacing the current workspace.
+
+Schema validity does not make a restored result current. The separate workflow
+lifecycle contract controls whether a result may flow downstream; see
+[`workflow-execution.md`](workflow-execution.md).
+
+## Release-candidate external evidence
+
+`bne-release-candidate-evidence/v1.0.0` is an operator-completed record for one
+immutable candidate across Registry, Compose/TLS, AWS, Slurm, and macOS. The
+tracked JSON is deliberately a `not_run` template. It is not an execution log
+and does not establish any external result.
+
+A lane can be `passed` only with a named authorized environment, at least one
+timestamped command observation whose redacted output is SHA-256-addressed, and
+a completed rollback observation or a non-empty reason why rollback is not
+applicable. `overall_status=passed` additionally requires a clean 40-character
+source commit, configuration hash, OCI digest, macOS artifact hash, and all five
+lanes passed. These structural checks prevent accidental promotion of a local
+or mocked check; an operator must still review whether each observation proves
+the lane named in the runbook.
+
+See the prepared-but-not-executed
+[`release-candidate-external-verification`](../runbooks/release-candidate-external-verification.md)
+runbook. Evidence files remain outside the tracked template and must be
+redacted before hashing.
+
 ## Current Design Screen contract
 
 The current response identity is `bne-design-screen/v0.3.0`. Version 0.3 makes

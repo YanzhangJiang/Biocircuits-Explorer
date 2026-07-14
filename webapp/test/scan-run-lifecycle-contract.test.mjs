@@ -146,7 +146,14 @@ global.fetch = (url, options) => new Promise((resolve) => {
 });
 
 const stateModule = await import('../public/js/state.js');
-const { nodeRegistry, setConnections, plotResizeObservers, wiringState } = stateModule;
+const {
+  advanceWorkspaceRuntimeEpoch,
+  getWorkspaceRuntimeEpoch,
+  nodeRegistry,
+  setConnections,
+  plotResizeObservers,
+  wiringState,
+} = stateModule;
 const scanModule = await import('../public/js/scan.js');
 const {
   runParameterScan1D, executeScan1DResult,
@@ -154,7 +161,10 @@ const {
   setupLegacyScanInputInvalidation,
 } = scanModule;
 const {
-  beginScanExecution, invalidateScanExecution,
+  beginScanExecution,
+  inspectScanExecution,
+  invalidateScanExecution,
+  readCurrentScanResult,
 } = await import('../public/js/execution-lifecycle.js');
 const {
   invalidateModelBuilder, replaceConnectionsWithModelInvalidation,
@@ -351,6 +361,15 @@ for (const mode of RUN_MODES) {
       assert.equal(nodeRegistry[resultId].data[metaKey].historical, false);
       assert.equal(nodeRegistry[resultId].data[metaKey].model.networkIrHash, 'network-hash');
       assert.match(nodeRegistry[resultId].data[metaKey].requestFingerprint, /network-hash/);
+      const runtime = inspectScanExecution(resultId);
+      assert.equal(runtime.state, 'current');
+      assert.equal(runtime.freshness, 'current');
+      assert.equal(runtime.owner, nodeRegistry[resultId]);
+      assert.equal(runtime.workspaceEpoch, getWorkspaceRuntimeEpoch());
+      assert.equal(runtime.endpoint,
+        mode.dimension === 1 ? '/api/v1/parameter_scan_1d' : '/api/v1/parameter_scan_2d');
+      assert.equal(runtime.inputFingerprint, nodeRegistry[resultId].data[metaKey].requestFingerprint);
+      assert.equal(readCurrentScanResult(resultId).result.marker, 'new');
 
       if (oldOutcome === 'success') {
         respond(requests[0], scanResponse(mode.dimension, 'old'));
@@ -385,8 +404,22 @@ for (const mode of RUN_MODES) {
     const resultKey = mode.dimension === 1 ? 'scan1DResult' : 'scan2DResult';
     assert.equal(nodeRegistry[resultId].data[resultKey], undefined);
     assert.match(elements.get(`${resultId}-content`).innerHTML, /did not run/);
+    assert.equal(inspectScanExecution(resultId).state, 'blocked');
   });
 }
+
+await test('workspace epoch drift invalidates a pending scan before response publication', async () => {
+  const mode = RUN_MODES[0];
+  const { resultId } = resetHarness(mode);
+  const run = mode.run(resultId);
+  await flushMicrotasks();
+  assert.equal(requests.length, 1);
+  advanceWorkspaceRuntimeEpoch();
+  respond(requests[0], scanResponse(1, 'old-epoch'));
+  assert.equal(await run, false);
+  assert.equal(nodeRegistry[resultId].data.scan1DResult, undefined);
+  assert.equal(inspectScanExecution(resultId).state, 'invalidated');
+});
 
 await test('config input invalidates a paired result immediately, before debounced persistence', async () => {
   const mode = RUN_MODES[1];
@@ -704,7 +737,11 @@ await test('restored scan data is historical and never receives a fresh runtime 
     scan1DResult: scanResponse(1, 'saved'),
     scan1DResultMeta: {
       contract: 'bne-scan-execution/v1',
-      request: { param_symbol: 'q_A' },
+      request: {
+        param_symbol: 'q_A',
+        session_id: 'stale-backend-session',
+        nested: { sessionId: 'also-stale' },
+      },
       model: { networkIrHash: 'saved-hash' },
       historical: false,
     },
@@ -714,6 +751,15 @@ await test('restored scan data is historical and never receives a fresh runtime 
   assert.equal(elements.get(`${resultId}-content`).dataset.resultState, 'historical');
   assert.match(elements.get(`${resultId}-content`).innerHTML, /Historical saved result/);
   assert.equal(nodeRegistry[resultId]._latestScanExecutionToken, undefined);
+  assert.equal(nodeRegistry[resultId].data.scan1DResultMeta.request.session_id, undefined);
+  assert.equal(nodeRegistry[resultId].data.scan1DResultMeta.request.nested.sessionId, undefined);
+  const runtime = inspectScanExecution(resultId);
+  assert.equal(runtime.state, 'historical');
+  assert.equal(runtime.freshness, 'historical');
+  assert.equal(runtime.owner, nodeRegistry[resultId]);
+  assert.equal(runtime.workspaceEpoch, getWorkspaceRuntimeEpoch());
+  assert.equal(runtime.endpoint, '/api/v1/parameter_scan_1d');
+  assert.equal(runtime.sessionId, null);
 });
 
 await test('invalidating a restored historical result cancels its owner-guarded plot timer', async () => {

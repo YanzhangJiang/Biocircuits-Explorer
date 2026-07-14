@@ -39,7 +39,7 @@ jobs:
         working-directory: webapp
         run: npm ci
 
-      - name: ESLint (errors fail; warnings allowed)
+      - name: ESLint (errors and warnings fail)
         working-directory: webapp
         run: npm run lint
 
@@ -57,6 +57,42 @@ jobs:
       - name: index.html / index.zh.html structural sync
         working-directory: webapp
         run: npm run check-i18n-sync
+
+  browser-e2e:
+    name: Browser E2E / accessibility / visual regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "webapp/package-lock.json"
+
+      - name: Install browser test dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Install Chromium and system dependencies
+        working-directory: webapp
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real-browser workspace quality gate
+        working-directory: webapp
+        run: npm run test:e2e
+
+      - name: Upload Playwright diagnostics after a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-diagnostics
+          path: |
+            webapp/e2e/.artifacts/playwright-report
+            webapp/e2e/.artifacts/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-macos-host:
     name: macOS host on ${{ matrix.os }}

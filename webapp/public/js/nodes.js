@@ -1,17 +1,18 @@
 // Biocircuits Explorer — Node CRUD, Discovery, Menu, Auto-Update & Observer Functions
 
-import { nodeRegistry, connections, nodeIdCounter, nextNodeId, setNodeIdCounter, canvasState, scale, plotResizeObservers, nodeResizeObservers, plotInteractionGuards, getPortColor } from './state.js';
+import { nodeRegistry, connections, nodeIdCounter, nextNodeId, setNodeIdCounter, plotResizeObservers, nodeResizeObservers, plotInteractionGuards } from './state.js';
 import { showToast } from './api.js';
 import { applyThemeMode } from './theme.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { updateConnections } from './connections.js';
-import { buildModel, triggerDownstreamNodes, getReactionsFromNode } from './model.js';
+import { buildModel, getReactionsFromNode } from './model.js';
 import { commitWorkspaceSnapshot, queueWorkspaceShellSync, getNodeSerialData } from './workspace.js';
 import { refreshAtlasQueryDesigner } from './atlas.js';
 import { dispatch, record, CreateNodeCommand, RemoveNodeCommand, ChangeAttrCommand } from './commands.js';
 import {
   invalidateModelBuildersForReactionSource,
   modelInputRevision,
+  readCurrentModelBuildResult,
   replaceConnectionsWithModelInvalidation,
 } from './model-lifecycle.js';
 import {
@@ -26,6 +27,13 @@ import {
   planWorkflowExecution,
   runWorkflowPlan,
 } from './workflow-execution.js';
+import {
+  GraphPatchCommand,
+  GraphPatchError,
+  QUICK_ADD_REACTION_SOURCE_TYPES,
+  planQuickAddWorkflow,
+} from './graph-patch.js';
+import { validateNodeConnection } from './connection-validation.js';
 export { setNodeLoading } from './node-loading.js';
 
 // ===== Node Discovery =====
@@ -67,15 +75,7 @@ function findUpstreamNodeInConnections(nodeId, predicate, connectionList, visite
 }
 
 export function getModelContextFromBuilder(modelBuilderNodeId) {
-  const data = nodeRegistry[modelBuilderNodeId]?.data;
-  if (!data?.modelContext || data.built === false || !data.modelContext.sessionId) {
-    return null;
-  }
-  if (data.modelContext.builtForRevision != null &&
-      data.modelContext.builtForRevision !== modelInputRevision(modelBuilderNodeId)) {
-    return null;
-  }
-  return data.modelContext;
+  return readCurrentModelBuildResult(modelBuilderNodeId);
 }
 
 export function getModelContextForNode(nodeId) {
@@ -150,9 +150,40 @@ export async function ensureModelSession(nodeId, { connectionResolver = null } =
 
 // ===== Node CRUD =====
 
+const RESTORE_ONLY_NODE_CREATION_MODES = new Set([
+  'workspace-restore',
+  'workspace-migration',
+]);
+
+export function validateNodeCreation(nodeType, opts = {}) {
+  const definition = NODE_TYPES[nodeType];
+  if (!definition) {
+    return {
+      ok: false,
+      code: 'unknown-node-type',
+      message: `Unknown node type: ${String(nodeType)}`,
+      definition: null,
+    };
+  }
+  if (definition.availability === 'restore-only' &&
+      !RESTORE_ONLY_NODE_CREATION_MODES.has(opts.creationMode)) {
+    return {
+      ok: false,
+      code: 'restore-only-node-type',
+      message: `${definition.title || nodeType} is restore-only and cannot be created interactively`,
+      definition,
+    };
+  }
+  return { ok: true, code: 'creatable', message: 'Node type is creatable', definition };
+}
+
 export function createNode(nodeType, x, y, opts = {}) {
-  const typeDef = NODE_TYPES[nodeType];
-  if (!typeDef) { console.error('Unknown node type:', nodeType); return null; }
+  const creation = validateNodeCreation(nodeType, opts);
+  if (!creation.ok) {
+    console.error(`[nodes] ${creation.message}`);
+    return null;
+  }
+  const typeDef = creation.definition;
 
   let nodeId;
   if (opts.id) {
@@ -319,8 +350,7 @@ export function initAttrHistory(target = document) {
 // ===== Auto-Chain Generation =====
 
 function isReactionSourceNodeType(type) {
-  return type === 'reaction-network' || type === 'network-id-definition' ||
-         type === 'design-target';
+  return QUICK_ADD_REACTION_SOURCE_TYPES.includes(type);
 }
 
 // Find an existing chain ending with a model-builder that has a model output
@@ -379,7 +409,7 @@ export function resolveOverlap(x, y, width, height, excludeNodeId) {
   let curY = y;
   while (maxAttempts-- > 0) {
     let overlaps = false;
-    for (const [id, info] of Object.entries(nodeRegistry)) {
+    for (const id of Object.keys(nodeRegistry)) {
       if (id === excludeNodeId) continue;
       const pos = getNodePosition(id);
       const size = getNodeSize(id);
@@ -436,149 +466,329 @@ export function addResultNode(nodeType) {
 }
 
 // ===== Quick Add Chain Generation =====
-export function addQuickAddChain(chainType) {
+
+function cloneConnections(connectionList) {
+  return (connectionList || []).map(connection => ({ ...connection }));
+}
+
+export function captureQuickAddGraphSnapshot() {
+  return {
+    nodes: Object.entries(nodeRegistry).map(([id, info]) => {
+      const position = getNodePosition(id);
+      return { id, type: info.type, x: position.x, y: position.y };
+    }),
+    connections: cloneConnections(connections),
+    nodeIdCounter,
+  };
+}
+
+export function captureEditorGraphPlanningGraph() {
+  return {
+    nodes: Object.entries(nodeRegistry).map(([id, info]) => {
+      const position = getNodePosition(id);
+      const size = getNodeSize(id);
+      return {
+        id,
+        type: info.type,
+        x: position.x,
+        y: position.y,
+        width: size.w,
+        height: size.h,
+      };
+    }),
+    connections: cloneConnections(connections),
+  };
+}
+
+function quickAddComparableSnapshot(snapshot) {
+  const nodes = (snapshot?.nodes || []).map(({ id, type, x, y }) => ({ id, type, x, y }));
+  const largestNodeOrdinal = nodes.reduce((largest, node) => {
+    const match = /^node-(\d+)$/.exec(node.id);
+    return match ? Math.max(largest, Number(match[1])) : largest;
+  }, 0);
+  return {
+    nodes,
+    connections: cloneConnections(snapshot?.connections),
+    // projectGraphPatch is intentionally generic and preserves extra snapshot
+    // fields. Treat the largest newly planned node ID as the projected counter
+    // so commit verification can still require exact counter restoration.
+    nodeIdCounter: Math.max(snapshot?.nodeIdCounter || 0, largestNodeOrdinal),
+  };
+}
+
+export function quickAddGraphSnapshotsEqual(left, right) {
+  return JSON.stringify(quickAddComparableSnapshot(left)) ===
+    JSON.stringify(quickAddComparableSnapshot(right));
+}
+
+function restoreQuickAddGraphSnapshot(snapshot, phase) {
+  const targetNodes = new Map(snapshot.nodes.map(spec => [spec.id, spec]));
+
+  // Check type identity before making the first mutation. A type mismatch
+  // cannot be repaired without serialized node data and must fail closed.
+  for (const [id, spec] of targetNodes) {
+    const live = nodeRegistry[id];
+    if (live && live.type !== spec.type) {
+      throw new GraphPatchError(
+        'quick-add-node-type-mismatch',
+        `Cannot ${phase}: ${id} changed from ${spec.type} to ${live.type}`,
+      );
+    }
+  }
+
+  for (const id of Object.keys(nodeRegistry).reverse()) {
+    if (!targetNodes.has(id)) removeNode(id);
+  }
+
+  for (const spec of snapshot.nodes) {
+    if (!nodeRegistry[spec.id]) {
+      const restoredId = createNode(spec.type, spec.x, spec.y, {
+        id: spec.id,
+        creationMode: 'quick-add-rollback',
+      });
+      if (restoredId !== spec.id) {
+        throw new GraphPatchError(
+          'quick-add-node-restore-failed',
+          `Cannot ${phase}: failed to restore ${spec.id}`,
+        );
+      }
+    }
+    const element = document.getElementById(spec.id);
+    if (!element) {
+      throw new GraphPatchError(
+        'quick-add-node-element-missing',
+        `Cannot ${phase}: ${spec.id} has no DOM element`,
+      );
+    }
+    element.style.left = `${spec.x}px`;
+    element.style.top = `${spec.y}px`;
+  }
+
+  replaceConnectionsWithModelInvalidation(
+    cloneConnections(snapshot.connections),
+    `quick-add-${phase}`,
+  );
+  setNodeIdCounter(snapshot.nodeIdCounter);
+  updateConnections();
+}
+
+export function createEditorGraphPatchAdapter({ initializeNode = null } = {}) {
+  return {
+    captureSnapshot: captureQuickAddGraphSnapshot,
+    stageNode: spec => ({ ...spec }),
+    stageConnection: spec => ({ ...spec }),
+    commit(transaction, context) {
+      for (const spec of transaction.patch.nodes) {
+        const createdId = createNode(spec.type, spec.x, spec.y, {
+          id: spec.id,
+          creationMode: 'graph-patch',
+        });
+        if (createdId !== spec.id) {
+          throw new GraphPatchError(
+            'graph-patch-node-create-failed',
+            `Graph patch failed to create ${spec.id} (${spec.type})`,
+          );
+        }
+        if (typeof initializeNode === 'function') {
+          const initialization = initializeNode(spec, {
+            nodeId: createdId,
+            transaction,
+            context,
+          });
+          if (initialization && typeof initialization.then === 'function') {
+            throw new GraphPatchError(
+              'async-graph-patch-initializer',
+              'Graph patch node initialization must be synchronous',
+            );
+          }
+        }
+      }
+      replaceConnectionsWithModelInvalidation(
+        cloneConnections(transaction.nextSnapshot.connections),
+        'editor-graph-patch',
+      );
+      updateConnections();
+    },
+    restoreSnapshot(snapshot, context = {}) {
+      restoreQuickAddGraphSnapshot(snapshot, context.phase || 'restore');
+    },
+  };
+}
+
+export function createQuickAddGraphAdapter(options = {}) {
+  return createEditorGraphPatchAdapter(options);
+}
+
+export function createEditorGraphPatchValidators() {
+  return {
+    snapshot(snapshot) {
+      if (!Number.isSafeInteger(snapshot.nodeIdCounter) || snapshot.nodeIdCounter < 0) {
+        return { ok: false, message: 'Graph patch requires a valid node ID counter' };
+      }
+      return true;
+    },
+    node(spec, { isNew }) {
+      const definition = NODE_TYPES[spec.type];
+      if (!definition) {
+        return { ok: false, message: `Unknown node type ${spec.type}` };
+      }
+      if (isNew && definition.availability !== 'active') {
+        return {
+          ok: false,
+          message: `Graph patch cannot create ${spec.type} because it is ${definition.availability}`,
+        };
+      }
+      return true;
+    },
+    connection(spec, { nextSnapshot }) {
+      const projectedRegistry = Object.fromEntries(
+        nextSnapshot.nodes.map(nodeSpec => [nodeSpec.id, { type: nodeSpec.type }]),
+      );
+      return validateNodeConnection(spec, projectedRegistry, NODE_TYPES);
+    },
+  };
+}
+
+export function createQuickAddGraphValidators() {
+  return createEditorGraphPatchValidators();
+}
+
+function reactionsReadyForBuild(modelBuilderNodeId) {
+  const reactionInput = connections.find(connection =>
+    connection.toNode === modelBuilderNodeId && connection.toPort === 'reactions');
+  if (!reactionInput) return false;
+  const { reactions, kds } = getReactionsFromNode(reactionInput.fromNode);
+  return reactions.length > 0 && kds.length === reactions.length &&
+    kds.every(kd => Number.isFinite(kd) && kd > 0);
+}
+
+function reactionsReadyForParams(paramsNodeId) {
+  const reactionInput = connections.find(connection =>
+    connection.toNode === paramsNodeId && connection.toPort === 'reactions');
+  if (!reactionInput) return false;
+  return getReactionsFromNode(reactionInput.fromNode).reactions.length > 0;
+}
+
+export function createEditorGraphPatchDeferredTasks(patch) {
+  return (patch.effects || []).map(effect => {
+    if (effect.kind === 'node-auto-build-if-needed') {
+      return {
+        id: effect.id,
+        delay: effect.delay,
+        run(context) {
+          if (!context.isCurrent() || context.signal.aborted) return undefined;
+          if (nodeRegistry[effect.nodeId]?.type !== 'model-builder') return undefined;
+          if (getModelContextFromBuilder(effect.nodeId)) return undefined;
+          if (!reactionsReadyForBuild(effect.nodeId)) return undefined;
+          if (!context.isCurrent() || context.signal.aborted) return undefined;
+          return buildModel(effect.nodeId, { triggerDownstream: true });
+        },
+      };
+    }
+    if (effect.kind === 'node-execute-if-ready') {
+      return {
+        id: effect.id,
+        delay: effect.delay,
+        run(context) {
+          if (!context.isCurrent() || context.signal.aborted) return undefined;
+          const info = nodeRegistry[effect.nodeId];
+          const prepare = NODE_TYPES[info?.type]?.prepare;
+          if (typeof prepare !== 'function') return undefined;
+          const ready = hasModelContextForNode(effect.nodeId) ||
+            (info.type === 'rop-cloud-params' && reactionsReadyForParams(effect.nodeId));
+          if (!ready || !context.isCurrent() || context.signal.aborted) return undefined;
+          return prepare(effect.nodeId, { triggerDownstream: false });
+        },
+      };
+    }
+    throw new GraphPatchError(
+      'unknown-graph-patch-effect',
+      `Unknown graph patch deferred effect: ${String(effect.kind)}`,
+    );
+  });
+}
+
+export function createQuickAddDeferredTasks(patch) {
+  return createEditorGraphPatchDeferredTasks(patch);
+}
+
+export function createEditorGraphPatchCommand(plan, options = {}) {
+  if (!plan?.ok || !plan.patch) {
+    throw new GraphPatchError(
+      'invalid-editor-graph-patch-plan',
+      'Cannot create a graph command from an unsuccessful graph patch plan',
+    );
+  }
+  return new GraphPatchCommand({
+    patch: plan.patch,
+    adapter: options.adapter || createEditorGraphPatchAdapter({
+      initializeNode: options.initializeNode,
+    }),
+    validators: options.validators || createEditorGraphPatchValidators(),
+    deferredTasks: options.deferredTasks ?? createEditorGraphPatchDeferredTasks(plan.patch),
+    scheduler: options.scheduler,
+    snapshotEquals: quickAddGraphSnapshotsEqual,
+    onEpochCancel: options.onEpochCancel,
+    onDeferredError: options.onDeferredError || ((error, details) => {
+      console.error(`[graph-patch] Deferred task ${details.task?.id || 'unknown'} failed`, error);
+    }),
+  });
+}
+
+export function createQuickAddGraphCommand(plan, options = {}) {
+  return createEditorGraphPatchCommand(plan, options);
+}
+
+function selectedQuickAddNodeId(predicate) {
+  const candidates = getSelection().filter(id => predicate(nodeRegistry[id]?.type));
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+export function addQuickAddChain(chainType, options = {}) {
   closeDropdown();
 
-  if (chainType === 'atlas-preview') {
-    const specX = 80;
-    const specY = resolveOverlap(specX, 150, 420, 620, null);
-    const specId = createNode('atlas-spec', specX, specY);
-    const builderX = specX + 480;
-    const builderY = resolveOverlap(builderX, specY, 460, 480, null);
-    const builderId = createNode('atlas-builder', builderX, builderY);
+  const createIsolatedSource = options.createIsolatedSource === true;
+  const selectedSourceId = Object.prototype.hasOwnProperty.call(options, 'selectedSourceId')
+    ? options.selectedSourceId
+    : createIsolatedSource
+      ? undefined
+      : selectedQuickAddNodeId(isReactionSourceNodeType);
+  const selectedModelBuilderId = Object.prototype.hasOwnProperty.call(options, 'selectedModelBuilderId')
+    ? options.selectedModelBuilderId
+    : createIsolatedSource
+      ? undefined
+      : selectedQuickAddNodeId(type => type === 'model-builder');
 
-    connections.push({ fromNode: specId, fromPort: 'atlas-spec', toNode: builderId, toPort: 'atlas-spec' });
-    updateConnections();
-    return;
+  const plan = planQuickAddWorkflow({
+    chainType,
+    graph: captureEditorGraphPlanningGraph(),
+    nextNodeOrdinal: nodeIdCounter + 1,
+    anchor: options.anchor,
+    selectedSourceId,
+    selectedModelBuilderId,
+    createIsolatedSource,
+  });
+  if (!plan.ok) {
+    const hint = plan.diagnostic.code === 'manual-source-selection-required'
+      ? ' Shift-click Quick Add to create an isolated source.'
+      : '';
+    showToast(`${plan.diagnostic.message}${hint}`);
+    return plan;
   }
 
-  if (chainType === 'atlas-search' || chainType === 'atlas-workflow') {
-    const specX = 80;
-    const specY = resolveOverlap(specX, 150, 420, 620, null);
-    const specId = createNode('atlas-spec', specX, specY);
-    const builderX = specX + 480;
-    const builderY = resolveOverlap(builderX, specY, 460, 480, null);
-    const builderId = createNode('atlas-builder', builderX, builderY);
-    const queryX = builderX + 520;
-    const queryY = resolveOverlap(queryX, specY, 420, 700, null);
-    const queryId = createNode('atlas-query-config', queryX, queryY);
-    const resultX = queryX + 460;
-    const resultY = resolveOverlap(resultX, queryY, 640, 540, null);
-    const resultId = createNode('atlas-query-result', resultX, resultY);
-
-    connections.push({ fromNode: specId, fromPort: 'atlas-spec', toNode: builderId, toPort: 'atlas-spec' });
-    connections.push({ fromNode: builderId, fromPort: 'atlas', toNode: resultId, toPort: 'atlas' });
-    connections.push({ fromNode: queryId, fromPort: 'atlas-query', toNode: resultId, toPort: 'atlas-query' });
-    updateConnections();
-    return;
-  }
-
-  if (chainType === 'atlas-inverse-design') {
-    const specX = 80;
-    const specY = resolveOverlap(specX, 150, 420, 620, null);
-    const specId = createNode('atlas-spec', specX, specY);
-    const queryX = specX + 480;
-    const queryY = resolveOverlap(queryX, specY, 420, 700, null);
-    const queryId = createNode('atlas-query-config', queryX, queryY);
-    const resultX = queryX + 480;
-    const resultY = resolveOverlap(resultX, queryY, 700, 620, null);
-    const resultId = createNode('atlas-inverse-result', resultX, resultY);
-
-    connections.push({ fromNode: specId, fromPort: 'atlas-spec', toNode: resultId, toPort: 'atlas-spec' });
-    connections.push({ fromNode: queryId, fromPort: 'atlas-query', toNode: resultId, toPort: 'atlas-query' });
-    updateConnections();
-    return;
-  }
-
-  // Map legacy node types to their new chain equivalents
-  const chainMap = {
-    'siso-analysis': { params: 'siso-params', result: 'siso-result' },
-    'rop-cloud': { params: 'rop-cloud-params', result: 'rop-cloud-result' },
-    'fret-heatmap': { params: 'fret-params', result: 'fret-result' },
-    'parameter-scan-1d': { params: 'scan-1d-params', result: 'scan-1d-result' },
-    'parameter-scan-2d': { params: 'scan-2d-params', result: 'scan-2d-result' },
-    'rop-polyhedron': { params: 'rop-poly-params', result: 'rop-poly-result' },
-    'parameter-placer': { params: 'placer-params', result: 'placer-result' },
-  };
-
-  const chain = chainMap[chainType];
-  if (!chain) {
-    console.error('Unknown quick add chain type:', chainType);
-    return;
-  }
-
-  // Check for existing nodes and reuse them
-  let rnId = findExistingReactionNetwork();
-  let mbId = null;
-  let createdModelBuilder = false;
-
-  if (!rnId) {
-    // No reaction network exists, create one. Walk Y down to avoid landing
-    // on top of an existing node at the default (80, 150) anchor.
-    const safeY = resolveOverlap(80, 150, 280, 300, null);
-    rnId = createNode('reaction-network', 80, safeY);
-  }
-
-  // Check for existing model-builder connected to this reaction network
-  const existing = findExistingModelBuilder();
-  if (existing && existing.reactionNetworkId === rnId) {
-    mbId = existing.modelBuilderId;
-  } else {
-    // Create model-builder and connect to reaction network
-    const rnPos = getNodePosition(rnId);
-    const rnSize = getNodeSize(rnId);
-    const mbX = rnPos.x + rnSize.w + 60;
-    const mbY = resolveOverlap(mbX, rnPos.y, 260, 200, null);
-    mbId = createNode('model-builder', mbX, mbY);
-    createdModelBuilder = true;
-    connections.push({ fromNode: rnId, fromPort: 'reactions', toNode: mbId, toPort: 'reactions' });
-  }
-
-  // Create params and result nodes
-  const mbPos = getNodePosition(mbId);
-  const mbSize = getNodeSize(mbId);
-  const paramsX = mbPos.x + mbSize.w + 60;
-  const nDownstream = countDownstreamViewers(mbId);
-  const paramsY = resolveOverlap(paramsX, mbPos.y + nDownstream * 50, 320, 300, null);
-  const paramsId = createNode(chain.params, paramsX, paramsY);
-
-  const paramsSize = getNodeSize(paramsId);
-  const resultX = paramsX + paramsSize.w + 60;
-  const resultY = resolveOverlap(resultX, paramsY, 420, 300, null);
-  const resultId = createNode(chain.result, resultX, resultY);
-
-  // Connect them
-  connections.push({ fromNode: mbId, fromPort: 'model', toNode: paramsId, toPort: 'model' });
-  connections.push({ fromNode: paramsId, fromPort: 'params', toNode: resultId, toPort: 'params' });
-
-  // Special case: ROP cloud params also needs reactions connection
-  if (chain.params === 'rop-cloud-params') {
-    connections.push({ fromNode: rnId, fromPort: 'reactions', toNode: paramsId, toPort: 'reactions' });
-  }
-
-  updateConnections();
-
-  const modelBuilderInfo = nodeRegistry[mbId];
-  if ((createdModelBuilder || !getModelContextFromBuilder(mbId)) && modelBuilderInfo?._autoBuildCheck) {
-    setTimeout(() => {
-      modelBuilderInfo._autoBuildCheck();
-    }, 100);
-  }
-
-  // Auto-populate the params node if model data is available
-  const paramsTypeDef = NODE_TYPES[chain.params];
-  if (paramsTypeDef && paramsTypeDef.execute) {
-    // Check if we have model data or reactions data
-    const hasModelData = hasModelContextForNode(paramsId);
-    const hasReactionsData = chain.params === 'rop-cloud-params'; // ROP cloud uses reactions
-
-    if (hasModelData || hasReactionsData) {
-      setTimeout(() => {
-        paramsTypeDef.execute(paramsId).catch(e => {
-          console.error(`Failed to auto-populate ${paramsId}:`, e);
-        });
-      }, 100);
-    }
+  try {
+    const command = createQuickAddGraphCommand(plan);
+    dispatch(command);
+    return { ...plan, command };
+  } catch (error) {
+    const diagnostic = {
+      kind: 'error',
+      code: error?.code || 'quick-add-commit-failed',
+      message: error?.message || String(error),
+    };
+    console.error('[quick-add] Graph patch failed', error);
+    showToast(`Quick Add failed: ${diagnostic.message}`);
+    return { ok: false, patch: null, diagnostic };
   }
 }
 
@@ -944,8 +1154,8 @@ export function initNodeMenuEvents() {
   });
 
   legacyNodesMenu.querySelectorAll('.menu-item').forEach(item => {
-    item.addEventListener('click', () => {
-      addQuickAddChain(item.dataset.type);
+    item.addEventListener('click', (event) => {
+      addQuickAddChain(item.dataset.type, { createIsolatedSource: event.shiftKey });
     });
   });
 

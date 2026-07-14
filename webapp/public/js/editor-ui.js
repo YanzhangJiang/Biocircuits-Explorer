@@ -3,7 +3,7 @@
 // programmatically so no index-node.html changes are required.
 
 import {
-  getSelection, selectionSize, selectAll, clearSelection, deleteSelection,
+  selectionSize, selectAll, clearSelection, deleteSelection,
   applyAlignment, onSelectionChange,
 } from './selection.js';
 import { copySelection, pasteClipboard, duplicateSelection } from './workspace.js';

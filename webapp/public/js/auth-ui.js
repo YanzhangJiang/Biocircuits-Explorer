@@ -28,7 +28,7 @@ export async function initAuthUiEvents() {
   let config;
   try {
     config = await fetchAuthConfig();
-  } catch (_) {
+  } catch {
     config = { enabled: false };
   }
   const authEnabled = !!(config && config.enabled);

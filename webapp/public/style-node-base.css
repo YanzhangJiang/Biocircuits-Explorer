@@ -274,6 +274,7 @@ body.debug-console-open #editor {
 .node {
   position: absolute; background: var(--node-bg-full, var(--node-bg));
   border: 1px solid var(--node-border); border-radius: 6px;
+  box-sizing: border-box;
   box-shadow: var(--node-shadow);
   min-width: 240px; min-height: 100px;
   display: flex; flex-direction: column; z-index: 10;

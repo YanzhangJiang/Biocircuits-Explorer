@@ -107,18 +107,20 @@ export class UndoStack {
   }
 
   undo() {
-    const cmd = this._undo.pop();
+    const cmd = this._undo[this._undo.length - 1];
     if (!cmd) return null;
     cmd.revert();
+    this._undo.pop();
     this._redo.push(cmd);
     this._emit();
     return cmd;
   }
 
   redo() {
-    const cmd = this._redo.pop();
+    const cmd = this._redo[this._redo.length - 1];
     if (!cmd) return null;
     cmd.apply();
+    this._redo.pop();
     this._undo.push(cmd);
     this._emit();
     return cmd;

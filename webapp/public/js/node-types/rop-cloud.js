@@ -2,7 +2,14 @@ import { connections, nodeRegistry, ensureNodeData } from '../state.js';
 import { api, renderNodeError } from '../api.js';
 import { setNodeLoading, getModelForNode, setupAutoUpdate, ensureModelSession } from '../nodes.js';
 import { getReactionsFromNode } from '../model.js';
-import { executeROPCloudResult, updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, executeFRETResult } from '../rop-cloud.js';
+import {
+  executeROPCloudResult,
+  updateROPCloudMode,
+  refreshROPCloudTargetOptions,
+  renderROPCloudOutput,
+  executeFRETResult,
+  installDerivedResultInvalidation,
+} from '../rop-cloud.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
 import { plotHeatmap } from '../plotting.js';
 import { setupPlotResize } from '../nodes.js';
@@ -52,6 +59,7 @@ export const ROP_CLOUD_TYPES = {
     },
     onInit(nodeId) {
       updateROPCloudMode(nodeId);
+      installDerivedResultInvalidation(nodeId);
       setupAutoUpdate(nodeId, 'rop-cloud-params');
     },
     async prepare(nodeId) {
@@ -202,6 +210,7 @@ export const ROP_CLOUD_TYPES = {
       `;
     },
     onInit(nodeId) {
+      installDerivedResultInvalidation(nodeId);
       setupAutoUpdate(nodeId, 'fret-params');
     },
     async prepare(nodeId) {

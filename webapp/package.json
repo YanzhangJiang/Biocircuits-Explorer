@@ -7,13 +7,16 @@
   "scripts": {
     "build": "esbuild public/js/main.js --bundle --format=esm --sourcemap --target=es2022 --outfile=public/js/dist/main.js",
     "watch": "npm run build -- --watch",
-    "lint": "eslint --config eslint.config.mjs public/js",
-    "test:js": "node test/commands.test.mjs && node test/geometry.test.mjs && node test/workspace-load-contract.test.mjs && node test/graph-model-invalidation-contract.test.mjs && node test/model-build-lifecycle-contract.test.mjs && node test/scan-validity-contract.test.mjs && node test/scan-run-lifecycle-contract.test.mjs && node test/atlas-sqlite-policy.test.mjs && node test/atlas-execution-lifecycle-contract.test.mjs && node test/strict-config-port-contract.test.mjs && node test/port-types.test.mjs && node test/action-events.test.mjs && node test/connection-validation.test.mjs && node test/execution-outcome-contract.test.mjs && node test/workflow-execution-contract.test.mjs && node test/siso-workflow-contract.test.mjs && node test/execution-descriptor-inventory.test.mjs && node test/model-request.test.mjs && node test/reaction-species.test.mjs && node test/native-clipboard.test.mjs && node test/design-target-render.test.mjs && node test/design-target-rop-shape-reference.test.mjs && node test/rop-shape-node-contract.test.mjs && node test/design-spec-node-contract.test.mjs && node test/design-agent-conversation-owner-contract.test.mjs && node test/design-chat-auth.test.mjs && node test/browser-security-contract.test.mjs",
+    "lint": "eslint --config eslint.config.mjs public/js --max-warnings 0",
+    "test:js": "node test/commands.test.mjs && node test/graph-patch-contract.test.mjs && node test/quick-add-graph-patch-integration.test.mjs && node test/geometry.test.mjs && node test/workspace-load-contract.test.mjs && node test/workspace-v2-migration-contract.test.mjs && node test/graph-model-invalidation-contract.test.mjs && node test/model-build-lifecycle-contract.test.mjs && node test/execution-lifecycle-core-contract.test.mjs && node test/scan-validity-contract.test.mjs && node test/scan-run-lifecycle-contract.test.mjs && node test/placer-execution-lifecycle-contract.test.mjs && node test/derived-result-lifecycle-contract.test.mjs && node test/vertices-table-lifecycle-contract.test.mjs && node test/atlas-sqlite-policy.test.mjs && node test/atlas-execution-lifecycle-contract.test.mjs && node test/strict-config-port-contract.test.mjs && node test/port-types.test.mjs && node test/action-events.test.mjs && node test/connection-validation.test.mjs && node test/execution-outcome-contract.test.mjs && node test/workflow-execution-contract.test.mjs && node test/siso-workflow-contract.test.mjs && node test/execution-descriptor-inventory.test.mjs && node test/model-request.test.mjs && node test/reaction-species.test.mjs && node test/native-clipboard.test.mjs && node test/design-target-render.test.mjs && node test/design-target-rop-shape-reference.test.mjs && node test/design-target-execution-lifecycle-contract.test.mjs && node test/rop-shape-node-contract.test.mjs && node test/design-spec-node-contract.test.mjs && node test/design-agent-conversation-owner-contract.test.mjs && node test/design-chat-auth.test.mjs && node test/browser-security-contract.test.mjs",
+    "test:e2e": "playwright test",
     "test:py": "python3 scripts/test_chat_api.py && python3 scripts/test_design_agent_contract.py",
     "sync-i18n": "cp public/index.html public/index.zh.html",
     "check-i18n-sync": "diff -q public/index.html public/index.zh.html"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
     "esbuild": "^0.24.0",
     "eslint": "^9.15.0",
     "globals": "^15.12.0"

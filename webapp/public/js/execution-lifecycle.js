@@ -2,8 +2,28 @@
 // depends only on shared graph state and the small loading helper so model,
 // connection, and config mutators can retire obsolete executions without
 // importing the plotting/request implementation.
-import { nodeRegistry, connections, plotResizeObservers, wiringState } from './state.js';
+import {
+  connections,
+  getWorkspaceRuntimeEpoch,
+  nodeRegistry,
+  plotResizeObservers,
+  wiringState,
+} from './state.js';
 import { setNodeLoading } from './node-loading.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  readCurrentResult,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from './execution-lifecycle-core.js';
 
 const SCAN_RESULT_CONTRACTS = Object.freeze({
   'parameter-scan-1d': { resultKey: 'scan1DResult', metaKey: 'scan1DResultMeta' },
@@ -29,6 +49,113 @@ const ATLAS_RESULT_CONTRACTS = Object.freeze({
     invalidatedMessage: 'Inputs changed — run inverse design again.',
   },
 });
+
+const PLACER_RESULT_CONTRACTS = Object.freeze({
+  'placer-result': {
+    dataKeys: ['placerResult', 'placerMenu', 'evidence'],
+    invalidatedMessage: 'Inputs changed — run Parameter Placer again.',
+  },
+});
+
+const ATLAS_LIFECYCLE_KEY = '_atlasExecutionLifecycle';
+export const PLACER_RESULT_LIFECYCLE_KEY = '_placerResultLifecycle';
+const SCAN_LIFECYCLE_KEY = '_scanExecutionLifecycle';
+
+function canonicalFingerprintValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalFingerprintValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) {
+    normalized[key] = canonicalFingerprintValue(value[key]);
+  }
+  return normalized;
+}
+
+function stableFingerprint(value) {
+  return JSON.stringify(canonicalFingerprintValue(value));
+}
+
+function scanEndpoint(kind = '', nodeType = '') {
+  const hint = `${kind} ${nodeType}`.toLowerCase();
+  return hint.includes('2d')
+    ? '/api/v1/parameter_scan_2d'
+    : '/api/v1/parameter_scan_1d';
+}
+
+function scanLifecycleFor(owner) {
+  if (!owner[SCAN_LIFECYCLE_KEY]) {
+    owner[SCAN_LIFECYCLE_KEY] = createExecutionLifecycle();
+  }
+  return owner[SCAN_LIFECYCLE_KEY];
+}
+
+function syncScanLifecycle(owner) {
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!owner || !lifecycle) return;
+  owner.data = owner.data || {};
+  owner.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function defaultScanContext(nodeId, kind) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: stableFingerprint({
+      kind,
+      nodeType: owner.type,
+      upstream: scanUpstreamSignature(nodeId),
+    }),
+    endpoint: scanEndpoint(kind, owner.type),
+  };
+}
+
+function atlasEndpoint(kind, nodeType = '') {
+  if (nodeType === 'atlas-builder' || kind === 'atlas-builder' || kind === 'build') {
+    return '/api/v1/build_atlas';
+  }
+  if (nodeType === 'atlas-query-result' || kind === 'atlas-query' || kind === 'query') {
+    return '/api/v1/query_atlas';
+  }
+  if (nodeType === 'atlas-inverse-result' || kind === 'atlas-inverse' || kind === 'inverse') {
+    return '/api/v1/run_inverse_design';
+  }
+  return '/api/v1/atlas';
+}
+
+function defaultAtlasContext(nodeId, kind) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: stableFingerprint({
+      kind,
+      nodeType: owner.type,
+      upstream: atlasUpstreamSignature(nodeId),
+    }),
+    endpoint: atlasEndpoint(kind, owner.type),
+  };
+}
+
+function atlasLifecycleFor(owner) {
+  if (!owner[ATLAS_LIFECYCLE_KEY]) {
+    owner[ATLAS_LIFECYCLE_KEY] = createExecutionLifecycle();
+  }
+  return owner[ATLAS_LIFECYCLE_KEY];
+}
+
+function syncAtlasLifecycle(owner) {
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!owner || !lifecycle) return;
+  owner.data = owner.data || {};
+  owner.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function placerResultContract(nodeId) {
+  return PLACER_RESULT_CONTRACTS[nodeRegistry[nodeId]?.type] || null;
+}
 
 function resultContract(nodeId) {
   return SCAN_RESULT_CONTRACTS[nodeRegistry[nodeId]?.type] || null;
@@ -89,7 +216,25 @@ export function clearStoredAtlasResult(nodeId, message = 'Run this Atlas step to
   return true;
 }
 
-export function beginAtlasNodeExecution(nodeId, kind = 'atlas') {
+export function clearStoredPlacerResult(
+  nodeId,
+  message = 'Run Parameter Placer to compute a current result.',
+) {
+  const info = nodeRegistry[nodeId];
+  const contract = placerResultContract(nodeId);
+  if (!info || !contract) return false;
+  if (info._placerPlotTimer != null) clearTimeout(info._placerPlotTimer);
+  if (info._placerTuneTimer != null) clearTimeout(info._placerTuneTimer);
+  delete info._placerPlotTimer;
+  delete info._placerTuneTimer;
+  delete info._placerPendingTune;
+  info.data = info.data || {};
+  contract.dataKeys.forEach(key => delete info.data[key]);
+  setAtlasResultMessage(nodeId, message);
+  return true;
+}
+
+export function beginAtlasNodeExecution(nodeId, kind = 'atlas', executionContext = null) {
   const owner = nodeRegistry[nodeId];
   const contract = atlasResultContract(nodeId);
   if (!owner || !contract) return null;
@@ -102,26 +247,114 @@ export function beginAtlasNodeExecution(nodeId, kind = 'atlas') {
   }
 
   setNodeLoading(nodeId, false);
-  const priorRevision = Number.isSafeInteger(owner._atlasExecutionRevision)
-    ? owner._atlasExecutionRevision
-    : 0;
-  const ticket = {
-    owner,
-    token: Symbol(`${kind}-${nodeId}`),
-    kind,
-    revision: priorRevision + 1,
-  };
-  owner._atlasExecutionRevision = ticket.revision;
-  owner._atlasExecution = ticket;
+  const context = executionContext || defaultAtlasContext(nodeId, kind);
+  if (!context || context.owner !== owner) return null;
+  const lifecycle = atlasLifecycleFor(owner);
+  const ticket = beginLifecycle(lifecycle, context);
   clearStoredAtlasResult(nodeId, contract.runningMessage);
+  syncAtlasLifecycle(owner);
   return ticket;
 }
 
-export function isCurrentAtlasNodeExecution(nodeId, ticket) {
+export function isCurrentAtlasNodeExecution(nodeId, ticket, executionContext = null) {
   const owner = nodeRegistry[nodeId];
-  return !!ticket && owner === ticket.owner &&
-    owner._atlasExecution === ticket &&
-    owner._atlasExecutionRevision === ticket.revision;
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!ticket || !lifecycle || owner !== ticket.owner) return false;
+  const context = executionContext || {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: ticket.inputFingerprint,
+    endpoint: ticket.endpoint,
+  };
+  return isCurrentLifecycle(lifecycle, ticket, context);
+}
+
+export function commitAtlasNodeExecution(nodeId, ticket, context, { result, evidence = null }) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const committed = commitLifecycle(lifecycle, ticket, { context, result, evidence });
+  syncAtlasLifecycle(owner);
+  return committed;
+}
+
+export function failAtlasNodeExecution(nodeId, ticket, context, error, evidence = null) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const failed = failLifecycle(lifecycle, ticket, { context, error, evidence });
+  if (failed) clearStoredAtlasResult(nodeId, 'Atlas execution failed — fix the error and rerun.');
+  syncAtlasLifecycle(owner);
+  return failed;
+}
+
+export function blockAtlasNodeExecution(nodeId, ticket, context, reason, evidence = null) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const blocked = blockLifecycle(lifecycle, ticket, { context, reason, evidence });
+  if (blocked) clearStoredAtlasResult(nodeId, 'Atlas execution is blocked — connect valid inputs and rerun.');
+  syncAtlasLifecycle(owner);
+  return blocked;
+}
+
+export function releaseAtlasNodeExecution(nodeId, ticket) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[ATLAS_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const released = releaseLifecycle(lifecycle, ticket);
+  syncAtlasLifecycle(owner);
+  setNodeLoading(nodeId, inspectExecutionLifecycle(lifecycle).loading);
+  return released;
+}
+
+export function inspectAtlasNodeExecution(nodeId) {
+  const lifecycle = nodeRegistry[nodeId]?.[ATLAS_LIFECYCLE_KEY];
+  return lifecycle ? inspectExecutionLifecycle(lifecycle) : null;
+}
+
+export function readCurrentAtlasNodeResult(nodeId) {
+  const lifecycle = nodeRegistry[nodeId]?.[ATLAS_LIFECYCLE_KEY];
+  return lifecycle ? readCurrentResult(lifecycle) : null;
+}
+
+function restoredAtlasInputIdentity(nodeId, owner, data) {
+  let persistedInput = null;
+  if (owner.type === 'atlas-builder') {
+    persistedInput = { lastSpec: data.lastSpec || null, sqlitePath: data.sqlitePath || '' };
+  } else if (owner.type === 'atlas-query-result') {
+    persistedInput = { lastQuery: data.lastQuery || null };
+  } else if (owner.type === 'atlas-inverse-result') {
+    persistedInput = { lastInverseRequest: data.lastInverseRequest || null };
+  }
+  return {
+    nodeType: owner.type,
+    persistedInput,
+    upstream: atlasUpstreamSignature(nodeId),
+  };
+}
+
+export function restoreAtlasNodeExecution(nodeId, data = {}) {
+  const owner = nodeRegistry[nodeId];
+  const contract = atlasResultContract(nodeId);
+  if (!owner || !contract) return false;
+  const resultKey = contract.dataKeys[0];
+  if (data[resultKey] == null) return false;
+  const lifecycle = atlasLifecycleFor(owner);
+  restoreHistoricalLifecycle(lifecycle, {
+    context: {
+      owner,
+      workspaceEpoch: getWorkspaceRuntimeEpoch(),
+      inputFingerprint: stableFingerprint(restoredAtlasInputIdentity(nodeId, owner, data)),
+      endpoint: atlasEndpoint('', owner.type),
+    },
+    result: data[resultKey],
+    evidence: data.lifecycle?.evidence || data.evidence || null,
+  });
+  owner.data = owner.data || {};
+  owner.data[resultKey] = inspectExecutionLifecycle(lifecycle).result;
+  syncAtlasLifecycle(owner);
+  return true;
 }
 
 export function invalidateAtlasExecution(nodeId, reason = 'atlas-input-changed') {
@@ -129,55 +362,161 @@ export function invalidateAtlasExecution(nodeId, reason = 'atlas-input-changed')
   const contract = atlasResultContract(nodeId);
   if (!info || !contract) return false;
 
-  const priorRevision = Number.isSafeInteger(info._atlasExecutionRevision)
-    ? info._atlasExecutionRevision
-    : 0;
-  info._atlasExecutionRevision = priorRevision + 1;
-  info._atlasInvalidationReason = reason;
-  delete info._atlasExecution;
+  const lifecycle = info[ATLAS_LIFECYCLE_KEY];
+  if (lifecycle) {
+    const runtime = inspectExecutionLifecycle(lifecycle);
+    if (runtime.owner === info && runtime.workspaceEpoch != null) {
+      invalidateLifecycle(lifecycle, {
+        owner: info,
+        workspaceEpoch: runtime.workspaceEpoch,
+        reason,
+      });
+      syncAtlasLifecycle(info);
+    }
+  } else if (info.data?.lifecycle) {
+    info.data.lifecycle = { state: 'invalidated', freshness: 'invalidated', evidence: null };
+  }
   setNodeLoading(nodeId, false);
   clearStoredAtlasResult(nodeId, contract.invalidatedMessage);
   return true;
 }
 
-export function beginScanExecution(nodeId, kind) {
+export function invalidatePlacerExecution(nodeId, reason = 'placer-input-changed') {
   const info = nodeRegistry[nodeId];
-  if (!info || !resultContract(nodeId)) return null;
+  const contract = placerResultContract(nodeId);
+  if (!info || !contract) return false;
+  const lifecycle = info[PLACER_RESULT_LIFECYCLE_KEY];
+  if (lifecycle) {
+    const runtime = inspectExecutionLifecycle(lifecycle);
+    if (runtime.owner === info && runtime.workspaceEpoch != null) {
+      invalidateLifecycle(lifecycle, {
+        owner: info,
+        workspaceEpoch: runtime.workspaceEpoch,
+        reason,
+      });
+      info.data = info.data || {};
+      info.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+    }
+  } else if (info.data?.lifecycle) {
+    info.data.lifecycle = { state: 'invalidated', freshness: 'invalidated', evidence: null };
+  }
+  setNodeLoading(nodeId, false);
+  clearStoredPlacerResult(nodeId, contract.invalidatedMessage);
+  return true;
+}
 
-  clearPlotTimer(info);
+export function beginScanExecution(nodeId, kind = 'scan', executionContext = null) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || !resultContract(nodeId)) return null;
+
+  clearPlotTimer(owner);
   // A new attempt supersedes an older request even when this attempt later
   // fails local validation and never reaches the backend.
   setNodeLoading(nodeId, false);
-  const priorRevision = Number.isSafeInteger(info._scanExecutionRevision)
-    ? info._scanExecutionRevision
-    : 0;
-  const ticket = {
-    token: Symbol(`${kind || 'scan'}-${nodeId}`),
-    revision: priorRevision + 1,
-    nodeInfo: info,
-    kind: kind || 'scan',
-  };
-  info._scanExecutionRevision = ticket.revision;
-  info._scanExecutionToken = ticket.token;
-  // Kept after the HTTP request settles so a delayed plot callback can still
-  // prove that it belongs to the latest successful run.
-  info._latestScanExecutionToken = ticket.token;
+  const context = executionContext || defaultScanContext(nodeId, kind);
+  if (!context || context.owner !== owner) return null;
+  const lifecycle = scanLifecycleFor(owner);
+  const ticket = beginLifecycle(lifecycle, context);
+  syncScanLifecycle(owner);
   return ticket;
 }
 
-export function isCurrentScanExecution(nodeId, ticket) {
-  const info = nodeRegistry[nodeId];
-  return !!info && !!ticket &&
-    info === ticket.nodeInfo &&
-    info._scanExecutionRevision === ticket.revision &&
-    info._latestScanExecutionToken === ticket.token;
+export function isCurrentScanExecution(nodeId, ticket, executionContext = null) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!ticket || !lifecycle || owner !== ticket.owner) return false;
+  const context = executionContext || {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: ticket.inputFingerprint,
+    endpoint: ticket.endpoint,
+  };
+  return isCurrentLifecycle(lifecycle, ticket, context);
+}
+
+export function commitScanExecution(nodeId, ticket, context, { result, evidence = null }) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const committed = commitLifecycle(lifecycle, ticket, { context, result, evidence });
+  syncScanLifecycle(owner);
+  return committed;
+}
+
+export function failScanExecution(nodeId, ticket, context, error, evidence = null) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const failed = failLifecycle(lifecycle, ticket, { context, error, evidence });
+  if (failed) clearStoredScanResult(nodeId, 'Scan execution failed — fix the error and rerun.');
+  syncScanLifecycle(owner);
+  return failed;
+}
+
+export function blockScanExecution(nodeId, ticket, context, reason, evidence = null) {
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const blocked = blockLifecycle(lifecycle, ticket, { context, reason, evidence });
+  if (blocked) clearStoredScanResult(nodeId, 'Scan did not run — fix the inputs and try again.');
+  syncScanLifecycle(owner);
+  return blocked;
 }
 
 export function releaseScanExecution(nodeId, ticket) {
-  if (!isCurrentScanExecution(nodeId, ticket)) return false;
-  const info = nodeRegistry[nodeId];
-  if (info._scanExecutionToken !== ticket.token) return false;
-  delete info._scanExecutionToken;
+  const owner = nodeRegistry[nodeId];
+  const lifecycle = owner?.[SCAN_LIFECYCLE_KEY];
+  if (!lifecycle || owner !== ticket?.owner) return false;
+  const released = releaseLifecycle(lifecycle, ticket);
+  syncScanLifecycle(owner);
+  setNodeLoading(nodeId, inspectExecutionLifecycle(lifecycle).loading);
+  return released;
+}
+
+export function inspectScanExecution(nodeId) {
+  const lifecycle = nodeRegistry[nodeId]?.[SCAN_LIFECYCLE_KEY];
+  return lifecycle ? inspectExecutionLifecycle(lifecycle) : null;
+}
+
+export function readCurrentScanResult(nodeId) {
+  const lifecycle = nodeRegistry[nodeId]?.[SCAN_LIFECYCLE_KEY];
+  return lifecycle ? readCurrentResult(lifecycle) : null;
+}
+
+export function restoreScanExecution(nodeId, data = {}) {
+  const owner = nodeRegistry[nodeId];
+  const contract = resultContract(nodeId);
+  if (!owner || !contract || data[contract.resultKey] == null) return false;
+
+  const savedMeta = data[contract.metaKey] || {};
+  const lifecycle = scanLifecycleFor(owner);
+  restoreHistoricalLifecycle(lifecycle, {
+    context: {
+      owner,
+      workspaceEpoch: getWorkspaceRuntimeEpoch(),
+      inputFingerprint: savedMeta.requestFingerprint || stableFingerprint({
+        request: savedMeta.request || null,
+        model: savedMeta.model || null,
+        upstream: scanUpstreamSignature(nodeId),
+      }),
+      endpoint: scanEndpoint(savedMeta.endpoint, owner.type),
+    },
+    result: {
+      result: data[contract.resultKey],
+      meta: savedMeta,
+    },
+    evidence: data.lifecycle?.evidence || null,
+  });
+
+  const restored = inspectExecutionLifecycle(lifecycle).result;
+  owner.data = owner.data || {};
+  owner.data[contract.resultKey] = restored.result;
+  owner.data[contract.metaKey] = {
+    contract: 'bne-scan-execution/v1',
+    ...restored.meta,
+    historical: true,
+  };
+  syncScanLifecycle(owner);
   return true;
 }
 
@@ -186,8 +525,8 @@ export function scheduleCurrentScanPlot(nodeId, ticket, callback, delay = 50) {
   const info = nodeRegistry[nodeId];
   clearPlotTimer(info);
   const timer = setTimeout(() => {
-    if (nodeRegistry[nodeId] !== ticket.nodeInfo || !isCurrentScanExecution(nodeId, ticket)) return;
-    if (ticket.nodeInfo._scanPlotTimer === timer) delete ticket.nodeInfo._scanPlotTimer;
+    if (nodeRegistry[nodeId] !== ticket.owner || !isCurrentScanExecution(nodeId, ticket)) return;
+    if (ticket.owner._scanPlotTimer === timer) delete ticket.owner._scanPlotTimer;
     callback();
   }, delay);
   info._scanPlotTimer = timer;
@@ -196,14 +535,23 @@ export function scheduleCurrentScanPlot(nodeId, ticket, callback, delay = 50) {
 
 export function scheduleHistoricalScanPlot(nodeId, callback, delay = 50) {
   const info = nodeRegistry[nodeId];
-  if (!info || !resultContract(nodeId)) return null;
+  const contract = resultContract(nodeId);
+  if (!info || !contract || info.data?.[contract.resultKey] == null) return null;
+  const existing = info[SCAN_LIFECYCLE_KEY]
+    ? inspectExecutionLifecycle(info[SCAN_LIFECYCLE_KEY])
+    : null;
+  if (!existing || existing.state !== 'historical') {
+    restoreScanExecution(nodeId, info.data);
+  }
   clearPlotTimer(info);
   const owner = info;
-  const revision = Number.isSafeInteger(info._scanExecutionRevision)
-    ? info._scanExecutionRevision
-    : 0;
+  const lifecycle = owner[SCAN_LIFECYCLE_KEY];
+  const revision = inspectExecutionLifecycle(lifecycle).revision;
   const timer = setTimeout(() => {
-    if (nodeRegistry[nodeId] !== owner || owner._scanExecutionRevision !== revision) return;
+    if (nodeRegistry[nodeId] !== owner) return;
+    const runtime = inspectExecutionLifecycle(lifecycle);
+    if (runtime.revision !== revision || runtime.state !== 'historical' ||
+        runtime.freshness !== 'historical') return;
     if (owner._scanPlotTimer === timer) delete owner._scanPlotTimer;
     callback();
   }, delay);
@@ -213,16 +561,27 @@ export function scheduleHistoricalScanPlot(nodeId, callback, delay = 50) {
 
 export function invalidateScanExecution(nodeId, reason = 'scan-input-changed') {
   const info = nodeRegistry[nodeId];
-  if (!info || !resultContract(nodeId)) return false;
+  const contract = resultContract(nodeId);
+  if (!info || !contract) return false;
 
   clearPlotTimer(info);
-  const priorRevision = Number.isSafeInteger(info._scanExecutionRevision)
-    ? info._scanExecutionRevision
-    : 0;
-  info._scanExecutionRevision = priorRevision + 1;
-  info._scanInvalidationReason = reason;
-  delete info._scanExecutionToken;
-  delete info._latestScanExecutionToken;
+  if (!info[SCAN_LIFECYCLE_KEY] && info.data?.[contract.resultKey] != null) {
+    restoreScanExecution(nodeId, info.data);
+  }
+  const lifecycle = info[SCAN_LIFECYCLE_KEY];
+  if (lifecycle) {
+    const runtime = inspectExecutionLifecycle(lifecycle);
+    if (runtime.owner === info && runtime.workspaceEpoch != null) {
+      invalidateLifecycle(lifecycle, {
+        owner: info,
+        workspaceEpoch: runtime.workspaceEpoch,
+        reason,
+      });
+      syncScanLifecycle(info);
+    }
+  } else if (info.data?.lifecycle) {
+    info.data.lifecycle = { state: 'invalidated', freshness: 'invalidated', evidence: null };
+  }
   setNodeLoading(nodeId, false);
   clearStoredScanResult(nodeId, 'Inputs changed — run the scan again.');
   return true;
@@ -262,8 +621,14 @@ export function invalidateAtlasExecutionsDownstreamOf(
 ) {
   const invalidated = [];
   for (const nodeId of downstreamNodeIds(sourceNodeId, executionDependencyConnections())) {
-    if (nodeId === exceptNodeId || !atlasResultContract(nodeId)) continue;
-    if (invalidateAtlasExecution(nodeId, reason)) invalidated.push(nodeId);
+    if (nodeId === exceptNodeId) continue;
+    if (atlasResultContract(nodeId) && invalidateAtlasExecution(nodeId, reason)) {
+      invalidated.push(nodeId);
+      continue;
+    }
+    if (placerResultContract(nodeId) && invalidatePlacerExecution(nodeId, reason)) {
+      invalidated.push(nodeId);
+    }
   }
   return invalidated;
 }
@@ -325,9 +690,13 @@ export function invalidateAtlasExecutionsForConnectionChange(
 ) {
   const invalidated = [];
   for (const [nodeId, info] of Object.entries(nodeRegistry)) {
-    if (!ATLAS_RESULT_CONTRACTS[info?.type]) continue;
+    if (!ATLAS_RESULT_CONTRACTS[info?.type] && !PLACER_RESULT_CONTRACTS[info?.type]) continue;
     if (upstreamSignature(before, nodeId) === upstreamSignature(after, nodeId)) continue;
-    if (invalidateAtlasExecution(nodeId, reason)) invalidated.push(nodeId);
+    if (ATLAS_RESULT_CONTRACTS[info.type] && invalidateAtlasExecution(nodeId, reason)) {
+      invalidated.push(nodeId);
+    } else if (PLACER_RESULT_CONTRACTS[info.type] && invalidatePlacerExecution(nodeId, reason)) {
+      invalidated.push(nodeId);
+    }
   }
   return invalidated;
 }

@@ -1,7 +1,12 @@
-import { nodeRegistry, ATLAS_ROLE_OPTIONS, ATLAS_ORDER_OPTIONS, ATLAS_SINGULAR_OPTIONS } from './state.js';
-import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable, syncSelectOptions } from './api.js';
-import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
-import { setNodeLoading, getModelContextForNode, findUpstreamNodeByType, getSessionIdForNode } from './nodes.js';
+import {
+  ATLAS_ORDER_OPTIONS,
+  ATLAS_ROLE_OPTIONS,
+  ATLAS_SINGULAR_OPTIONS,
+  getWorkspaceRuntimeEpoch,
+  nodeRegistry,
+} from './state.js';
+import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, syncSelectOptions } from './api.js';
+import { setNodeLoading } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
 import { triggerConfigUpdate } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
@@ -16,11 +21,24 @@ import {
 } from './atlas-sqlite-policy.js';
 import {
   beginAtlasNodeExecution,
+  blockAtlasNodeExecution,
+  commitAtlasNodeExecution,
   executionDependencyConnections,
+  failAtlasNodeExecution,
+  inspectAtlasNodeExecution,
   isCurrentAtlasNodeExecution,
+  readCurrentAtlasNodeResult,
+  releaseAtlasNodeExecution,
+  restoreAtlasNodeExecution,
+  atlasUpstreamSignature,
 } from './execution-lifecycle.js';
 
-export { beginAtlasNodeExecution, isCurrentAtlasNodeExecution };
+export {
+  beginAtlasNodeExecution,
+  inspectAtlasNodeExecution,
+  isCurrentAtlasNodeExecution,
+  restoreAtlasNodeExecution,
+};
 
 let _plotAtlasLandscape2D = null;
 
@@ -339,7 +357,7 @@ function base64UrlToBytes(text) {
   let binary = '';
   try {
     binary = window.atob(padded);
-  } catch (error) {
+  } catch {
     throw new Error('Bad compact network identifier encoding.');
   }
   return Uint8Array.from(binary, ch => ch.charCodeAt(0));
@@ -914,7 +932,12 @@ export function getConnectedAtlasData(nodeId) {
   const conn = executionDependencyConnections()
     .find(c => c.toNode === nodeId && c.toPort === 'atlas');
   if (!conn) return null;
-  return nodeRegistry[conn.fromNode]?.data?.atlasData || null;
+  const source = nodeRegistry[conn.fromNode];
+  if (!source) return null;
+  const runtime = inspectAtlasNodeExecution(conn.fromNode);
+  if (runtime) return readCurrentAtlasNodeResult(conn.fromNode);
+  if (source.data?.lifecycle && source.data.lifecycle.freshness !== 'current') return null;
+  return source.data?.atlasData || null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2051,17 +2074,65 @@ export function hydrateAtlasResultContent(nodeId, data = null) {
 /*  Execution                                                          */
 /* ------------------------------------------------------------------ */
 
-function atlasRequestFingerprint(request) {
-  return JSON.stringify(request);
+function canonicalAtlasFingerprintValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalAtlasFingerprintValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  Object.keys(value).sort().forEach(key => {
+    normalized[key] = canonicalAtlasFingerprintValue(value[key]);
+  });
+  return normalized;
 }
 
-function atlasExecutionRequestIsCurrent(nodeId, ticket, fingerprint, currentRequest) {
-  if (!isCurrentAtlasNodeExecution(nodeId, ticket)) return false;
+function atlasRequestFingerprint(nodeId, endpoint, request) {
+  return JSON.stringify(canonicalAtlasFingerprintValue({
+    endpoint,
+    request,
+    upstream: atlasUpstreamSignature(nodeId),
+  }));
+}
+
+function atlasExecutionContext(nodeId, endpoint, request) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: atlasRequestFingerprint(nodeId, endpoint, request),
+    endpoint,
+  };
+}
+
+function atlasFallbackContext(nodeId, endpoint, reason) {
+  return atlasExecutionContext(nodeId, endpoint, { unavailable: reason });
+}
+
+function currentAtlasContextOrDrift(nodeId, ticket, endpoint, requestResolver) {
   try {
-    return atlasRequestFingerprint(currentRequest()) === fingerprint;
-  } catch (_) {
-    return false;
+    return atlasExecutionContext(nodeId, endpoint, requestResolver());
+  } catch (error) {
+    const owner = nodeRegistry[nodeId];
+    if (!owner) return null;
+    return {
+      owner,
+      workspaceEpoch: getWorkspaceRuntimeEpoch(),
+      inputFingerprint: `unavailable:${error?.message || 'request-context-error'}`,
+      endpoint,
+    };
   }
+}
+
+function atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver) {
+  const context = contextResolver();
+  return !!context && isCurrentAtlasNodeExecution(nodeId, ticket, context);
+}
+
+function atlasEvidence(endpoint, data) {
+  return {
+    endpoint,
+    evidence_grade: 'current-computation',
+    partial: data?.partial === true,
+  };
 }
 
 function atlasStaleExecutionOutcome(throwOnFailure, label) {
@@ -2086,58 +2157,93 @@ export function resolveAtlasExecutionContext(nodeId, queryPayload) {
   };
 }
 
+function settleAtlasPreflightFailure({
+  nodeId,
+  kind,
+  endpoint,
+  error,
+  blocked = false,
+  contentEl,
+  throwOnFailure,
+}) {
+  const context = atlasFallbackContext(nodeId, endpoint, error.message);
+  const ticket = context ? beginAtlasNodeExecution(nodeId, kind, context) : null;
+  if (ticket) {
+    if (blocked) {
+      blockAtlasNodeExecution(nodeId, ticket, context, error.message);
+    } else {
+      failAtlasNodeExecution(nodeId, ticket, context, error);
+    }
+    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    releaseAtlasNodeExecution(nodeId, ticket);
+  }
+  if (throwOnFailure) throw error;
+  return null;
+}
+
 export async function executeAtlasBuilder(
   nodeId,
   { triggerDownstream = true, throwOnFailure = false } = {},
 ) {
-  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-builder');
-  if (!ticket) return null;
+  const endpoint = '/api/v1/build_atlas';
   const contentEl = document.getElementById(`${nodeId}-content`);
   let payload;
+  let requestSpec;
   try {
     payload = getConnectedAtlasSpec(nodeId);
   } catch (e) {
-    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
-    if (executionIsCurrent && contentEl) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    }
-    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
-    if (throwOnFailure) throw e;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-builder', endpoint, error: e, contentEl, throwOnFailure,
+    });
   }
 
   if (!payload) {
     showToast('Connect an Atlas Spec node first');
     const error = new Error('Connect an Atlas Spec node first');
-    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
-    }
-    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-builder', endpoint, error, blocked: true,
+      contentEl, throwOnFailure,
+    });
   }
 
-  setNodeLoading(nodeId, true);
-  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
-  let requestIsCurrent = executionIsCurrent;
   try {
-    const requestSpec = prepareAtlasSpecForHttp(payload.spec, 'Atlas build');
-    const requestFingerprint = atlasRequestFingerprint(requestSpec);
-    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
-      nodeId,
-      ticket,
-      requestFingerprint,
-      () => {
-        const currentPayload = getConnectedAtlasSpec(nodeId);
-        if (!currentPayload) throw new Error('Atlas Spec disconnected');
-        return prepareAtlasSpecForHttp(currentPayload.spec, 'Atlas build');
-      },
-    );
+    requestSpec = prepareAtlasSpecForHttp(payload.spec, 'Atlas build');
+  } catch (error) {
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-builder', endpoint, error, contentEl, throwOnFailure,
+    });
+  }
+
+  const beginContext = atlasExecutionContext(nodeId, endpoint, requestSpec);
+  const ticket = beginContext
+    ? beginAtlasNodeExecution(nodeId, 'atlas-builder', beginContext)
+    : null;
+  if (!ticket) return null;
+  setNodeLoading(nodeId, true);
+  const requestResolver = () => {
+    const currentPayload = getConnectedAtlasSpec(nodeId);
+    if (!currentPayload) throw new Error('Atlas Spec disconnected');
+    return prepareAtlasSpecForHttp(currentPayload.spec, 'Atlas build');
+  };
+  const contextResolver = () => currentAtlasContextOrDrift(
+    nodeId, ticket, endpoint, requestResolver,
+  );
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket, beginContext);
+  const requestIsCurrent = () => atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver);
+  try {
     const data = await computeApi('build_atlas', requestSpec, {
       // Polling a cloud job must stay O(1); the full request fingerprint is
       // reconstructed only when the request settles.
       statusIsCurrent: executionIsCurrent,
     });
     if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
+    const currentContext = contextResolver();
+    if (!currentContext || !commitAtlasNodeExecution(nodeId, ticket, currentContext, {
+      result: data,
+      evidence: atlasEvidence(endpoint, data),
+    })) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
+    }
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2155,13 +2261,18 @@ export async function executeAtlasBuilder(
     }
     return data;
   } catch (e) {
-    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
+    const currentContext = contextResolver();
+    if (!currentContext || !isCurrentAtlasNodeExecution(nodeId, ticket, currentContext)) {
+      if (currentContext) failAtlasNodeExecution(nodeId, ticket, currentContext, e);
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
+    }
+    failAtlasNodeExecution(nodeId, ticket, currentContext, e);
     handleNodeError(e, nodeId, 'Atlas build');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
     if (throwOnFailure) throw e;
     return null;
   } finally {
-    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
+    releaseAtlasNodeExecution(nodeId, ticket);
   }
 }
 
@@ -2169,43 +2280,33 @@ export async function executeAtlasQueryResult(
   nodeId,
   { throwOnFailure = false } = {},
 ) {
-  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-query');
-  if (!ticket) return null;
+  const endpoint = '/api/v1/query_atlas';
   const contentEl = document.getElementById(`${nodeId}-content`);
   let queryPayload;
   try {
     queryPayload = getConnectedAtlasQuery(nodeId);
   } catch (e) {
-    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
-    if (executionIsCurrent && contentEl) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    }
-    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
-    if (throwOnFailure) throw e;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-query', endpoint, error: e, contentEl, throwOnFailure,
+    });
   }
 
   if (!queryPayload) {
     showToast('Connect an Atlas Query Config node first');
     const error = new Error('Connect an Atlas Query Config node first');
-    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
-    }
-    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-query', endpoint, error, blocked: true,
+      contentEl, throwOnFailure,
+    });
   }
 
   let executionContext;
   try {
     executionContext = resolveAtlasExecutionContext(nodeId, queryPayload);
   } catch (e) {
-    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
-    if (executionIsCurrent && contentEl) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    }
-    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
-    if (throwOnFailure) throw e;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-query', endpoint, error: e, contentEl, throwOnFailure,
+    });
   }
 
   const { atlas, sqlitePath } = executionContext;
@@ -2213,41 +2314,42 @@ export async function executeAtlasQueryResult(
   if (!atlas && !sqlitePath) {
     showToast('Build an atlas first; operator-enabled deployments may also use a SQLite path');
     const error = new Error('Build an atlas first or provide an enabled SQLite path');
-    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
-    }
-    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-query', endpoint, error, blocked: true,
+      contentEl, throwOnFailure,
+    });
   }
 
+  const request = createAtlasQueryHttpRequest({
+    atlas,
+    sqlitePath,
+    query: queryPayload.query,
+  });
+  const beginContext = atlasExecutionContext(nodeId, endpoint, request);
+  const ticket = beginContext
+    ? beginAtlasNodeExecution(nodeId, 'atlas-query', beginContext)
+    : null;
+  if (!ticket) return null;
   setNodeLoading(nodeId, true);
-  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
-  let requestIsCurrent = executionIsCurrent;
-  try {
-    const request = createAtlasQueryHttpRequest({
-      atlas,
-      sqlitePath,
-      query: queryPayload.query,
+  const requestResolver = () => {
+    const currentQuery = getConnectedAtlasQuery(nodeId);
+    if (!currentQuery) throw new Error('Atlas Query disconnected');
+    const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
+    if (!currentContext.atlas && !currentContext.sqlitePath) {
+      throw new Error('Atlas source disconnected');
+    }
+    return createAtlasQueryHttpRequest({
+      atlas: currentContext.atlas,
+      sqlitePath: currentContext.sqlitePath,
+      query: currentQuery.query,
     });
-    const requestFingerprint = atlasRequestFingerprint(request);
-    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
-      nodeId,
-      ticket,
-      requestFingerprint,
-      () => {
-        const currentQuery = getConnectedAtlasQuery(nodeId);
-        if (!currentQuery) throw new Error('Atlas Query disconnected');
-        const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
-        if (!currentContext.atlas && !currentContext.sqlitePath) {
-          throw new Error('Atlas source disconnected');
-        }
-        return createAtlasQueryHttpRequest({
-          atlas: currentContext.atlas,
-          sqlitePath: currentContext.sqlitePath,
-          query: currentQuery.query,
-        });
-      },
-    );
+  };
+  const contextResolver = () => currentAtlasContextOrDrift(
+    nodeId, ticket, endpoint, requestResolver,
+  );
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket, beginContext);
+  const requestIsCurrent = () => atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver);
+  try {
     const data = await api('query_atlas', request, { statusIsCurrent: executionIsCurrent });
     if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
     const renderData = {
@@ -2255,6 +2357,13 @@ export async function executeAtlasQueryResult(
       query_source: sqlitePath ? 'sqlite' : 'atlas',
       sqlite_path: sqlitePath || '',
     };
+    const currentContext = contextResolver();
+    if (!currentContext || !commitAtlasNodeExecution(nodeId, ticket, currentContext, {
+      result: renderData,
+      evidence: atlasEvidence(endpoint, renderData),
+    })) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
+    }
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2268,13 +2377,18 @@ export async function executeAtlasQueryResult(
     commitWorkspaceSnapshot('atlas-query');
     return renderData;
   } catch (e) {
-    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
+    const currentContext = contextResolver();
+    if (!currentContext || !isCurrentAtlasNodeExecution(nodeId, ticket, currentContext)) {
+      if (currentContext) failAtlasNodeExecution(nodeId, ticket, currentContext, e);
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
+    }
+    failAtlasNodeExecution(nodeId, ticket, currentContext, e);
     handleNodeError(e, nodeId, 'Atlas query');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
     if (throwOnFailure) throw e;
     return null;
   } finally {
-    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
+    releaseAtlasNodeExecution(nodeId, ticket);
   }
 }
 
@@ -2282,97 +2396,95 @@ export async function executeAtlasInverseDesignResult(
   nodeId,
   { throwOnFailure = false } = {},
 ) {
-  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-inverse');
-  if (!ticket) return null;
+  const endpoint = '/api/v1/run_inverse_design';
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   let queryPayload;
   try {
     queryPayload = getConnectedAtlasQuery(nodeId);
   } catch (e) {
-    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
-    if (executionIsCurrent && contentEl) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    }
-    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
-    if (throwOnFailure) throw e;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-inverse', endpoint, error: e, contentEl, throwOnFailure,
+    });
   }
 
   if (!queryPayload) {
     showToast('Connect an Atlas Query Config node first');
     const error = new Error('Connect an Atlas Query Config node first');
-    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
-    }
-    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-inverse', endpoint, error, blocked: true,
+      contentEl, throwOnFailure,
+    });
   }
 
   let executionContext;
   try {
     executionContext = resolveAtlasExecutionContext(nodeId, queryPayload);
   } catch (e) {
-    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
-    if (executionIsCurrent && contentEl) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    }
-    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
-    if (throwOnFailure) throw e;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-inverse', endpoint, error: e, contentEl, throwOnFailure,
+    });
   }
 
   const { atlas, specPayload, sqlitePath } = executionContext;
   if (!specPayload && !atlas && !sqlitePath) {
     showToast('Connect an Atlas Spec or Atlas Preview Builder node, or provide a SQLite path in Atlas Query Config');
     const error = new Error('Connect an Atlas Spec, Atlas Preview Builder, or enabled SQLite path');
-    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
-      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
-    }
-    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
-    return null;
+    return settleAtlasPreflightFailure({
+      nodeId, kind: 'atlas-inverse', endpoint, error, blocked: true,
+      contentEl, throwOnFailure,
+    });
   }
 
+  const request = createAtlasInverseHttpRequest({
+    query: queryPayload.query,
+    inverseDesign: queryPayload.inverseDesign,
+    refinement: queryPayload.refinement,
+    allowDuplicateAtlas: queryPayload.allowDuplicateAtlas,
+    sqlitePath,
+    atlasSpec: specPayload?.spec || null,
+    atlas,
+  });
+  const beginContext = atlasExecutionContext(nodeId, endpoint, request);
+  const ticket = beginContext
+    ? beginAtlasNodeExecution(nodeId, 'atlas-inverse', beginContext)
+    : null;
+  if (!ticket) return null;
   setNodeLoading(nodeId, true);
-  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
-  let requestIsCurrent = executionIsCurrent;
-  try {
-    const request = createAtlasInverseHttpRequest({
-      query: queryPayload.query,
-      inverseDesign: queryPayload.inverseDesign,
-      refinement: queryPayload.refinement,
-      allowDuplicateAtlas: queryPayload.allowDuplicateAtlas,
-      sqlitePath,
-      atlasSpec: specPayload?.spec || null,
-      atlas,
+  const requestResolver = () => {
+    const currentQuery = getConnectedAtlasQuery(nodeId);
+    if (!currentQuery) throw new Error('Atlas Query disconnected');
+    const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
+    if (!currentContext.specPayload && !currentContext.atlas && !currentContext.sqlitePath) {
+      throw new Error('Atlas inputs disconnected');
+    }
+    return createAtlasInverseHttpRequest({
+      query: currentQuery.query,
+      inverseDesign: currentQuery.inverseDesign,
+      refinement: currentQuery.refinement,
+      allowDuplicateAtlas: currentQuery.allowDuplicateAtlas,
+      sqlitePath: currentContext.sqlitePath,
+      atlasSpec: currentContext.specPayload?.spec || null,
+      atlas: currentContext.atlas,
     });
-    const requestFingerprint = atlasRequestFingerprint(request);
-    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
-      nodeId,
-      ticket,
-      requestFingerprint,
-      () => {
-        const currentQuery = getConnectedAtlasQuery(nodeId);
-        if (!currentQuery) throw new Error('Atlas Query disconnected');
-        const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
-        if (!currentContext.specPayload && !currentContext.atlas && !currentContext.sqlitePath) {
-          throw new Error('Atlas inputs disconnected');
-        }
-        return createAtlasInverseHttpRequest({
-          query: currentQuery.query,
-          inverseDesign: currentQuery.inverseDesign,
-          refinement: currentQuery.refinement,
-          allowDuplicateAtlas: currentQuery.allowDuplicateAtlas,
-          sqlitePath: currentContext.sqlitePath,
-          atlasSpec: currentContext.specPayload?.spec || null,
-          atlas: currentContext.atlas,
-        });
-      },
-    );
+  };
+  const contextResolver = () => currentAtlasContextOrDrift(
+    nodeId, ticket, endpoint, requestResolver,
+  );
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket, beginContext);
+  const requestIsCurrent = () => atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver);
+  try {
     const data = await computeApi('run_inverse_design', request, {
       statusIsCurrent: executionIsCurrent,
     });
     if (!requestIsCurrent()) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    }
+    const currentContext = contextResolver();
+    if (!currentContext || !commitAtlasNodeExecution(nodeId, ticket, currentContext, {
+      result: data,
+      evidence: atlasEvidence(endpoint, data),
+    })) {
       return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
     }
     const info = nodeRegistry[nodeId];
@@ -2396,14 +2508,17 @@ export async function executeAtlasInverseDesignResult(
     commitWorkspaceSnapshot('atlas-inverse-design');
     return data;
   } catch (e) {
-    if (!requestIsCurrent()) {
+    const currentContext = contextResolver();
+    if (!currentContext || !isCurrentAtlasNodeExecution(nodeId, ticket, currentContext)) {
+      if (currentContext) failAtlasNodeExecution(nodeId, ticket, currentContext, e);
       return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
     }
+    failAtlasNodeExecution(nodeId, ticket, currentContext, e);
     handleNodeError(e, nodeId, 'Atlas inverse design');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
     if (throwOnFailure) throw e;
     return null;
   } finally {
-    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
+    releaseAtlasNodeExecution(nodeId, ticket);
   }
 }

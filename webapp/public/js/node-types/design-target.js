@@ -11,18 +11,40 @@
 //   [/api/v1/design_screen]
 import { api, escapeHtml, showToast, syncSelectOptions } from '../api.js';
 import {
-  setNodeLoading, createNode, getNodePosition, getNodeSize, resolveOverlap,
+  captureEditorGraphPlanningGraph,
+  createEditorGraphPatchCommand,
+  setNodeLoading,
   getModelForNode, triggerConfigUpdate, triggerAutoModelBuild,
 } from '../nodes.js';
 import { buildModel } from '../model.js';
-import { connections, nodeRegistry } from '../state.js';
-import { updateConnections } from '../connections.js';
+import {
+  connections,
+  getWorkspaceRuntimeEpoch,
+  nodeIdCounter,
+  nodeRegistry,
+} from '../state.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
+import { dispatch } from '../commands.js';
+import { planDesignBuildAndTuneWorkflow } from '../graph-patch.js';
 import {
   blockedOutcome,
   failedOutcome,
+  staleOutcome,
   succeededOutcome,
 } from '../execution-outcome.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from '../execution-lifecycle-core.js';
 import { loadPlacerMenu, realizePlacerProgram } from './placer.js';
 import {
   DESIGNABILITY_SPEC_VERSION,
@@ -41,6 +63,10 @@ const NETWORK_IR_VERSION = 'bne-ir/v1.0.0';
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const CELL_ID = /^sha256:[0-9a-f]{64}$/;
 const PATH_IDENTITY = /^path:[1-9][0-9]*$/;
+const DESIGN_SCREEN_ENDPOINT = '/api/v1/design_screen';
+const DESIGN_SCREEN_LIFECYCLE_KEY = '_designScreenLifecycle';
+const DESIGN_SELECTION_LIFECYCLE_KEY = '_designSelectionLifecycle';
+const DESIGN_HISTORICAL_CONTEXT = 'design-target-historical-context/v1';
 const EXACT_WINDOW_EVIDENCE_GRADES = new Set([
   'enforced_exact',
   'enforced_exact+sampled_forward',
@@ -49,6 +75,118 @@ const EXACT_WINDOW_EVIDENCE_GRADES = new Set([
 function deepCloneJson(value) {
   if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value);
   return JSON.parse(JSON.stringify(value));
+}
+
+function canonicalLifecycleValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) {
+    normalized[key] = canonicalLifecycleValue(value[key]);
+  }
+  return normalized;
+}
+
+function stableLifecycleFingerprint(value) {
+  return JSON.stringify(canonicalLifecycleValue(value));
+}
+
+function persistedLifecycleKey(runtimeKey) {
+  return runtimeKey === DESIGN_SELECTION_LIFECYCLE_KEY
+    ? 'selectionLifecycle'
+    : 'lifecycle';
+}
+
+function isPersistedHistoricalLifecycle(value) {
+  return isPlainObject(value) &&
+    value.state === 'historical' &&
+    value.freshness === 'historical';
+}
+
+function restoredDesignLifecycleContext(info, runtimeKey) {
+  const role = runtimeKey === DESIGN_SELECTION_LIFECYCLE_KEY ? 'selection' : 'screen';
+  return {
+    owner: info,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    // The restored result itself is deliberately absent from this bounded
+    // owner context. Historical payload bytes never become an input identity.
+    inputFingerprint: stableLifecycleFingerprint({
+      contract: DESIGN_HISTORICAL_CONTEXT,
+      nodeType: info.type,
+      role,
+    }),
+    endpoint: DESIGN_SCREEN_ENDPOINT,
+  };
+}
+
+function lifecycleForOwner(info, key) {
+  if (!info[key]) {
+    const lifecycle = createExecutionLifecycle();
+    info[key] = lifecycle;
+    const dataKey = persistedLifecycleKey(key);
+    const saved = info.data?.[dataKey];
+    if (isPersistedHistoricalLifecycle(saved)) {
+      restoreHistoricalLifecycle(lifecycle, {
+        context: restoredDesignLifecycleContext(info, key),
+        // Workspace serialization intentionally stores only freshness and
+        // evidence. Do not reconstruct a result or a backend session here.
+        result: null,
+        evidence: Object.hasOwn(saved, 'evidence') ? saved.evidence : null,
+      });
+      info.data[dataKey] = serializeExecutionLifecycle(lifecycle);
+    }
+  }
+  return info[key];
+}
+
+function syncDesignLifecycleSnapshots(info) {
+  if (!info) return;
+  info.data = info.data || {};
+  if (info[DESIGN_SCREEN_LIFECYCLE_KEY]) {
+    info.data.lifecycle = serializeExecutionLifecycle(info[DESIGN_SCREEN_LIFECYCLE_KEY]);
+  }
+  if (info[DESIGN_SELECTION_LIFECYCLE_KEY]) {
+    info.data.selectionLifecycle = serializeExecutionLifecycle(
+      info[DESIGN_SELECTION_LIFECYCLE_KEY],
+    );
+  }
+}
+
+function invalidateBoundLifecycle(info, key, reason) {
+  const lifecycle = info?.[key];
+  if (!lifecycle) return false;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.owner !== info || runtime.workspaceEpoch == null) return false;
+  return invalidateLifecycle(lifecycle, {
+    owner: info,
+    workspaceEpoch: runtime.workspaceEpoch,
+    reason,
+  });
+}
+
+function designLifecycleContext(nodeId, inputFingerprint) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint,
+    endpoint: DESIGN_SCREEN_ENDPOINT,
+  };
+}
+
+export function inspectDesignTargetLifecycles(nodeId) {
+  const info = nodeRegistry[nodeId];
+  const inspectBoundLifecycle = key => {
+    if (!info) return null;
+    const saved = info.data?.[persistedLifecycleKey(key)];
+    if (!info[key] && !isPersistedHistoricalLifecycle(saved)) return null;
+    return inspectExecutionLifecycle(lifecycleForOwner(info, key));
+  };
+  return {
+    screen: inspectBoundLifecycle(DESIGN_SCREEN_LIFECYCLE_KEY),
+    selection: inspectBoundLifecycle(DESIGN_SELECTION_LIFECYCLE_KEY),
+  };
 }
 
 function hasExactObjectKeys(value, required, optional = []) {
@@ -279,6 +417,16 @@ export function invalidateConnectedRopShapeArtifacts(designNodeId) {
     const configInfo = nodeRegistry[configNodeId];
     if (!configInfo || configInfo.type !== 'rop-shape-edit-config') continue;
     configInfo.data = configInfo.data || {};
+    invalidateBoundLifecycle(
+      configInfo,
+      '_ropShapePrepareLifecycle',
+      'design-target-selection-changed',
+    );
+    if (configInfo._ropShapePrepareLifecycle) {
+      configInfo.data.lifecycle = serializeExecutionLifecycle(
+        configInfo._ropShapePrepareLifecycle,
+      );
+    }
     delete configInfo.data.ropShapeRequest;
     if (isPlainObject(configInfo.data.config)) {
       delete configInfo.data.config.ropShapeRequest;
@@ -301,6 +449,16 @@ export function invalidateConnectedRopShapeArtifacts(designNodeId) {
     const resultInfo = nodeRegistry[resultNodeId];
     if (!resultInfo || resultInfo.type !== 'rop-shape-result') continue;
     resultInfo.data = resultInfo.data || {};
+    invalidateBoundLifecycle(
+      resultInfo,
+      '_ropShapeResultLifecycle',
+      'design-target-selection-changed',
+    );
+    if (resultInfo._ropShapeResultLifecycle) {
+      resultInfo.data.lifecycle = serializeExecutionLifecycle(
+        resultInfo._ropShapeResultLifecycle,
+      );
+    }
     const currentToken = Number.isSafeInteger(resultInfo.data.ropShapeRunToken)
       ? resultInfo.data.ropShapeRunToken
       : 0;
@@ -463,6 +621,9 @@ export const DESIGN_TARGET_TYPES = {
         <div class="node-info" id="${nodeId}-spec-preview" style="display:none;"></div>
       `;
     },
+    onInit(nodeId) {
+      installDesignSpecInputInvalidation(nodeId);
+    },
     async prepare(nodeId) {
       return validateDesignSpecConfig(nodeId);
     },
@@ -498,6 +659,9 @@ export const DESIGN_TARGET_TYPES = {
           <span class="text-dim">Connect a Design Spec Config for explicit constraints, or use the local target fields as a legacy shorthand. Verified recommendations require an active DesignabilitySpec with explicit parameter bounds; proxy screens stay exploratory.</span>
         </div>
       `;
+    },
+    onInit(nodeId) {
+      installDesignTargetInputInvalidation(nodeId);
     },
     async execute(nodeId) {
       return runDesignSearch(nodeId);
@@ -1618,6 +1782,7 @@ export async function loadDesignLabels() {
 // (label mode, showing each label's RO translation) or a free-text input
 // (sign / exact). Both use id "${nodeId}-target" so runDesignSearch reads .value.
 export async function onDesignTargetKindChange(nodeId) {
+  invalidateDesignTargetInputs(nodeId, 'design-target-kind-changed');
   await updateDesignTargetField(nodeId, {
     kindSuffix: '-kind',
     wrapSuffix: '-target-wrap',
@@ -1626,6 +1791,7 @@ export async function onDesignTargetKindChange(nodeId) {
 }
 
 export async function onDesignSpecKindChange(nodeId) {
+  invalidateDesignTargetsFromSpec(nodeId, 'design-spec-kind-changed');
   await updateDesignTargetField(nodeId, {
     kindSuffix: '-spec-kind',
     wrapSuffix: '-spec-target-wrap',
@@ -1667,18 +1833,233 @@ async function updateDesignTargetField(nodeId, suffixes) {
   }
 }
 
+function installDesignTargetInputInvalidation(nodeId) {
+  const info = nodeRegistry[nodeId];
+  const root = document.getElementById(nodeId);
+  if (!info || !root?.addEventListener || info._designInputInvalidationInstalled) return;
+  info._designInputInvalidationInstalled = true;
+  const invalidateInput = event => {
+    const id = String(event?.target?.id || '');
+    if (id === `${nodeId}-kind` || id === `${nodeId}-target`) {
+      invalidateDesignTargetInputs(nodeId, 'design-target-input-changed');
+    }
+  };
+  root.addEventListener('input', invalidateInput);
+  root.addEventListener('change', invalidateInput);
+}
+
+function invalidateDesignTargetsFromSpec(specNodeId, reason) {
+  const targetIds = new Set(connections
+    .filter(connection =>
+      connection.fromNode === specNodeId &&
+      connection.fromPort === 'designability-spec' &&
+      connection.toPort === 'designability-spec')
+    .map(connection => connection.toNode));
+  for (const targetId of targetIds) invalidateDesignTargetInputs(targetId, reason);
+  return [...targetIds];
+}
+
+function installDesignSpecInputInvalidation(nodeId) {
+  const info = nodeRegistry[nodeId];
+  const root = document.getElementById(nodeId);
+  if (!info || !root?.addEventListener || info._designSpecInvalidationInstalled) return;
+  info._designSpecInvalidationInstalled = true;
+  const invalidateInput = event => {
+    const id = String(event?.target?.id || '');
+    if (id.startsWith(`${nodeId}-spec-`)) {
+      invalidateDesignTargetsFromSpec(nodeId, 'design-spec-input-changed');
+    }
+  };
+  root.addEventListener('input', invalidateInput);
+  root.addEventListener('change', invalidateInput);
+}
+
+export function invalidateDesignTargetInputs(nodeId, reason = 'design-target-input-changed') {
+  const info = nodeRegistry[nodeId];
+  if (!info || info.type !== 'design-target') return false;
+  info.data = info.data || {};
+  lifecycleForOwner(info, DESIGN_SCREEN_LIFECYCLE_KEY);
+  lifecycleForOwner(info, DESIGN_SELECTION_LIFECYCLE_KEY);
+  invalidateBoundLifecycle(info, DESIGN_SCREEN_LIFECYCLE_KEY, reason);
+  invalidateBoundLifecycle(info, DESIGN_SELECTION_LIFECYCLE_KEY, reason);
+  delete info.data.designSearchResponse;
+  const config = info.data.config = info.data.config || {};
+  delete config.resolvedDefinition;
+  delete config.ropShapeReference;
+  invalidateConnectedRopShapeArtifacts(nodeId);
+  syncDesignLifecycleSnapshots(info);
+  setNodeLoading(nodeId, false);
+  return true;
+}
+
+function readDesignSearchRequest(nodeId) {
+  const specSourceNodeId = designSpecSourceForTarget(nodeId);
+  if (specSourceNodeId) {
+    return buildDesignScreenRequestFromSpec(readDesignSpecConfig(specSourceNodeId));
+  }
+  const kindElement = document.getElementById(`${nodeId}-kind`);
+  const targetElement = document.getElementById(`${nodeId}-target`);
+  if (!kindElement || !targetElement) throw new Error('Design Target controls are unavailable');
+  return buildDesignScreenRequest(kindElement.value, String(targetElement.value || '').trim());
+}
+
+function designSearchAttemptFingerprint(nodeId) {
+  let specSourceNodeId = null;
+  try { specSourceNodeId = designSpecSourceForTarget(nodeId); }
+  catch { specSourceNodeId = 'invalid-source'; }
+  return stableLifecycleFingerprint({
+    kind: document.getElementById(`${nodeId}-kind`)?.value ?? null,
+    target: document.getElementById(`${nodeId}-target`)?.value ?? null,
+    specSourceNodeId,
+    specConfig: specSourceNodeId && nodeRegistry[specSourceNodeId]?.data?.config
+      ? nodeRegistry[specSourceNodeId].data.config
+      : null,
+  });
+}
+
+function designSearchRequestFingerprint(request) {
+  return stableLifecycleFingerprint({ endpoint: DESIGN_SCREEN_ENDPOINT, request });
+}
+
+function currentDesignSearchContext(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  let inputFingerprint;
+  try {
+    inputFingerprint = designSearchRequestFingerprint(readDesignSearchRequest(nodeId));
+  } catch {
+    inputFingerprint = stableLifecycleFingerprint({
+      invalid: true,
+      attempt: designSearchAttemptFingerprint(nodeId),
+    });
+  }
+  return designLifecycleContext(nodeId, inputFingerprint);
+}
+
+function designScreenEvidence(data) {
+  const evidence = {
+    source_endpoint: DESIGN_SCREEN_ENDPOINT,
+    truncated: data?.truncated === true,
+  };
+  if (Number.isInteger(data?.eligible_count)) evidence.eligible_count = data.eligible_count;
+  if (Number.isInteger(data?.evaluated_count)) evidence.evaluated_count = data.evaluated_count;
+  return evidence;
+}
+
+function candidateEvidence(card) {
+  const evidence = {};
+  for (const key of ['evidence_grade', 'certificate_grade', 'screen_status']) {
+    if (typeof card?.[key] === 'string' && card[key]) evidence[key] = card[key];
+  }
+  return Object.keys(evidence).length ? evidence : null;
+}
+
+function selectedCandidateEntry(response, selectedKey) {
+  if (!selectedKey) return null;
+  const matches = candidateEntries(response).filter(({ card }) =>
+    isPlainObject(card) &&
+    designCandidateKey(card.nid, card.inp, card.out) === selectedKey);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function publishSelectedNetwork(nodeId, entry, rules) {
+  const info = nodeRegistry[nodeId];
+  if (!info || !entry?.card || !Array.isArray(rules) || !rules.length) return false;
+  const screen = info[DESIGN_SCREEN_LIFECYCLE_KEY]
+    ? inspectExecutionLifecycle(info[DESIGN_SCREEN_LIFECYCLE_KEY])
+    : null;
+  if (screen?.state !== 'current' || screen.freshness !== 'current') return false;
+
+  const card = entry.card;
+  const selectedKey = designCandidateKey(card.nid, card.inp, card.out);
+  const inputFingerprint = stableLifecycleFingerprint({
+    screenInputFingerprint: screen.inputFingerprint,
+    selectedKey,
+    card,
+  });
+  const context = designLifecycleContext(nodeId, inputFingerprint);
+  if (!context) return false;
+  const lifecycle = lifecycleForOwner(info, DESIGN_SELECTION_LIFECYCLE_KEY);
+  const ticket = beginLifecycle(lifecycle, context);
+  const result = {
+    selectedCandidateKey: selectedKey,
+    raw_rules: rules,
+  };
+  if (!commitLifecycle(lifecycle, ticket, {
+    context,
+    result,
+    evidence: candidateEvidence(card),
+  })) return false;
+
+  const config = info.data.config = info.data.config || {};
+  config.resolvedDefinition = { raw_rules: rules };
+  config.selectedNid = card.nid;
+  config.suggestedInput = card.inp;
+  config.suggestedOutput = card.out;
+  config.selectedCandidateKey = selectedKey;
+  syncDesignLifecycleSnapshots(info);
+  return true;
+}
+
+function refreshSelectedOutputFromScreen(nodeId, response) {
+  const info = nodeRegistry[nodeId];
+  const config = info?.data?.config;
+  if (!info || !config?.selectedCandidateKey) return null;
+  const entry = selectedCandidateEntry(response, config.selectedCandidateKey);
+  if (!entry) return null;
+  let rules;
+  try { rules = nidToRules(entry.card.nid); }
+  catch { return null; }
+  if (!publishSelectedNetwork(nodeId, entry, rules)) return null;
+  return entry;
+}
+
+function staleDesignSearchOutcome(nodeId) {
+  return staleOutcome(nodeId, {
+    code: 'design_screen_obsolete',
+    message: 'Design Screen response no longer owns the current node inputs',
+    outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
+  });
+}
+
+function settleDesignNodeLoading(nodeId, lifecycle, ticket) {
+  if (!ticket || nodeRegistry[nodeId] !== ticket.owner) return;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.currentTicket === ticket ||
+      (runtime.currentTicket == null && runtime.loading === false)) {
+    setNodeLoading(nodeId, false);
+  }
+}
+
 export async function runDesignSearch(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'design-target') {
+    return blockedOutcome(nodeId, {
+      code: 'missing_design_target',
+      message: 'Design Target node is unavailable',
+      outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
+    });
+  }
+  const lifecycle = lifecycleForOwner(owner, DESIGN_SCREEN_LIFECYCLE_KEY);
+  lifecycleForOwner(owner, DESIGN_SELECTION_LIFECYCLE_KEY);
+  invalidateDesignTargetInputs(nodeId, 'design-search-restarted');
+
   let request;
   try {
-    const specSourceNodeId = designSpecSourceForTarget(nodeId);
-    if (specSourceNodeId) {
-      request = buildDesignScreenRequestFromSpec(readDesignSpecConfig(specSourceNodeId));
-    } else {
-      const kind = document.getElementById(`${nodeId}-kind`).value;
-      const raw = (document.getElementById(`${nodeId}-target`).value || '').trim();
-      request = buildDesignScreenRequest(kind, raw);
-    }
+    request = readDesignSearchRequest(nodeId);
   } catch (e) {
+    const context = designLifecycleContext(nodeId, stableLifecycleFingerprint({
+      invalid: true,
+      attempt: designSearchAttemptFingerprint(nodeId),
+    }));
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, {
+        context,
+        reason: e?.message || String(e),
+      });
+      syncDesignLifecycleSnapshots(nodeRegistry[nodeId]);
+    }
     alert(e.message);
     return blockedOutcome(nodeId, {
       code: 'invalid_design_target',
@@ -1686,25 +2067,44 @@ export async function runDesignSearch(nodeId) {
       outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
     });
   }
+  const beginContext = designLifecycleContext(nodeId, designSearchRequestFingerprint(request));
+  if (!beginContext) return staleDesignSearchOutcome(nodeId);
+  const ticket = beginLifecycle(lifecycle, beginContext);
+  syncDesignLifecycleSnapshots(owner);
   setNodeLoading(nodeId, true);
-  const contentEl = document.getElementById(`${nodeId}-content`);
   try {
-    const data = await api('design_screen', request);
-    const info = nodeRegistry[nodeId];
-    if (info) {
-      info.data = info.data || {};
-      // Search results are runtime evidence for resolving the selected card.
-      // Keep them outside config so workspace serialization stays compact.
-      info.data.designSearchResponse = deepCloneJson(data);
+    const data = await api('design_screen', request, {
+      statusIsCurrent: () => {
+        const context = currentDesignSearchContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
+    });
+    const currentContext = currentDesignSearchContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: data,
+      evidence: designScreenEvidence(data),
+    })) {
+      syncDesignLifecycleSnapshots(ticket.owner);
+      return staleDesignSearchOutcome(nodeId);
     }
-    const cfg = info?.data?.config || {};
+
+    const info = nodeRegistry[nodeId];
+    if (info !== ticket.owner) return staleDesignSearchOutcome(nodeId);
+    info.data = info.data || {};
+    // Search results are runtime evidence for resolving the selected card.
+    // Keep them outside config so workspace serialization stays compact.
+    info.data.designSearchResponse = deepCloneJson(data);
+    syncDesignLifecycleSnapshots(info);
+    const cfg = info.data.config = info.data.config || {};
     const previousSelectedKey = cfg.selectedCandidateKey;
     const previousReference = cfg.ropShapeReference;
+    refreshSelectedOutputFromScreen(nodeId, info.data.designSearchResponse);
     const currentReference = refreshRopShapeReferenceForSelection(
       cfg,
-      info?.data?.designSearchResponse,
+      info.data.designSearchResponse,
     );
-    if (info && didRopShapeReferenceChange(
+    if (didRopShapeReferenceChange(
       previousSelectedKey,
       previousReference,
       cfg.selectedCandidateKey,
@@ -1712,6 +2112,10 @@ export async function runDesignSearch(nodeId) {
     )) {
       invalidateConnectedRopShapeArtifacts(nodeId);
       commitWorkspaceSnapshot('design-target-reference-refresh');
+    }
+    const contentEl = document.getElementById(`${nodeId}-content`);
+    if (!contentEl || !isCurrentLifecycle(lifecycle, ticket, currentContext)) {
+      return staleDesignSearchOutcome(nodeId);
     }
     contentEl.innerHTML = renderDesignScreenResults(nodeId, data, {
       selectedNid: cfg.selectedNid || null,
@@ -1734,14 +2138,29 @@ export async function runDesignSearch(nodeId) {
         : 'Select a screened candidate before running downstream compute nodes',
     });
   } catch (e) {
-    contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    const currentContext = currentDesignSearchContext(nodeId);
+    const failed = !!currentContext && failLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      error: e,
+    });
+    if (!failed) {
+      syncDesignLifecycleSnapshots(ticket.owner);
+      return staleDesignSearchOutcome(nodeId);
+    }
+    const info = nodeRegistry[nodeId];
+    syncDesignLifecycleSnapshots(info);
+    const contentEl = document.getElementById(`${nodeId}-content`);
+    if (info === ticket.owner && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
     return failedOutcome(nodeId, {
       code: 'design_screen_failed',
       message: e?.message || String(e),
       outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
     });
   } finally {
-    setNodeLoading(nodeId, false);
+    releaseLifecycle(lifecycle, ticket);
+    settleDesignNodeLoading(nodeId, lifecycle, ticket);
   }
 }
 
@@ -1791,21 +2210,29 @@ function shortNid(nid) {
 // Publishes the chosen network's rules as config.resolvedDefinition.raw_rules —
 // the same shape getReactionsFromNode reads for network-id-definition — so any
 // model-builder wired to this node's Reactions port rebuilds from it.
-function selectNetwork(designNodeId, nid, inp, out) {
+export function selectNetwork(designNodeId, nid, inp, out) {
+  const info = nodeRegistry[designNodeId];
+  const response = info?.data?.designSearchResponse;
+  const selectedKey = designCandidateKey(nid, inp, out);
+  const entry = selectedCandidateEntry(response, selectedKey);
+  const screen = info?.[DESIGN_SCREEN_LIFECYCLE_KEY]
+    ? inspectExecutionLifecycle(info[DESIGN_SCREEN_LIFECYCLE_KEY])
+    : null;
+  if (!info || !entry || screen?.state !== 'current' || screen.freshness !== 'current') {
+    return null;
+  }
   let rules;
   try { rules = nidToRules(nid); }
   catch (e) { alert(`Could not convert network: ${e.message}`); return null; }
-  const info = nodeRegistry[designNodeId];
-  if (!info) return null;
   info.data = info.data || {};
   const cfg = info.data.config = info.data.config || {};
   const previousSelectedKey = cfg.selectedCandidateKey;
   const previousReference = cfg.ropShapeReference;
-  cfg.resolvedDefinition = { raw_rules: rules };
-  cfg.selectedNid = nid;
-  cfg.suggestedInput = inp;
-  cfg.suggestedOutput = out;
-  cfg.selectedCandidateKey = designCandidateKey(nid, inp, out);
+  if (previousSelectedKey !== selectedKey) {
+    // Retire every dependent request/result before exposing the new selection.
+    invalidateConnectedRopShapeArtifacts(designNodeId);
+  }
+  if (!publishSelectedNetwork(designNodeId, entry, rules)) return null;
   const currentReference = refreshRopShapeReferenceForSelection(
     cfg,
     info.data.designSearchResponse,
@@ -1836,64 +2263,155 @@ function selectNetwork(designNodeId, nid, inp, out) {
 }
 
 // ── The GLUE: emit the network AND spawn a wired tunable station from our port ──
-async function buildAndTune(designNodeId, nid, inp, out, btn) {
-  const rules = selectNetwork(designNodeId, nid, inp, out);
-  if (!rules) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+function resetBuildAndTuneButton(btn) {
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = 'Build & tune →';
+}
 
-  // Lay the chain out to the right of the Design Target node.
-  const anchor = getNodePosition(designNodeId);
-  const aSize = getNodeSize(designNodeId);
-  const x0 = (anchor?.x || 80) + (aSize?.w || 460) + 60;
-  const mbY = resolveOverlap(x0, (anchor?.y || 120), 260, 200, null);
-
-  // model-builder pulls reactions through THIS node's own Reactions output port.
-  const mbId = createNode('model-builder', x0, mbY);
-  connections.push({ fromNode: designNodeId, fromPort: 'reactions', toNode: mbId, toPort: 'reactions' });
-
-  // placer-params + placer-result, connected.
-  const mbSize = getNodeSize(mbId);
-  const pX = x0 + (mbSize?.w || 260) + 60;
-  const pY = resolveOverlap(pX, mbY, 320, 320, null);
-  const paramsId = createNode('placer-params', pX, pY);
-  const pSize = getNodeSize(paramsId);
-  const rX = pX + (pSize?.w || 320) + 60;
-  const rY = resolveOverlap(rX, pY, 480, 360, null);
-  const resultId = createNode('placer-result', rX, rY);
-  connections.push({ fromNode: mbId, fromPort: 'model', toNode: paramsId, toPort: 'model' });
-  connections.push({ fromNode: paramsId, fromPort: 'params', toNode: resultId, toPort: 'params' });
-  updateConnections();
-
+function reportBuildAndTuneFailure(designNodeId, error) {
+  const message = error?.message || String(error);
   const contentEl = document.getElementById(`${designNodeId}-content`);
-  try {
-    // Build the model from this node's emitted network.
-    await buildModel(mbId, { triggerDownstream: false, throwOnFailure: true });
-    const model = getModelForNode(paramsId);
-    if (!model) throw new Error('Model build did not produce a model');
-
-    // Configure the Placer with this slice's input total + output species.
-    // The atlas tokens must exist in the built model — surface it loudly if not
-    // (that would be the naming gotcha), instead of silently mis-tuning.
-    const xSyms = (model.x_sym || []).map(String);
-    const qSyms = (model.q_sym || []).map(String);
-    if (!qSyms.includes(inp)) throw new Error(`input total "${inp}" not in built model (${qSyms.join(', ')})`);
-    if (!xSyms.includes(out)) throw new Error(`output species "${out}" not in built model (${xSyms.join(', ')})`);
-    syncSelectOptions(document.getElementById(`${paramsId}-input`), qSyms, inp);
-    syncSelectOptions(document.getElementById(`${paramsId}-output`), xSyms, out);
-    triggerConfigUpdate(paramsId, 'placer-params');
-
-    // Populate the fine-tune menu, then REALIZE THE WHOLE PROGRAM (the design
-    // target is a program, not a single slope) — the primary, no-re-ask action.
-    await loadPlacerMenu(resultId);
-    await realizePlacerProgram(resultId);
-    if (btn) { btn.textContent = 'Built'; }
-  } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Build & tune →'; }
-    if (contentEl) {
-      const err = document.createElement('div');
-      err.className = 'node-error';
-      err.textContent = `Build & tune failed: ${e.message}`;
-      contentEl.appendChild(err);
-    }
+  if (contentEl) {
+    const err = document.createElement('div');
+    err.className = 'node-error';
+    err.textContent = `Build & tune failed: ${message}`;
+    contentEl.appendChild(err);
   }
+  showToast(`Build & tune failed: ${message}`);
+}
+
+function buildAndTuneDeferredTask(plan, { inputSymbol, outputSymbol, btn }) {
+  const { modelBuilderNodeId, paramsNodeId, resultNodeId } = plan.patch.metadata;
+  return {
+    id: `${modelBuilderNodeId}:build-and-tune`,
+    delay: 100,
+    async run(context) {
+      if (!context.isCurrent() || context.signal.aborted) return;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Building…';
+      }
+
+      await buildModel(modelBuilderNodeId, {
+        triggerDownstream: false,
+        throwOnFailure: true,
+      });
+      if (!context.isCurrent() || context.signal.aborted) return;
+
+      const model = getModelForNode(paramsNodeId);
+      if (!model) throw new Error('Model build did not produce a model');
+
+      // Atlas tokens must exist in the built model. A mismatch is a naming
+      // error, not permission to silently tune a different input or output.
+      const xSyms = (model.x_sym || []).map(String);
+      const qSyms = (model.q_sym || []).map(String);
+      if (!qSyms.includes(inputSymbol)) {
+        throw new Error(`input total "${inputSymbol}" not in built model (${qSyms.join(', ')})`);
+      }
+      if (!xSyms.includes(outputSymbol)) {
+        throw new Error(`output species "${outputSymbol}" not in built model (${xSyms.join(', ')})`);
+      }
+      syncSelectOptions(
+        document.getElementById(`${paramsNodeId}-input`),
+        qSyms,
+        inputSymbol,
+      );
+      syncSelectOptions(
+        document.getElementById(`${paramsNodeId}-output`),
+        xSyms,
+        outputSymbol,
+      );
+      triggerConfigUpdate(paramsNodeId, 'placer-params');
+      if (!context.isCurrent() || context.signal.aborted) return;
+
+      // The design target is a whole regime program, so Build & Tune realizes
+      // that program after populating the optional fine-tune menu.
+      await loadPlacerMenu(resultNodeId);
+      if (!context.isCurrent() || context.signal.aborted) return;
+      await realizePlacerProgram(resultNodeId);
+      if (!context.isCurrent() || context.signal.aborted) return;
+      if (btn) btn.textContent = 'Built';
+    },
+  };
+}
+
+export function spawnBuildAndTuneGraph(
+  designNodeId,
+  { inputSymbol, outputSymbol, btn = null } = {},
+) {
+  if (typeof inputSymbol !== 'string' || !inputSymbol.trim() ||
+      typeof outputSymbol !== 'string' || !outputSymbol.trim()) {
+    const diagnostic = {
+      kind: 'error',
+      code: 'invalid-build-and-tune-symbols',
+      message: 'Build & Tune requires non-empty input and output symbols.',
+    };
+    resetBuildAndTuneButton(btn);
+    showToast(diagnostic.message);
+    return { ok: false, patch: null, diagnostic };
+  }
+
+  const plan = planDesignBuildAndTuneWorkflow({
+    graph: captureEditorGraphPlanningGraph(),
+    nextNodeOrdinal: nodeIdCounter + 1,
+    designNodeId,
+  });
+  if (!plan.ok) {
+    resetBuildAndTuneButton(btn);
+    showToast(plan.diagnostic.message);
+    return plan;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Building…';
+  }
+  try {
+    const command = createEditorGraphPatchCommand(plan, {
+      deferredTasks: [buildAndTuneDeferredTask(plan, {
+        inputSymbol: inputSymbol.trim(),
+        outputSymbol: outputSymbol.trim(),
+        btn,
+      })],
+      onDeferredError(error) {
+        resetBuildAndTuneButton(btn);
+        reportBuildAndTuneFailure(designNodeId, error);
+      },
+      onEpochCancel() {
+        resetBuildAndTuneButton(btn);
+      },
+    });
+    dispatch(command);
+    return { ...plan, command };
+  } catch (error) {
+    resetBuildAndTuneButton(btn);
+    reportBuildAndTuneFailure(designNodeId, error);
+    const diagnostic = {
+      kind: 'error',
+      code: error?.code || 'build-and-tune-commit-failed',
+      message: error?.message || String(error),
+    };
+    return { ok: false, patch: null, diagnostic };
+  }
+}
+
+export function buildAndTune(designNodeId, nid, inp, out, btn) {
+  const rules = selectNetwork(designNodeId, nid, inp, out);
+  if (!rules) {
+    return {
+      ok: false,
+      patch: null,
+      diagnostic: {
+        kind: 'error',
+        code: 'design-target-selection-failed',
+        message: 'Build & Tune requires a current selected Design Target candidate.',
+      },
+    };
+  }
+  return spawnBuildAndTuneGraph(designNodeId, {
+    inputSymbol: inp,
+    outputSymbol: out,
+    btn,
+  });
 }

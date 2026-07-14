@@ -1,21 +1,332 @@
-import { nodeRegistry, connections, SISO_FAMILY_COLORS, ensureNodeData, getNodeData } from './state.js';
-import { api, showToast, handleNodeError, renderNodeError, escapeHtml, splitCommaList, parseOptionalFloat, cloneSerializable } from './api.js';
-import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, themedColorbar } from './theme.js';
-import { plotTrajectory, convexHull2D, formatPolyNumber, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
+import {
+  nodeRegistry,
+  connections,
+  ensureNodeData,
+  getNodeData,
+  getWorkspaceRuntimeEpoch,
+} from './state.js';
+import { api, showToast, handleNodeError, renderNodeError, escapeHtml } from './api.js';
+import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme } from './theme.js';
+import { plotTrajectory, convexHull2D, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { NODE_TYPES } from './node-types/index.js';
 import {
   blockedOutcome,
   failedOutcome,
+  staleOutcome,
   succeededOutcome,
 } from './execution-outcome.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from './execution-lifecycle-core.js';
 
 const SISO_PLOT_MODE_SINGLE = 'single';
 const SISO_PLOT_MODE_OVERLAY = 'overlay';
 const SISO_PLOT_MODE_VALUES = new Set([SISO_PLOT_MODE_SINGLE, SISO_PLOT_MODE_OVERLAY]);
 const SISO_OVERLAY_CONCURRENCY = 4;
+const SISO_ENDPOINT = '/api/v1/behavior_families';
+const QK_POLY_ENDPOINT = '/api/v1/siso_polyhedra';
+const SISO_LIFECYCLE_KEY = '_sisoResultLifecycle';
+const QK_POLY_LIFECYCLE_KEY = '_qkPolyResultLifecycle';
+
+function canonicalLifecycleValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) {
+    normalized[key] = canonicalLifecycleValue(value[key]);
+  }
+  return normalized;
+}
+
+function stableLifecycleFingerprint(value) {
+  return JSON.stringify(canonicalLifecycleValue(value));
+}
+
+function upstreamConnectionIdentity(nodeId) {
+  const visited = new Set();
+  const edges = [];
+  const visit = current => {
+    if (!current || visited.has(current)) return;
+    visited.add(current);
+    for (const connection of connections) {
+      if (connection?.toNode !== current) continue;
+      edges.push([
+        connection.fromNode,
+        connection.fromPort,
+        connection.toNode,
+        connection.toPort,
+      ]);
+      visit(connection.fromNode);
+    }
+  };
+  visit(nodeId);
+  return edges.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function modelIdentityForNode(nodeId) {
+  const builderId = findUpstreamNodeByType(nodeId, 'model-builder');
+  const modelContext = builderId ? nodeRegistry[builderId]?.data?.modelContext : null;
+  return {
+    builderId: builderId || null,
+    inputFingerprint: modelContext?.inputFingerprint || null,
+    networkIrHash: modelContext?.networkIrHash || modelContext?.model?.network_ir_hash || null,
+    networkIr: modelContext?.networkIr || modelContext?.model?.network_ir || null,
+  };
+}
+
+function lifecycleContext(owner, endpoint, inputFingerprint) {
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint,
+    endpoint,
+  };
+}
+
+function sisoResultSnapshot(info) {
+  return {
+    behaviorData: info?.data?.behaviorData || null,
+    selectedPath: info?.data?.selectedPath || null,
+    trajectoryData: info?.data?.trajectoryData || null,
+    overlayTrajectoryData: info?.data?.overlayTrajectoryData || null,
+  };
+}
+
+function qkPolyResultSnapshot(info) {
+  return {
+    selection: info?.data?.selection || null,
+    polyhedronPayload: info?.data?.polyhedronPayload || null,
+  };
+}
+
+function hasSISOStoredResult(info) {
+  return !!(info?.data?.behaviorData || info?.data?.selectedPath || info?.data?.trajectoryData);
+}
+
+function hasQKStoredResult(info) {
+  return !!(info?.data?.selection || info?.data?.polyhedronPayload);
+}
+
+function currentSISOResultContext(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  let config = null;
+  try {
+    config = getConnectedSISOConfig(nodeId);
+  } catch {
+    config = null;
+  }
+  return lifecycleContext(owner, SISO_ENDPOINT, stableLifecycleFingerprint({
+    connections: upstreamConnectionIdentity(nodeId),
+    config,
+    model: modelIdentityForNode(nodeId),
+  }));
+}
+
+function currentQKPolyContext(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  const connection = connections.find(candidate =>
+    candidate.toNode === nodeId && candidate.toPort === 'result');
+  const sourceInfo = connection ? nodeRegistry[connection.fromNode] : null;
+  const sourceLifecycle = sourceInfo
+    ? lifecycleFor(sourceInfo, SISO_LIFECYCLE_KEY, {
+      endpoint: SISO_ENDPOINT,
+      contextFactory: () => currentSISOResultContext(connection.fromNode),
+      hasStoredResult: hasSISOStoredResult,
+      snapshot: sisoResultSnapshot,
+    })
+    : null;
+  const sourceRuntime = sourceLifecycle ? inspectExecutionLifecycle(sourceLifecycle) : null;
+  return lifecycleContext(owner, QK_POLY_ENDPOINT, stableLifecycleFingerprint({
+    connections: upstreamConnectionIdentity(nodeId),
+    model: modelIdentityForNode(nodeId),
+    sourceNodeId: connection?.fromNode || null,
+    sourceFingerprint: sourceRuntime?.inputFingerprint || null,
+    sourceFreshness: sourceRuntime?.freshness || 'empty',
+    selection: sourceRuntime?.freshness === 'current' ? sourceInfo?.data?.selectedPath || null : null,
+  }));
+}
+
+function lifecycleFor(info, key, {
+  endpoint,
+  contextFactory,
+  hasStoredResult,
+  snapshot,
+}) {
+  if (!info[key]) {
+    const lifecycle = createExecutionLifecycle();
+    info[key] = lifecycle;
+    if (hasStoredResult(info)) {
+      const context = contextFactory();
+      if (context) {
+        restoreHistoricalLifecycle(lifecycle, {
+          context: { ...context, endpoint },
+          result: snapshot(info),
+          evidence: info.data?.lifecycle?.evidence || null,
+        });
+        syncLifecycle(info, lifecycle);
+      }
+    }
+  }
+  return info[key];
+}
+
+function sisoLifecycleFor(info) {
+  return lifecycleFor(info, SISO_LIFECYCLE_KEY, {
+    endpoint: SISO_ENDPOINT,
+    contextFactory: () => {
+      const nodeId = Object.keys(nodeRegistry).find(id => nodeRegistry[id] === info);
+      return nodeId ? currentSISOResultContext(nodeId) : null;
+    },
+    hasStoredResult: hasSISOStoredResult,
+    snapshot: sisoResultSnapshot,
+  });
+}
+
+function qkPolyLifecycleFor(info) {
+  return lifecycleFor(info, QK_POLY_LIFECYCLE_KEY, {
+    endpoint: QK_POLY_ENDPOINT,
+    contextFactory: () => {
+      const nodeId = Object.keys(nodeRegistry).find(id => nodeRegistry[id] === info);
+      return nodeId ? currentQKPolyContext(nodeId) : null;
+    },
+    hasStoredResult: hasQKStoredResult,
+    snapshot: qkPolyResultSnapshot,
+  });
+}
+
+function syncLifecycle(info, lifecycle) {
+  if (!info || !lifecycle) return;
+  info.data = info.data || {};
+  info.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function clearTimer(info, key) {
+  if (info?.[key] == null) return;
+  clearTimeout(info[key]);
+  delete info[key];
+}
+
+function settleLoading(nodeId, lifecycle, ticket) {
+  if (!ticket || nodeRegistry[nodeId] !== ticket.owner) return;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.currentTicket === ticket ||
+      (runtime.currentTicket == null && runtime.loading === false)) {
+    setNodeLoading(nodeId, false);
+  }
+}
+
+function invalidateBoundLifecycle(info, lifecycle, reason) {
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.owner !== info || runtime.workspaceEpoch == null) return false;
+  return invalidateLifecycle(lifecycle, {
+    owner: info,
+    workspaceEpoch: runtime.workspaceEpoch,
+    reason,
+  });
+}
+
+function setResultMessage(nodeId, message) {
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  if (!contentEl) return;
+  contentEl.dataset.resultState = 'invalidated';
+  contentEl.innerHTML = `<span class="text-dim">${escapeHtml(message)}</span>`;
+}
+
+export function invalidateSISOResult(nodeId, reason = 'siso-input-changed') {
+  const info = nodeRegistry[nodeId];
+  if (!info || info.type !== 'siso-result') return false;
+  const lifecycle = sisoLifecycleFor(info);
+  invalidateBoundLifecycle(info, lifecycle, reason);
+  clearTimer(info, '_sisoPlotTimer');
+  info.data = info.data || {};
+  info.data.sisoTrajectoryRequestId = (info.data.sisoTrajectoryRequestId || 0) + 1;
+  info.data.sisoOverlayRequestId = (info.data.sisoOverlayRequestId || 0) + 1;
+  delete info.data.behaviorData;
+  delete info.data.selectedPath;
+  delete info.data.trajectoryData;
+  delete info.data.overlayTrajectoryData;
+  syncLifecycle(info, lifecycle);
+  setNodeLoading(nodeId, false);
+  setResultMessage(nodeId, 'Inputs changed — run SISO Behaviors again.');
+  return true;
+}
+
+export function invalidateQKPolyResult(nodeId, reason = 'qk-input-changed') {
+  const info = nodeRegistry[nodeId];
+  if (!info || info.type !== 'qk-poly-result') return false;
+  const lifecycle = qkPolyLifecycleFor(info);
+  invalidateBoundLifecycle(info, lifecycle, reason);
+  clearTimer(info, '_qkPolyPlotTimer');
+  info.data = info.data || {};
+  delete info.data.selection;
+  delete info.data.polyhedronPayload;
+  syncLifecycle(info, lifecycle);
+  setNodeLoading(nodeId, false);
+  setResultMessage(nodeId, 'Upstream path changed — run qK Polyhedron again.');
+  return true;
+}
+
+export function invalidateSISOResultsDownstreamOf(sourceNodeId, reason = 'siso-upstream-changed') {
+  const visited = new Set([sourceNodeId]);
+  const queue = [sourceNodeId];
+  const invalidated = [];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const connection of connections) {
+      if (connection?.fromNode !== current || visited.has(connection.toNode)) continue;
+      visited.add(connection.toNode);
+      queue.push(connection.toNode);
+      const type = nodeRegistry[connection.toNode]?.type;
+      if (type === 'siso-result' && invalidateSISOResult(connection.toNode, reason)) {
+        invalidated.push(connection.toNode);
+      } else if (type === 'qk-poly-result' && invalidateQKPolyResult(connection.toNode, reason)) {
+        invalidated.push(connection.toNode);
+      }
+    }
+  }
+  return invalidated;
+}
+
+export function installSISOConfigInvalidation(nodeId) {
+  const node = document.getElementById(nodeId);
+  if (!node) return;
+  node.querySelectorAll('.auto-update').forEach(control => {
+    const eventType = control.tagName === 'SELECT' || control.type === 'checkbox' ? 'change' : 'input';
+    control.addEventListener(eventType, () => {
+      invalidateSISOResultsDownstreamOf(nodeId, 'siso-config-input-changed');
+    });
+  });
+}
+
+export function inspectSISOResultLifecycle(nodeId) {
+  const info = nodeRegistry[nodeId];
+  return info?.type === 'siso-result'
+    ? inspectExecutionLifecycle(sisoLifecycleFor(info))
+    : null;
+}
+
+export function inspectQKPolyResultLifecycle(nodeId) {
+  const info = nodeRegistry[nodeId];
+  return info?.type === 'qk-poly-result'
+    ? inspectExecutionLifecycle(qkPolyLifecycleFor(info))
+    : null;
+}
 
 export function recomputeSISO(nodeId) {
   const typeDef = NODE_TYPES['siso-analysis'];
@@ -202,10 +513,18 @@ export function buildSISOSelection(nodeId, changeQK, pathIdx) {
 }
 
 export function setSISOSelection(nodeId, changeQK, pathIdx) {
-  const nodeData = nodeRegistry[nodeId]?.data;
+  const info = nodeRegistry[nodeId];
+  const nodeData = info?.data;
   if (!nodeData) return null;
+  const lifecycle = sisoLifecycleFor(info);
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.state !== 'current' || runtime.freshness !== 'current') {
+    showToast('Run SISO Behaviors before selecting a current path');
+    return null;
+  }
   const selection = buildSISOSelection(nodeId, changeQK, pathIdx);
   if (!selection) return null;
+  invalidateQKResultsDownstreamOfSISO(nodeId, 'siso-path-selection-changed');
   nodeData.selectedPath = selection;
   commitWorkspaceSnapshot('siso-selection');
   triggerDownstreamNodes(nodeId, 'result');
@@ -215,9 +534,19 @@ export function setSISOSelection(nodeId, changeQK, pathIdx) {
 export function clearSISOSelection(nodeId, notify = true) {
   const nodeData = nodeRegistry[nodeId]?.data;
   if (!nodeData) return;
+  invalidateQKResultsDownstreamOfSISO(nodeId, 'siso-path-selection-cleared');
   nodeData.selectedPath = null;
   commitWorkspaceSnapshot('siso-selection-cleared');
   if (notify) triggerDownstreamNodes(nodeId, 'result');
+}
+
+function invalidateQKResultsDownstreamOfSISO(nodeId, reason) {
+  for (const connection of connections) {
+    if (connection?.fromNode !== nodeId || connection.fromPort !== 'result') continue;
+    if (nodeRegistry[connection.toNode]?.type === 'qk-poly-result') {
+      invalidateQKPolyResult(connection.toNode, reason);
+    }
+  }
 }
 
 export function renderPathChips(nodeId, changeQK, pathIndices, accent) {
@@ -445,12 +774,16 @@ export function plotSISOBehaviorOverlay(nodeId) {
 }
 
 export async function loadAndPlotSISOBehaviorOverlay(nodeId, { force = false } = {}) {
-  const nodeData = nodeRegistry[nodeId]?.data;
+  const owner = nodeRegistry[nodeId];
+  const nodeData = owner?.data;
   const data = nodeData?.behaviorData;
   const config = getConnectedSISOConfig(nodeId);
   const sessionId = getSessionIdForNode(nodeId);
   const plotEl = document.getElementById(`${nodeId}-traj-plot`);
   if (!plotEl || !data || !config || !sessionId) return;
+  const lifecycle = owner?.type === 'siso-result' ? sisoLifecycleFor(owner) : null;
+  const lifecycleRuntime = lifecycle ? inspectExecutionLifecycle(lifecycle) : null;
+  if (lifecycleRuntime && lifecycleRuntime.freshness !== 'current') return;
 
   const paths = sisoOverlayPathCandidates(data);
   if (!paths.length) {
@@ -469,6 +802,16 @@ export async function loadAndPlotSISOBehaviorOverlay(nodeId, { force = false } =
 
   const requestId = (nodeData?.sisoOverlayRequestId || 0) + 1;
   if (nodeData) nodeData.sisoOverlayRequestId = requestId;
+  const workspaceEpoch = getWorkspaceRuntimeEpoch();
+  const inputFingerprint = currentSISOResultContext(nodeId)?.inputFingerprint || '';
+  const requestIsCurrent = () => {
+    const currentOwner = nodeRegistry[nodeId];
+    const context = currentSISOResultContext(nodeId);
+    return currentOwner === owner && getWorkspaceRuntimeEpoch() === workspaceEpoch &&
+      currentOwner?.data?.sisoOverlayRequestId === requestId &&
+      context?.inputFingerprint === inputFingerprint &&
+      (!lifecycle || inspectExecutionLifecycle(lifecycle).freshness === 'current');
+  };
 
   const { exactFamilyByPath } = buildPathFamilyMaps(data);
   setNodeLoading(nodeId, true);
@@ -503,7 +846,7 @@ export async function loadAndPlotSISOBehaviorOverlay(nodeId, { force = false } =
       }
     });
 
-    if (nodeRegistry[nodeId]?.data?.sisoOverlayRequestId !== requestId) return;
+    if (!requestIsCurrent()) return;
 
     const overlayData = {
       requestKey,
@@ -515,13 +858,14 @@ export async function loadAndPlotSISOBehaviorOverlay(nodeId, { force = false } =
       failures: results.filter(result => result && !result.ok),
     };
 
-    if (nodeRegistry[nodeId]) {
+    if (requestIsCurrent()) {
       ensureNodeData(nodeId).overlayTrajectoryData = overlayData;
     }
+    if (!requestIsCurrent()) return;
     renderSISOBehaviorOverlayPlot(nodeId, overlayData);
     commitWorkspaceSnapshot('siso-all-path-overlay');
   } finally {
-    setNodeLoading(nodeId, false);
+    if (requestIsCurrent()) setNodeLoading(nodeId, false);
   }
 }
 
@@ -585,9 +929,28 @@ export function getConnectedSISOConfig(resultNodeId) {
 }
 
 export async function computeSISOResult(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'siso-result') {
+    return blockedOutcome(nodeId, {
+      code: 'missing_siso_result',
+      message: 'SISO Behaviors node is unavailable',
+      outputs: { result: 'missing' },
+    });
+  }
+  const lifecycle = sisoLifecycleFor(owner);
+  const previousSelectedPath = getNodeData(nodeId).selectedPath?.path_idx || null;
+  invalidateSISOResult(nodeId, 'siso-execution-restarted');
+  invalidateSISOResultsDownstreamOf(nodeId, 'upstream-siso-execution-restarted');
+
   // Find the connected params node
   const paramsConn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!paramsConn) {
+    const context = currentSISOResultContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, { context, reason: 'Connect a SISO Config node first' });
+      syncLifecycle(owner, lifecycle);
+    }
     showToast('Connect a SISO Config node first');
     return blockedOutcome(nodeId, {
       code: 'missing_siso_config',
@@ -599,6 +962,12 @@ export async function computeSISOResult(nodeId) {
   const paramsNode = nodeRegistry[paramsConn.fromNode];
   const config = getConnectedSISOConfig(nodeId);
   if (!paramsNode || !config) {
+    const context = currentSISOResultContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, { context, reason: 'SISO Config node has no configuration' });
+      syncLifecycle(owner, lifecycle);
+    }
     showToast('SISO Config node has no configuration');
     return blockedOutcome(nodeId, {
       code: 'invalid_siso_config',
@@ -609,15 +978,29 @@ export async function computeSISOResult(nodeId) {
 
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
-  const previousSelectedPath = getNodeData(nodeId).selectedPath?.path_idx || null;
   const plotMode = getSISOPlotMode(nodeId);
+  const attemptRevision = (owner._sisoAttemptRevision || 0) + 1;
+  owner._sisoAttemptRevision = attemptRevision;
+  let ticket = null;
 
   try {
     const sessionId = await ensureModelSession(nodeId);
-    if (nodeRegistry[nodeId]) {
-      const nd = ensureNodeData(nodeId);
-      nd.sisoTrajectoryRequestId = (nd.sisoTrajectoryRequestId || 0) + 1;
+    if (nodeRegistry[nodeId] !== owner || owner._sisoAttemptRevision !== attemptRevision) {
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_superseded',
+        message: 'A newer SISO execution owns this node',
+        outputs: { result: 'missing' },
+      });
     }
+    const beginContext = currentSISOResultContext(nodeId);
+    if (!beginContext) {
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_context_missing',
+        outputs: { result: 'missing' },
+      });
+    }
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncLifecycle(owner, lifecycle);
     const data = await api('behavior_families', {
       session_id: sessionId,
       change_qK: config.change_qK,
@@ -628,21 +1011,64 @@ export async function computeSISOResult(nodeId) {
       keep_nonasymptotic: config.keep_nonasymptotic,
       deduplicate: true,
       compute_volume: true,
+    }, {
+      statusIsCurrent: () => {
+        const context = currentSISOResultContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
     });
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).behaviorData = data;
+    const currentContext = currentSISOResultContext(nodeId);
+    if (!currentContext || !isCurrentLifecycle(lifecycle, ticket, currentContext)) {
+      if (currentContext) {
+        failLifecycle(lifecycle, ticket, {
+          context: currentContext,
+          error: new Error('SISO execution no longer owns the current inputs'),
+        });
+      }
+      syncLifecycle(owner, lifecycle);
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_superseded',
+        outputs: { result: 'missing' },
+      });
+    }
+    const pathStillExists = previousSelectedPath != null &&
+      (data.paths || []).some(path => path.path_idx === previousSelectedPath);
+    const nd = ensureNodeData(nodeId);
+    nd.behaviorData = data;
+    nd.selectedPath = pathStillExists
+      ? buildSISOSelection(nodeId, config.change_qK, previousSelectedPath)
+      : null;
+    nd.trajectoryData = null;
+    nd.overlayTrajectoryData = null;
+    if (!commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: sisoResultSnapshot(owner),
+      evidence: {
+        source_endpoint: SISO_ENDPOINT,
+        included_paths: data?.included_paths ?? null,
+        excluded_paths: data?.excluded_paths ?? null,
+      },
+      sessionId,
+    })) {
+      syncLifecycle(owner, lifecycle);
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_superseded',
+        outputs: { result: 'missing' },
+      });
+    }
+    syncLifecycle(owner, lifecycle);
+    if (nodeRegistry[nodeId] !== owner || !isCurrentLifecycle(lifecycle, ticket, currentContext)) {
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_superseded',
+        outputs: { result: 'missing' },
+      });
     }
     contentEl.innerHTML = renderBehaviorFamiliesResult(nodeId, config.change_qK, data);
     commitWorkspaceSnapshot('siso-behavior');
-    const pathStillExists = previousSelectedPath && (data.paths || []).some(path => path.path_idx === previousSelectedPath);
     if (plotMode === SISO_PLOT_MODE_OVERLAY) {
-      if (pathStillExists) setSISOSelection(nodeId, config.change_qK, previousSelectedPath);
-      else clearSISOSelection(nodeId, previousSelectedPath !== null);
       await loadAndPlotSISOBehaviorOverlay(nodeId, { force: true });
     } else if (pathStillExists) {
       await plotSISOPath(nodeId, config.change_qK, previousSelectedPath);
-    } else {
-      clearSISOSelection(nodeId, previousSelectedPath !== null);
     }
     const selection = getNodeData(nodeId).selectedPath;
     return succeededOutcome(nodeId, {
@@ -651,15 +1077,38 @@ export async function computeSISOResult(nodeId) {
       message: selection?.path_idx != null ? null : 'Select a current SISO path before running qK',
     });
   } catch (e) {
+    const currentContext = currentSISOResultContext(nodeId);
+    let current = false;
+    if (ticket && currentContext) {
+      current = failLifecycle(lifecycle, ticket, { context: currentContext, error: e });
+    } else if (currentContext && nodeRegistry[nodeId] === owner &&
+               owner._sisoAttemptRevision === attemptRevision) {
+      ticket = beginLifecycle(lifecycle, currentContext);
+      current = failLifecycle(lifecycle, ticket, { context: currentContext, error: e });
+    }
+    syncLifecycle(owner, lifecycle);
+    if (!current && ticket) {
+      return staleOutcome(nodeId, {
+        code: 'siso_execution_superseded',
+        outputs: { result: 'missing' },
+      });
+    }
     handleNodeError(e, nodeId, 'SISO behavior analysis');
-    renderNodeError(contentEl, e);
+    if (nodeRegistry[nodeId] === owner) renderNodeError(contentEl, e);
     return failedOutcome(nodeId, {
       code: 'siso_execution_failed',
       message: e?.message || String(e),
       outputs: { result: 'missing' },
     });
   } finally {
-    setNodeLoading(nodeId, false);
+    if (ticket) {
+      releaseLifecycle(lifecycle, ticket);
+      if (owner._sisoAttemptRevision === attemptRevision) {
+        settleLoading(nodeId, lifecycle, ticket);
+      }
+    } else if (nodeRegistry[nodeId] === owner && owner._sisoAttemptRevision === attemptRevision) {
+      setNodeLoading(nodeId, false);
+    }
   }
 }
 
@@ -675,6 +1124,14 @@ export function recomputeHeatmap(nodeId) {
 
 // ===== SISO Path Selection =====
 export async function plotSISOPath(nodeId, changeQK, pathIdx, selectedEl = null) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'siso-result') return;
+  const lifecycle = sisoLifecycleFor(owner);
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.state !== 'current' || runtime.freshness !== 'current') {
+    showToast('Run SISO Behaviors before plotting a current path');
+    return;
+  }
   const config = getConnectedSISOConfig(nodeId);
   const sessionId = getSessionIdForNode(nodeId);
   if (!sessionId) return;
@@ -684,6 +1141,15 @@ export async function plotSISOPath(nodeId, changeQK, pathIdx, selectedEl = null)
   if (nodeData) {
     nodeData.sisoTrajectoryRequestId = requestId;
   }
+  const workspaceEpoch = getWorkspaceRuntimeEpoch();
+  const inputFingerprint = currentSISOResultContext(nodeId)?.inputFingerprint || '';
+  const requestIsCurrent = () => {
+    const context = currentSISOResultContext(nodeId);
+    return nodeRegistry[nodeId] === owner && getWorkspaceRuntimeEpoch() === workspaceEpoch &&
+      owner.data?.sisoTrajectoryRequestId === requestId &&
+      context?.inputFingerprint === inputFingerprint &&
+      inspectExecutionLifecycle(lifecycle).freshness === 'current';
+  };
   const contentEl = document.getElementById(`${nodeId}-content`);
   if (contentEl) {
     contentEl.querySelectorAll('.path-item, .path-chip').forEach(p => {
@@ -705,9 +1171,11 @@ export async function plotSISOPath(nodeId, changeQK, pathIdx, selectedEl = null)
       path_idx: pathIdx,
       start: config?.min ?? -6,
       stop: config?.max ?? 6,
+    }, {
+      statusIsCurrent: requestIsCurrent,
     });
-    if (nodeRegistry[nodeId]?.data?.sisoTrajectoryRequestId !== requestId) return;
-    if (nodeRegistry[nodeId]) {
+    if (!requestIsCurrent()) return;
+    if (nodeRegistry[nodeId] === owner) {
       ensureNodeData(nodeId).trajectoryData = data;
     }
     const plotEl = document.getElementById(`${nodeId}-traj-plot`);
@@ -767,10 +1235,15 @@ export function getConnectedSISOSelection(nodeId) {
   if (!conn) return null;
   const sourceInfo = nodeRegistry[conn.fromNode];
   if (!sourceInfo) return null;
+  const lifecycle = sisoLifecycleFor(sourceInfo);
+  const runtime = inspectExecutionLifecycle(lifecycle);
   return {
     sourceNodeId: conn.fromNode,
     sourceInfo,
-    selection: sourceInfo.data?.selectedPath || null,
+    freshness: runtime.freshness,
+    selection: runtime.state === 'current' && runtime.freshness === 'current'
+      ? sourceInfo.data?.selectedPath || null
+      : null,
   };
 }
 
@@ -906,9 +1379,24 @@ export function renderQKPolyhedronResult(nodeId, selection, payload) {
 }
 
 export async function executeQKPolyResult(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'qk-poly-result') {
+    return blockedOutcome(nodeId, {
+      code: 'missing_qk_result',
+      message: 'qK Polyhedron node is unavailable',
+    });
+  }
+  const lifecycle = qkPolyLifecycleFor(owner);
+  invalidateQKPolyResult(nodeId, 'qk-execution-restarted');
   const contentEl = document.getElementById(`${nodeId}-content`);
   const source = getConnectedSISOSelection(nodeId);
   if (!source) {
+    const context = currentQKPolyContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, { context, reason: 'Connect to a SISO Behaviors node first' });
+      syncLifecycle(owner, lifecycle);
+    }
     if (contentEl) contentEl.innerHTML = '<span class="text-dim">Connect to a SISO Behaviors node first.</span>';
     return blockedOutcome(nodeId, {
       code: 'missing_siso_source',
@@ -916,8 +1404,36 @@ export async function executeQKPolyResult(nodeId) {
     });
   }
 
+  if (source.freshness === 'historical' || source.freshness === 'invalidated') {
+    const reason = source.freshness === 'historical'
+      ? 'Run the restored SISO Behaviors node before using its selected path'
+      : 'Run the invalidated SISO Behaviors node before using its selected path';
+    const context = currentQKPolyContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, { context, reason });
+      syncLifecycle(owner, lifecycle);
+    }
+    if (contentEl) contentEl.innerHTML = `<span class="text-dim">${escapeHtml(reason)}</span>`;
+    return blockedOutcome(nodeId, {
+      code: source.freshness === 'historical'
+        ? 'upstream_output_historical'
+        : 'upstream_output_invalidated',
+      message: reason,
+    });
+  }
+
   const selection = source.selection;
   if (!selection) {
+    const context = currentQKPolyContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, {
+        context,
+        reason: 'Select a current path in the upstream SISO Behaviors node',
+      });
+      syncLifecycle(owner, lifecycle);
+    }
     if (contentEl) contentEl.innerHTML = '<span class="text-dim">Select a path in the upstream SISO Behaviors node.</span>';
     return blockedOutcome(nodeId, {
       code: 'upstream_output_missing',
@@ -926,14 +1442,42 @@ export async function executeQKPolyResult(nodeId) {
   }
 
   setNodeLoading(nodeId, true);
+  const attemptRevision = (owner._qkPolyAttemptRevision || 0) + 1;
+  owner._qkPolyAttemptRevision = attemptRevision;
+  let ticket = null;
   try {
     const sessionId = await ensureModelSession(nodeId);
+    if (nodeRegistry[nodeId] !== owner || owner._qkPolyAttemptRevision !== attemptRevision) {
+      return staleOutcome(nodeId, { code: 'qk_execution_superseded' });
+    }
+    const beginContext = currentQKPolyContext(nodeId);
+    if (!beginContext) {
+      return staleOutcome(nodeId, { code: 'qk_execution_context_missing' });
+    }
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncLifecycle(owner, lifecycle);
     const payload = await api('siso_polyhedra', {
       session_id: sessionId,
       change_qK: selection.change_qK,
       path_indices: [selection.path_idx],
+    }, {
+      statusIsCurrent: () => {
+        const context = currentQKPolyContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
     });
-    if (nodeRegistry[nodeId]) {
+    const currentContext = currentQKPolyContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: { selection, polyhedronPayload: payload },
+      evidence: { source_endpoint: QK_POLY_ENDPOINT },
+      sessionId,
+    })) {
+      syncLifecycle(owner, lifecycle);
+      return staleOutcome(nodeId, { code: 'qk_execution_superseded' });
+    }
+    syncLifecycle(owner, lifecycle);
+    if (nodeRegistry[nodeId] === owner) {
       const nd = ensureNodeData(nodeId);
       nd.selection = selection;
       nd.polyhedronPayload = payload;
@@ -942,20 +1486,45 @@ export async function executeQKPolyResult(nodeId) {
     contentEl.innerHTML = rendered.html;
     commitWorkspaceSnapshot('qk-polyhedron');
     if (rendered.canPlot) {
-      setTimeout(() => {
+      clearTimer(owner, '_qkPolyPlotTimer');
+      const timer = setTimeout(() => {
+        if (owner._qkPolyPlotTimer === timer) delete owner._qkPolyPlotTimer;
+        const context = currentQKPolyContext(nodeId);
+        if (nodeRegistry[nodeId] !== owner || !context ||
+            !isCurrentLifecycle(lifecycle, ticket, context)) return;
         plotQKPolyhedron(payload.polyhedra?.[0], payload.qk_symbols || [], `${nodeId}-plot`);
         setupPlotResize(nodeId, `${nodeId}-plot`);
       }, 50);
+      owner._qkPolyPlotTimer = timer;
     }
     return succeededOutcome(nodeId);
   } catch (e) {
+    const currentContext = currentQKPolyContext(nodeId);
+    let current = false;
+    if (ticket && currentContext) {
+      current = failLifecycle(lifecycle, ticket, { context: currentContext, error: e });
+    } else if (currentContext && nodeRegistry[nodeId] === owner &&
+               owner._qkPolyAttemptRevision === attemptRevision) {
+      ticket = beginLifecycle(lifecycle, currentContext);
+      current = failLifecycle(lifecycle, ticket, { context: currentContext, error: e });
+    }
+    syncLifecycle(owner, lifecycle);
+    if (!current && ticket) return staleOutcome(nodeId, { code: 'qk_execution_superseded' });
     handleNodeError(e, nodeId, 'qK polyhedron');
-    renderNodeError(contentEl, e);
+    if (nodeRegistry[nodeId] === owner) renderNodeError(contentEl, e);
     return failedOutcome(nodeId, {
       code: 'qk_polyhedron_failed',
       message: e?.message || String(e),
     });
   } finally {
-    setNodeLoading(nodeId, false);
+    if (ticket) {
+      releaseLifecycle(lifecycle, ticket);
+      if (owner._qkPolyAttemptRevision === attemptRevision) {
+        settleLoading(nodeId, lifecycle, ticket);
+      }
+    } else if (nodeRegistry[nodeId] === owner &&
+               owner._qkPolyAttemptRevision === attemptRevision) {
+      setNodeLoading(nodeId, false);
+    }
   }
 }
