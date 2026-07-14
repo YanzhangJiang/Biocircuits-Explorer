@@ -15,8 +15,8 @@ function test(name, fn) {
 
 // The full set of port ids declared across node types (keep in sync with the
 // node-type definitions; this test fails loudly if one loses its type mapping).
-const PORT_IDS = [
-  'reactions', 'model', 'params', 'result',
+const GLOBALLY_TYPED_PORT_IDS = [
+  'reactions', 'model', 'result',
   'atlas-spec', 'atlas', 'atlas-query', 'atlas-network',
   'designability-spec',
   'rop-shape-reference', 'rop-shape-request', 'rop-shape-result',
@@ -29,21 +29,24 @@ const ROP_SHAPE_PORT_TYPES = [
 ];
 
 test('every known port id maps to a declared type (no raw-id fallback)', () => {
-  for (const id of PORT_IDS) {
+  for (const id of GLOBALLY_TYPED_PORT_IDS) {
     const t = portTypeOf(id);
     assert.notEqual(t, id, `port '${id}' should map to a type, not fall back to its id`);
     assert.ok(Object.values(PORT_TYPES).includes(t), `'${id}' → '${t}' must be a PORT_TYPES value`);
   }
 });
 
-test('unknown port id falls back to its own id and is only self-compatible', () => {
-  assert.equal(portTypeOf('mystery'), 'mystery');
-  assert.ok(portsCompatible('mystery', 'mystery'));
+test('unknown and context-dependent raw port ids fail closed', () => {
+  assert.equal(portTypeOf('mystery'), null);
+  assert.equal(portTypeOf('params'), null);
+  assert.ok(!portsCompatible('mystery', 'mystery'));
+  assert.ok(!portsCompatible('params', 'params'));
   assert.ok(!portsCompatible('mystery', 'model'));
 });
 
-test('a declared per-port type overrides the central map', () => {
-  assert.equal(portTypeOf('model', 'CustomType'), 'CustomType');
+test('a known declared per-port type overrides the central map and typos fail closed', () => {
+  assert.equal(portTypeOf('params', PORT_TYPES.Scan1DConfig), PORT_TYPES.Scan1DConfig);
+  assert.equal(portTypeOf('params', 'Scan1DConfg'), null);
 });
 
 test('type compatibility is reflexive and rejects mismatches', () => {
@@ -70,11 +73,11 @@ test('ROP shape ports map to three distinct artifact types with no implicit comp
   assert.equal(portsCompatible('rop-shape-result', 'result'), false);
 });
 
-test('behavior-preserving: typed compatibility matches old port-id equality', () => {
+test('globally typed artifact ids preserve strict equality compatibility', () => {
   // The old rule was `fromPort === toPort`. With a bijective id→type map, the
   // typed rule must accept/reject exactly the same pairs — no silent widening.
-  for (const a of PORT_IDS) {
-    for (const b of PORT_IDS) {
+  for (const a of GLOBALLY_TYPED_PORT_IDS) {
+    for (const b of GLOBALLY_TYPED_PORT_IDS) {
       assert.equal(portsCompatible(a, b), a === b, `compat(${a}, ${b})`);
     }
   }

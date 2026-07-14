@@ -182,7 +182,7 @@ export function setupAgentNode(nodeId) {
 
   renderFileList(nodeId);
 
-  $$(nodeId, '-agent-run').addEventListener('click', () => onRun(nodeId));
+  $$(nodeId, '-agent-run').addEventListener('click', () => executeAgentNode(nodeId));
   $$(nodeId, '-agent-cancel').addEventListener('click', () => onCancel(nodeId));
 }
 
@@ -215,18 +215,18 @@ function readModelChoice(nodeId) {
   return { model: sel.value, provider: opt?.provider || detectProvider(sel.value) };
 }
 
-async function onRun(nodeId) {
+export async function executeAgentNode(nodeId) {
   const state = rt(nodeId);
-  if (!state || state.abort) return;
+  if (!state || state.abort) return false;
   const key = ($$(nodeId, '-agent-key')?.value || '').trim();
   const { model, provider } = readModelChoice(nodeId);
   const text = $$(nodeId, '-agent-text')?.value || '';
   const files = state.files.slice();
   const remember = !!$$(nodeId, '-agent-remember')?.checked;
 
-  if (!key) { setStatus(nodeId, 'Enter an API key.', 'error'); return; }
-  if (!model) { setStatus(nodeId, 'Pick or type a model id.', 'error'); return; }
-  if (files.length === 0 && !text.trim()) { setStatus(nodeId, 'Select at least one file or paste some text.', 'error'); return; }
+  if (!key) { setStatus(nodeId, 'Enter an API key.', 'error'); return false; }
+  if (!model) { setStatus(nodeId, 'Pick or type a model id.', 'error'); return false; }
+  if (files.length === 0 && !text.trim()) { setStatus(nodeId, 'Select at least one file or paste some text.', 'error'); return false; }
 
   try {
     if (remember) {
@@ -248,7 +248,7 @@ async function onRun(nodeId) {
   state.abort = new AbortController();
   try {
     const result = await runAgent({ provider, apiKey: key, model, text, files, signal: state.abort.signal });
-    if (!nodeRegistry[nodeId] || !document.getElementById(nodeId)) return;
+    if (!nodeRegistry[nodeId] || !document.getElementById(nodeId)) return false;
     state.lastResult = result;
     renderResult(nodeId, result);
     if (result.networks.length > 0) {
@@ -257,6 +257,7 @@ async function onRun(nodeId) {
     } else {
       setStatus(nodeId, `Done, but no extractable equilibrium binding networks were found. See summary.`, 'warn');
     }
+    return true;
   } catch (e) {
     if (e?.name === 'AbortError') {
       setStatus(nodeId, 'Cancelled.', 'info');
@@ -265,6 +266,7 @@ async function onRun(nodeId) {
       setStatus(nodeId, e.message || String(e), 'error');
       if (e?.rawText) renderRawError(nodeId, e);
     }
+    return false;
   } finally {
     setThinking(nodeId, false);
     state.abort = null;

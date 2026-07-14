@@ -18,6 +18,11 @@ import { buildModel } from '../model.js';
 import { connections, nodeRegistry } from '../state.js';
 import { updateConnections } from '../connections.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
+import {
+  blockedOutcome,
+  failedOutcome,
+  succeededOutcome,
+} from '../execution-outcome.js';
 import { loadPlacerMenu, realizePlacerProgram } from './placer.js';
 import {
   DESIGNABILITY_SPEC_VERSION,
@@ -334,7 +339,7 @@ export const DESIGN_TARGET_TYPES = {
     headerClass: 'header-parameter',
     title: 'Design Spec Config',
     inputs: [],
-    outputs: [{ port: 'designability-spec', label: 'DesignabilitySpec' }],
+    outputs: [{ port: 'designability-spec', type: 'DesignabilitySpec', label: 'DesignabilitySpec' }],
     defaultWidth: 440,
     createBody(nodeId) {
       return `
@@ -458,15 +463,18 @@ export const DESIGN_TARGET_TYPES = {
         <div class="node-info" id="${nodeId}-spec-preview" style="display:none;"></div>
       `;
     },
+    async prepare(nodeId) {
+      return validateDesignSpecConfig(nodeId);
+    },
   },
   'design-target': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'Design Target',
-    inputs: [{ port: 'designability-spec', label: 'DesignabilitySpec' }],
+    inputs: [{ port: 'designability-spec', type: 'DesignabilitySpec', label: 'DesignabilitySpec' }],
     outputs: [
-      { port: 'reactions', label: 'Reactions' },
-      { port: 'rop-shape-reference', label: 'ROP Shape Reference' },
+      { port: 'reactions', type: 'NetworkIR', label: 'Reactions' },
+      { port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference' },
     ],
     defaultWidth: 460,
     createBody(nodeId) {
@@ -490,6 +498,9 @@ export const DESIGN_TARGET_TYPES = {
           <span class="text-dim">Connect a Design Spec Config for explicit constraints, or use the local target fields as a legacy shorthand. Verified recommendations require an active DesignabilitySpec with explicit parameter bounds; proxy screens stay exploratory.</span>
         </div>
       `;
+    },
+    async execute(nodeId) {
+      return runDesignSearch(nodeId);
     },
   },
 };
@@ -1669,7 +1680,11 @@ export async function runDesignSearch(nodeId) {
     }
   } catch (e) {
     alert(e.message);
-    return;
+    return blockedOutcome(nodeId, {
+      code: 'invalid_design_target',
+      message: e?.message || String(e),
+      outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
+    });
   }
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
@@ -1705,8 +1720,26 @@ export async function runDesignSearch(nodeId) {
       selectedCandidateKey: cfg.selectedCandidateKey || null,
     });
     wireNetworkRows(nodeId, contentEl);
+    const selectedRules = cfg.resolvedDefinition?.raw_rules;
+    return succeededOutcome(nodeId, {
+      outputs: {
+        reactions: Array.isArray(selectedRules) && selectedRules.length > 0 ? 'present' : 'missing',
+        'rop-shape-reference': cfg.ropShapeReference ? 'present' : 'missing',
+      },
+      code: Array.isArray(selectedRules) && selectedRules.length > 0
+        ? null
+        : 'manual_candidate_selection_required',
+      message: Array.isArray(selectedRules) && selectedRules.length > 0
+        ? null
+        : 'Select a screened candidate before running downstream compute nodes',
+    });
   } catch (e) {
     contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    return failedOutcome(nodeId, {
+      code: 'design_screen_failed',
+      message: e?.message || String(e),
+      outputs: { reactions: 'missing', 'rop-shape-reference': 'missing' },
+    });
   } finally {
     setNodeLoading(nodeId, false);
   }

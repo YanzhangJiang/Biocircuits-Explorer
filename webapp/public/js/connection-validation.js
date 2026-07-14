@@ -1,18 +1,73 @@
-import { portsCompatible } from './port-types.js';
+import { portTypesCompatible, resolveNodePort } from './port-types.js';
 
-function declaredPort(typeDef, direction, port) {
-  const ports = Array.isArray(typeDef?.[direction]) ? typeDef[direction] : [];
-  return ports.some((entry) => entry?.port === port);
+function invalid(code, message, details = {}) {
+  return { ok: false, code, message, ...details };
+}
+
+export function validateTypedConnection(conn, fromType, toType, nodeTypes) {
+  if (!conn || typeof conn !== 'object') {
+    return invalid('invalid-connection', 'Connection must be an object');
+  }
+  if (!fromType || !toType) {
+    return invalid('unknown-node-type', 'Connection endpoint node type is missing');
+  }
+  const from = resolveNodePort(nodeTypes, fromType, 'output', conn.fromPort);
+  if (!from) {
+    return invalid(
+      'invalid-output-port',
+      `Unknown or untyped output ${fromType}.${String(conn.fromPort)}`,
+    );
+  }
+  const to = resolveNodePort(nodeTypes, toType, 'input', conn.toPort);
+  if (!to) {
+    return invalid(
+      'invalid-input-port',
+      `Unknown or untyped input ${toType}.${String(conn.toPort)}`,
+      { from },
+    );
+  }
+  if (!portTypesCompatible(from.type, to.type)) {
+    return invalid(
+      'incompatible-port-types',
+      `Port type mismatch: ${from.type} cannot connect to ${to.type}`,
+      { from, to },
+    );
+  }
+  return { ok: true, code: 'compatible', message: 'Compatible connection', from, to };
+}
+
+export function validateNodeConnection(conn, registry, nodeTypes) {
+  if (!conn || typeof conn !== 'object') {
+    return invalid('invalid-connection', 'Connection must be an object');
+  }
+  if (conn.fromNode === conn.toNode) {
+    return invalid('self-connection', 'A node cannot connect to itself');
+  }
+  const fromType = registry?.[conn.fromNode]?.type;
+  const toType = registry?.[conn.toNode]?.type;
+  if (!fromType || !toType) {
+    return invalid(
+      'missing-endpoint',
+      `Connection endpoint is missing: ${String(conn.fromNode)} -> ${String(conn.toNode)}`,
+    );
+  }
+  return validateTypedConnection(conn, fromType, toType, nodeTypes);
+}
+
+export function assertNodeConnectionValid(conn, registry, nodeTypes) {
+  const result = validateNodeConnection(conn, registry, nodeTypes);
+  if (!result.ok) {
+    const error = new Error(result.message);
+    error.name = 'ConnectionContractError';
+    error.code = result.code;
+    error.validation = result;
+    throw error;
+  }
+  return result;
 }
 
 export function isRestoredConnectionValid(conn, fromType, toType, nodeTypes) {
-  if (!conn || !fromType || !toType) return false;
-  const fromDef = nodeTypes?.[fromType];
-  const toDef = nodeTypes?.[toType];
-  if (!fromDef || !toDef) return false;
-  if (!declaredPort(fromDef, 'outputs', conn.fromPort)) return false;
-  if (!declaredPort(toDef, 'inputs', conn.toPort)) return false;
-  return portsCompatible(conn.fromPort, conn.toPort);
+  return validateTypedConnection(conn, fromType, toType, nodeTypes).ok;
 }
 
 export function normalizeRestoredConnection(conn, idMap, savedTypeById, nodeTypes) {

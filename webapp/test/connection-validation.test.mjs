@@ -9,31 +9,31 @@ function test(name, fn) {
 }
 
 const nodeTypes = {
-  source: { outputs: [{ port: 'reactions', label: 'Reactions' }], inputs: [] },
-  builder: { inputs: [{ port: 'reactions', label: 'Reactions' }], outputs: [{ port: 'model', label: 'Model' }] },
-  viewer: { inputs: [{ port: 'model', label: 'Model' }], outputs: [] },
+  source: { outputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }], inputs: [] },
+  builder: { inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }], outputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }] },
+  viewer: { inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }], outputs: [] },
   ropReference: {
     inputs: [],
-    outputs: [{ port: 'rop-shape-reference', label: 'ROP Shape Reference' }],
+    outputs: [{ port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference' }],
   },
   ropEdit: {
-    inputs: [{ port: 'rop-shape-reference', label: 'ROP Shape Reference' }],
-    outputs: [{ port: 'rop-shape-request', label: 'ROP Shape Request' }],
+    inputs: [{ port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference' }],
+    outputs: [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }],
   },
   ropOptimizer: {
-    inputs: [{ port: 'rop-shape-request', label: 'ROP Shape Request' }],
-    outputs: [{ port: 'rop-shape-result', label: 'ROP Shape Result' }],
+    inputs: [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }],
+    outputs: [{ port: 'rop-shape-result', type: 'ROPShapeResultArtifact', label: 'ROP Shape Result' }],
   },
   ropResult: {
-    inputs: [{ port: 'rop-shape-result', label: 'ROP Shape Result' }],
+    inputs: [{ port: 'rop-shape-result', type: 'ROPShapeResultArtifact', label: 'ROP Shape Result' }],
     outputs: [],
   },
   legacyPathSource: {
     inputs: [],
-    outputs: [{ port: 'result', label: 'Path' }],
+    outputs: [{ port: 'result', type: 'PathResult', label: 'Path' }],
   },
   legacyPathResult: {
-    inputs: [{ port: 'result', label: 'Path' }],
+    inputs: [{ port: 'result', type: 'PathResult', label: 'Path' }],
     outputs: [],
   },
 };
@@ -70,13 +70,13 @@ test('restored connections must keep compatible port artifact types', () => {
 
 test('ROP shape restored connections use exact reference/request/result labels and types', () => {
   assert.deepEqual(nodeTypes.ropReference.outputs[0], {
-    port: 'rop-shape-reference', label: 'ROP Shape Reference',
+    port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference',
   });
   assert.deepEqual(nodeTypes.ropEdit.outputs[0], {
-    port: 'rop-shape-request', label: 'ROP Shape Request',
+    port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request',
   });
   assert.deepEqual(nodeTypes.ropOptimizer.outputs[0], {
-    port: 'rop-shape-result', label: 'ROP Shape Result',
+    port: 'rop-shape-result', type: 'ROPShapeResultArtifact', label: 'ROP Shape Result',
   });
   assert.equal(isRestoredConnectionValid(
     { fromPort: 'rop-shape-reference', toPort: 'rop-shape-reference' },

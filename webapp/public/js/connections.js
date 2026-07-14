@@ -13,7 +13,21 @@ import {
   invalidateScanExecutionsForConnectionChange,
 } from './execution-lifecycle.js';
 import { record, SetConnectionsCommand } from './commands.js';
-import { portsCompatible, portTypeOf, PORT_TYPES } from './port-types.js';
+import { PORT_TYPES, resolveNodePort } from './port-types.js';
+import {
+  assertNodeConnectionValid,
+  validateNodeConnection,
+} from './connection-validation.js';
+
+const CONFIG_PORT_TYPES = new Set([
+  PORT_TYPES.SISOConfig,
+  PORT_TYPES.Scan1DConfig,
+  PORT_TYPES.Scan2DConfig,
+  PORT_TYPES.ROPCloudConfig,
+  PORT_TYPES.FRETConfig,
+  PORT_TYPES.ROPPolyhedronConfig,
+  PORT_TYPES.ParameterPlacerConfig,
+]);
 
 // ===== Connection mutators (command performers) =====
 
@@ -21,6 +35,7 @@ import { portsCompatible, portTypeOf, PORT_TYPES } from './port-types.js';
 // the same input socket is evicted and returned so a command can restore it
 // on undo. Returns the replaced connection or null.
 export function addConnection(conn) {
+  assertNodeConnectionValid(conn, nodeRegistry, NODE_TYPES);
   let replaced = null;
   const existing = connections.find(c => c.toNode === conn.toNode && c.toPort === conn.toPort);
   const next = connections.filter(c => c !== existing);
@@ -42,6 +57,9 @@ export function removeConnection(conn) {
 
 // Replace the whole connection set (backs SetConnectionsCommand).
 export function replaceConnections(arr) {
+  for (const conn of arr || []) {
+    assertNodeConnectionValid(conn, nodeRegistry, NODE_TYPES);
+  }
   replaceConnectionsWithModelInvalidation(arr, 'connection-set-replaced');
   updateConnections();
 }
@@ -129,7 +147,10 @@ export function updateConnections() {
     path.classList.add('wire', 'connected');
     path.setAttribute('id', wireId);
     path.setAttribute('d', bezierPath(from.x, from.y, to.x, to.y));
-    path.setAttribute('data-port-type', conn.fromPort);
+    const fromNodeType = nodeRegistry[conn.fromNode]?.type;
+    const resolvedPort = resolveNodePort(NODE_TYPES, fromNodeType, 'output', conn.fromPort);
+    if (!resolvedPort) return;
+    path.setAttribute('data-port-type', resolvedPort.type);
     path.style.stroke = getPortColor(conn.fromPort);
 
     // Restore transmitting state if it was active
@@ -225,10 +246,12 @@ export function initSocketEvents() {
       if (fromSocket && toSocket) {
         const fromPort = fromSocket.dataset.port;
         const toPort = toSocket.dataset.port;
-        // Validate by port *type* (the wire's artifact contract), not raw id.
-        if (portsCompatible(fromPort, toPort)) {
-          const fromNode = fromSocket.dataset.node;
-          const toNode = toSocket.dataset.node;
+        const fromNode = fromSocket.dataset.node;
+        const toNode = toSocket.dataset.node;
+        const candidate = { fromNode, fromPort, toNode, toPort };
+        // Validate through the canonical node-type + direction + port resolver.
+        const validation = validateNodeConnection(candidate, nodeRegistry, NODE_TYPES);
+        if (validation.ok) {
           // No self-connections
           if (fromNode !== toNode) {
             // Remove existing connection to this input (one input = one wire)
@@ -241,18 +264,19 @@ export function initSocketEvents() {
             const toNodeInfo = nodeRegistry[toNode];
             if (toNodeInfo && toNodeInfo.type) {
               const typeDef = NODE_TYPES[toNodeInfo.type];
-              if (typeDef && typeDef.execute) {
-                // Execute the node to populate dropdowns/options
+              if (typeDef && typeDef.prepare) {
+                // Preparation may populate UI/config only; connecting a wire
+                // must never launch scientific computation.
                 // Check if we have the necessary data before executing
-                const toType = portTypeOf(toPort);
+                const toType = validation.to.type;
                 const shouldExecute =
                   (toType === PORT_TYPES.ModelArtifact && hasModelContextForNode(toNode)) || // Has model data
                   (toType === PORT_TYPES.NetworkIR && getReactionsFromNode(fromNode).reactions.length > 0) || // Has reactions data
-                  (toType === PORT_TYPES.ParamsConfig); // Config connection
+                  CONFIG_PORT_TYPES.has(toType); // Typed config connection
 
                 if (shouldExecute) {
                   setTimeout(() => {
-                    typeDef.execute(toNode).catch(e => {
+                    typeDef.prepare(toNode).catch(e => {
                       console.error(`Failed to auto-populate ${toNode}:`, e);
                     });
                   }, 100);
@@ -261,7 +285,7 @@ export function initSocketEvents() {
             }
           }
         } else {
-          showToast(`Port mismatch: ${portTypeOf(fromPort)} ≠ ${portTypeOf(toPort)}`);
+          showToast(validation.message);
         }
       }
     }

@@ -9,7 +9,7 @@ import { nodeRegistry } from './state.js';
 import { shouldDispatchActionForEvent } from './action-events.js';
 import { initAuthUiEvents } from './auth-ui.js';
 import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
-import { applyThemeMode, installThemeChangeObserver } from './theme.js';
+import { installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
 import {
   initSocketEvents, updateConnections,
@@ -18,47 +18,42 @@ import {
 import { toggleDebugConsole, initDebugConsoleEvents } from './debug-console.js';
 import { NODE_TYPES, switchNoteTab } from './node-types/index.js';
 import {
-  addNodeFromMenu, addQuickAddChain, removeNode, runConnectedWorkspace,
-  initNodeMenuEvents, setupPlotResize, setupPlotInteractionGuard,
+  addNodeFromMenu, addQuickAddChain, removeNode, runConnectedWorkspace, runAllConnectedWorkspace,
+  initNodeMenuEvents,
   createNode, moveNode, deleteNodeWithHistory, setNodeAttr, initAttrHistory,
 } from './nodes.js';
 import { registerPerformers, initUndoKeyboard } from './commands.js';
 import { initEditorUI } from './editor-ui.js';
-import { buildModel, addReactionRow, triggerDownstreamNodes, getReactionsFromNode } from './model.js';
+import { addReactionRow, triggerDownstreamNodes } from './model.js';
 import {
   initWorkspaceShell, installWorkspaceShellObservers,
   saveState, loadState, commitWorkspaceSnapshot,
   snapshotNode, restoreNode,
 } from './workspace.js';
 import {
-  computeSISOResult, recomputeSISO, recomputeROPCloud, recomputeHeatmap,
-  plotSISOPath, selectSISOPath, toggleSISOPathCondition, executeQKPolyResult, updateSISOPlotMode, refreshSISOPlot,
+  recomputeSISO, recomputeROPCloud, recomputeHeatmap,
+  plotSISOPath, selectSISOPath, toggleSISOPathCondition, updateSISOPlotMode, refreshSISOPlot,
   expandSISOPaths,
 } from './siso.js';
 import {
-  executeROPCloudResult, updateROPCloudMode, refreshROPCloudPlot,
-  applyROPCloudFOVPreset, updateFRETConfig, executeFRETResult,
+  updateROPCloudMode, refreshROPCloudPlot, applyROPCloudFOVPreset,
 } from './rop-cloud.js';
-import { updateRegimeGraphMode, executeRegimeGraph } from './regime-graph.js';
+import { updateRegimeGraphMode } from './regime-graph.js';
 import {
-  executeScan1DResult, executeScan2DResult, runParameterScan1D, runParameterScan2D,
+  runParameterScan1D, runParameterScan2D,
   insertSpecies1D, insertSpecies2D, updateROPPolyDimension,
-  refreshROPPolyhedronPlot, executeROPPolyResult, runROPPolyhedron,
+  refreshROPPolyhedronPlot, runROPPolyhedron,
 } from './scan.js';
-import { executeAtlasBuilder, executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow } from './atlas.js';
-import { executePlacerResult, loadPlacerMenu, realizePlacerProgram } from './node-types/placer.js';
+import { addAtlasBuilderRow } from './atlas.js';
+import { executePlacerResult, loadPlacerMenu } from './node-types/placer.js';
 import {
-  executeRopShapeResult,
-  prepareRopShapeRequest,
   updateRopShapeIntentVisibility,
 } from './node-types/rop-shape.js';
 import {
-  runDesignSearch,
   onDesignTargetKindChange,
   onDesignSpecKindChange,
-  validateDesignSpecConfig,
 } from './node-types/design-target.js';
-import { importSbml, exportSbml, loadSbmlFile } from './sbml-io.js';
+import { importSbml, loadSbmlFile } from './sbml-io.js';
 import { initAgentView, setNodeView } from './agent-view.js';
 import './llm-settings.js';   // temporary self-mounting LLM-key panel (OpenAI/Anthropic)
 
@@ -68,10 +63,10 @@ const ACTION_HANDLERS = {
   switchNoteTab: (el) => switchNoteTab(el.dataset.node, el.dataset.tab),
   // Reactions
   addReactionRow: (el) => addReactionRow(el.dataset.node),
-  buildModel: (el) => buildModel(el.dataset.node),
+  buildModel: (el) => runNodeOperation(el),
   removeReactionRow: (el) => el.closest('.reaction-row')?.remove(),
   // SISO
-  computeSISOResult: (el) => computeSISOResult(el.dataset.node),
+  computeSISOResult: (el) => runNodeOperation(el),
   recomputeSISO: (el) => recomputeSISO(el.dataset.node),
   selectSISOPath: (el) => selectSISOPath(el),
   plotSISOPath: (el) => plotSISOPath(el.dataset.node, el.dataset.qk, parseInt(el.dataset.idx), el),
@@ -79,48 +74,48 @@ const ACTION_HANDLERS = {
   toggleSISOPaths: (el) => expandSISOPaths(el),
   updateSISOPlotMode: (el) => updateSISOPlotMode(el.dataset.node, el.value),
   refreshSISOPlot: (el) => refreshSISOPlot(el.dataset.node),
-  executeQKPolyResult: (el) => executeQKPolyResult(el.dataset.node),
+  executeQKPolyResult: (el) => runNodeOperation(el),
   // ROP Cloud
   recomputeROPCloud: (el) => recomputeROPCloud(el.dataset.node),
   recomputeHeatmap: (el) => recomputeHeatmap(el.dataset.node),
-  executeROPCloudResult: (el) => executeROPCloudResult(el.dataset.node),
-  executeFRETResult: (el) => executeFRETResult(el.dataset.node),
+  executeROPCloudResult: (el) => runNodeOperation(el),
+  executeFRETResult: (el) => runNodeOperation(el),
   updateROPCloudMode: (el) => updateROPCloudMode(el.dataset.node),
   refreshROPCloudPlot: (el) => refreshROPCloudPlot(el.dataset.node),
   applyROPCloudFOVPreset: (el) => applyROPCloudFOVPreset(el.dataset.node, el.dataset.preset),
   // Scans
   runParameterScan1D: (el) => runParameterScan1D(el.dataset.node),
   runParameterScan2D: (el) => runParameterScan2D(el.dataset.node),
-  executeScan1DResult: (el) => executeScan1DResult(el.dataset.node),
-  executeScan2DResult: (el) => executeScan2DResult(el.dataset.node),
+  executeScan1DResult: (el) => runNodeOperation(el),
+  executeScan2DResult: (el) => runNodeOperation(el),
   insertSpecies1D: (el) => insertSpecies1D(el.dataset.node),
   insertSpecies2D: (el) => insertSpecies2D(el.dataset.node),
   // Parameter Placer (non-conversational)
   executePlacerResult: (el) => executePlacerResult(el.dataset.node),
   loadPlacerMenu: (el) => loadPlacerMenu(el.dataset.node),
-  realizePlacerProgram: (el) => realizePlacerProgram(el.dataset.node),
-  runDesignSearch: (el) => runDesignSearch(el.dataset.node),
+  realizePlacerProgram: (el) => runNodeOperation(el),
+  runDesignSearch: (el) => runNodeOperation(el),
   designTargetKindChange: (el) => onDesignTargetKindChange(el.dataset.node),
   designSpecKindChange: (el) => onDesignSpecKindChange(el.dataset.node),
-  validateDesignSpecConfig: (el) => validateDesignSpecConfig(el.dataset.node),
+  validateDesignSpecConfig: (el) => runNodeOperation(el, 'prepare'),
   updateRopShapeIntentVisibility: (el) => updateRopShapeIntentVisibility(el.dataset.node),
-  prepareRopShapeRequest: (el) => prepareRopShapeRequest(el.dataset.node),
-  executeRopShapeResult: (el) => executeRopShapeResult(el.dataset.node),
+  prepareRopShapeRequest: (el) => runNodeOperation(el, 'prepare'),
+  executeRopShapeResult: (el) => runNodeOperation(el),
   // ROP Polyhedron
   runROPPolyhedron: (el) => runROPPolyhedron(el.dataset.node),
-  executeROPPolyResult: (el) => executeROPPolyResult(el.dataset.node),
+  executeROPPolyResult: (el) => runNodeOperation(el),
   updateROPPolyDimension: (el) => updateROPPolyDimension(el.dataset.node),
   refreshROPPolyhedronPlot: (el) => refreshROPPolyhedronPlot(el.dataset.node),
   // Regime graph
   updateRegimeGraphMode: (el) => updateRegimeGraphMode(el.dataset.node),
   // Atlas
-  executeAtlasBuilder: (el) => executeAtlasBuilder(el.dataset.node),
-  executeAtlasQueryResult: (el) => executeAtlasQueryResult(el.dataset.node),
-  executeAtlasInverseDesignResult: (el) => executeAtlasInverseDesignResult(el.dataset.node),
+  executeAtlasBuilder: (el) => runNodeOperation(el),
+  executeAtlasQueryResult: (el) => runNodeOperation(el),
+  executeAtlasInverseDesignResult: (el) => runNodeOperation(el),
   addAtlasBuilderRow: (el) => addAtlasBuilderRow(el.dataset.node, el.dataset.container, el.dataset.kind),
   // SBML import/export
   importSbml: (el) => importSbml(el.dataset.node),
-  exportSbml: (el) => exportSbml(el.dataset.node),
+  exportSbml: (el) => runNodeOperation(el),
   loadSbmlFile: (el) => loadSbmlFile(el),
   // Node management (× button) — routed through history so it's undoable.
   removeNode: (el) => deleteNodeWithHistory(el.dataset.node),
@@ -129,6 +124,24 @@ const ACTION_HANDLERS = {
   loadState: () => loadState(),
   resetView: () => resetView(),
 };
+
+async function runNodeOperation(el, phase = 'execute') {
+  const nodeId = el?.dataset?.node;
+  const info = nodeRegistry[nodeId];
+  const definition = NODE_TYPES[info?.type];
+  const operation = definition?.[phase];
+  if (typeof operation !== 'function') {
+    showToast(definition?.availability === 'restore-only'
+      ? `${definition.title} is restore-only; use Quick Add to migrate it`
+      : `${definition?.title || info?.type || 'Node'} has no ${phase} operation`);
+    return null;
+  }
+  const outcome = await operation(nodeId, { triggerDownstream: false });
+  if (outcome?.status && outcome.status !== 'succeeded') {
+    showToast(outcome.message || `${definition.title}: ${outcome.status}`);
+  }
+  return outcome;
+}
 
 function dispatchActionEvent(e) {
   const target = e.target.closest('[data-action]');
@@ -150,6 +163,7 @@ window.toggleCloudComputeEnabled = toggleCloudComputeEnabled;
 window.setCloudComputeEnabled = setCloudComputeEnabled;
 window.showToast = showToast;
 window.runConnectedWorkspace = runConnectedWorkspace;
+window.runAllConnectedWorkspace = runAllConnectedWorkspace;
 window.saveState = saveState;
 window.loadState = loadState;
 window.setNodeView = setNodeView;

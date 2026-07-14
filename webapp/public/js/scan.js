@@ -514,14 +514,14 @@ export async function executeROPPolyResult(nodeId) {
   const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!conn) {
     alert('Please connect to a ROP Polyhedron Config node');
-    return;
+    return false;
   }
 
   const paramsNode = nodeRegistry[conn.fromNode];
   const config = getNodeSerialData(conn.fromNode, 'rop-poly-params');
   if (!paramsNode || !config || !(config.pairs || []).length) {
     alert('Config node has no configuration. Please configure it first.');
-    return;
+    return false;
   }
   paramsNode.data = paramsNode.data || {};
   paramsNode.data.config = config;
@@ -535,9 +535,11 @@ export async function executeROPPolyResult(nodeId) {
       ...config
     });
     renderROPPolyhedronOutput(nodeId, contentEl, data, config);
+    return true;
   } catch (e) {
     handleNodeError(e, nodeId, 'ROP polyhedron');
     renderNodeError(contentEl, e);
+    return false;
   } finally {
     setNodeLoading(nodeId, false);
   }

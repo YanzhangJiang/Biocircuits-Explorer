@@ -1,21 +1,16 @@
-import { api, syncSelectOptions } from '../api.js';
-import { setNodeLoading, getModelForNode, getSessionIdForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
+import { syncSelectOptions } from '../api.js';
+import { getModelForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
 import {
-  executeScan1DResult, executeScan2DResult, runParameterScan1D, runParameterScan2D,
-  insertSpecies1D, insertSpecies2D, setupLegacyScanInputInvalidation,
+  executeScan1DResult, executeScan2DResult, setupLegacyScanInputInvalidation,
 } from '../scan.js';
-import { commitWorkspaceSnapshot } from '../workspace.js';
-import { plotHeatmap } from '../plotting.js';
-import { setupPlotResize } from '../nodes.js';
-import { nodeRegistry, ensureNodeData } from '../state.js';
 
 export const SCAN_TYPES = {
   'scan-1d-params': {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'Scan 1D Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'Scan1DConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -49,7 +44,7 @@ export const SCAN_TYPES = {
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'scan-1d-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const model = getModelForNode(nodeId);
       if (!model) return;
 
@@ -65,8 +60,8 @@ export const SCAN_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'Scan 2D Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'Scan2DConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -112,7 +107,7 @@ export const SCAN_TYPES = {
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'scan-2d-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const model = getModelForNode(nodeId);
       if (!model) return;
       const param1Select = document.getElementById(`${nodeId}-param1`);
@@ -129,7 +124,7 @@ export const SCAN_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: '1D Scan Result',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'Scan1DConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {
@@ -141,14 +136,14 @@ export const SCAN_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeScan1DResult(nodeId);
+      return executeScan1DResult(nodeId);
     },
   },
   'scan-2d-result': {
     category: 'result',
     headerClass: 'header-result',
     title: '2D Scan Result',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'Scan2DConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 600,
     createBody(nodeId) {
@@ -160,14 +155,14 @@ export const SCAN_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeScan2DResult(nodeId);
+      return executeScan2DResult(nodeId);
     },
   },
   'parameter-scan-1d': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'Parameter Scan (1D)',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {
@@ -221,7 +216,7 @@ export const SCAN_TYPES = {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'Parameter Scan (2D)',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {

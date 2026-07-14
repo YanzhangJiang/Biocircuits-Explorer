@@ -7,8 +7,8 @@ export const PROCESS_TYPES = {
     category: 'process',
     headerClass: 'header-process',
     title: 'Model Builder',
-    inputs: [{ port: 'reactions', label: 'Reactions' }],
-    outputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }],
+    outputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     defaultWidth: 260,
     createBody(nodeId) {
       return `
@@ -21,16 +21,19 @@ export const PROCESS_TYPES = {
     onInit(nodeId) {
       setupAutoModelBuild(nodeId);
     },
-    async execute(nodeId) {
-      await buildModel(nodeId, { triggerDownstream: false });
+    async execute(nodeId, options = {}) {
+      return buildModel(nodeId, {
+        triggerDownstream: options.triggerDownstream ?? false,
+        throwOnFailure: options.throwOnFailure ?? false,
+      });
     },
   },
   'atlas-builder': {
     category: 'process',
     headerClass: 'header-process',
     title: 'Atlas Preview Builder',
-    inputs: [{ port: 'atlas-spec', label: 'Spec' }],
-    outputs: [{ port: 'atlas', label: 'Atlas' }],
+    inputs: [{ port: 'atlas-spec', type: 'AtlasSpec', label: 'Spec' }],
+    outputs: [{ port: 'atlas', type: 'AtlasArtifact', label: 'Atlas' }],
     defaultWidth: 460,
     defaultHeight: 480,
     createBody(nodeId) {
@@ -42,7 +45,7 @@ export const PROCESS_TYPES = {
       `;
     },
     async execute(nodeId, options = {}) {
-      await executeAtlasBuilder(nodeId, options);
+      return executeAtlasBuilder(nodeId, options);
     },
   },
 };

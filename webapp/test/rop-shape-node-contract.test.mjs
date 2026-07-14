@@ -252,12 +252,13 @@ await test('workspace node definitions expose the exact shape artifact ports and
   const config = ROP_SHAPE_TYPES['rop-shape-edit-config'];
   const result = ROP_SHAPE_TYPES['rop-shape-result'];
   assert.equal(config.category, 'parameter');
-  assert.deepEqual(config.inputs, [{ port: 'rop-shape-reference', label: 'ROP Shape Reference' }]);
-  assert.deepEqual(config.outputs, [{ port: 'rop-shape-request', label: 'ROP Shape Request' }]);
-  assert.equal(typeof config.execute, 'function');
+  assert.deepEqual(config.inputs, [{ port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference' }]);
+  assert.deepEqual(config.outputs, [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }]);
+  assert.equal(typeof config.prepare, 'function');
+  assert.equal(config.execute, undefined);
   assert.equal(result.category, 'result');
-  assert.deepEqual(result.inputs, [{ port: 'rop-shape-request', label: 'ROP Shape Request' }]);
-  assert.deepEqual(result.outputs, [{ port: 'rop-shape-result', label: 'ROP Shape Result' }]);
+  assert.deepEqual(result.inputs, [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }]);
+  assert.deepEqual(result.outputs, [{ port: 'rop-shape-result', type: 'ROPShapeResultArtifact', label: 'ROP Shape Result' }]);
   assert.equal(typeof result.execute, 'function');
 
   const configHtml = config.createBody('shape-config');

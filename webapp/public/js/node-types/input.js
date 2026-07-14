@@ -1,7 +1,7 @@
 import { setupAutoUpdate } from '../nodes.js';
 import { addReactionRow } from '../model.js';
 import { renderAtlasNetworkDefinitionPreview } from '../atlas.js';
-import { buildAgentNodeBody, setupAgentNode } from '../agent-node.js';
+import { buildAgentNodeBody, executeAgentNode, setupAgentNode } from '../agent-node.js';
 
 export const INPUT_TYPES = {
   'ai-import': {
@@ -13,13 +13,14 @@ export const INPUT_TYPES = {
     defaultWidth: 340,
     createBody(nodeId) { return buildAgentNodeBody(nodeId); },
     onInit(nodeId) { setupAgentNode(nodeId); },
+    async execute(nodeId) { return executeAgentNode(nodeId); },
   },
   'reaction-network': {
     category: 'input',
     headerClass: 'header-input',
     title: 'Reaction Network',
     inputs: [],
-    outputs: [{ port: 'reactions', label: 'Reactions' }],
+    outputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }],
     defaultWidth: 280,
     createBody(nodeId) {
       return `
@@ -43,8 +44,8 @@ export const INPUT_TYPES = {
     title: 'Network ID',
     inputs: [],
     outputs: [
-      { port: 'reactions', label: 'Reactions' },
-      { port: 'atlas-network', label: 'Atlas Net' },
+      { port: 'reactions', type: 'NetworkIR', label: 'Reactions' },
+      { port: 'atlas-network', type: 'AtlasNetwork', label: 'Atlas Net' },
     ],
     defaultWidth: 280,
     createBody(nodeId) {

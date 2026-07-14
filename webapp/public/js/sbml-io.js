@@ -78,9 +78,9 @@ function downloadText(text, filename, mime = 'application/xml') {
 // POST it to the backend, and download the returned SBML document.
 export async function exportSbml(nodeId) {
   const conn = connections.find((c) => c.toNode === nodeId && c.toPort === 'reactions');
-  if (!conn) { showToast('Connect a reaction source to the Reactions input first'); return; }
+  if (!conn) { showToast('Connect a reaction source to the Reactions input first'); return false; }
   const { reactions, kds } = getReactionsFromNode(conn.fromNode);
-  if (!reactions.length) { showToast('Upstream node has no reactions'); return; }
+  if (!reactions.length) { showToast('Upstream node has no reactions'); return false; }
   try {
     const res = await api('export/sbml', {
       reactions,
@@ -91,7 +91,9 @@ export async function exportSbml(nodeId) {
     downloadText(res.sbml, `${safeName}.xml`);
     const status = document.getElementById(`${nodeId}-sbml-export-status`);
     if (status) status.textContent = `Exported ${reactions.length} reaction(s).`;
+    return true;
   } catch (e) {
     handleNodeError(e, nodeId, 'SBML export');
+    return false;
   }
 }

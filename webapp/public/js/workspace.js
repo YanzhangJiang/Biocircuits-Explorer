@@ -15,7 +15,7 @@ import { applyThemeMode } from './theme.js';
 import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
-import { normalizeRestoredConnection } from './connection-validation.js';
+import { normalizeRestoredConnection, validateNodeConnection } from './connection-validation.js';
 import { replaceConnectionsWithModelInvalidation } from './model-lifecycle.js';
 import { scheduleHistoricalScanPlot } from './execution-lifecycle.js';
 
@@ -29,7 +29,7 @@ import { plotTrajectory, plotHeatmap } from './plotting.js';
 import { plotParameterScan1D, plotParameterScan2D, plotROPPolyhedron, renderROPPolyhedronOutput, updateScan1DConfig, updateScan2DConfig, updateROPPolyConfig, updateROPPolyDimension } from './scan.js';
 import { plotQKPolyhedron, renderQKPolyhedronResult, renderBehaviorFamiliesResult, normalizeSISOConfig } from './siso.js';
 import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasNetworkDefinitionState, renderAtlasNetworkDefinitionPreview, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
-import { runConnectedWorkspace } from './nodes.js';
+import { runAllConnectedWorkspace, runConnectedWorkspace } from './nodes.js';
 import { serializeNodeBySchema, restoreNodeBySchema, NODE_SCHEMAS } from './node-schema.js';
 
 // ===== Shell Metadata & Validation =====
@@ -264,9 +264,12 @@ export function initWorkspaceShell() {
       return isCloudComputeEnabled();
     },
 
-    runConnectedWorkspace() {
-      void runConnectedWorkspace();
-      return true;
+    async runConnectedWorkspace() {
+      return runConnectedWorkspace();
+    },
+
+    async runAllConnectedWorkspace() {
+      return runAllConnectedWorkspace();
     },
   };
   window.BiocircuitsExplorerWorkspaceShell = workspaceShell;
@@ -389,7 +392,17 @@ export function restoreNode(snapshot) {
     const dup = nextConnections.some(c =>
       c.fromNode === conn.fromNode && c.fromPort === conn.fromPort &&
       c.toNode === conn.toNode && c.toPort === conn.toPort);
-    if (!dup) nextConnections.push({ ...conn });
+    if (dup) continue;
+    // Restore/paste/Undo use the same endpoint resolver as interactive wiring.
+    // A sibling pasted node may not exist yet; its duplicate snapshot will
+    // retry the internal wire after both endpoints have been recreated.
+    if (!nodeRegistry[conn.fromNode] || !nodeRegistry[conn.toNode]) continue;
+    const validation = validateNodeConnection(conn, nodeRegistry, NODE_TYPES);
+    if (!validation.ok) {
+      console.warn(`[workspace] Dropped invalid restored connection: ${validation.message}`);
+      continue;
+    }
+    nextConnections.push({ ...conn });
   }
   replaceConnectionsWithModelInvalidation(nextConnections, 'node-restored');
   updateConnections();

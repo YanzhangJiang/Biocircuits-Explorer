@@ -1,15 +1,15 @@
 import { nodeRegistry } from '../state.js';
 import { api, escapeHtml, renderNodeError, syncSelectOptions } from '../api.js';
-import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, hasModelContextForNode, setupAutoUpdate } from '../nodes.js';
-import { computeSISOResult, recomputeSISO, executeQKPolyResult } from '../siso.js';
+import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, setupAutoUpdate } from '../nodes.js';
+import { computeSISOResult, executeQKPolyResult } from '../siso.js';
 
 export const SISO_TYPES = {
   'siso-params': {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'SISO Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Params' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'SISOConfig', label: 'Params' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -54,7 +54,7 @@ export const SISO_TYPES = {
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'siso-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const model = getModelForNode(nodeId);
       const qKSymbols = getQKSymbolsForNode(nodeId);
       const sel = document.getElementById(`${nodeId}-siso-select`);
@@ -85,8 +85,8 @@ export const SISO_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'SISO Behaviors',
-    inputs: [{ port: 'params', label: 'Params' }],
-    outputs: [{ port: 'result', label: 'Path' }],
+    inputs: [{ port: 'params', type: 'SISOConfig', label: 'Params' }],
+    outputs: [{ port: 'result', type: 'PathResult', label: 'Path' }],
     defaultWidth: 420,
     createBody(nodeId) {
       return `
@@ -94,12 +94,15 @@ export const SISO_TYPES = {
         <div class="viewer-content siso-result-viewer" id="${nodeId}-content"><span class="text-dim">Click Run to enumerate behavior families</span></div>
       `;
     },
+    async execute(nodeId) {
+      return computeSISOResult(nodeId);
+    },
   },
   'qk-poly-result': {
     category: 'result',
     headerClass: 'header-result',
     title: 'qK-space Polyhedron',
-    inputs: [{ port: 'result', label: 'Path' }],
+    inputs: [{ port: 'result', type: 'PathResult', label: 'Path' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {
@@ -109,14 +112,14 @@ export const SISO_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeQKPolyResult(nodeId);
+      return executeQKPolyResult(nodeId);
     },
   },
   'siso-analysis': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'SISO Analysis',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {

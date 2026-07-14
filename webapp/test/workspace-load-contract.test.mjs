@@ -364,11 +364,11 @@ test('successful staging remaps valid connections exactly once', () => {
   installExistingWorkspace();
   NODE_TYPES['workspace-test-source'] = {
     category: 'input', headerClass: 'header-input', title: 'Source',
-    inputs: [], outputs: [{ port: 'reactions', label: 'Reactions' }], createBody: () => '',
+    inputs: [], outputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }], createBody: () => '',
   };
   NODE_TYPES['workspace-test-sink'] = {
     category: 'process', headerClass: 'header-process', title: 'Sink',
-    inputs: [{ port: 'reactions', label: 'Reactions' }], outputs: [], createBody: () => '',
+    inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }], outputs: [], createBody: () => '',
   };
 
   try {

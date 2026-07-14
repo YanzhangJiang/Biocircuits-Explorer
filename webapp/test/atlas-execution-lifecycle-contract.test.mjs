@@ -44,7 +44,8 @@ const {
   invalidateAtlasExecutionsForConnectionChange,
 } = await import('../public/js/execution-lifecycle.js');
 const { NODE_TYPES } = await import('../public/js/node-types/index.js');
-const { runConnectedWorkspace } = await import('../public/js/nodes.js');
+const { runAllConnectedWorkspace } = await import('../public/js/nodes.js');
+const { succeededOutcome } = await import('../public/js/execution-outcome.js');
 
 let passed = 0;
 async function test(name, fn) {
@@ -260,7 +261,7 @@ await test('an old Atlas finally cannot clear the loading state of its replaceme
   }
 });
 
-await test('Run Connected invokes every Atlas node once and suppresses builder auto-trigger', async () => {
+await test('Run All Connected invokes every Atlas node once and suppresses builder auto-trigger', async () => {
   Object.keys(nodeRegistry).forEach(key => delete nodeRegistry[key]);
   connections.splice(0, connections.length);
   nodeRegistry.builder = { type: 'atlas-builder', data: {} };
@@ -278,9 +279,11 @@ await test('Run Connected invokes every Atlas node once and suppresses builder a
   try {
     NODE_TYPES['atlas-builder'].execute = async (nodeId, options) => {
       calls.push({ nodeId, options });
+      return succeededOutcome(nodeId, { outputs: { atlas: 'present' } });
     };
     NODE_TYPES['atlas-query-result'].execute = async (nodeId, options) => {
       calls.push({ nodeId, options });
+      return succeededOutcome(nodeId);
     };
 
     const priorSetTimeout = global.setTimeout;
@@ -289,7 +292,7 @@ await test('Run Connected invokes every Atlas node once and suppresses builder a
       return 0;
     };
     try {
-      await runConnectedWorkspace();
+      await runAllConnectedWorkspace();
     } finally {
       global.setTimeout = priorSetTimeout;
     }

@@ -3,7 +3,6 @@ import { api, renderNodeError } from '../api.js';
 import { setNodeLoading, getModelForNode, setupAutoUpdate, ensureModelSession } from '../nodes.js';
 import { getReactionsFromNode } from '../model.js';
 import { executeROPCloudResult, updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, executeFRETResult } from '../rop-cloud.js';
-import { recomputeROPCloud, recomputeHeatmap } from '../siso.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
 import { plotHeatmap } from '../plotting.js';
 import { setupPlotResize } from '../nodes.js';
@@ -13,8 +12,8 @@ export const ROP_CLOUD_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'ROP Cloud Config',
-    inputs: [{ port: 'reactions', label: 'Reactions' }, { port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }, { port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'ROPCloudConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -55,7 +54,7 @@ export const ROP_CLOUD_TYPES = {
       updateROPCloudMode(nodeId);
       setupAutoUpdate(nodeId, 'rop-cloud-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       updateROPCloudMode(nodeId);
       const mode = document.getElementById(`${nodeId}-sampling-mode`)?.value || 'x_space';
       if (mode === 'x_space') {
@@ -73,7 +72,7 @@ export const ROP_CLOUD_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'ROP Cloud Result',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'ROPCloudConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 600,
     createBody(nodeId) {
@@ -85,14 +84,14 @@ export const ROP_CLOUD_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeROPCloudResult(nodeId);
+      return executeROPCloudResult(nodeId);
     },
   },
   'rop-cloud': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'ROP Point Cloud',
-    inputs: [{ port: 'reactions', label: 'Reactions' }, { port: 'model', label: 'Model' }],
+    inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }, { port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {
@@ -135,7 +134,7 @@ export const ROP_CLOUD_TYPES = {
     onInit(nodeId) {
       updateROPCloudMode(nodeId);
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const nSamples = parseInt(document.getElementById(`${nodeId}-samples`)?.value || '10000');
       const contentEl = document.getElementById(`${nodeId}-content`);
       const mode = document.getElementById(`${nodeId}-sampling-mode`)?.value || 'x_space';
@@ -183,8 +182,8 @@ export const ROP_CLOUD_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'FRET Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'FRETConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -205,7 +204,7 @@ export const ROP_CLOUD_TYPES = {
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'fret-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       if (!getModelForNode(nodeId)) return;
       // Store config in node data
       const info = nodeRegistry[nodeId];
@@ -223,7 +222,7 @@ export const ROP_CLOUD_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'FRET Result',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'FRETConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 600,
     createBody(nodeId) {
@@ -235,14 +234,14 @@ export const ROP_CLOUD_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeFRETResult(nodeId);
+      return executeFRETResult(nodeId);
     },
   },
   'fret-heatmap': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'FRET Heatmap',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {

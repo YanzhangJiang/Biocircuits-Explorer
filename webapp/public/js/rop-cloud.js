@@ -338,13 +338,13 @@ export async function executeROPCloudResult(nodeId) {
   const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!conn) {
     alert('Please connect to a ROP Cloud Config node');
-    return;
+    return false;
   }
 
   const paramsNode = nodeRegistry[conn.fromNode];
   if (!paramsNode) {
     alert('Config node has no configuration. Please configure it first.');
-    return;
+    return false;
   }
 
   const config = getNodeSerialData(conn.fromNode, paramsNode.type || 'rop-cloud-params');
@@ -381,9 +381,11 @@ export async function executeROPCloudResult(nodeId) {
     }
 
     renderROPCloudOutput(nodeId, contentEl, data);
+    return true;
   } catch (e) {
     handleNodeError(e, nodeId, 'ROP cloud');
     renderNodeError(contentEl, e);
+    return false;
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -399,13 +401,13 @@ export async function executeFRETResult(nodeId) {
   const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!conn) {
     alert('Please connect to a FRET Config node');
-    return;
+    return false;
   }
 
   const paramsNode = nodeRegistry[conn.fromNode];
   if (!paramsNode) {
     alert('Config node has no configuration. Please configure it first.');
-    return;
+    return false;
   }
 
   const config = getNodeSerialData(conn.fromNode, paramsNode.type || 'fret-params');
@@ -432,9 +434,11 @@ export async function executeFRETResult(nodeId) {
       plotHeatmap(data, `${nodeId}-plot`);
       setupPlotResize(nodeId, `${nodeId}-plot`);
     }, 50);
+    return true;
   } catch (e) {
     handleNodeError(e, nodeId, 'FRET heatmap');
     renderNodeError(contentEl, e);
+    return false;
   } finally {
     setNodeLoading(nodeId, false);
   }
