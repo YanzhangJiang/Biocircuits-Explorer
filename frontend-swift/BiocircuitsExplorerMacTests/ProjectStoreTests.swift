@@ -225,11 +225,14 @@ struct ProjectStoreTests {
             ("Valid Unknown Fields", """
                 {"version":1,"canvas":{"scale":2},"nodes":[],"connections":[],"unknown":{"flag":true,"values":[1,null,"x"]}}
                 """),
+            ("Valid V2", """
+                {"version":2,"schema_version":"bne-workspace/v2.0.0","canvas":{},"nodes":[],"connections":[]}
+                """),
             ("Missing Optional Fields", "{\"nodes\":[]}"),
             ("Missing Required Nodes", "{}"),
             ("Null Optional Fields", "{\"version\":null,\"canvas\":null,\"nodes\":[],\"connections\":null}"),
             ("Noninteger Version", "{\"version\":1.5}"),
-            ("Future Version", "{\"version\":2}"),
+            ("Future Version", "{\"version\":3,\"nodes\":[]}"),
             ("Invalid Canvas", "{\"canvas\":[],\"nodes\":[]}"),
             ("Invalid Nodes", "{\"nodes\":{}}"),
             ("Invalid Connections", "{\"nodes\":[],\"connections\":{}}"),

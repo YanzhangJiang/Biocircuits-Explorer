@@ -77,6 +77,7 @@ artifacts:
       - "schemas/rop-shape-optimize-request.schema.json"
       - "schemas/result-artifact.schema.json"
       - "schemas/target-spec.schema.json"
+      - "schemas/workspace.schema.json"
     producer: "manual-with-runtime-owner"
     validator: "scripts/verify_repository.py --check"
     authority: "Each schema plus the runtime owner named in the contract catalog"

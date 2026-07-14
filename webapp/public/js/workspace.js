@@ -5,12 +5,12 @@ import {
   workspaceShellSyncTimer, setWorkspaceShellSyncTimer,
   lastWorkspaceShellSnapshot, setLastWorkspaceShellSnapshot,
   WORKSPACE_DOCUMENT_VERSION, WORKSPACE_SHELL_CONTRACT_VERSION, themeState,
-  ensureNodeData, nextNodeId, MIN_SCALE, MAX_SCALE, MAX_CANVAS_PAN,
+  ensureNodeData, nextNodeId, advanceWorkspaceRuntimeEpoch,
 } from './state.js';
 import { dispatch, RestoreNodesCommand, undoStack } from './commands.js';
 import { getSelection, setSelection } from './selection.js';
 import { remapSnapshots } from './clipboard-util.js';
-import { showToast, cloneSerializable, escapeHtml, syncSelectOptions } from './api.js';
+import { showToast, cloneSerializable } from './api.js';
 import { applyThemeMode } from './theme.js';
 import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
 import { applyViewportTransform } from './canvas.js';
@@ -20,17 +20,21 @@ import { replaceConnectionsWithModelInvalidation } from './model-lifecycle.js';
 import { scheduleHistoricalScanPlot } from './execution-lifecycle.js';
 
 // Circular-dep imports (safe: only accessed inside function bodies at call time)
-import { createNode, removeNode, triggerAutoModelBuild, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
+import { createNode, removeNode, triggerAutoModelBuild, triggerAllAutoModelBuilds, setupPlotResize } from './nodes.js';
 import { addReactionRow, getReactionsFromNode } from './model.js';
 import { NODE_TYPES } from './node-types/index.js';
-import { updateROPCloudMode, refreshROPCloudTargetOptions, renderROPCloudOutput, plotROPCloud } from './rop-cloud.js';
-import { updateRegimeGraphMode, plotRegimeGraph } from './regime-graph.js';
+import { updateROPCloudMode, renderROPCloudOutput } from './rop-cloud.js';
+import { plotRegimeGraph } from './regime-graph.js';
 import { plotTrajectory, plotHeatmap } from './plotting.js';
-import { plotParameterScan1D, plotParameterScan2D, plotROPPolyhedron, renderROPPolyhedronOutput, updateScan1DConfig, updateScan2DConfig, updateROPPolyConfig, updateROPPolyDimension } from './scan.js';
-import { plotQKPolyhedron, renderQKPolyhedronResult, renderBehaviorFamiliesResult, normalizeSISOConfig } from './siso.js';
-import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasNetworkDefinitionState, renderAtlasNetworkDefinitionPreview, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState, collectAtlasRegimeRows, collectAtlasTransitionRows, readAtlasQueryBuilderState, clearAtlasBuilderRows, addAtlasBuilderRow } from './atlas.js';
+import { plotParameterScan1D, plotParameterScan2D, renderROPPolyhedronOutput } from './scan.js';
+import { plotQKPolyhedron, renderQKPolyhedronResult, renderBehaviorFamiliesResult } from './siso.js';
+import { renderAtlasBuilderResult, renderAtlasQueryResult, renderAtlasInverseDesignResult, hydrateAtlasResultContent, readAtlasNetworkDefinitionState, renderAtlasNetworkDefinitionPreview, readAtlasSpecEditorState, readAtlasQueryEditorState, refreshAtlasQueryDesigner, restoreAtlasQueryBuilderState } from './atlas.js';
 import { runAllConnectedWorkspace, runConnectedWorkspace } from './nodes.js';
 import { serializeNodeBySchema, restoreNodeBySchema, NODE_SCHEMAS } from './node-schema.js';
+import {
+  WORKSPACE_V2_SCHEMA_VERSION,
+  migrateWorkspaceDocument,
+} from './workspace-v2.js';
 
 // ===== Shell Metadata & Validation =====
 
@@ -43,97 +47,7 @@ export function workspaceShellMetadata() {
 }
 
 export function validateWorkspaceDocument(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Workspace document must be an object');
-  }
-
-  const version = data.version == null ? WORKSPACE_DOCUMENT_VERSION : data.version;
-  if (!Number.isInteger(version)) {
-    throw new Error('Workspace version must be an integer');
-  }
-  if (version < 1) {
-    throw new Error(`Unsupported workspace version: ${version}`);
-  }
-  if (version > WORKSPACE_DOCUMENT_VERSION) {
-    throw new Error(`Workspace version ${version} is newer than this app supports (${WORKSPACE_DOCUMENT_VERSION})`);
-  }
-  if (!Array.isArray(data.nodes)) {
-    throw new Error('Workspace document is missing a nodes array');
-  }
-  if (data.connections != null && !Array.isArray(data.connections)) {
-    throw new Error('Workspace document has an invalid connections array');
-  }
-
-  const sourceCanvas = data.canvas == null ? {} : data.canvas;
-  if (!sourceCanvas || typeof sourceCanvas !== 'object' || Array.isArray(sourceCanvas)) {
-    throw new Error('Workspace document has an invalid canvas object');
-  }
-
-  const finiteNumber = (value, path, fallback) => {
-    if (value == null) return fallback;
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      throw new Error(`${path} must be a finite number`);
-    }
-    return value;
-  };
-
-  const canvas = {
-    ...sourceCanvas,
-    panX: finiteNumber(sourceCanvas.panX, 'canvas.panX', 0),
-    panY: finiteNumber(sourceCanvas.panY, 'canvas.panY', 0),
-    scale: finiteNumber(sourceCanvas.scale, 'canvas.scale', 1),
-  };
-  if (canvas.scale < MIN_SCALE || canvas.scale > MAX_SCALE) {
-    throw new Error(`canvas.scale must be between ${MIN_SCALE} and ${MAX_SCALE}`);
-  }
-  if (Math.abs(canvas.panX) > MAX_CANVAS_PAN || Math.abs(canvas.panY) > MAX_CANVAS_PAN) {
-    throw new Error(`canvas pan must be between -${MAX_CANVAS_PAN} and ${MAX_CANVAS_PAN}`);
-  }
-
-  const seenNodeIds = new Set();
-  const nodes = data.nodes.map((saved, index) => {
-    const path = `nodes[${index}]`;
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
-      throw new Error(`${path} must be an object`);
-    }
-    if (typeof saved.id !== 'string' || !saved.id.trim()) {
-      throw new Error(`${path}.id must be a non-empty string`);
-    }
-    if (seenNodeIds.has(saved.id)) {
-      throw new Error(`${path}.id duplicates workspace node ${saved.id}`);
-    }
-    seenNodeIds.add(saved.id);
-
-    if (typeof saved.type !== 'string' || !Object.hasOwn(NODE_TYPES, saved.type)) {
-      throw new Error(`${path}.type is not a supported node type: ${String(saved.type)}`);
-    }
-    if (saved.data != null && (typeof saved.data !== 'object' || Array.isArray(saved.data))) {
-      throw new Error(`${path}.data must be an object`);
-    }
-
-    const normalized = {
-      ...saved,
-      x: finiteNumber(saved.x, `${path}.x`, 0),
-      y: finiteNumber(saved.y, `${path}.y`, 0),
-      data: saved.data || {},
-    };
-    for (const dimension of ['width', 'height']) {
-      if (saved[dimension] == null) continue;
-      const value = finiteNumber(saved[dimension], `${path}.${dimension}`, null);
-      if (value < 0) throw new Error(`${path}.${dimension} must not be negative`);
-      if (value === 0) delete normalized[dimension];
-      else normalized[dimension] = value;
-    }
-    return normalized;
-  });
-
-  return {
-    ...data,
-    version,
-    canvas,
-    nodes,
-    connections: Array.isArray(data.connections) ? data.connections : [],
-  };
+  return migrateWorkspaceDocument(data, { nodeTypes: NODE_TYPES }).document;
 }
 
 // ===== Shell Sync Queue =====
@@ -207,9 +121,7 @@ export function initWorkspaceShell() {
     },
 
     applyWorkspaceFromJSONString(jsonString) {
-      const data = validateWorkspaceDocument(JSON.parse(jsonString));
-
-      applyState(data);
+      applyState(JSON.parse(jsonString));
       // Applying the staged document is the commit point. Serialization is a
       // follow-up snapshot optimization and must not turn a committed workspace
       // into an apparent apply failure for native hosts (which would leave the
@@ -279,34 +191,61 @@ export function initWorkspaceShell() {
 // ===== Node Serial Data =====
 
 export function getNodeSerialData(nodeId, type) {
+  let serialized;
   // Schema-based serialization handles most node types declaratively
   if (NODE_SCHEMAS[type]) {
-    return serializeNodeBySchema(nodeId, type);
-  }
-  // Custom serialization for types that need special logic
-  switch (type) {
-    case 'sbml-import':       // same reactions-list structure as reaction-network
-    case 'reaction-network': {
-      const { reactions, kds } = getReactionsFromNode(nodeId);
-      return { reactions: reactions.map((rule, i) => ({ rule, kd: kds[i] })) };
+    serialized = serializeNodeBySchema(nodeId, type);
+  } else {
+    // Custom serialization for types that need special logic
+    switch (type) {
+      case 'sbml-import':       // same reactions-list structure as reaction-network
+      case 'reaction-network': {
+        const { reactions, kds } = getReactionsFromNode(nodeId);
+        serialized = { reactions: reactions.map((rule, i) => ({ rule, kd: kds[i] })) };
+        break;
+      }
+      case 'network-id-definition':
+        serialized = readAtlasNetworkDefinitionState(nodeId);
+        break;
+      case 'atlas-spec':
+        serialized = readAtlasSpecEditorState(nodeId);
+        break;
+      case 'atlas-query-config':
+        serialized = readAtlasQueryEditorState(nodeId);
+        break;
+      case 'design-target': {
+        // Persist the selected candidate network (config.resolvedDefinition.raw_rules +
+        // selectedNid) so a save/reload doesn't drop it and downstream model-builders
+        // keep their reaction source. The search panel is transient (out of scope).
+        const info = nodeRegistry[nodeId];
+        const cfg = info?.data?.config;
+        serialized = cfg ? { config: cloneSerializable(cfg) } : {};
+        break;
+      }
+      default:
+        serialized = {};
+        break;
     }
-    case 'network-id-definition':
-      return readAtlasNetworkDefinitionState(nodeId);
-    case 'atlas-spec':
-      return readAtlasSpecEditorState(nodeId);
-    case 'atlas-query-config':
-      return readAtlasQueryEditorState(nodeId);
-    case 'design-target': {
-      // Persist the selected candidate network (config.resolvedDefinition.raw_rules +
-      // selectedNid) so a save/reload doesn't drop it and downstream model-builders
-      // keep their reaction source. The search panel is transient (out of scope).
-      const info = nodeRegistry[nodeId];
-      const cfg = info?.data?.config;
-      return cfg ? { config: cloneSerializable(cfg) } : {};
-    }
-    default:
-      return {};
   }
+
+  // Lifecycle/freshness and scientific evidence are independent persisted
+  // axes. Runtime tickets and sessions are intentionally absent; the v2
+  // migrator recursively strips them as a second fail-closed boundary.
+  const runtimeData = nodeRegistry[nodeId]?.data || {};
+  for (const key of [
+    'lifecycle',
+    'selectionLifecycle',
+    'evidence',
+    'evidence_grade',
+    'certificate_grade',
+    'artifact',
+    'provenance',
+    'warnings',
+  ]) {
+    if (!Object.hasOwn(runtimeData, key)) continue;
+    serialized[key] = cloneSerializable(runtimeData[key]);
+  }
+  return serialized;
 }
 
 // ===== Serialize / Deserialize =====
@@ -341,6 +280,7 @@ export function serializeState() {
   }
   return {
     version: WORKSPACE_DOCUMENT_VERSION,
+    schema_version: WORKSPACE_V2_SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
     canvas: { panX: canvasState.panX, panY: canvasState.panY, scale },
     nodes,
@@ -381,7 +321,10 @@ export function snapshotNode(nodeId) {
 // updateConnections() only draws wires whose both sockets exist.
 export function restoreNode(snapshot) {
   if (!snapshot) return null;
-  const newId = createNode(snapshot.type, snapshot.x, snapshot.y, { id: snapshot.id });
+  const newId = createNode(snapshot.type, snapshot.x, snapshot.y, {
+    id: snapshot.id,
+    creationMode: 'workspace-restore',
+  });
   if (!newId) return null;
   const el = document.getElementById(newId);
   if (el && snapshot.width) el.style.width = `${snapshot.width}px`;
@@ -471,8 +414,7 @@ export function defaultLoadState() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const data = validateWorkspaceDocument(JSON.parse(ev.target.result));
-        applyState(data);
+        applyState(JSON.parse(ev.target.result));
         setLastWorkspaceShellSnapshot((window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).serializeWorkspace());
         showToast('Workspace loaded');
       } catch (err) {
@@ -522,7 +464,10 @@ function stageWorkspaceRestore(data, existingNodeIds) {
       reservedIds.add(stagedId);
       stagedIds.push(stagedId);
 
-      const newId = createNode(saved.type, saved.x, saved.y, { id: stagedId });
+      const newId = createNode(saved.type, saved.x, saved.y, {
+        id: stagedId,
+        creationMode: 'workspace-restore',
+      });
       if (!newId) throw new Error(`Failed to create node ${saved.id} (${saved.type})`);
       idMap[saved.id] = newId;
       stagedNodes.push({ id: newId, type: saved.type, data: saved.data });
@@ -560,12 +505,16 @@ function runPostRestoreHook(label, callback) {
 }
 
 export function applyState(data) {
-  data = validateWorkspaceDocument(data);
+  const migration = migrateWorkspaceDocument(data, { nodeTypes: NODE_TYPES });
+  data = migration.document;
   const existingNodeIds = Object.keys(nodeRegistry);
   const { stagedIds, stagedNodes, restoredConnections, droppedConnections } =
     stageWorkspaceRestore(data, existingNodeIds);
 
   // Staging succeeded: the remaining operations commit the prepared document.
+  // Advance before replacing owners so every delayed completion from the old
+  // graph fails its workspace-epoch check.
+  advanceWorkspaceRuntimeEpoch();
   for (const id of existingNodeIds) removeNode(id);
   setConnections(restoredConnections);
   document.getElementById('svg-layer')?.querySelectorAll('.wire').forEach(w => w.remove());
@@ -598,6 +547,23 @@ export function applyState(data) {
     showToast(`Dropped ${droppedConnections} invalid connection${droppedConnections === 1 ? '' : 's'} while loading`);
   }
 
+  const migrationWarnings = migration.diagnostics.filter(entry => entry.severity === 'warning');
+  migrationWarnings.forEach(entry => {
+    console.warn(`[workspace:${entry.code}] ${entry.path}: ${entry.message}`, entry.details);
+  });
+  const migratedLegacyCount = migration.diagnostics.filter(
+    entry => entry.code === 'legacy-node-expanded',
+  ).length;
+  const migratedDropCount = migration.diagnostics.filter(
+    entry => entry.code.startsWith('connection-dropped'),
+  ).length;
+  const migrationSummary = [];
+  if (migratedLegacyCount > 0) migrationSummary.push(`expanded ${migratedLegacyCount} legacy nodes`);
+  if (migratedDropCount > 0) migrationSummary.push(`dropped ${migratedDropCount} invalid connections`);
+  if (migrationSummary.length > 0) {
+    showToast(`Workspace migrated: ${migrationSummary.join('; ')}`);
+  }
+
   if (typeof window !== 'undefined' && window.setDesignAgentConversation) {
     runPostRestoreHook('Design Agent conversation restore', () => {
       window.setDesignAgentConversation(data.designAgent || null);
@@ -625,6 +591,19 @@ export function applyState(data) {
 // ===== Restore Node Data =====
 
 export function restoreNodeData(nodeId, type, data, { deferEffects = false } = {}) {
+  const runtimeData = ensureNodeData(nodeId);
+  for (const key of [
+    'lifecycle',
+    'selectionLifecycle',
+    'evidence',
+    'evidence_grade',
+    'certificate_grade',
+    'artifact',
+    'provenance',
+    'warnings',
+  ]) {
+    if (Object.hasOwn(data || {}, key)) runtimeData[key] = cloneSerializable(data[key]);
+  }
   // Schema-based restore handles most node types declaratively
   if (NODE_SCHEMAS[type]) {
     // Schema hooks parse and apply persisted fields, so they are part of the
@@ -774,8 +753,6 @@ export function restoreNodeData(nodeId, type, data, { deferEffects = false } = {
 export function restoreCachedNodeRuntime(nodeId, type, data) {
   const info = nodeRegistry[nodeId];
   if (!info) return;
-  const nd = ensureNodeData(nodeId);
-
   switch (type) {
     case 'model-builder': {
       if (!data.modelContext) break;
@@ -960,6 +937,23 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
     }
     default:
       break;
+  }
+
+  if (data.lifecycle?.state === 'historical') {
+    info.data.lifecycle = cloneSerializable(data.lifecycle);
+    const contentEl = document.getElementById(`${nodeId}-content`);
+    if (contentEl) {
+      contentEl.dataset.resultState = 'historical';
+      if (!contentEl.querySelector(
+        '.workspace-historical-warning, .rop-shape-restored-warning, .scan-result-status',
+      )) {
+        contentEl.insertAdjacentHTML(
+          'afterbegin',
+          '<div class="workspace-historical-warning text-dim" role="status">' +
+            'Historical saved result — rerun before using it downstream.</div>',
+        );
+      }
+    }
   }
 }
 
