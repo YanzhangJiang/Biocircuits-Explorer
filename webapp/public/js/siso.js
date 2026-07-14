@@ -1,5 +1,5 @@
 import { nodeRegistry, connections, SISO_FAMILY_COLORS, ensureNodeData, getNodeData } from './state.js';
-import { api, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalFloat, cloneSerializable } from './api.js';
+import { api, showToast, handleNodeError, renderNodeError, escapeHtml, splitCommaList, parseOptionalFloat, cloneSerializable } from './api.js';
 import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme, applyPlotAxisTheme, applyPlotSceneAxisTheme, themedColorbar } from './theme.js';
 import { plotTrajectory, convexHull2D, formatPolyNumber, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
 import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelContextForNode, getSessionIdForNode, getQKSymbolsForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
@@ -29,7 +29,7 @@ export function formatVolumeSummary(vol) {
 export function renderExclusionCounts(exclusionCounts) {
   const entries = Object.entries(exclusionCounts || {});
   if (!entries.length) return '';
-  const items = entries.map(([reason, count]) => `<span class="tag tag-nonasym">${reason}: ${count}</span>`).join(' ');
+  const items = entries.map(([reason, count]) => `<span class="tag tag-nonasym">${escapeHtml(reason)}: ${escapeHtml(count)}</span>`).join(' ');
   return `<div class="siso-inline-tags"><strong>Excluded paths</strong>: ${items}</div>`;
 }
 
@@ -128,8 +128,8 @@ function renderSISOPlotControls(nodeId, data) {
         <button type="button" class="btn btn-small siso-plot-refresh" data-action="refreshSISOPlot" data-node="${nodeId}">Refresh</button>
       </div>
       <div class="siso-summary-line">
-        <span class="summary-chip">exact families ${familyCount}</span>
-        <span class="summary-chip">included paths ${includedCount}</span>
+        <span class="summary-chip">exact families ${escapeHtml(familyCount)}</span>
+        <span class="summary-chip">included paths ${escapeHtml(includedCount)}</span>
       </div>
       <div class="plot-container siso-active-plot" id="${nodeId}-traj-plot" style="display:none;"></div>
     </section>
@@ -144,7 +144,7 @@ function renderSISOConditionPanel(nodeId, pathIdx) {
   return `
     <div
       class="siso-condition-panel"
-      id="${sisoConditionPanelId(nodeId, pathIdx)}"
+      id="${escapeHtml(sisoConditionPanelId(nodeId, pathIdx))}"
       data-loaded="false"
       style="display:none;"
     >
@@ -167,7 +167,7 @@ function renderSISOConditionContent(data) {
   const qkSymbols = (data.qk_symbols || []).map(escapeHtml).join(', ') || 'n/a';
   return `
     <div class="siso-condition-meta">
-      <span class="summary-chip">Path #${data.path_idx}</span>
+      <span class="summary-chip">Path #${escapeHtml(data.path_idx)}</span>
       <span class="summary-chip">Fixed coordinates: ${qkSymbols}</span>
     </div>
     <div class="siso-condition-list">${conditionRows}</div>
@@ -221,11 +221,11 @@ export function renderPathChips(nodeId, changeQK, pathIndices, accent) {
     <button
       type="button"
       class="path-chip ${selectedPathIdx === pathIdx ? 'selected' : ''}"
-      data-path-idx="${pathIdx}"
+      data-path-idx="${escapeHtml(pathIdx)}"
       style="--path-chip-accent:${accent}; --path-chip-soft:${hexToRgba(accent, 0.16)};"
       data-action="plotSISOPath"
-      data-node="${nodeId}" data-qk="${changeQK}" data-idx="${pathIdx}"
-    >#${pathIdx}</button>
+      data-node="${nodeId}" data-qk="${escapeHtml(changeQK)}" data-idx="${escapeHtml(pathIdx)}"
+    >#${escapeHtml(pathIdx)}</button>
   `).join('');
 }
 
@@ -247,11 +247,11 @@ export function renderFamilyTable(nodeId, changeQK, families) {
   const rows = families.map(family => {
     const accent = getFamilyColor(family.family_idx, 0);
     const badgeStyle = `--badge-accent:${accent}; --badge-soft:${hexToRgba(accent, 0.18)};`;
-    const profile = family.exact_label;
+    const profile = escapeHtml(family.exact_label);
 
     return `
       <tr>
-        <td><span class="family-badge family-badge-exact" style="${badgeStyle}">E${family.family_idx}</span></td>
+        <td><span class="family-badge family-badge-exact" style="${badgeStyle}">E${escapeHtml(family.family_idx)}</span></td>
         <td class="siso-profile-cell">${profile}</td>
         <td>
           <div class="family-path-chips">
@@ -322,8 +322,8 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
       html += `
       <div class="siso-path-showall-wrap">
         <button type="button" class="btn btn-small siso-showall-btn" data-action="toggleSISOPaths"
-          data-node="${nodeId}" data-qk="${changeQK}" data-of="${fam}">
-          Show all ${famTotals[fam]} paths in ${fam === 'none' ? 'this group' : 'E' + fam} ▾
+          data-node="${nodeId}" data-qk="${escapeHtml(changeQK)}" data-of="${escapeHtml(fam)}">
+          Show all ${escapeHtml(famTotals[fam])} paths in ${fam === 'none' ? 'this group' : `E${escapeHtml(fam)}`} ▾
         </button>
       </div>`;
     }
@@ -332,33 +332,33 @@ export function renderBehaviorFamiliesResult(nodeId, changeQK, data) {
     const exactAccent = getFamilyColor(exactFamilyIdx || path.path_idx, 0);
     const includeTag = path.included
       ? '<span class="tag tag-asym">Included</span>'
-      : `<span class="tag tag-nonasym">${path.exclusion_reason || 'Excluded'}</span>`;
+      : `<span class="tag tag-nonasym">${escapeHtml(path.exclusion_reason || 'Excluded')}</span>`;
 
     html += `
       <div
         class="path-item siso-path-item ${path.included ? 'is-included' : 'is-excluded'} ${selectedPathIdx === path.path_idx ? 'selected' : ''}"
-        data-idx="${path.path_idx}"
-        data-path-idx="${path.path_idx}"
-        data-qk="${changeQK}"
+        data-idx="${escapeHtml(path.path_idx)}"
+        data-path-idx="${escapeHtml(path.path_idx)}"
+        data-qk="${escapeHtml(changeQK)}"
         data-node="${nodeId}"
-        ${overflow ? `data-of="${fam}"` : ''}
+        ${overflow ? `data-of="${escapeHtml(fam)}"` : ''}
         style="--exact-accent:${exactAccent}; --exact-soft:${hexToRgba(exactAccent, 0.14)};${overflow ? 'display:none;' : ''}"
         data-action="selectSISOPath"
       >
         <div class="siso-path-head">
-          <div class="siso-path-title">Path #${path.path_idx}</div>
+          <div class="siso-path-title">Path #${escapeHtml(path.path_idx)}</div>
           <div class="siso-path-actions">
-            <button type="button" class="btn btn-small siso-inline-btn" data-action="plotSISOPath" data-node="${nodeId}" data-qk="${changeQK}" data-idx="${path.path_idx}">Plot</button>
-            <button type="button" class="btn btn-small siso-inline-btn" data-action="toggleSISOPathCondition" data-node="${nodeId}" data-qk="${changeQK}" data-idx="${path.path_idx}">Condition</button>
+            <button type="button" class="btn btn-small siso-inline-btn" data-action="plotSISOPath" data-node="${nodeId}" data-qk="${escapeHtml(changeQK)}" data-idx="${escapeHtml(path.path_idx)}">Plot</button>
+            <button type="button" class="btn btn-small siso-inline-btn" data-action="toggleSISOPathCondition" data-node="${nodeId}" data-qk="${escapeHtml(changeQK)}" data-idx="${escapeHtml(path.path_idx)}">Condition</button>
           </div>
         </div>
         <div class="siso-path-badges">
-          ${exactFamilyIdx ? `<span class="family-badge family-badge-exact" style="--badge-accent:${exactAccent}; --badge-soft:${hexToRgba(exactAccent, 0.18)};">Exact ${exactFamilyIdx}</span>` : ''}
+          ${exactFamilyIdx ? `<span class="family-badge family-badge-exact" style="--badge-accent:${exactAccent}; --badge-soft:${hexToRgba(exactAccent, 0.18)};">Exact ${escapeHtml(exactFamilyIdx)}</span>` : ''}
           ${includeTag}
         </div>
-        <div class="siso-path-detail">${permStr}</div>
+        <div class="siso-path-detail">${escapeHtml(permStr)}</div>
         <div class="siso-path-meta">
-          <span>RO ${path.exact_label}</span>
+          <span>RO ${escapeHtml(path.exact_label)}</span>
           <span>Vol ${formatVolumeSummary(path.volume)}</span>
         </div>
         ${renderSISOConditionPanel(nodeId, path.path_idx)}
@@ -633,7 +633,7 @@ export async function computeSISOResult(nodeId) {
     }
   } catch (e) {
     handleNodeError(e, nodeId, 'SISO behavior analysis');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -818,21 +818,21 @@ export function renderQKPolyhedronResult(nodeId, selection, payload) {
 
   let html = `
     <div class="siso-summary-line">
-      <span class="summary-chip"><strong>Path #${selection.path_idx}</strong></span>
-      ${selection.exact_family_idx ? `<span class="family-badge family-badge-exact">E${selection.exact_family_idx}</span>` : ''}
-      <span class="summary-chip">${selection.observe_x}</span>
-      <span class="summary-chip">${payload.change_qK} scanned</span>
+      <span class="summary-chip"><strong>Path #${escapeHtml(selection.path_idx)}</strong></span>
+      ${selection.exact_family_idx ? `<span class="family-badge family-badge-exact">E${escapeHtml(selection.exact_family_idx)}</span>` : ''}
+      <span class="summary-chip">${escapeHtml(selection.observe_x)}</span>
+      <span class="summary-chip">${escapeHtml(payload.change_qK)} scanned</span>
     </div>
     <div class="siso-scope-note">
-      Fixed coordinates: ${qkSymbols.length ? qkSymbols.join(', ') : 'n/a'}<br>
-      Dimension ${poly.dimension}, constraints ${poly.n_constraints ?? (poly.A || []).length}, vertices ${poly.n_vertices ?? vertices.length}, rays ${poly.n_rays ?? rays.length}.
+      Fixed coordinates: ${qkSymbols.length ? escapeHtml(qkSymbols.join(', ')) : 'n/a'}<br>
+      Dimension ${escapeHtml(poly.dimension)}, constraints ${escapeHtml(poly.n_constraints ?? (poly.A || []).length)}, vertices ${escapeHtml(poly.n_vertices ?? vertices.length)}, rays ${escapeHtml(poly.n_rays ?? rays.length)}.
     </div>
   `;
 
   if (!canPlot) {
     html += `
       <div class="text-dim">
-        Direct geometric plotting is only shown for bounded 2D path polyhedra. This selected path is ${poly.dimension}D${poly.is_bounded ? '' : ' and unbounded'}.
+        Direct geometric plotting is only shown for bounded 2D path polyhedra. This selected path is ${escapeHtml(poly.dimension)}D${poly.is_bounded ? '' : ' and unbounded'}.
       </div>
     `;
   } else {
@@ -919,7 +919,7 @@ export async function executeQKPolyResult(nodeId) {
     }
   } catch (e) {
     handleNodeError(e, nodeId, 'qK polyhedron');
-    contentEl.innerHTML = `<div class="node-error">${e.message}</div>`;
+    renderNodeError(contentEl, e);
   } finally {
     setNodeLoading(nodeId, false);
   }

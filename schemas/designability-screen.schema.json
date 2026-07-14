@@ -18,7 +18,7 @@
     "constraint_audit",
     "designability_spec_normalized"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "bne-design-screen/v0.3.0" },
     "designability_spec_normalized": {
@@ -77,6 +77,21 @@
     "minimal_certificates": {
       "type": "array",
       "items": { "$ref": "#/$defs/minimal_certificate_group" }
+    },
+    "minimal": {
+      "description": "Pareto-minimal catalogue cells before certificate annotations are attached.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/minimal_certificate_group" }
+    },
+    "all_cells": {
+      "description": "Distinct catalogue complexity cells encoded as [species, reactions, mu].",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 0 },
+        "minItems": 3,
+        "maxItems": 3
+      }
     },
     "screen_summary": {
       "type": "object",
@@ -292,6 +307,16 @@
           "additionalProperties": true,
           "properties": {
             "chebyshev_radius": { "type": "number" },
+            "parameter_chebyshev_radius": { "type": "number", "minimum": 0 },
+            "augmented_chebyshev_radius": { "type": "number", "minimum": 0 },
+            "parameter_margin_basis": {
+              "enum": ["log10_qK_euclidean", "equality_feasible_log10_qK_subspace"]
+            },
+            "parameter_margin_dimension": { "type": "integer", "minimum": 0 },
+            "parameter_margin_equality_rank": { "type": "integer", "minimum": 0 },
+            "augmented_margin_basis": {
+              "const": "joint_log10_qK_and_witness_input_space"
+            },
             "chebyshev_radius_source": {
               "enum": ["theta_union_cell", "theta_union_path", "sampled_region", "not_computed", "legacy_proxy"]
             },
@@ -349,12 +374,48 @@
           "type": "array",
           "items": { "type": "object", "additionalProperties": true }
         },
+        "fixed_topology_reference": {
+          "type": "object",
+          "required": ["network", "network_ir_hash", "input", "output", "reference", "evidence_scope"],
+          "additionalProperties": false,
+          "properties": {
+            "network": { "$ref": "network-ir.schema.json" },
+            "network_ir_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "network_canonical_code": { "type": ["string", "null"] },
+            "input": { "type": "string", "minLength": 1 },
+            "output": { "type": "string", "minLength": 1 },
+            "reference": { "$ref": "rop-shape-optimize-request.schema.json#/$defs/reference" },
+            "evidence_scope": { "type": "string", "minLength": 1 }
+          }
+        },
+        "optimization_handoff_template": {
+          "type": "object",
+          "required": ["endpoint", "method", "body_template", "required_fill"],
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "const": "/api/v1/rop_shape_optimize" },
+            "method": { "const": "POST" },
+            "body_template": {
+              "type": "object",
+              "required": ["schema_version", "network", "expected_network_ir_hash", "designability_spec", "reference", "edit_intent", "optimization", "work_budget", "replay"],
+              "additionalProperties": true,
+              "properties": {
+                "schema_version": { "const": "bne-rop-shape-optimize-request/v1.0.0" },
+                "edit_intent": { "type": "null" }
+              }
+            },
+            "required_fill": {
+              "type": "array",
+              "const": ["edit_intent"]
+            }
+          }
+        },
         "agent_handoff": {
           "type": "object",
           "required": ["endpoint", "role", "next_actions"],
           "additionalProperties": true,
           "properties": {
-            "endpoint": { "const": "/api/design_screen" },
+            "endpoint": { "const": "/api/v1/design_screen" },
             "role": { "type": "string" },
             "next_actions": { "type": "array", "items": { "type": "string" } },
             "agent_should_not": { "type": "array", "items": { "type": "string" } },

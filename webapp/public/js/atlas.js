@@ -1,4 +1,4 @@
-import { nodeRegistry, connections, ATLAS_ROLE_OPTIONS, ATLAS_ORDER_OPTIONS, ATLAS_SINGULAR_OPTIONS } from './state.js';
+import { nodeRegistry, ATLAS_ROLE_OPTIONS, ATLAS_ORDER_OPTIONS, ATLAS_SINGULAR_OPTIONS } from './state.js';
 import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, cloneSerializable, syncSelectOptions } from './api.js';
 import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { setNodeLoading, getModelContextForNode, findUpstreamNodeByType, getSessionIdForNode } from './nodes.js';
@@ -14,6 +14,13 @@ import {
   prepareAtlasSpecForHttp,
   resolveAtlasHttpSqlitePath,
 } from './atlas-sqlite-policy.js';
+import {
+  beginAtlasNodeExecution,
+  executionDependencyConnections,
+  isCurrentAtlasNodeExecution,
+} from './execution-lifecycle.js';
+
+export { beginAtlasNodeExecution, isCurrentAtlasNodeExecution };
 
 let _plotAtlasLandscape2D = null;
 
@@ -584,7 +591,8 @@ export function atlasNetworkDefinitionPayloadFromState(rawState) {
 }
 
 export function getConnectedAtlasNetworkDefinition(nodeId) {
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas-network');
+  const conn = executionDependencyConnections()
+    .find(c => c.toNode === nodeId && c.toPort === 'atlas-network');
   if (!conn) return null;
   const sourceNodeId = conn.fromNode;
   const sourceType = nodeRegistry[sourceNodeId]?.type || 'network-id-definition';
@@ -708,7 +716,8 @@ export function atlasSpecPayloadFromState(rawState, nodeId = null) {
 }
 
 export function getConnectedAtlasSpec(nodeId) {
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas-spec');
+  const conn = executionDependencyConnections()
+    .find(c => c.toNode === nodeId && c.toPort === 'atlas-spec');
   if (!conn) return null;
   const sourceNodeId = conn.fromNode;
   return atlasSpecPayloadFromState(getNodeSerialData(sourceNodeId, 'atlas-spec'), sourceNodeId);
@@ -894,14 +903,16 @@ export function atlasQueryPayloadFromState(rawState) {
 }
 
 export function getConnectedAtlasQuery(nodeId) {
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas-query');
+  const conn = executionDependencyConnections()
+    .find(c => c.toNode === nodeId && c.toPort === 'atlas-query');
   if (!conn) return null;
   const sourceNodeId = conn.fromNode;
   return atlasQueryPayloadFromState(getNodeSerialData(sourceNodeId, 'atlas-query-config'));
 }
 
 export function getConnectedAtlasData(nodeId) {
-  const conn = connections.find(c => c.toNode === nodeId && c.toPort === 'atlas');
+  const conn = executionDependencyConnections()
+    .find(c => c.toNode === nodeId && c.toPort === 'atlas');
   if (!conn) return null;
   return nodeRegistry[conn.fromNode]?.data?.atlasData || null;
 }
@@ -938,7 +949,7 @@ export function renderWitnessPathSummary(path) {
   const volumeMean = path.volume?.mean;
   return `
     <div class="family-meta">
-      <span class="family-metric">path ${path.path_idx ?? '-'}</span>
+      <span class="family-metric">path ${escapeHtml(path.path_idx ?? '-')}</span>
       <span class="family-metric">${path.robust ? 'robust' : 'non-robust'}</span>
       <span class="family-metric">feasible ${path.feasible ? 'yes' : 'no'}</span>
       <span class="family-metric">vol ${Number.isFinite(volumeMean) ? Number(volumeMean).toFixed(3) : 'n/a'}</span>
@@ -1099,8 +1110,8 @@ export function renderAtlasMaterializationEventCards(events, limit = 8) {
           <div class="text-dim">${escapeHtml(event.reason || 'materialization')}</div>
         </div>
         <div class="family-meta">
-          <span class="family-metric">paths ${event.materialized_path_count ?? 0}</span>
-          <span class="family-metric">accepted ${event.accepted_path_count ?? 0}</span>
+          <span class="family-metric">paths ${escapeHtml(event.materialized_path_count ?? 0)}</span>
+          <span class="family-metric">accepted ${escapeHtml(event.accepted_path_count ?? 0)}</span>
           <span class="family-metric">${escapeHtml(event.mat_state || 'summary')}</span>
         </div>
       </summary>
@@ -1470,20 +1481,20 @@ export function renderAtlasBuilderResult(data) {
     <section class="siso-section">
       <div class="siso-section-head">
         <div class="siso-section-title">Atlas Summary</div>
-        <div class="text-dim">${data.generated_at || ''}</div>
+        <div class="text-dim">${escapeHtml(data.generated_at || '')}</div>
       </div>
       <div class="siso-summary-grid">
-        <div class="siso-stat-card"><div class="siso-stat-label">Input Networks</div><div class="siso-stat-value">${data.input_network_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Unique Networks</div><div class="siso-stat-value">${data.unique_network_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Successful</div><div class="siso-stat-value">${data.successful_network_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Deduplicated</div><div class="siso-stat-value">${data.deduplicated_network_count ?? 0}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Input Networks</div><div class="siso-stat-value">${escapeHtml(data.input_network_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Unique Networks</div><div class="siso-stat-value">${escapeHtml(data.unique_network_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Successful</div><div class="siso-stat-value">${escapeHtml(data.successful_network_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Deduplicated</div><div class="siso-stat-value">${escapeHtml(data.deduplicated_network_count ?? 0)}</div></div>
       </div>
       <div class="siso-summary-line">
         ${data.pruned_against_library ? '<span class="summary-chip">reused library</span>' : ''}
         ${data.pruned_against_sqlite ? '<span class="summary-chip">reused sqlite</span>' : ''}
         ${data.sqlite_persisted ? '<span class="summary-chip">persisted sqlite</span>' : ''}
-        <span class="summary-chip">skipped slices ${data.skipped_existing_slice_count ?? 0}</span>
-        <span class="summary-chip">skipped networks ${data.skipped_existing_network_count ?? 0}</span>
+        <span class="summary-chip">skipped slices ${escapeHtml(data.skipped_existing_slice_count ?? 0)}</span>
+        <span class="summary-chip">skipped networks ${escapeHtml(data.skipped_existing_network_count ?? 0)}</span>
       </div>
     </section>
   `;
@@ -1501,10 +1512,10 @@ export function renderAtlasBuilderResult(data) {
         </div>
         ${sqliteSummary ? `
           <div class="siso-summary-grid">
-            <div class="siso-stat-card"><div class="siso-stat-label">Atlases</div><div class="siso-stat-value">${sqliteSummary.atlas_count ?? 0}</div></div>
-            <div class="siso-stat-card"><div class="siso-stat-label">Networks</div><div class="siso-stat-value">${sqliteSummary.unique_network_count ?? 0}</div></div>
-            <div class="siso-stat-card"><div class="siso-stat-label">Slices</div><div class="siso-stat-value">${sqliteSummary.behavior_slice_count ?? 0}</div></div>
-            <div class="siso-stat-card"><div class="siso-stat-label">Buckets</div><div class="siso-stat-value">${sqliteSummary.family_bucket_count ?? 0}</div></div>
+            <div class="siso-stat-card"><div class="siso-stat-label">Atlases</div><div class="siso-stat-value">${escapeHtml(sqliteSummary.atlas_count ?? 0)}</div></div>
+            <div class="siso-stat-card"><div class="siso-stat-label">Networks</div><div class="siso-stat-value">${escapeHtml(sqliteSummary.unique_network_count ?? 0)}</div></div>
+            <div class="siso-stat-card"><div class="siso-stat-label">Slices</div><div class="siso-stat-value">${escapeHtml(sqliteSummary.behavior_slice_count ?? 0)}</div></div>
+            <div class="siso-stat-card"><div class="siso-stat-label">Buckets</div><div class="siso-stat-value">${escapeHtml(sqliteSummary.family_bucket_count ?? 0)}</div></div>
           </div>
         ` : ''}
       </section>
@@ -1519,9 +1530,9 @@ export function renderAtlasBuilderResult(data) {
           <div class="text-dim">${enumeration.truncated ? 'truncated' : 'complete'}</div>
         </div>
         <div class="siso-summary-line">
-          <span class="summary-chip">generated ${enumeration.generated_network_count ?? 0}</span>
+          <span class="summary-chip">generated ${escapeHtml(enumeration.generated_network_count ?? 0)}</span>
           <span class="summary-chip">mode ${escapeHtml(enumeration.enumeration_spec?.mode || 'unknown')}</span>
-          <span class="summary-chip">base counts ${(enumeration.enumeration_spec?.base_species_counts || []).join(', ') || 'n/a'}</span>
+          <span class="summary-chip">base counts ${escapeHtml((enumeration.enumeration_spec?.base_species_counts || []).join(', ') || 'n/a')}</span>
         </div>
       </section>
     `;
@@ -1550,9 +1561,9 @@ export function renderAtlasBuilderResult(data) {
               <tr>
                 <td class="siso-wrap-cell">${escapeHtml(entry.source_label || entry.network_id || 'network')}</td>
                 <td>${formatAtlasStatusTag(entry.analysis_status)}</td>
-                <td>${entry.base_species_count ?? '-'}</td>
-                <td>${entry.reaction_count ?? '-'}</td>
-                <td>${entry.max_support ?? '-'}</td>
+                <td>${escapeHtml(entry.base_species_count ?? '-')}</td>
+                <td>${escapeHtml(entry.reaction_count ?? '-')}</td>
+                <td>${escapeHtml(entry.max_support ?? '-')}</td>
                 <td class="siso-wrap-cell">${renderAtlasLabelRefs(entry.motif_union || [])}</td>
               </tr>
             `).join('')}
@@ -1642,12 +1653,12 @@ export function renderAtlasQueryResult(data) {
     <section class="siso-section">
       <div class="siso-section-head">
         <div class="siso-section-title">Query Summary</div>
-        <div class="text-dim">${data.result_count ?? 0} matches</div>
+        <div class="text-dim">${escapeHtml(data.result_count ?? 0)} matches</div>
       </div>
       <div class="siso-summary-line">
         <span class="summary-chip">unit ${escapeHtml(resultUnit)}</span>
         <span class="summary-chip">ranking ${escapeHtml(query.ranking_mode || 'minimal_first')}</span>
-        <span class="summary-chip">limit ${query.limit ?? '-'}</span>
+        <span class="summary-chip">limit ${escapeHtml(query.limit ?? '-')}</span>
         <span class="summary-chip">source ${escapeHtml(querySource)}</span>
         ${hasGoal ? '<span class="summary-chip">goal dsl</span>' : ''}
         ${query.pareto_only ? '<span class="summary-chip">pareto only</span>' : ''}
@@ -1689,22 +1700,22 @@ export function renderAtlasQueryResult(data) {
             <div class="family-card" style="--family-accent:${accent}; --family-soft:${hexToRgba(accent, 0.16)};">
               <div class="family-card-header">
                 <div>
-                  <div class="family-kicker">Rank ${result.rank ?? idx + 1}</div>
+                  <div class="family-kicker">Rank ${escapeHtml(result.rank ?? idx + 1)}</div>
                   <div class="family-title">${title}</div>
                   <div class="family-subtitle">${escapeHtml(resultUnit === 'network' ? `${result.matching_slice_count || 1} matching slices` : `${result.slice_id || 'slice'} in ${result.network_id || 'network'}`)}</div>
                 </div>
               </div>
               <div class="family-meta">
-                <span class="family-metric">d ${result.base_species_count ?? '-'}</span>
-                <span class="family-metric">r ${result.reaction_count ?? '-'}</span>
-                <span class="family-metric">support ${result.max_support ?? '-'}</span>
-                <span class="family-metric">mass ${result.support_mass ?? '-'}</span>
+                <span class="family-metric">d ${escapeHtml(result.base_species_count ?? '-')}</span>
+                <span class="family-metric">r ${escapeHtml(result.reaction_count ?? '-')}</span>
+                <span class="family-metric">support ${escapeHtml(result.max_support ?? '-')}</span>
+                <span class="family-metric">mass ${escapeHtml(result.support_mass ?? '-')}</span>
                 <span class="family-metric">robust ${Number(result.robustness_score || 0).toFixed(2)}</span>
               </div>
               <div class="family-meta">
-                <span class="family-metric">regimes ${result.matched_regime_count ?? 0}</span>
-                <span class="family-metric">transitions ${result.matched_transition_count ?? 0}</span>
-                <span class="family-metric">witness ${result.witness_path_count ?? 0}</span>
+                <span class="family-metric">regimes ${escapeHtml(result.matched_regime_count ?? 0)}</span>
+                <span class="family-metric">transitions ${escapeHtml(result.matched_transition_count ?? 0)}</span>
+                <span class="family-metric">witness ${escapeHtml(result.witness_path_count ?? 0)}</span>
               </div>
               <div>
                 <div class="family-kicker">Motifs</div>
@@ -1756,10 +1767,10 @@ export function renderAtlasInverseDesignResult(data) {
         <div class="text-dim">${escapeHtml(data.generated_at || '')}</div>
       </div>
       <div class="siso-summary-grid">
-        <div class="siso-stat-card"><div class="siso-stat-label">Build Candidates</div><div class="siso-stat-value">${buildPlan.candidate_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Queued Builds</div><div class="siso-stat-value">${buildPlan.build_candidate_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Query Matches</div><div class="siso-stat-value">${queryResult.result_count ?? 0}</div></div>
-        <div class="siso-stat-card"><div class="siso-stat-label">Refined</div><div class="siso-stat-value">${refinement.evaluated_count ?? 0}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Build Candidates</div><div class="siso-stat-value">${escapeHtml(buildPlan.candidate_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Queued Builds</div><div class="siso-stat-value">${escapeHtml(buildPlan.build_candidate_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Query Matches</div><div class="siso-stat-value">${escapeHtml(queryResult.result_count ?? 0)}</div></div>
+        <div class="siso-stat-card"><div class="siso-stat-label">Refined</div><div class="siso-stat-value">${escapeHtml(refinement.evaluated_count ?? 0)}</div></div>
       </div>
       <div class="siso-summary-line">
         ${data.build_requested ? '<span class="summary-chip">build requested</span>' : ''}
@@ -1783,10 +1794,10 @@ export function renderAtlasInverseDesignResult(data) {
           <div class="text-dim">${data.library_summary ? 'library-aware' : 'delta-only'}</div>
         </div>
         <div class="siso-summary-line">
-          ${data.delta_atlas_summary ? `<span class="summary-chip">delta slices ${data.delta_atlas_summary.behavior_slice_count ?? 0}</span>` : ''}
-          ${data.delta_atlas_summary ? `<span class="summary-chip">delta paths ${data.delta_atlas_summary.path_record_count ?? 0}</span>` : ''}
-          ${data.library_summary ? `<span class="summary-chip">library atlases ${data.library_summary.atlas_count ?? 0}</span>` : ''}
-          ${data.library_summary ? `<span class="summary-chip">library slices ${data.library_summary.behavior_slice_count ?? 0}</span>` : ''}
+          ${data.delta_atlas_summary ? `<span class="summary-chip">delta slices ${escapeHtml(data.delta_atlas_summary.behavior_slice_count ?? 0)}</span>` : ''}
+          ${data.delta_atlas_summary ? `<span class="summary-chip">delta paths ${escapeHtml(data.delta_atlas_summary.path_record_count ?? 0)}</span>` : ''}
+          ${data.library_summary ? `<span class="summary-chip">library atlases ${escapeHtml(data.library_summary.atlas_count ?? 0)}</span>` : ''}
+          ${data.library_summary ? `<span class="summary-chip">library slices ${escapeHtml(data.library_summary.behavior_slice_count ?? 0)}</span>` : ''}
         </div>
       </section>
     `;
@@ -1800,8 +1811,8 @@ export function renderAtlasInverseDesignResult(data) {
           <div class="text-dim">${planTraces.length} traces</div>
         </div>
         <div class="siso-summary-line">
-          <span class="summary-chip">input candidates ${buildPlan.candidate_count ?? 0}</span>
-          <span class="summary-chip">queued ${buildPlan.build_candidate_count ?? 0}</span>
+          <span class="summary-chip">input candidates ${escapeHtml(buildPlan.candidate_count ?? 0)}</span>
+          <span class="summary-chip">queued ${escapeHtml(buildPlan.build_candidate_count ?? 0)}</span>
           <span class="summary-chip">negative updates ${(buildPlan.negative_certificate_updates || []).length}</span>
           <span class="summary-chip">cache updates ${(buildPlan.support_screen_cache_updates || []).length}</span>
         </div>
@@ -1818,10 +1829,10 @@ export function renderAtlasInverseDesignResult(data) {
           <div class="text-dim">${refinement.reranked ? 'reranked' : 'annotated only'}</div>
         </div>
         <div class="siso-summary-line">
-          <span class="summary-chip">top k ${data.refinement?.top_k ?? 0}</span>
-          <span class="summary-chip">trials ${data.refinement?.trials ?? 0}</span>
-          <span class="summary-chip">points ${data.refinement?.n_points ?? 0}</span>
-          <span class="summary-chip">evaluated ${refinement.evaluated_count ?? 0}</span>
+          <span class="summary-chip">top k ${escapeHtml(data.refinement?.top_k ?? 0)}</span>
+          <span class="summary-chip">trials ${escapeHtml(data.refinement?.trials ?? 0)}</span>
+          <span class="summary-chip">points ${escapeHtml(data.refinement?.n_points ?? 0)}</span>
+          <span class="summary-chip">evaluated ${escapeHtml(refinement.evaluated_count ?? 0)}</span>
           ${invalidRefinementCount ? `<span class="summary-chip">invalid ${invalidRefinementCount}</span>` : ''}
         </div>
         ${bestCandidate ? `
@@ -1935,6 +1946,14 @@ function applyAtlasLandscapeResponse(shell, response, candidate) {
 }
 
 async function runAtlasLandscapeShell(nodeId, shell, queryData) {
+  const nodeOwner = nodeRegistry[nodeId];
+  const execution = {
+    token: Symbol(`atlas-landscape-${nodeId}`),
+    nodeOwner,
+  };
+  shell._atlasLandscapeExecution = execution;
+  const executionIsCurrent = () =>
+    shell._atlasLandscapeExecution === execution && nodeRegistry[nodeId] === nodeOwner;
   const resultIdx = parseInt(shell.dataset.resultIdx || '', 10);
   const results = Array.isArray(queryData?.results) ? queryData.results : [];
   const result = Number.isInteger(resultIdx) ? results[resultIdx] : null;
@@ -1950,6 +1969,9 @@ async function runAtlasLandscapeShell(nodeId, shell, queryData) {
   }
 
   const selection = atlasLandscapeSelection(shell);
+  let selectionFingerprint = JSON.stringify(selection);
+  const requestIsCurrent = () => executionIsCurrent() &&
+    JSON.stringify(atlasLandscapeSelection(shell)) === selectionFingerprint;
   if (selection.param1 && selection.param2 && selection.param1 === selection.param2) {
     setAtlasLandscapeStatus(shell, 'X and Y must be different coordinates.', true);
     return;
@@ -1979,19 +2001,27 @@ async function runAtlasLandscapeShell(nodeId, shell, queryData) {
 
   try {
     const response = await apiSilent('atlas_landscape_2d', request);
+    if (!requestIsCurrent()) return;
     applyAtlasLandscapeResponse(shell, response, candidate);
+    selectionFingerprint = JSON.stringify(atlasLandscapeSelection(shell));
     const plotEl = shell.querySelector('.atlas-landscape-plot');
     if (!plotEl.id) {
       plotEl.id = `${nodeId}-atlas-landscape-${resultIdx}`;
     }
     const plotAtlasLandscape2D = await ensureAtlasPlotting();
+    if (!requestIsCurrent()) return;
     plotAtlasLandscape2D(response, plotEl.id);
     shell.dataset.hasLandscape = 'true';
     setAtlasLandscapeStatus(shell, formatAtlasLandscapeResponseSummary(response));
   } catch (error) {
-    setAtlasLandscapeStatus(shell, error?.message || 'Landscape computation failed.', true);
+    if (requestIsCurrent()) {
+      setAtlasLandscapeStatus(shell, error?.message || 'Landscape computation failed.', true);
+    }
   } finally {
-    if (button) button.disabled = false;
+    if (executionIsCurrent() && !requestIsCurrent()) {
+      setAtlasLandscapeStatus(shell, 'Selection changed — generate the landscape again.');
+    }
+    if (executionIsCurrent() && button) button.disabled = false;
   }
 }
 
@@ -2021,6 +2051,26 @@ export function hydrateAtlasResultContent(nodeId, data = null) {
 /*  Execution                                                          */
 /* ------------------------------------------------------------------ */
 
+function atlasRequestFingerprint(request) {
+  return JSON.stringify(request);
+}
+
+function atlasExecutionRequestIsCurrent(nodeId, ticket, fingerprint, currentRequest) {
+  if (!isCurrentAtlasNodeExecution(nodeId, ticket)) return false;
+  try {
+    return atlasRequestFingerprint(currentRequest()) === fingerprint;
+  } catch (_) {
+    return false;
+  }
+}
+
+function atlasStaleExecutionOutcome(throwOnFailure, label) {
+  if (!throwOnFailure) return null;
+  const error = new Error(`${label} inputs changed while it was running.`);
+  error.code = 'atlas_execution_stale';
+  throw error;
+}
+
 export function resolveAtlasExecutionContext(nodeId, queryPayload) {
   const atlas = getConnectedAtlasData(nodeId);
   const specPayload = getConnectedAtlasSpec(nodeId);
@@ -2036,25 +2086,58 @@ export function resolveAtlasExecutionContext(nodeId, queryPayload) {
   };
 }
 
-export async function executeAtlasBuilder(nodeId) {
+export async function executeAtlasBuilder(
+  nodeId,
+  { triggerDownstream = true, throwOnFailure = false } = {},
+) {
+  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-builder');
+  if (!ticket) return null;
   const contentEl = document.getElementById(`${nodeId}-content`);
   let payload;
   try {
     payload = getConnectedAtlasSpec(nodeId);
   } catch (e) {
-    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    return;
+    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
+    if (executionIsCurrent && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
+    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
+    if (throwOnFailure) throw e;
+    return null;
   }
 
   if (!payload) {
     showToast('Connect an Atlas Spec node first');
-    return;
+    const error = new Error('Connect an Atlas Spec node first');
+    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    }
+    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
+    return null;
   }
 
   setNodeLoading(nodeId, true);
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
+  let requestIsCurrent = executionIsCurrent;
   try {
     const requestSpec = prepareAtlasSpecForHttp(payload.spec, 'Atlas build');
-    const data = await computeApi('build_atlas', requestSpec);
+    const requestFingerprint = atlasRequestFingerprint(requestSpec);
+    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
+      nodeId,
+      ticket,
+      requestFingerprint,
+      () => {
+        const currentPayload = getConnectedAtlasSpec(nodeId);
+        if (!currentPayload) throw new Error('Atlas Spec disconnected');
+        return prepareAtlasSpecForHttp(currentPayload.spec, 'Atlas build');
+      },
+    );
+    const data = await computeApi('build_atlas', requestSpec, {
+      // Polling a cloud job must stay O(1); the full request fingerprint is
+      // reconstructed only when the request settles.
+      statusIsCurrent: executionIsCurrent,
+    });
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2063,55 +2146,110 @@ export async function executeAtlasBuilder(nodeId) {
       info.data.sqlitePath = data.sqlite_path || payload.spec.sqlite_path || '';
     }
     if (contentEl) contentEl.innerHTML = renderAtlasBuilderResult(data);
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
     hydrateAtlasResultContent(nodeId, data);
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
     commitWorkspaceSnapshot('atlas-built');
-    triggerDownstreamNodes(nodeId, 'atlas');
+    if (triggerDownstream && requestIsCurrent()) {
+      triggerDownstreamNodes(nodeId, 'atlas');
+    }
+    return data;
   } catch (e) {
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas build');
     handleNodeError(e, nodeId, 'Atlas build');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    if (throwOnFailure) throw e;
+    return null;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
   }
 }
 
-export async function executeAtlasQueryResult(nodeId) {
+export async function executeAtlasQueryResult(
+  nodeId,
+  { throwOnFailure = false } = {},
+) {
+  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-query');
+  if (!ticket) return null;
   const contentEl = document.getElementById(`${nodeId}-content`);
   let queryPayload;
   try {
     queryPayload = getConnectedAtlasQuery(nodeId);
   } catch (e) {
-    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    return;
+    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
+    if (executionIsCurrent && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
+    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
+    if (throwOnFailure) throw e;
+    return null;
   }
 
   if (!queryPayload) {
     showToast('Connect an Atlas Query Config node first');
-    return;
+    const error = new Error('Connect an Atlas Query Config node first');
+    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    }
+    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
+    return null;
   }
 
   let executionContext;
   try {
     executionContext = resolveAtlasExecutionContext(nodeId, queryPayload);
   } catch (e) {
-    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    return;
+    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
+    if (executionIsCurrent && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
+    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
+    if (throwOnFailure) throw e;
+    return null;
   }
 
   const { atlas, sqlitePath } = executionContext;
 
   if (!atlas && !sqlitePath) {
     showToast('Build an atlas first; operator-enabled deployments may also use a SQLite path');
-    return;
+    const error = new Error('Build an atlas first or provide an enabled SQLite path');
+    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    }
+    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
+    return null;
   }
 
   setNodeLoading(nodeId, true);
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
+  let requestIsCurrent = executionIsCurrent;
   try {
     const request = createAtlasQueryHttpRequest({
       atlas,
       sqlitePath,
       query: queryPayload.query,
     });
-    const data = await api('query_atlas', request);
+    const requestFingerprint = atlasRequestFingerprint(request);
+    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
+      nodeId,
+      ticket,
+      requestFingerprint,
+      () => {
+        const currentQuery = getConnectedAtlasQuery(nodeId);
+        if (!currentQuery) throw new Error('Atlas Query disconnected');
+        const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
+        if (!currentContext.atlas && !currentContext.sqlitePath) {
+          throw new Error('Atlas source disconnected');
+        }
+        return createAtlasQueryHttpRequest({
+          atlas: currentContext.atlas,
+          sqlitePath: currentContext.sqlitePath,
+          query: currentQuery.query,
+        });
+      },
+    );
+    const data = await api('query_atlas', request, { statusIsCurrent: executionIsCurrent });
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
     const renderData = {
       ...data,
       query_source: sqlitePath ? 'sqlite' : 'atlas',
@@ -2124,47 +2262,80 @@ export async function executeAtlasQueryResult(nodeId) {
       info.data.lastQuery = queryPayload.serial;
     }
     if (contentEl) contentEl.innerHTML = renderAtlasQueryResult(renderData);
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
     hydrateAtlasResultContent(nodeId, renderData);
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
     commitWorkspaceSnapshot('atlas-query');
+    return renderData;
   } catch (e) {
+    if (!requestIsCurrent()) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas query');
     handleNodeError(e, nodeId, 'Atlas query');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    if (throwOnFailure) throw e;
+    return null;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
   }
 }
 
-export async function executeAtlasInverseDesignResult(nodeId) {
+export async function executeAtlasInverseDesignResult(
+  nodeId,
+  { throwOnFailure = false } = {},
+) {
+  const ticket = beginAtlasNodeExecution(nodeId, 'atlas-inverse');
+  if (!ticket) return null;
   const contentEl = document.getElementById(`${nodeId}-content`);
 
   let queryPayload;
   try {
     queryPayload = getConnectedAtlasQuery(nodeId);
   } catch (e) {
-    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    return;
+    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
+    if (executionIsCurrent && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
+    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    if (throwOnFailure) throw e;
+    return null;
   }
 
   if (!queryPayload) {
     showToast('Connect an Atlas Query Config node first');
-    return;
+    const error = new Error('Connect an Atlas Query Config node first');
+    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    }
+    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
+    return null;
   }
 
   let executionContext;
   try {
     executionContext = resolveAtlasExecutionContext(nodeId, queryPayload);
   } catch (e) {
-    if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
-    return;
+    const executionIsCurrent = isCurrentAtlasNodeExecution(nodeId, ticket);
+    if (executionIsCurrent && contentEl) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    }
+    if (!executionIsCurrent) return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    if (throwOnFailure) throw e;
+    return null;
   }
 
   const { atlas, specPayload, sqlitePath } = executionContext;
   if (!specPayload && !atlas && !sqlitePath) {
     showToast('Connect an Atlas Spec or Atlas Preview Builder node, or provide a SQLite path in Atlas Query Config');
-    return;
+    const error = new Error('Connect an Atlas Spec, Atlas Preview Builder, or enabled SQLite path');
+    if (contentEl && isCurrentAtlasNodeExecution(nodeId, ticket)) {
+      contentEl.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
+    }
+    if (throwOnFailure && isCurrentAtlasNodeExecution(nodeId, ticket)) throw error;
+    return null;
   }
 
   setNodeLoading(nodeId, true);
+  const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket);
+  let requestIsCurrent = executionIsCurrent;
   try {
     const request = createAtlasInverseHttpRequest({
       query: queryPayload.query,
@@ -2175,7 +2346,35 @@ export async function executeAtlasInverseDesignResult(nodeId) {
       atlasSpec: specPayload?.spec || null,
       atlas,
     });
-    const data = await computeApi('run_inverse_design', request);
+    const requestFingerprint = atlasRequestFingerprint(request);
+    requestIsCurrent = () => atlasExecutionRequestIsCurrent(
+      nodeId,
+      ticket,
+      requestFingerprint,
+      () => {
+        const currentQuery = getConnectedAtlasQuery(nodeId);
+        if (!currentQuery) throw new Error('Atlas Query disconnected');
+        const currentContext = resolveAtlasExecutionContext(nodeId, currentQuery);
+        if (!currentContext.specPayload && !currentContext.atlas && !currentContext.sqlitePath) {
+          throw new Error('Atlas inputs disconnected');
+        }
+        return createAtlasInverseHttpRequest({
+          query: currentQuery.query,
+          inverseDesign: currentQuery.inverseDesign,
+          refinement: currentQuery.refinement,
+          allowDuplicateAtlas: currentQuery.allowDuplicateAtlas,
+          sqlitePath: currentContext.sqlitePath,
+          atlasSpec: currentContext.specPayload?.spec || null,
+          atlas: currentContext.atlas,
+        });
+      },
+    );
+    const data = await computeApi('run_inverse_design', request, {
+      statusIsCurrent: executionIsCurrent,
+    });
+    if (!requestIsCurrent()) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    }
     const info = nodeRegistry[nodeId];
     if (info) {
       info.data = info.data || {};
@@ -2187,12 +2386,24 @@ export async function executeAtlasInverseDesignResult(nodeId) {
       };
     }
     if (contentEl) contentEl.innerHTML = renderAtlasInverseDesignResult(data);
+    if (!requestIsCurrent()) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    }
     hydrateAtlasResultContent(nodeId, data);
+    if (!requestIsCurrent()) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    }
     commitWorkspaceSnapshot('atlas-inverse-design');
+    return data;
   } catch (e) {
+    if (!requestIsCurrent()) {
+      return atlasStaleExecutionOutcome(throwOnFailure, 'Atlas inverse design');
+    }
     handleNodeError(e, nodeId, 'Atlas inverse design');
     if (contentEl) contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    if (throwOnFailure) throw e;
+    return null;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (isCurrentAtlasNodeExecution(nodeId, ticket)) setNodeLoading(nodeId, false);
   }
 }

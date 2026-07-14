@@ -538,8 +538,8 @@ export const ATLAS_TYPES = {
         </div>
       `;
     },
-    async execute(nodeId) {
-      await executeAtlasQueryResult(nodeId);
+    async execute(nodeId, options = {}) {
+      await executeAtlasQueryResult(nodeId, options);
     },
   },
   'atlas-inverse-result': {
@@ -562,8 +562,8 @@ export const ATLAS_TYPES = {
         </div>
       `;
     },
-    async execute(nodeId) {
-      await executeAtlasInverseDesignResult(nodeId);
+    async execute(nodeId, options = {}) {
+      await executeAtlasInverseDesignResult(nodeId, options);
     },
   },
 };

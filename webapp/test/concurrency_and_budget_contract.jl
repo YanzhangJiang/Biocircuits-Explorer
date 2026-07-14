@@ -85,6 +85,17 @@ end
     backend = BiocircuitsExplorerBackend
     err = BindingAndCatalysis.PathEnumerationLimitExceeded(:paths, 2_000, 2_001)
     @test_throws backend.SyncBudgetExceeded backend._path_budget_exceeded(err)
+    hard_error = try
+        backend._path_materialization_hard_bound_exceeded(
+            err; label="ROP shape job")
+        nothing
+    catch caught
+        caught
+    end
+    @test hard_error isa ArgumentError
+    @test occursin("materialization hard bound", sprint(showerror, hard_error))
+    @test occursin("does not establish scientific infeasibility",
+                   sprint(showerror, hard_error))
     @test backend.MAX_WEB_REGIME_PATHS == 2_000
     @test backend.MAX_WEB_MATERIALIZED_PATH_NODES == 200_000
     @test !backend._in_sync_request_context()
@@ -663,6 +674,19 @@ end
     )
     @test_throws backend.SyncBudgetExceeded backend.sync_model_candidate_bound(
         fake_explosive_model)
+    job_candidate_error = try
+        backend.model_candidate_bound(
+            fake_explosive_model;
+            maximum=backend.MAX_JOB_REGIME_CANDIDATES,
+            label="ROP shape job",
+        )
+        nothing
+    catch caught
+        caught
+    end
+    @test job_candidate_error isa backend.ModelCandidateBoundExceeded
+    @test occursin("enumeration was not started",
+                   sprint(showerror, job_candidate_error))
 
     support_symbols = [Symbol("fallback_$idx") for idx in 1:8]
     support_validation = Dict(

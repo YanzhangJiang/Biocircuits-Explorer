@@ -39,6 +39,20 @@ override wins in either mode.
 - A process-wide gate admits exactly two named heavy synchronous handlers. The
   next request fails immediately with HTTP 429,
   `code=sync_capacity_exhausted`, `Retry-After: 1`, and `retryable=true`.
+- Local asynchronous work has a separate process-local queue contract. By
+  default at most `min(Threads.nthreads(), 2)` jobs compute concurrently and at
+  most 64 jobs may be admitted across running and queued work. Strict positive
+  integer environment settings can adjust those limits within hard bounds of
+  64 concurrent and 4,096 admitted jobs. A full queue fails before quota
+  consumption or durable writes with HTTP 429,
+  `code=local_job_capacity_exhausted`, `Retry-After: 1`, and `retryable=true`.
+- Canonical job state is serialized by 128 stable job-ID stripes, so JSON
+  reads/parsing, atomic rename/fsync, projection repair, and snapshots for one
+  job do not hold the process-wide registry lock or block an unrelated stripe.
+  The in-memory `JOBS` table is a true LRU cache with a strict default capacity
+  of 1,024 records and a validated hard maximum of 65,536; `record.json`
+  remains authoritative, and queued/running local or AWS records may be
+  evicted and cold-loaded safely.
 - A structurally valid request above a declared synchronous limit fails before
   the expensive allocation with HTTP 422, `code=sync_budget_exceeded`, and
   `retryable=false`. JSON request bodies have a 1 MiB application limit; Nginx
@@ -46,8 +60,9 @@ override wins in either mode.
   HTTP 413 contract.
 - Synchronous Web SISO/change-path construction is capped at 2,000 paths and
   200,000 materialized path nodes. Parallel atlas network workers explicitly
-  propagate the synchronous context and typed budget errors. Local jobs and
-  direct/offline APIs do not inherit these two Web-only limits.
+  propagate the synchronous context and typed budget errors. ROP-shape and
+  Atlas local jobs explicitly use the same values as job hard materialization
+  bounds; unrelated direct/offline APIs do not inherit them automatically.
 - Numerical scans, FRET heatmaps, qK-sampled ROP clouds, and scan-based
   placement/inverse-refinement responses expose validity/partial state and do
   not rank a failed terminal solver value as successful evidence. Point-only
@@ -116,7 +131,8 @@ override wins in either mode.
 - Versioned IR/designability payloads, supported legacy network requests, SBML,
   atlas/job specifications, and local image paths.
 - Environment settings for bind host/port, parent supervision, public assets,
-  job storage, local-image exposure, AWS, Cognito, and quotas.
+  job storage, job-cache capacity, local-job concurrency/admission, local-image
+  exposure, AWS, Cognito, and quotas.
 - Local files or S3 URIs for batch input/status/result artifacts.
 - Application identity from an explicit environment value or a `VERSION` file
   in the installed resource bundle/source tree.
@@ -153,7 +169,9 @@ override wins in either mode.
   [`scripts/build_macos_dmg.sh`](../../scripts/build_macos_dmg.sh)
 - Job lifecycle and result provenance: [`jobs.jl`](../../webapp/src/jobs.jl),
   [`result_artifact.jl`](../../webapp/src/result_artifact.jl), and
-  [`result-artifact.schema.json`](../../schemas/result-artifact.schema.json)
+  [`result-artifact.schema.json`](../../schemas/result-artifact.schema.json),
+  plus the working-tree asynchronous commit marker in
+  [`job-result-manifest.schema.json`](../../schemas/job-result-manifest.schema.json)
 - Shared-model locking, content-hash build single-flight, and request bundle
   pinning: [`model_runtime.jl`](../../webapp/src/model_runtime.jl)
 - Independent model/session LRU timestamps:
@@ -177,6 +195,14 @@ override wins in either mode.
   serialization.
 - [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl)
   covers local/AWS cancellation, finish, submit, and dispatch races.
+- [`webapp/test/jobs_submission_reconciliation_contract.jl`](../../webapp/test/jobs_submission_reconciliation_contract.jl)
+  covers at-most-once AWS submission, crash/response-loss reconciliation,
+  strict candidate adoption, and explicit unknown/conflict states.
+- [`webapp/test/jobs_cache_concurrency_contract.jl`](../../webapp/test/jobs_cache_concurrency_contract.jl)
+  covers cross-job progress during blocked persistence, same-job serialization,
+  cold-load single-flight, wrong-directory identity rejection, hard LRU
+  eviction/reload, active local/AWS ownership across eviction, projection
+  repair, and cache stress/invariants.
 - [`webapp/test/cooperative_cancel_checkpoints_contract.jl`](../../webapp/test/cooperative_cancel_checkpoints_contract.jl)
   covers cancellation propagation through long workflows.
 - [`tests/version_resource_contract.jl`](../../tests/version_resource_contract.jl)
@@ -247,6 +273,10 @@ stack or a real AWS worker.
 - The synchronous heavy gate has two process-local slots. Capacity failure is a
   retryable 429 with `Retry-After: 1`; a static work-limit failure is a
   non-retryable 422. Neither is mapped to 500.
+- Local asynchronous admission is also process-local but independent of the
+  synchronous gate. A fixed semaphore bounds active computation; admitted jobs
+  waiting for a permit remain queued, and admission ownership is released on
+  success, failure, or cancellation cleanup.
 - Application JSON size is at most 1 MiB. The deployed Nginx route enforces the
   same value before proxying; the application additionally bounds JSON nesting
   and value count after parsing.
@@ -259,10 +289,46 @@ stack or a real AWS worker.
 - Exact relabel canonicalization is bounded at seven free species. Beyond that,
   the deterministic positional content hash is accepted with weaker identity
   semantics rather than starting factorial work.
-- Long computation and external AWS/S3 calls never hold `JOBS_LOCK`; terminal
-  job state is monotonic and cross-user lookup does not disclose existence.
+- `JOBS_LOCK` owns only short cache, task/token/admission, describe, and
+  submission-owner metadata sections. Canonical state changes acquire the
+  stable job stripe first; JSON parsing, deepcopy, file publication, projection
+  inspection/repair, long computation, and external AWS/S3 calls never hold
+  `JOBS_LOCK`. Same-job state remains serialized, terminal state is monotonic,
+  and unrelated stripes can progress while one job's disk I/O is blocked.
+- `JOBS` is a bounded process-local LRU, not an authority or active-job pin.
+  Its capacity uses `BIOCIRCUITS_EXPLORER_JOB_CACHE_CAPACITY` (default 1,024,
+  hard maximum 65,536). Cold misses are single-flight under the job stripe and
+  must load a canonical record whose `job_id` matches its directory. Local
+  worker/token/admission ownership and initial AWS submission ownership live
+  outside the cache, so eviction cannot trigger false restart recovery.
+- AWS submission identity is canonical state, not transient request context.
+  New records persist the resolved job name, queue, definition, Batch region,
+  optional account ID, tag, exact worker command, and artifact URIs before
+  remote I/O. `dispatch_started` authorizes SubmitJob only after its exact
+  parent-directory fsync is confirmed; a committed-but-unconfirmed boundary
+  performs no submit and remains reconciliation-only. Once the boundary
+  commits, the broker never issues another SubmitJob for that job ID.
+  Reconciliation requires complete one-for-one DescribeJobs coverage of every
+  ListJobs ID before applying zero/one/many candidate semantics, and full ARNs
+  never degrade to resource-name matching.
 - `record.json` is canonical restart state. A remote success without the
-  expected result artifact is failed rather than promoted to success.
+  expected result artifact is failed rather than promoted to success. In the
+  working tree, new AWS jobs additionally require a result manifest published
+  after `result.json`; status polling validates that bounded marker and object
+  metadata without downloading the potentially large result payload.
+- Canonical job publication on macOS/Linux writes and fsyncs a same-directory
+  temporary file, performs one no-fallback atomic rename, and fsyncs the parent
+  directory. Rename is the logical commit point: a later directory-fsync
+  failure does not roll memory back, but readiness remains false until the
+  exact pending directory is synced successfully.
+- Every canonical commit owns one monotonically increasing `state_revision`.
+  `status.json` is a derived projection: missing, malformed, stale, ahead, or
+  same-revision-but-different content is rebuilt from `record.json`. Legacy
+  canonical records read as revision zero until their next real commit. A
+  projection without a canonical record is never treated as authoritative.
+- Local input/result/manifest/terminal-status artifacts use a stricter rule
+  than canonical records: directory durability must be confirmed before the
+  next commit marker or success state can be published.
 
 ## Known gaps
 
@@ -276,8 +342,10 @@ stack or a real AWS worker.
   shell, live AWS Batch/S3/Cognito/quota path, or broker/worker lifecycle.
 - P2 — The bundle version/resource contract does not build and launch a complete
   macOS bundle in CI.
-- P2 — Browser and Python engine clients still construct compatibility `/api`
-  URLs, so v1 migration remains incomplete.
+- P2 — Ordinary browser compute calls and the Python engine client use
+  canonical `/api/v1/*` routes. Browser broker/auth configuration and
+  local-image transport still retain compatibility paths, so complete alias
+  removal remains a coordinated deployment change.
 - P2 — Result-envelope adoption remains additive rather than uniform across all
   synchronous historical handlers.
 - P2 — Admission, build locks, bundle locks, and LRU tables are process-local;
@@ -292,16 +360,17 @@ stack or a real AWS worker.
   1 MiB limit. Only the Nginx path is proven to reject oversized bodies before
   Julia buffers them.
 - P2 — Direct/offline and job path enumeration is not restricted by the two Web
-  counters. Large jobs require explicit partitioning, quota, and cooperative
-  cancellation.
+  path-materialization counters. Local-job task count is now bounded, but a
+  single admitted job can still request large work and therefore requires
+  explicit partitioning, quota, and cooperative cancellation.
 - P2 — Positional hashing above seven free species can split cache identity for
   relabeled/reordered equivalents; scalable exact canonicalization is not yet
   provided.
 - P2 — A validity flag reports the configured solver's convergence status, not
   mathematical uniqueness, discretization completeness, or biological truth.
-- P2 — Local record publication fsyncs and renames the file but not its parent
-  directory; sudden-power-loss durability and automatic repair of a failed
-  `status.json` projection are not established.
+- P2 — Durable local job-store publication is implemented and tested on
+  macOS/Linux only; Windows needs a separately owned atomic-replacement and
+  directory-durability contract before it can make the same claim.
 
 ## Change protocol
 

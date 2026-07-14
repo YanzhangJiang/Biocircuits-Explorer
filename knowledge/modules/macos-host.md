@@ -49,8 +49,10 @@ of a stale secret or use of a different port is not enough.
 - A bundled backend or a development checkout with Julia.
 - The Julia port selected by `BiocircuitsBackendController`; the chat helper has
   a separate service port.
-- An optional Python interpreter and the allowlisted Design Agent source/data
-  files included in the backend bundle.
+- For distributable packaging, an operator-supplied, pinned and already-unpacked
+  relocatable Python 3.9+ runtime rooted at `DESIGN_PYTHON_SOURCE`, plus the
+  allowlisted Design Agent source/data files included in the backend bundle.
+  Local development may instead use an explicit interpreter or `PATH` fallback.
 - An optional `deploy/aws-runtime.env`; only explicitly approved AWS, Cognito,
   and quota keys are accepted from it.
 
@@ -63,8 +65,12 @@ of a stale secret or use of a different port is not enough.
 - A per-chat-process bearer secret and an exact origin
   `http://127.0.0.1:<actual Julia port>` supplied to both the helper and the web
   shell.
+- An optional embedded authentication page only for the exact HTTPS Cognito
+  origin returned by `/api/v1/auth/config`; unrelated HTTPS navigation is sent
+  to the user's default browser instead of being trusted inside the WebView.
 - A macOS 14 app/DMG build path containing the backend, public assets, version
-  file, and allowlisted Design Agent runtime files.
+  file, allowlisted Design Agent runtime files, and—when packaging a release—a
+  self-contained Python runtime under the standard Helpers backend tree.
 
 ## Contract sources
 
@@ -91,7 +97,10 @@ of a stale secret or use of a different port is not enough.
   Authorization headers are propagated, and an AWS runtime file cannot replace
   native host/port/assets/parent settings or enable local-image access.
 - The same Swift target covers packaged chat discovery and lossless workspace
-  normalization/round trips. UI tests remain launch-template coverage.
+  normalization/round trips, strict imported-node validation, exact external
+  authentication origin matching, termination registration and window-close
+  interception, sequenced rename snapshots, queued-project handoff, and the
+  post-rename WebKit-failure path. UI tests remain launch-template coverage.
 - `webapp/scripts/test_chat_api.py` checks loopback binding, exact-origin
   validation, bearer enforcement, preflight rules, and parent-watchdog behavior.
 - `packaging/test_design_runtime.jl` stages only the resource allowlist, checks
@@ -104,12 +113,14 @@ of a stale secret or use of a different port is not enough.
 
 `.github/workflows/ci.yml` runs the Python chat contracts, the packaged resource
 allowlist test, version-resource lookup, and repository checks that keep release
-identity and the macOS 14 target aligned.
+identity and the macOS 14 target aligned. The current working tree also adds a
+no-sign `build-for-testing` plus the Swift unit bundle on `macos-15-intel` and
+`macos-26`.
 
-No checked-in job runs `xcodebuild`, Swift unit/UI tests, a macOS app build, DMG
-creation, Developer ID signing, notarization, or a packaged-app launch. The
-native process and WebView integration therefore remain local/source evidence,
-not CI-verified release behavior.
+That workflow configuration is not evidence that a remote run passed. It does
+not run Swift UI tests, launch the packaged backend and chat processes end to
+end, create a DMG, perform Developer ID signing/notarization, or test a clean-host
+installation.
 
 ## Invariants
 
@@ -131,25 +142,73 @@ not CI-verified release behavior.
   assets, and parent PID always win; image selection, local-image opt-in, and
   unrelated operator keys do not pass through.
 - Workspace documents reject unsupported future versions while preserving
-  unknown fields in supported documents. Swift and JavaScript bridge versions
+  unknown fields in supported documents. Imported canvas and node records must
+  also pass the embedded Web loader's finite-number, range, identity, node-type,
+  and shape rules. The repository verifier keeps the native supported-node set
+  equal to the Web `NODE_TYPES` registry; Swift and JavaScript bridge versions
   advance together.
+- Only the exact configured HTTPS Cognito origin may remain in the embedded
+  authentication context. A merely HTTPS URL, subdomain, lookalike, path, or
+  malformed/disabled authentication configuration does not gain that trust.
 - The Xcode project and release helper target macOS 14.0. The packaged Design
   Agent surface is limited to `packaging/design-runtime-files.txt`; optional
   Reader host dependencies are not implied by that list.
+- Release-mode packaging fails closed without `DESIGN_PYTHON_SOURCE`. The
+  staged runtime must expose `bin/python3`, remain internally relocatable, load
+  the required standard library and `chat_api` in isolated mode, and contain the
+  target architecture in every Mach-O file. Local packaging may omit it with an
+  explicit warning and retain development-only interpreter discovery.
 - Chat failure is non-fatal to the node workspace, and app-started helpers are
   stopped with the app or exit through their parent watchdog.
 
+## Working-tree lifecycle and persistence maintenance
+
+- Web navigation, workspace apply, snapshot capture, bridge messages, backend
+  launches, and theme callbacks carry generation/identity checks. A stale
+  callback cannot commit project identity, readiness, diagnostics, or app
+  appearance for its replacement.
+- Project switching, reload, rename, duplicate, and delete capture and persist
+  the latest applied Web workspace first. Capture or persistence failure stops
+  the requested operation instead of navigating with or writing an older copy.
+- Rename freezes Web interaction before its final snapshot and retains that lock
+  through the same-directory move, explicit project-identity rebind, sequenced
+  final persistence, and any queued project replacement. A navigation replaces
+  the still-locked document; a queued project unlocks only after it is applied.
+  This closes the interval in which a late edit could otherwise be saved under
+  the old project identity after the rename had already committed. Once the
+  file move succeeds, native selection commits to the new identity even if a
+  later WebKit rebind reports an error.
+- Closing the sole main window requests application termination instead of
+  destroying the editing session first. The app deduplicates concurrent quit
+  preparations, captures the final workspace, and keeps the window recoverable
+  when persistence fails and termination is cancelled.
+- One unreadable project JSON is isolated and reported without hiding valid
+  projects. Delete changes in-memory state only after disk removal succeeds;
+  rename uses a same-directory file move; duplicate writes the current document
+  directly without publishing an intermediate starter file.
+- The app exposes one main `Window` per process while project stores still own
+  one on-disk file per workspace. This avoids multiple independent window stores
+  racing on the same directory until a revisioned multi-window model exists.
+
 ## Known gaps
 
-- P2 — Swift controller tests exist but are not run by checked-in CI; actual
-  process startup, port contention, WebView traffic, termination races, and
-  fallback discovery are not exercised end to end.
+- P2 — Swift unit tests are now wired into checked-in CI, but no resulting
+  remote run is claimed. Actual packaged-process startup, port contention,
+  interactive WebView traffic, termination races, UI automation, and fallback
+  discovery are not exercised end to end.
 - P2 — No checked-in lane produces a Developer ID-signed and notarized DMG,
   verifies Gatekeeper on a clean macOS 14 host, or distributes updates. The
   release script's default signature is ad hoc.
-- P2 — The complete packaged app has not been launched and probed in CI, so
-  dylib relocation, Python availability, optional Reader dependencies, and
-  bundled-backend fallback remain release-time checks.
+- P2 — The complete packaged app has not been launched and probed in CI. The
+  release script now validates an operator-supplied Python runtime before
+  signing, but no specific runtime artifact is supplied by this repository, and
+  clean-host launch, optional Reader dependencies, and bundled-backend fallback
+  remain release qualification checks.
+- P2 — Focused Swift and JavaScript tests exercise lifecycle state machines but
+  do not drive rapid real pointer input through `WKWebView` or launch two app
+  processes against the same project directory.
+- P2 — Exact Cognito-origin policy is covered with native unit contracts, but a
+  real Cognito/federated-provider sign-in and callback has not been exercised.
 - P2 — The resource allowlist proves which tracked files are staged; it does not
   bundle or validate every optional dataset and third-party Python dependency.
 
@@ -157,6 +216,7 @@ not CI-verified release behavior.
 
 1. Change the bridge only with a matching JavaScript contract/version decision
    and tests on both sides.
+   Keep the native supported-node set and the Web `NODE_TYPES` registry equal.
 2. Preserve loopback binding, exact `/ready` parsing, the actual Julia port,
    bearer rotation, exact-origin checks, and parent supervision when changing
    process launch or discovery.
@@ -173,6 +233,9 @@ not CI-verified release behavior.
 ## Verified against
 
 - Source commit: `01a01be`
+- Lifecycle/persistence extension: current uncommitted working tree on
+  2026-07-14; a local macOS 27 arm64 no-sign test build and all 47 Swift unit
+  tests passed, with no remote-CI, packaged-app, or notarization claim.
 - Evidence inspected: Swift controllers/tests, chat enforcement/tests, WebView
   handoff, Xcode target, runtime environment allowlist, packaging scripts,
   packaged-resource allowlist/tests, and CI wiring.

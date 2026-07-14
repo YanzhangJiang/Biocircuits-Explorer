@@ -15,6 +15,7 @@ __pycache__/
 
 .julia_packaging_depot/
 dist/
+/build/
 
 frontend-swift/**/xcuserdata/
 frontend-swift/**/.DS_Store
@@ -43,7 +44,7 @@ datasets/
 *.sql
 # Local mirror of the design-system skill (byte-identical to .claude/skills/, already ignored).
 design/
-# DesignAgentTrace store (traces.jsonl + artifacts/) — local runtime evidence, can grow.
+# DesignAgentTrace store (rotating traces.jsonl + bounded artifacts/) — local runtime evidence.
 traces/
 # Superpowers SDD dev-process scaffolding (task briefs/reports + progress ledger).
 .superpowers/

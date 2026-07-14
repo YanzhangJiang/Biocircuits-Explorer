@@ -2,7 +2,41 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ThemeCompletionLifecycle {
+    static func accepts(requestedMode: String, currentMode: String) -> Bool {
+        requestedMode == currentMode
+    }
+}
+
+struct ProjectFileOperationCoordinator {
+    static func run<Result>(
+        capture: () async throws -> WebShellProjectSnapshot?,
+        operation: () async throws -> Result
+    ) async throws -> Result {
+        // WebShell capture returns only after its ordered native persistence
+        // callback has durably written the final snapshot.
+        _ = try await capture()
+        return try await operation()
+    }
+}
+
+struct ProjectRenameCommitCoordinator {
+    static func run<RenamedProject>(
+        renameOnDisk: () async throws -> RenamedProject,
+        commitNativeState: (RenamedProject) -> Void,
+        rebindWebIdentity: (RenamedProject) async throws -> Void
+    ) async throws -> RenamedProject {
+        let renamedProject = try await renameOnDisk()
+        // Once the filesystem move commits, native selection must stop
+        // referring to the source identity even if WebKit rebind later fails.
+        commitNativeState(renamedProject)
+        try await rebindWebIdentity(renamedProject)
+        return renamedProject
+    }
+}
+
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @AppStorage("biocircuitsExplorer.themeMode") private var themeMode = "auto"
     @AppStorage("biocircuitsExplorer.cloudComputeEnabled") private var cloudComputeEnabled = false
     // Active surface inside the embedded canvas: "agent" (Design Agent) or
@@ -20,6 +54,9 @@ struct ContentView: View {
     @State private var isRenaming = false
     @State private var renameDraft = ""
     @State private var errorMessage: String?
+    @State private var pendingDeleteIDs: [String] = []
+    @State private var terminationSessionToken: AppTerminationCoordinator.SessionToken
+    @State private var terminationRegistrationToken: AppTerminationCoordinator.RegistrationToken?
 
     private let sidebarTopInset: CGFloat = 14
     private let sidebarLeadingInset: CGFloat = 16
@@ -72,6 +109,7 @@ struct ContentView: View {
                 NodeMenuItem(id: "rop-cloud-params", title: "ROP Cloud Config", systemImage: "cube.transparent"),
                 NodeMenuItem(id: "fret-params", title: "FRET Config", systemImage: "sparkles.rectangle.stack"),
                 NodeMenuItem(id: "rop-poly-params", title: "ROP Polyhedron Config", systemImage: "hexagon"),
+                NodeMenuItem(id: "rop-shape-edit-config", title: "ROP Shape Edit Config", systemImage: "slider.horizontal.3"),
                 NodeMenuItem(id: "atlas-spec", title: "Atlas Spec", systemImage: "map"),
                 NodeMenuItem(id: "atlas-query-config", title: "Atlas Query Config", systemImage: "line.3.horizontal.decrease.circle"),
                 NodeMenuItem(id: "placer-params", title: "Parameter Placer Config", systemImage: "tuningfork")
@@ -98,6 +136,7 @@ struct ContentView: View {
                 NodeMenuItem(id: "rop-cloud-result", title: "ROP Cloud Result", systemImage: "cloud"),
                 NodeMenuItem(id: "fret-result", title: "FRET Result", systemImage: "camera.filters"),
                 NodeMenuItem(id: "rop-poly-result", title: "ROP Polyhedron Result", systemImage: "cube"),
+                NodeMenuItem(id: "rop-shape-result", title: "ROP Shape Optimization Result", systemImage: "waveform.path.ecg"),
                 NodeMenuItem(id: "atlas-query-result", title: "Atlas Search Result", systemImage: "scope"),
                 NodeMenuItem(id: "atlas-inverse-result", title: "Atlas Inverse Design (advanced / unbounded)", systemImage: "wand.and.stars"),
                 NodeMenuItem(id: "placer-result", title: "Parameter Placer Result", systemImage: "ruler")
@@ -134,13 +173,13 @@ struct ContentView: View {
             ?? "auto"
         let webController = WebShellController(initialThemeMode: initialThemeMode)
         let initialProjectID = store.projects.first?.id
+        let terminationSessionToken = AppTerminationCoordinator.shared.makeSessionToken()
 
         webController.onProjectChange = { [weak store] projectID, document in
-            do {
-                try store?.updateDocument(document, for: projectID)
-            } catch {
-                store?.lastErrorMessage = error.localizedDescription
+            guard let store else {
+                throw CancellationError()
             }
+            try await store.updateDocument(document, for: projectID)
         }
 
         _store = StateObject(wrappedValue: store)
@@ -149,6 +188,7 @@ struct ContentView: View {
         _webController = StateObject(wrappedValue: webController)
         _selectedProjectIDs = State(initialValue: initialProjectID.map { Set([$0]) } ?? [])
         _activeProjectID = State(initialValue: initialProjectID)
+        _terminationSessionToken = State(initialValue: terminationSessionToken)
     }
 
     var body: some View {
@@ -172,6 +212,7 @@ struct ContentView: View {
                         .offset(x: isSidebarPresented ? 0 : -(panelWidth + 32))
                         .opacity(isSidebarPresented ? 1 : 0.001)
                         .allowsHitTesting(isSidebarPresented)
+                        .accessibilityHidden(!isSidebarPresented)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -184,11 +225,12 @@ struct ContentView: View {
                     }
                 }
 
-                // Sits just to the right of the sidebar toggle in the leading
-                // area, but in its OWN glass group — the spacer breaks the
-                // Liquid Glass grouping so the two controls aren't boxed together.
-                if #available(macOS 26.0, *) {
-                    ToolbarSpacer(.fixed, placement: .navigation)
+                // Keep a small visual break without requiring the macOS 26 SDK
+                // merely to compile a source build targeting macOS 14.
+                ToolbarItem(placement: .navigation) {
+                    Color.clear
+                        .frame(width: 6, height: 1)
+                        .accessibilityHidden(true)
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -235,9 +277,9 @@ struct ContentView: View {
                     .disabled(singleSelectedProjectID == nil)
 
                     Button(role: .destructive) {
-                        deleteSelection()
+                        requestDelete(projectIDs: orderedSelectedProjectIDs)
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("Move to Trash", systemImage: "trash")
                     }
                     .disabled(selectedProjectIDs.isEmpty)
                 }
@@ -367,6 +409,7 @@ struct ContentView: View {
             }
         }
         .navigationTitle(windowToolbarTitle)
+        .background(ApplicationTerminationWindowBridge())
         .sheet(isPresented: $isRenaming) {
             RenameProjectSheet(
                 currentName: renameDraft,
@@ -380,6 +423,25 @@ struct ContentView: View {
             allowsMultipleSelection: true,
             onCompletion: handleImport
         )
+        .confirmationDialog(
+            deleteConfirmationTitle,
+            isPresented: Binding(
+                get: { !pendingDeleteIDs.isEmpty },
+                set: { if !$0 { pendingDeleteIDs = [] } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(deleteConfirmationButtonTitle, role: .destructive) {
+                let ids = pendingDeleteIDs
+                pendingDeleteIDs = []
+                delete(projectIDs: ids)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteIDs = []
+            }
+        } message: {
+            Text("The selected project files will be moved to the Trash, where they can be recovered.")
+        }
         .alert("Project Error", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -391,9 +453,14 @@ struct ContentView: View {
             Text(errorMessage ?? "")
         }
         .task {
+            await store.waitUntilReady()
+            reconcileSelectionForAvailableProjects(store.projects.map(\.id))
             if let launchError = store.lastErrorMessage {
                 errorMessage = launchError
+                store.lastErrorMessage = nil
             }
+        }
+        .task {
             await startBackend()
         }
         .task {
@@ -401,6 +468,12 @@ struct ContentView: View {
             // analysis server so a slow first Julia boot never delays the agent.
             // Failure is non-fatal: the Workspace still loads, the agent shows offline.
             await designChatController.startIfNeeded()
+        }
+        .onAppear {
+            registerTerminationPreparation()
+        }
+        .onDisappear {
+            prepareForDisappearance()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             backendController.stop()
@@ -420,6 +493,12 @@ struct ContentView: View {
         }
         .onChange(of: store.projects.map(\.id)) { _, ids in
             reconcileSelectionForAvailableProjects(ids)
+        }
+        .onChange(of: store.lastErrorMessage) { _, newValue in
+            if let newValue {
+                errorMessage = newValue
+                store.lastErrorMessage = nil
+            }
         }
         .onChange(of: webController.lastErrorMessage) { _, newValue in
             if let newValue {
@@ -457,6 +536,52 @@ struct ContentView: View {
 
     private var selectedProjects: [ProjectStore.ProjectFile] {
         store.projects.filter { selectedProjectIDs.contains($0.id) }
+    }
+
+    private func registerTerminationPreparation() {
+        guard terminationRegistrationToken == nil else {
+            return
+        }
+        // Accessing these properties from the mounted view resolves SwiftUI's
+        // retained StateObject instances. Registering their init-time wrapped
+        // values can instead capture objects SwiftUI immediately discards.
+        let store = store
+        let backendController = backendController
+        let designChatController = designChatController
+        let webController = webController
+
+        let token = AppTerminationCoordinator.shared.registerPreparation(
+            for: terminationSessionToken
+        ) {
+            do {
+                let projectIDs = Set(store.projects.map(\.id))
+                _ = try await webController.captureCurrentProjectForFileOperation(
+                    projectIDs: projectIDs
+                )
+                backendController.stop()
+                designChatController.stop()
+                return true
+            } catch {
+                store.lastErrorMessage = "Quit was cancelled because the latest workspace edits could not be saved: \(error.localizedDescription)"
+                return false
+            }
+        }
+        terminationRegistrationToken = token
+    }
+
+    private func prepareForDisappearance() {
+        guard let token = terminationRegistrationToken else {
+            return
+        }
+
+        Task { @MainActor in
+            let succeeded = await AppTerminationCoordinator.shared
+                .prepareAndUnregister(token)
+            guard succeeded, terminationRegistrationToken == token else {
+                return
+            }
+            terminationRegistrationToken = nil
+        }
     }
 
     private var orderedSelectedProjectIDs: [String] {
@@ -560,8 +685,8 @@ struct ContentView: View {
                             Button("Reveal in Finder") {
                                 reveal(projectIDs: targetIDs)
                             }
-                            Button("Delete", role: .destructive) {
-                                delete(projectIDs: targetIDs)
+                            Button("Move to Trash", role: .destructive) {
+                                requestDelete(projectIDs: targetIDs)
                             }
                         }
                 }
@@ -570,7 +695,10 @@ struct ContentView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
             .overlay {
-                if store.projects.isEmpty {
+                if !store.isReady {
+                    ProgressView("Loading Projects")
+                        .controlSize(.small)
+                } else if store.projects.isEmpty {
                     ContentUnavailableView(
                         "No Projects",
                         systemImage: "doc.text",
@@ -598,18 +726,30 @@ struct ContentView: View {
     }
 
     private func setSidebarPresented(_ isPresented: Bool) {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.92, blendDuration: 0.2)) {
+        let animation: Animation? = accessibilityReduceMotion
+            ? nil
+            : .spring(response: 0.4, dampingFraction: 0.92, blendDuration: 0.2)
+        withAnimation(animation) {
             isSidebarPresented = isPresented
         }
     }
 
     private func createProject() {
-        do {
-            let project = try store.createProject()
-            selectedProjectIDs = [project.id]
-            activeProjectID = project.id
-        } catch {
-            errorMessage = error.localizedDescription
+        Task {
+            do {
+                if let activeProjectID {
+                    _ = try await webController.captureCurrentProjectForFileOperation(
+                        projectIDs: [activeProjectID]
+                    )
+                }
+                let project = try await store.createProject()
+                selectedProjectIDs = [project.id]
+                activeProjectID = project.id
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -617,25 +757,39 @@ struct ContentView: View {
         duplicate(projectIDs: orderedSelectedProjectIDs)
     }
 
-    private func duplicate(_ projectID: String) {
-        duplicate(projectIDs: [projectID])
-    }
-
     private func duplicate(projectIDs: [String]) {
         guard !projectIDs.isEmpty else {
             return
         }
 
-        do {
-            var duplicatedIDs: [String] = []
-            for projectID in projectIDs {
-                let project = try store.duplicateProject(id: projectID)
-                duplicatedIDs.append(project.id)
+        Task {
+            do {
+                let duplication = try await ProjectFileOperationCoordinator.run(
+                    capture: {
+                        try await webController.captureCurrentProjectForFileOperation(
+                            projectIDs: Set(projectIDs)
+                        )
+                    },
+                    operation: {
+                        await store.duplicateProjects(ids: projectIDs)
+                    }
+                )
+                let successfulIDs = duplication.successes.map(\.id)
+                if !successfulIDs.isEmpty {
+                    selectedProjectIDs = Set(successfulIDs)
+                    activeProjectID = successfulIDs.last
+                }
+                if !duplication.failures.isEmpty {
+                    errorMessage = batchFailureMessage(
+                        action: "Duplicate",
+                        failures: duplication.failures
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            selectedProjectIDs = Set(duplicatedIDs)
-            activeProjectID = duplicatedIDs.last
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -656,13 +810,47 @@ struct ContentView: View {
             return
         }
 
-        do {
-            let renamed = try store.renameProject(id: selectedProjectID, to: newName)
-            self.selectedProjectIDs = [renamed.id]
-            self.activeProjectID = renamed.id
-            isRenaming = false
-        } catch {
-            errorMessage = error.localizedDescription
+        Task {
+            var identityChangeStarted = false
+            do {
+                identityChangeStarted = try await webController
+                    .captureCurrentProjectForIdentityChange(
+                        projectID: selectedProjectID
+                    ) != nil
+                _ = try await ProjectRenameCommitCoordinator.run(
+                    renameOnDisk: {
+                        try await store.renameProject(
+                            id: selectedProjectID,
+                            to: newName
+                        )
+                    },
+                    commitNativeState: { renamed in
+                        self.selectedProjectIDs = [renamed.id]
+                        self.activeProjectID = renamed.id
+                        isRenaming = false
+                    },
+                    rebindWebIdentity: { renamed in
+                        guard identityChangeStarted else {
+                            return
+                        }
+                        try await webController.rebindProjectIdentity(
+                            from: selectedProjectID,
+                            to: renamed.id,
+                            document: renamed.document
+                        )
+                    }
+                )
+            } catch is CancellationError {
+                if identityChangeStarted {
+                    await webController.cancelProjectIdentityChange()
+                }
+                return
+            } catch {
+                if identityChangeStarted {
+                    await webController.cancelProjectIdentityChange()
+                }
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -673,17 +861,48 @@ struct ContentView: View {
                 return
             }
 
-            let imported = try store.importProjects(from: urls)
-            let importedIDs = imported.map(\.id)
-            selectedProjectIDs = Set(importedIDs)
-            activeProjectID = importedIDs.last
+            Task {
+                do {
+                    if let activeProjectID {
+                        _ = try await webController.captureCurrentProjectForFileOperation(
+                            projectIDs: [activeProjectID]
+                        )
+                    }
+                    let imported = await store.importProjects(from: urls)
+                    let importedIDs = imported.successes.map(\.id)
+                    if !importedIDs.isEmpty {
+                        selectedProjectIDs = Set(importedIDs)
+                        activeProjectID = importedIDs.last
+                    }
+                    if !imported.failures.isEmpty {
+                        errorMessage = batchFailureMessage(
+                            action: "Import",
+                            failures: imported.failures
+                        )
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func deleteSelection() {
-        delete(projectIDs: orderedSelectedProjectIDs)
+    private func requestDelete(projectIDs: [String]) {
+        pendingDeleteIDs = orderedProjectIDs(from: Set(projectIDs))
+    }
+
+    private var deleteConfirmationTitle: String {
+        pendingDeleteIDs.count == 1 ? "Move Project to Trash?" : "Move Projects to Trash?"
+    }
+
+    private var deleteConfirmationButtonTitle: String {
+        pendingDeleteIDs.count == 1
+            ? "Move to Trash"
+            : "Move \(pendingDeleteIDs.count) Projects to Trash"
     }
 
     private func delete(projectIDs: [String]) {
@@ -692,21 +911,47 @@ struct ContentView: View {
             return
         }
 
-        do {
-            let idsToDeleteSet = Set(idsToDelete)
-            let remainingIDs = store.projects.map(\.id).filter { !idsToDeleteSet.contains($0) }
-            for projectID in idsToDelete {
-                try store.deleteProject(id: projectID)
+        Task {
+            do {
+                let idsToDeleteSet = Set(idsToDelete)
+                let deletion = try await ProjectFileOperationCoordinator.run(
+                    capture: {
+                        try await webController.captureCurrentProjectForFileOperation(
+                            projectIDs: idsToDeleteSet
+                        )
+                    },
+                    operation: {
+                        await store.deleteProjects(ids: idsToDelete)
+                    }
+                )
+                let deletedIDs = Set(deletion.successes)
+                webController.forgetProjectIdentities(deletedIDs)
+                if !deletedIDs.isEmpty {
+                    let failedSelectedIDs = idsToDelete.filter {
+                        store.project(withID: $0) != nil
+                    }
+                    if let nextSelectedID = failedSelectedIDs.first {
+                        selectedProjectIDs = Set(failedSelectedIDs)
+                        activeProjectID = nextSelectedID
+                    } else if let nextID = store.projects.first?.id {
+                        selectedProjectIDs = [nextID]
+                        activeProjectID = nextID
+                    } else {
+                        selectedProjectIDs = []
+                        activeProjectID = nil
+                    }
+                }
+                if !deletion.failures.isEmpty {
+                    errorMessage = batchFailureMessage(
+                        action: "Move to Trash",
+                        failures: deletion.failures
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            if let nextID = remainingIDs.first {
-                selectedProjectIDs = [nextID]
-                activeProjectID = nextID
-            } else {
-                selectedProjectIDs = []
-                activeProjectID = nil
-            }
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -718,12 +963,22 @@ struct ContentView: View {
         webController.showProject(id: project.id, document: project.document)
     }
 
+    private func batchFailureMessage(
+        action: String,
+        failures: [ProjectStore.BatchFailure]
+    ) -> String {
+        let details = failures.map { "\($0.item): \($0.message)" }.joined(separator: "; ")
+        return "\(action) completed with \(failures.count) failure(s): \(details)"
+    }
+
     private func startBackend() async {
         do {
             applyAppAppearance(themeMode)
             try await backendController.startIfNeeded()
             webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
             syncCurrentSelectionIntoWeb()
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -741,6 +996,8 @@ struct ContentView: View {
                 try await backendController.restart()
                 webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
                 syncCurrentSelectionIntoWeb()
+            } catch is CancellationError {
+                return
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -777,10 +1034,6 @@ struct ContentView: View {
         reveal(urls)
     }
 
-    private func reveal(_ url: URL) {
-        reveal([url])
-    }
-
     private func reveal(_ urls: [URL]) {
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
@@ -802,6 +1055,12 @@ struct ContentView: View {
         }
 
         webController.setThemeMode(mode, effectiveThemeOverride: effectiveTheme) {
+            guard ThemeCompletionLifecycle.accepts(
+                requestedMode: mode,
+                currentMode: themeMode
+            ) else {
+                return
+            }
             applyAppAppearance(mode)
         }
     }

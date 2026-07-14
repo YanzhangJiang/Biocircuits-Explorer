@@ -5,7 +5,7 @@ import {
   workspaceShellSyncTimer, setWorkspaceShellSyncTimer,
   lastWorkspaceShellSnapshot, setLastWorkspaceShellSnapshot,
   WORKSPACE_DOCUMENT_VERSION, WORKSPACE_SHELL_CONTRACT_VERSION, themeState,
-  ensureNodeData, nextNodeId,
+  ensureNodeData, nextNodeId, MIN_SCALE, MAX_SCALE, MAX_CANVAS_PAN,
 } from './state.js';
 import { dispatch, RestoreNodesCommand, undoStack } from './commands.js';
 import { getSelection, setSelection } from './selection.js';
@@ -16,6 +16,8 @@ import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePrefere
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
 import { normalizeRestoredConnection } from './connection-validation.js';
+import { replaceConnectionsWithModelInvalidation } from './model-lifecycle.js';
+import { scheduleHistoricalScanPlot } from './execution-lifecycle.js';
 
 // Circular-dep imports (safe: only accessed inside function bodies at call time)
 import { createNode, removeNode, triggerAutoModelBuild, triggerAllAutoModelBuilds, setupPlotResize, setupPlotInteractionGuard, setupAutoUpdate, setupAutoModelBuild } from './nodes.js';
@@ -45,7 +47,10 @@ export function validateWorkspaceDocument(data) {
     throw new Error('Workspace document must be an object');
   }
 
-  const version = Number.isInteger(data.version) ? data.version : WORKSPACE_DOCUMENT_VERSION;
+  const version = data.version == null ? WORKSPACE_DOCUMENT_VERSION : data.version;
+  if (!Number.isInteger(version)) {
+    throw new Error('Workspace version must be an integer');
+  }
   if (version < 1) {
     throw new Error(`Unsupported workspace version: ${version}`);
   }
@@ -59,9 +64,74 @@ export function validateWorkspaceDocument(data) {
     throw new Error('Workspace document has an invalid connections array');
   }
 
+  const sourceCanvas = data.canvas == null ? {} : data.canvas;
+  if (!sourceCanvas || typeof sourceCanvas !== 'object' || Array.isArray(sourceCanvas)) {
+    throw new Error('Workspace document has an invalid canvas object');
+  }
+
+  const finiteNumber = (value, path, fallback) => {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`${path} must be a finite number`);
+    }
+    return value;
+  };
+
+  const canvas = {
+    ...sourceCanvas,
+    panX: finiteNumber(sourceCanvas.panX, 'canvas.panX', 0),
+    panY: finiteNumber(sourceCanvas.panY, 'canvas.panY', 0),
+    scale: finiteNumber(sourceCanvas.scale, 'canvas.scale', 1),
+  };
+  if (canvas.scale < MIN_SCALE || canvas.scale > MAX_SCALE) {
+    throw new Error(`canvas.scale must be between ${MIN_SCALE} and ${MAX_SCALE}`);
+  }
+  if (Math.abs(canvas.panX) > MAX_CANVAS_PAN || Math.abs(canvas.panY) > MAX_CANVAS_PAN) {
+    throw new Error(`canvas pan must be between -${MAX_CANVAS_PAN} and ${MAX_CANVAS_PAN}`);
+  }
+
+  const seenNodeIds = new Set();
+  const nodes = data.nodes.map((saved, index) => {
+    const path = `nodes[${index}]`;
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+      throw new Error(`${path} must be an object`);
+    }
+    if (typeof saved.id !== 'string' || !saved.id.trim()) {
+      throw new Error(`${path}.id must be a non-empty string`);
+    }
+    if (seenNodeIds.has(saved.id)) {
+      throw new Error(`${path}.id duplicates workspace node ${saved.id}`);
+    }
+    seenNodeIds.add(saved.id);
+
+    if (typeof saved.type !== 'string' || !Object.hasOwn(NODE_TYPES, saved.type)) {
+      throw new Error(`${path}.type is not a supported node type: ${String(saved.type)}`);
+    }
+    if (saved.data != null && (typeof saved.data !== 'object' || Array.isArray(saved.data))) {
+      throw new Error(`${path}.data must be an object`);
+    }
+
+    const normalized = {
+      ...saved,
+      x: finiteNumber(saved.x, `${path}.x`, 0),
+      y: finiteNumber(saved.y, `${path}.y`, 0),
+      data: saved.data || {},
+    };
+    for (const dimension of ['width', 'height']) {
+      if (saved[dimension] == null) continue;
+      const value = finiteNumber(saved[dimension], `${path}.${dimension}`, null);
+      if (value < 0) throw new Error(`${path}.${dimension} must not be negative`);
+      if (value === 0) delete normalized[dimension];
+      else normalized[dimension] = value;
+    }
+    return normalized;
+  });
+
   return {
     ...data,
     version,
+    canvas,
+    nodes,
     connections: Array.isArray(data.connections) ? data.connections : [],
   };
 }
@@ -140,7 +210,17 @@ export function initWorkspaceShell() {
       const data = validateWorkspaceDocument(JSON.parse(jsonString));
 
       applyState(data);
-      setLastWorkspaceShellSnapshot(this.serializeWorkspace());
+      // Applying the staged document is the commit point. Serialization is a
+      // follow-up snapshot optimization and must not turn a committed workspace
+      // into an apparent apply failure for native hosts (which would leave the
+      // visible document and its project identity pointing at different files).
+      let appliedSnapshot = jsonString;
+      try {
+        appliedSnapshot = this.serializeWorkspace() || jsonString;
+      } catch (error) {
+        console.warn('[workspace] Workspace applied, but snapshot serialization failed', error);
+      }
+      setLastWorkspaceShellSnapshot(appliedSnapshot);
       return true;
     },
 
@@ -228,6 +308,19 @@ export function getNodeSerialData(nodeId, type) {
 
 // ===== Serialize / Deserialize =====
 
+function serializedNodeDimension(el, type, dimension) {
+  const measured = dimension === 'width' ? el.offsetWidth : el.offsetHeight;
+  if (Number.isFinite(measured) && measured > 0) return measured;
+
+  const inline = Number.parseFloat(el.style?.[dimension]);
+  if (Number.isFinite(inline) && inline > 0) return inline;
+
+  const fallback = dimension === 'width'
+    ? NODE_TYPES[type]?.defaultWidth
+    : NODE_TYPES[type]?.defaultHeight;
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : undefined;
+}
+
 export function serializeState() {
   const nodes = [];
   for (const [id, info] of Object.entries(nodeRegistry)) {
@@ -238,8 +331,8 @@ export function serializeState() {
       type: info.type,
       x: parseFloat(el.style.left) || 0,
       y: parseFloat(el.style.top) || 0,
-      width: el.offsetWidth,
-      height: el.offsetHeight,
+      width: serializedNodeDimension(el, info.type, 'width'),
+      height: serializedNodeDimension(el, info.type, 'height'),
       data: getNodeSerialData(id, info.type),
     });
   }
@@ -270,8 +363,8 @@ export function snapshotNode(nodeId) {
     type: info.type,
     x: parseFloat(el.style.left) || 0,
     y: parseFloat(el.style.top) || 0,
-    width: el.offsetWidth,
-    height: el.offsetHeight,
+    width: serializedNodeDimension(el, info.type, 'width'),
+    height: serializedNodeDimension(el, info.type, 'height'),
     data: getNodeSerialData(nodeId, info.type),
     connections: connections
       .filter(c => c.fromNode === nodeId || c.toNode === nodeId)
@@ -291,12 +384,14 @@ export function restoreNode(snapshot) {
   if (el && snapshot.width) el.style.width = `${snapshot.width}px`;
   if (el && snapshot.height) el.style.height = `${snapshot.height}px`;
   restoreNodeData(newId, snapshot.type, snapshot.data || {});
+  const nextConnections = connections.map(conn => ({ ...conn }));
   for (const conn of (snapshot.connections || [])) {
-    const dup = connections.some(c =>
+    const dup = nextConnections.some(c =>
       c.fromNode === conn.fromNode && c.fromPort === conn.fromPort &&
       c.toNode === conn.toNode && c.toPort === conn.toPort);
-    if (!dup) connections.push({ ...conn });
+    if (!dup) nextConnections.push({ ...conn });
   }
+  replaceConnectionsWithModelInvalidation(nextConnections, 'node-restored');
   updateConnections();
   return newId;
 }
@@ -381,93 +476,148 @@ export function loadState() {
   return (window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell).loadWorkspace();
 }
 
+function removeStagedNodes(stagedIds) {
+  for (const id of [...stagedIds].reverse()) {
+    try {
+      if (nodeRegistry[id]) removeNode(id);
+      else document.getElementById(id)?.remove();
+    } catch (error) {
+      console.warn(`[workspace] Failed to clean staged node ${id}`, error);
+    }
+  }
+}
+
+// Build the replacement nodes while the current workspace remains live. The
+// staged elements stay hidden and have no restored wires until every create and
+// restore hook succeeds. This turns hook failures into a no-op for user data.
+function stageWorkspaceRestore(data, existingNodeIds) {
+  const reservedIds = new Set(existingNodeIds);
+  const stagedIds = [];
+  const stagedNodes = [];
+  const idMap = {}; // oldId -> newId
+  const savedTypeById = {};
+  const restoredConnections = [];
+  let droppedConnections = 0;
+
+  try {
+    for (const saved of data.nodes) {
+      savedTypeById[saved.id] = saved.type;
+
+      let stagedId;
+      do stagedId = `node-${nextNodeId()}`;
+      while (reservedIds.has(stagedId));
+      reservedIds.add(stagedId);
+      stagedIds.push(stagedId);
+
+      const newId = createNode(saved.type, saved.x, saved.y, { id: stagedId });
+      if (!newId) throw new Error(`Failed to create node ${saved.id} (${saved.type})`);
+      idMap[saved.id] = newId;
+      stagedNodes.push({ id: newId, type: saved.type, data: saved.data });
+
+      const el = document.getElementById(newId);
+      if (!el) throw new Error(`Restored node ${saved.id} did not create a DOM element`);
+      el.style.visibility = 'hidden';
+      if (saved.width != null) el.style.width = `${saved.width}px`;
+      if (saved.height != null) el.style.height = `${saved.height}px`;
+
+      restoreNodeData(newId, saved.type, saved.data, { deferEffects: true });
+    }
+
+    for (const conn of data.connections) {
+      const restored = normalizeRestoredConnection(conn, idMap, savedTypeById, NODE_TYPES);
+      if (restored) restoredConnections.push(restored);
+      else droppedConnections += 1;
+    }
+  } catch (error) {
+    removeStagedNodes(stagedIds);
+    // Keep allocated IDs consumed: a node onInit hook may have queued work
+    // before throwing, and reusing its ID could target an unrelated later node.
+    throw error;
+  }
+
+  return { stagedIds, stagedNodes, restoredConnections, droppedConnections };
+}
+
+function runPostRestoreHook(label, callback) {
+  try {
+    callback();
+  } catch (error) {
+    console.warn(`[workspace] ${label} failed after the workspace was restored`, error);
+  }
+}
+
 export function applyState(data) {
   data = validateWorkspaceDocument(data);
-  undoStack.clear();
-  setSelection([]);
+  const existingNodeIds = Object.keys(nodeRegistry);
+  const { stagedIds, stagedNodes, restoredConnections, droppedConnections } =
+    stageWorkspaceRestore(data, existingNodeIds);
 
-  // 1. Clear existing canvas
-  for (const id of Object.keys(nodeRegistry)) {
-    removeNode(id);
-  }
-  connections.length = 0;
+  // Staging succeeded: the remaining operations commit the prepared document.
+  for (const id of existingNodeIds) removeNode(id);
+  setConnections(restoredConnections);
   document.getElementById('svg-layer')?.querySelectorAll('.wire').forEach(w => w.remove());
 
-  // Reset model state (user will need to rebuild)
   state.sessionId = null;
   state.model = null;
   state.qK_syms = [];
 
-  // 2. Restore canvas position
-  if (data.canvas) {
-    canvasState.panX = data.canvas.panX || 0;
-    canvasState.panY = data.canvas.panY || 0;
-    setScale(data.canvas.scale || 1.0);
-    applyViewportTransform();
+  canvasState.panX = data.canvas.panX;
+  canvasState.panY = data.canvas.panY;
+  setScale(data.canvas.scale);
+  applyViewportTransform();
+
+  for (const id of stagedIds) {
+    const el = document.getElementById(id);
+    if (el) el.style.visibility = '';
   }
 
-  // 3. Create nodes and build ID mapping
-  const idMap = {}; // oldId -> newId
-  const savedTypeById = {};
-  for (const saved of data.nodes) {
-    savedTypeById[saved.id] = saved.type;
-    const newId = createNode(saved.type, saved.x, saved.y);
-    if (!newId) continue;
-    idMap[saved.id] = newId;
+  undoStack.clear();
+  setSelection([]);
 
-    // Restore width
-    const el = document.getElementById(newId);
-    if (el && saved.width) el.style.width = `${saved.width}px`;
-    if (el && saved.height) el.style.height = `${saved.height}px`;
-
-    // Restore node-specific data
-    restoreNodeData(newId, saved.type, saved.data || {});
+  for (const staged of stagedNodes) {
+    runPostRestoreHook(`runtime restore for ${staged.id}`, () => {
+      restoreCachedNodeRuntime(staged.id, staged.type, staged.data);
+    });
   }
 
-  // 4. Restore connections (with remapped IDs)
-  let droppedConnections = 0;
-  if (data.connections) {
-    for (const conn of data.connections) {
-      const restored = normalizeRestoredConnection(conn, idMap, savedTypeById, NODE_TYPES);
-      if (restored) connections.push(restored);
-      else droppedConnections += 1;
-    }
-  }
   if (droppedConnections > 0) {
     console.warn(`[workspace] Dropped ${droppedConnections} invalid connection(s) while loading workspace`);
     showToast(`Dropped ${droppedConnections} invalid connection${droppedConnections === 1 ? '' : 's'} while loading`);
   }
 
-  // 4b. Restore this project's Design-Agent conversation (or clear it for a fresh project).
   if (typeof window !== 'undefined' && window.setDesignAgentConversation) {
-    window.setDesignAgentConversation(data.designAgent || null);
+    runPostRestoreHook('Design Agent conversation restore', () => {
+      window.setDesignAgentConversation(data.designAgent || null);
+    });
   }
 
-  // 5. Update wires
-  updateConnections();
+  runPostRestoreHook('connection redraw', updateConnections);
+  runPostRestoreHook('automatic model rebuild', triggerAllAutoModelBuilds);
 
-  // 6. Re-run any model-builders now that their reactions connections exist again.
-  triggerAllAutoModelBuilds();
-
-  // 7. Refresh ROP cloud target options now that connections are restored
   for (const [id, info] of Object.entries(nodeRegistry)) {
     if (info.type !== 'rop-cloud' && info.type !== 'rop-cloud-params') continue;
-    updateROPCloudMode(id);
-    const savedTarget = info.data?.targetSpecies;
-    const sel = document.getElementById(`${id}-target-species`);
-    if (sel && savedTarget && Array.from(sel.options).some(o => o.value === savedTarget)) {
-      sel.value = savedTarget;
-    }
+    runPostRestoreHook(`ROP cloud refresh for ${id}`, () => {
+      updateROPCloudMode(id);
+      const savedTarget = info.data?.targetSpecies;
+      const sel = document.getElementById(`${id}-target-species`);
+      if (sel && savedTarget && Array.from(sel.options).some(o => o.value === savedTarget)) {
+        sel.value = savedTarget;
+      }
+    });
   }
+
+  return true;
 }
 
 // ===== Restore Node Data =====
 
-export function restoreNodeData(nodeId, type, data) {
+export function restoreNodeData(nodeId, type, data, { deferEffects = false } = {}) {
   // Schema-based restore handles most node types declaratively
   if (NODE_SCHEMAS[type]) {
+    // Schema hooks parse and apply persisted fields, so they are part of the
+    // staging contract and must succeed before the old workspace is removed.
     restoreNodeBySchema(nodeId, type, data);
-    restoreCachedNodeRuntime(nodeId, type, data);
+    if (!deferEffects) restoreCachedNodeRuntime(nodeId, type, data);
     return;
   }
   // Custom restore for types that need special logic
@@ -498,7 +648,7 @@ export function restoreNodeData(nodeId, type, data) {
       if (data.config && nodeRegistry[nodeId]) {
         nodeRegistry[nodeId].data = nodeRegistry[nodeId].data || {};
         nodeRegistry[nodeId].data.config = data.config;
-        if (data.config?.resolvedDefinition?.raw_rules) triggerAutoModelBuild(nodeId);
+        if (!deferEffects && data.config?.resolvedDefinition?.raw_rules) triggerAutoModelBuild(nodeId);
       }
       break;
     }
@@ -603,7 +753,7 @@ export function restoreNodeData(nodeId, type, data) {
     }
   }
 
-  restoreCachedNodeRuntime(nodeId, type, data);
+  if (!deferEffects) restoreCachedNodeRuntime(nodeId, type, data);
 }
 
 // ===== Restore Cached Runtime State =====
@@ -712,26 +862,44 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
     case 'scan-1d-result': {
       if (!data.scan1DResult) break;
       info.data.scan1DResult = data.scan1DResult;
+      info.data.scan1DResultMeta = {
+        contract: 'bne-scan-execution/v1',
+        ...(data.scan1DResultMeta || {}),
+        historical: true,
+      };
       const contentEl = document.getElementById(`${nodeId}-content`);
       if (!contentEl) break;
-      contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-      setTimeout(() => {
+      contentEl.dataset.resultState = 'historical';
+      contentEl.innerHTML = `
+        <div class="scan-result-status text-dim">Historical saved result — rerun to verify it against the current model and inputs.</div>
+        <div class="plot-container" id="${nodeId}-plot"></div>
+      `;
+      scheduleHistoricalScanPlot(nodeId, () => {
         plotParameterScan1D(data.scan1DResult, `${nodeId}-plot`);
         setupPlotResize(nodeId, `${nodeId}-plot`);
-      }, 50);
+      });
       break;
     }
     case 'parameter-scan-2d':
     case 'scan-2d-result': {
       if (!data.scan2DResult) break;
       info.data.scan2DResult = data.scan2DResult;
+      info.data.scan2DResultMeta = {
+        contract: 'bne-scan-execution/v1',
+        ...(data.scan2DResultMeta || {}),
+        historical: true,
+      };
       const contentEl = document.getElementById(`${nodeId}-content`);
       if (!contentEl) break;
-      contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
-      setTimeout(() => {
+      contentEl.dataset.resultState = 'historical';
+      contentEl.innerHTML = `
+        <div class="scan-result-status text-dim">Historical saved result — rerun to verify it against the current model and inputs.</div>
+        <div class="plot-container" id="${nodeId}-plot"></div>
+      `;
+      scheduleHistoricalScanPlot(nodeId, () => {
         plotParameterScan2D(data.scan2DResult, `${nodeId}-plot`);
         setupPlotResize(nodeId, `${nodeId}-plot`);
-      }, 50);
+      });
       break;
     }
     case 'rop-polyhedron':

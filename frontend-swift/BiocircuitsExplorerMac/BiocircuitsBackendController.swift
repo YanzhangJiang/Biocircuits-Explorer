@@ -1,5 +1,136 @@
 import Combine
+import Darwin
 import Foundation
+
+enum LocalLoopbackService {
+    nonisolated static func makeNonce() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<32)
+            .map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }
+            .joined()
+    }
+
+    nonisolated static func configuredPort(
+        keys: [String],
+        environment: [String: String],
+        excluding: Set<Int> = [],
+        fallback: Int
+    ) -> Int {
+        for key in keys {
+            guard
+                let rawPort = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                let port = Int(rawPort),
+                (1...65_535).contains(port),
+                !excluding.contains(port)
+            else {
+                continue
+            }
+            return port
+        }
+
+        return ephemeralPort(excluding: excluding) ?? fallback
+    }
+
+    /// Ask the kernel for an unused loopback port. The socket is intentionally
+    /// released before the child process launches, so the per-launch nonce is
+    /// still the authority if another process wins that small race.
+    nonisolated static func ephemeralPort(excluding: Set<Int> = []) -> Int? {
+        for _ in 0..<16 {
+            let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+            guard descriptor >= 0 else {
+                return nil
+            }
+            defer { Darwin.close(descriptor) }
+
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(0)
+            address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+            let bindResult = withUnsafeMutablePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(
+                        descriptor,
+                        $0,
+                        socklen_t(MemoryLayout<sockaddr_in>.size)
+                    )
+                }
+            }
+            guard bindResult == 0 else {
+                continue
+            }
+
+            var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let nameResult = withUnsafeMutablePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.getsockname(descriptor, $0, &addressLength)
+                }
+            }
+            guard nameResult == 0 else {
+                continue
+            }
+
+            let port = Int(UInt16(bigEndian: address.sin_port))
+            if port > 0, !excluding.contains(port) {
+                return port
+            }
+        }
+        return nil
+    }
+}
+
+enum LocalProcessShutdown {
+    nonisolated static func waitForExit(
+        _ process: Process,
+        timeout: TimeInterval
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return !process.isRunning
+    }
+
+    nonisolated static func waitForExitOrKill(
+        _ process: Process,
+        gracefulTimeout: TimeInterval = 3,
+        forcedTimeout: TimeInterval = 1
+    ) async throws -> Bool {
+        guard process.isRunning else {
+            return true
+        }
+        if try await waitForExit(process, timeout: gracefulTimeout) {
+            return true
+        }
+
+        if process.isRunning {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+        return try await waitForExit(process, timeout: forcedTimeout)
+    }
+}
+
+struct BackendLaunchLifecycle {
+    private(set) var generation: UInt64 = 0
+
+    @discardableResult
+    mutating func advance() -> UInt64 {
+        generation &+= 1
+        return generation
+    }
+
+    func accepts(_ generation: UInt64) -> Bool {
+        generation == self.generation
+    }
+
+    func requireCurrent(_ generation: UInt64) throws {
+        guard accepts(generation) else {
+            throw CancellationError()
+        }
+    }
+}
 
 @MainActor
 final class BiocircuitsBackendController: ObservableObject {
@@ -35,6 +166,10 @@ final class BiocircuitsBackendController: ObservableObject {
     private var stopRequested = false
     private var startedByApp = false
     private var logBuffer = ""
+    private var launchLifecycle = BackendLaunchLifecycle()
+    private var instanceNonce: String?
+
+    nonisolated static let serviceIdentity = "biocircuits-explorer-backend"
 
     private var parentProcessIdentifierString: String {
         String(ProcessInfo.processInfo.processIdentifier)
@@ -50,19 +185,23 @@ final class BiocircuitsBackendController: ObservableObject {
         self.fileManager = fileManager
     }
 
-    private static func resolveConfiguredPort(from environment: [String: String]) -> Int {
-        guard
-            let rawPort = Self.environmentValue(
-                keys: ["BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"],
-                from: environment
-            )?.trimmingCharacters(in: .whitespacesAndNewlines),
-            let port = Int(rawPort),
-            (1...65_535).contains(port)
-        else {
-            return 18_088
+    nonisolated static func resolveConfiguredPort(from environment: [String: String]) -> Int {
+        for key in ["BIOCIRCUITS_EXPLORER_PORT", "ROP_PORT"] {
+            guard
+                let rawPort = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                let port = Int(rawPort),
+                (1...65_535).contains(port)
+            else {
+                continue
+            }
+            return port
         }
 
-        return port
+        // Cognito Hosted UI requires an exact, pre-registered redirect URI.
+        // auth.js derives that URI from this service's origin, so the native
+        // engine retains its documented stable default while the per-launch
+        // nonce prevents an unrelated listener on that port being accepted.
+        return 18_088
     }
 
     func startIfNeeded() async throws {
@@ -75,28 +214,39 @@ final class BiocircuitsBackendController: ObservableObject {
             return
         }
 
+        let generation = launchLifecycle.advance()
         isStarting = true
         lastErrorMessage = nil
         statusMessage = "Checking backend"
 
         defer {
-            isStarting = false
+            if launchLifecycle.accepts(generation) {
+                isStarting = false
+            }
         }
 
-        if await probeBackend() {
-            isReady = true
-            statusMessage = "Connected to running backend"
-            return
-        }
-
-        let launchSpec = try resolveLaunchSpec()
-        try launchBackend(using: launchSpec)
+        try launchLifecycle.requireCurrent(generation)
+        let nextInstanceNonce = LocalLoopbackService.makeNonce()
+        let launchSpec = try resolveLaunchSpec(instanceNonce: nextInstanceNonce)
+        instanceNonce = nextInstanceNonce
+        try launchBackend(using: launchSpec, generation: generation)
 
         do {
-            try await waitUntilReady(timeout: launchSpec.startupTimeout)
+            try await waitUntilReady(
+                timeout: launchSpec.startupTimeout,
+                generation: generation,
+                expectedNonce: nextInstanceNonce
+            )
+            try launchLifecycle.requireCurrent(generation)
             isReady = true
             statusMessage = "Backend ready"
+        } catch is CancellationError {
+            if launchLifecycle.accepts(generation) {
+                stop()
+            }
+            throw CancellationError()
         } catch {
+            try launchLifecycle.requireCurrent(generation)
             stop()
             lastErrorMessage = error.localizedDescription
             statusMessage = "Backend failed to start"
@@ -105,24 +255,40 @@ final class BiocircuitsBackendController: ObservableObject {
     }
 
     func restart() async throws {
-        stop()
-        try await Task.sleep(for: .milliseconds(500))
+        let processToStop = requestStop()
+        let stoppedGeneration = launchLifecycle.generation
+        if let processToStop {
+            let didStop = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
+            if !didStop {
+                throw BackendError.startFailed("Backend process did not stop before restart.")
+            }
+        }
+        try launchLifecycle.requireCurrent(stoppedGeneration)
         try await startIfNeeded()
     }
 
     func stop() {
+        _ = requestStop()
+    }
+
+    @discardableResult
+    private func requestStop() -> Process? {
+        launchLifecycle.advance()
         stopRequested = true
         isReady = false
         isStarting = false
+        let processToStop = process
         clearPipeHandlers()
-        if let process, process.isRunning {
-            process.terminate()
-        }
         self.process = nil
+        if let processToStop, processToStop.isRunning {
+            processToStop.terminate()
+        }
         if startedByApp {
             statusMessage = "Backend stopped"
         }
         startedByApp = false
+        instanceNonce = nil
+        return processToStop
     }
 
     private func waitForOngoingStartup() async throws {
@@ -137,6 +303,8 @@ final class BiocircuitsBackendController: ObservableObject {
         if let lastErrorMessage {
             throw BackendError.startFailed(lastErrorMessage)
         }
+
+        throw CancellationError()
     }
 
     private static func environmentValue(keys: [String], from environment: [String: String]) -> String? {
@@ -186,6 +354,36 @@ final class BiocircuitsBackendController: ObservableObject {
         }
         secured.merge(bootstrapEnvironment) { _, bootstrapValue in bootstrapValue }
         return secured
+    }
+
+    nonisolated static func runtimeStorageEnvironment(
+        applicationSupportDirectory: URL,
+        instanceNonce: String
+    ) -> [String: String] {
+        let runtimeRoot = applicationSupportDirectory
+            .appendingPathComponent("Biocircuits Explorer", isDirectory: true)
+            .appendingPathComponent("Runtime", isDirectory: true)
+        return [
+            "BIOCIRCUITS_EXPLORER_INSTANCE_NONCE": instanceNonce,
+            "BIOCIRCUITS_EXPLORER_JOB_STORE": runtimeRoot
+                .appendingPathComponent("Jobs", isDirectory: true)
+                .path,
+            "BIOCIRCUITS_EXPLORER_ATLAS_STORE_ROOT": runtimeRoot
+                .appendingPathComponent("Atlas", isDirectory: true)
+                .path,
+        ]
+    }
+
+    private func nativeRuntimeEnvironment(instanceNonce: String) -> [String: String] {
+        let applicationSupportDirectory = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return Self.runtimeStorageEnvironment(
+            applicationSupportDirectory: applicationSupportDirectory,
+            instanceNonce: instanceNonce
+        )
     }
 
     // Parse a deploy/aws-runtime.env style file: KEY=VALUE lines, # comments,
@@ -250,7 +448,7 @@ final class BiocircuitsBackendController: ObservableObject {
         return [:]
     }
 
-    private func resolveLaunchSpec() throws -> LaunchSpec {
+    private func resolveLaunchSpec(instanceNonce: String) throws -> LaunchSpec {
         let repoRoots = configuredRepoRoots()
 
         if
@@ -260,21 +458,28 @@ final class BiocircuitsBackendController: ObservableObject {
                     from: environment
                 )
             ),
-            let launchSpec = compiledLaunchSpec(for: configuredCompiledRoot)
+            let launchSpec = compiledLaunchSpec(
+                for: configuredCompiledRoot,
+                instanceNonce: instanceNonce
+            )
         {
             return launchSpec
         }
 
-        if prefersSourceBackendDuringDevelopment, let launchSpec = try sourceLaunchSpec(repoRoots: repoRoots) {
+        if
+            prefersSourceBackendDuringDevelopment,
+            let launchSpec = try sourceLaunchSpec(
+                repoRoots: repoRoots,
+                instanceNonce: instanceNonce
+            )
+        {
             return launchSpec
         }
 
-        let compiledRoots = [
-            Bundle.main.resourceURL?.appendingPathComponent("backend", isDirectory: true),
-            Bundle.main.resourceURL?.appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true),
-            Bundle.main.resourceURL?.appendingPathComponent("ROPExplorerBackend", isDirectory: true),
-        ]
-        .compactMap { $0 }
+        let compiledRoots = Self.bundledBackendRootCandidates(
+            bundleURL: Bundle.main.bundleURL,
+            resourceURL: Bundle.main.resourceURL
+        )
         + repoRoots.map {
             [
                 $0.appendingPathComponent("dist", isDirectory: true)
@@ -286,16 +491,42 @@ final class BiocircuitsBackendController: ObservableObject {
         .flatMap { $0 }
 
         for backendRoot in compiledRoots {
-            if let launchSpec = compiledLaunchSpec(for: backendRoot) {
+            if let launchSpec = compiledLaunchSpec(
+                for: backendRoot,
+                instanceNonce: instanceNonce
+            ) {
                 return launchSpec
             }
         }
 
-        if let launchSpec = try sourceLaunchSpec(repoRoots: repoRoots) {
+        if let launchSpec = try sourceLaunchSpec(
+            repoRoots: repoRoots,
+            instanceNonce: instanceNonce
+        ) {
             return launchSpec
         }
 
         throw BackendError.runtimeMissing
+    }
+
+    nonisolated static func bundledBackendRootCandidates(
+        bundleURL: URL,
+        resourceURL: URL?
+    ) -> [URL] {
+        var candidates = [
+            bundleURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Helpers", isDirectory: true)
+                .appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true),
+        ]
+        if let resourceURL {
+            candidates.append(contentsOf: [
+                resourceURL.appendingPathComponent("backend", isDirectory: true),
+                resourceURL.appendingPathComponent("BiocircuitsExplorerBackend", isDirectory: true),
+                resourceURL.appendingPathComponent("ROPExplorerBackend", isDirectory: true),
+            ])
+        }
+        return candidates
     }
 
     private var prefersSourceBackendDuringDevelopment: Bool {
@@ -320,7 +551,10 @@ final class BiocircuitsBackendController: ObservableObject {
         #endif
     }
 
-    private func compiledLaunchSpec(for backendRoot: URL) -> LaunchSpec? {
+    private func compiledLaunchSpec(
+        for backendRoot: URL,
+        instanceNonce: String
+    ) -> LaunchSpec? {
         let executableURL = [
             "biocircuits-explorer-backend",
             "rop-explorer-backend",
@@ -355,7 +589,7 @@ final class BiocircuitsBackendController: ObservableObject {
         // top of the bootstrap vars. Without this the local Julia process has
         // no Cognito / AWS Batch knowledge and the Sign-in button stays
         // hidden because /api/auth/config reports enabled: false.
-        let bootstrapEnvironment: [String: String] = [
+        var bootstrapEnvironment: [String: String] = [
             "HOME": NSHomeDirectory(),
             "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
             "BIOCIRCUITS_EXPLORER_PORT": String(port),
@@ -366,6 +600,9 @@ final class BiocircuitsBackendController: ObservableObject {
             "ROP_PUBLIC_DIR": publicDir.path,
             "ROP_PARENT_PID": parentProcessIdentifierString,
         ]
+        bootstrapEnvironment.merge(
+            nativeRuntimeEnvironment(instanceNonce: instanceNonce)
+        ) { _, nativeValue in nativeValue }
         let spawnEnv = Self.securedBackendEnvironment(
             runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: configuredRepoRoots()),
             bootstrapEnvironment: bootstrapEnvironment
@@ -381,7 +618,10 @@ final class BiocircuitsBackendController: ObservableObject {
         )
     }
 
-    private func sourceLaunchSpec(repoRoots: [URL]) throws -> LaunchSpec? {
+    private func sourceLaunchSpec(
+        repoRoots: [URL],
+        instanceNonce: String
+    ) throws -> LaunchSpec? {
         for repoRoot in repoRoots {
             let webappDir = repoRoot.appendingPathComponent("webapp", isDirectory: true)
             let bncDir = repoRoot.appendingPathComponent("Bnc_julia", isDirectory: true)
@@ -396,7 +636,7 @@ final class BiocircuitsBackendController: ObservableObject {
             }
 
             let juliaURL = try resolveJuliaExecutable()
-            let bootstrapEnvironment: [String: String] = [
+            var bootstrapEnvironment: [String: String] = [
                 "HOME": NSHomeDirectory(),
                 "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
                 "BIOCIRCUITS_EXPLORER_PORT": String(port),
@@ -407,6 +647,9 @@ final class BiocircuitsBackendController: ObservableObject {
                 "ROP_PUBLIC_DIR": publicDir.path,
                 "ROP_PARENT_PID": parentProcessIdentifierString,
             ]
+            bootstrapEnvironment.merge(
+                nativeRuntimeEnvironment(instanceNonce: instanceNonce)
+            ) { _, nativeValue in nativeValue }
             let spawnEnv = Self.securedBackendEnvironment(
                 runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: repoRoots),
                 bootstrapEnvironment: bootstrapEnvironment
@@ -532,7 +775,9 @@ final class BiocircuitsBackendController: ObservableObject {
         }
     }
 
-    private func launchBackend(using launchSpec: LaunchSpec) throws {
+    private func launchBackend(using launchSpec: LaunchSpec, generation: UInt64) throws {
+        try launchLifecycle.requireCurrent(generation)
+
         let process = Process()
         process.executableURL = launchSpec.executableURL
         process.arguments = launchSpec.arguments
@@ -555,7 +800,14 @@ final class BiocircuitsBackendController: ObservableObject {
                 return
             }
             Task { @MainActor [weak self] in
-                self?.appendLog(text)
+                guard
+                    let self,
+                    self.launchLifecycle.accepts(generation),
+                    self.stdoutPipe === stdoutPipe
+                else {
+                    return
+                }
+                self.appendLog(text)
             }
         }
 
@@ -565,7 +817,14 @@ final class BiocircuitsBackendController: ObservableObject {
                 return
             }
             Task { @MainActor [weak self] in
-                self?.appendLog(text)
+                guard
+                    let self,
+                    self.launchLifecycle.accepts(generation),
+                    self.stderrPipe === stderrPipe
+                else {
+                    return
+                }
+                self.appendLog(text)
             }
         }
 
@@ -574,11 +833,23 @@ final class BiocircuitsBackendController: ObservableObject {
                 guard let self else {
                     return
                 }
+                guard
+                    self.launchLifecycle.accepts(generation),
+                    self.process === terminatedProcess
+                else {
+                    return
+                }
 
                 self.isReady = false
+                self.isStarting = false
                 self.clearPipeHandlers()
                 self.process = nil
-                let expectedStop = self.stopRequested || terminatedProcess.terminationReason == .exit && terminatedProcess.terminationStatus == 0
+                self.instanceNonce = nil
+                let expectedStop = Self.processTerminationWasExpected(
+                    stopRequested: self.stopRequested,
+                    terminationReason: terminatedProcess.terminationReason,
+                    terminationStatus: terminatedProcess.terminationStatus
+                )
                 self.stopRequested = false
                 self.startedByApp = false
 
@@ -598,8 +869,17 @@ final class BiocircuitsBackendController: ObservableObject {
         startedByApp = true
         statusMessage = launchSpec.startupStatus
         logBuffer = ""
-        try process.run()
         self.process = process
+        do {
+            try process.run()
+        } catch {
+            if launchLifecycle.accepts(generation), self.process === process {
+                clearPipeHandlers()
+                self.process = nil
+                startedByApp = false
+            }
+            throw error
+        }
     }
 
     private func clearPipeHandlers() {
@@ -616,12 +896,24 @@ final class BiocircuitsBackendController: ObservableObject {
         }
     }
 
-    private func waitUntilReady(timeout: TimeInterval) async throws {
+    private func waitUntilReady(
+        timeout: TimeInterval,
+        generation: UInt64,
+        expectedNonce: String
+    ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
-            if await probeBackend() {
+            try launchLifecycle.requireCurrent(generation)
+            if await probeBackend(expectedNonce: expectedNonce) {
+                try launchLifecycle.requireCurrent(generation)
                 return
+            }
+
+            try launchLifecycle.requireCurrent(generation)
+            guard let process, process.isRunning else {
+                let detail = lastErrorMessage ?? "Backend process exited before readiness."
+                throw BackendError.startFailed(detail)
             }
 
             try await Task.sleep(for: .seconds(1))
@@ -630,7 +922,7 @@ final class BiocircuitsBackendController: ObservableObject {
         throw BackendError.startFailed("ROP backend did not become ready within \(Int(timeout)) seconds.")
     }
 
-    private func probeBackend() async -> Bool {
+    private func probeBackend(expectedNonce: String) async -> Bool {
         var request = URLRequest(url: readinessURL)
         request.timeoutInterval = 2
 
@@ -639,22 +931,42 @@ final class BiocircuitsBackendController: ObservableObject {
             guard let http = response as? HTTPURLResponse else {
                 return false
             }
-            return Self.readinessProbeSucceeded(statusCode: http.statusCode, body: data)
+            return Self.readinessProbeSucceeded(
+                statusCode: http.statusCode,
+                body: data,
+                expectedNonce: expectedNonce
+            )
         } catch {
             return false
         }
     }
 
-    nonisolated static func readinessProbeSucceeded(statusCode: Int, body: Data) -> Bool {
+    nonisolated static func readinessProbeSucceeded(
+        statusCode: Int,
+        body: Data,
+        expectedNonce: String
+    ) -> Bool {
         guard
             statusCode == 200,
             let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-            payload["status"] as? String == "ready"
+            payload["status"] as? String == "ready",
+            payload["service"] as? String == serviceIdentity,
+            payload["instance_nonce"] as? String == expectedNonce
         else {
             return false
         }
 
         return true
+    }
+
+    nonisolated static func processTerminationWasExpected(
+        stopRequested: Bool,
+        terminationReason _: Process.TerminationReason,
+        terminationStatus _: Int32
+    ) -> Bool {
+        // The backend is a long-running service. A zero exit status is still an
+        // unexpected loss unless this controller explicitly requested the stop.
+        stopRequested
     }
 }
 

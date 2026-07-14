@@ -42,18 +42,26 @@ get_binding_network(grh::VertexGraph, args...) = grh.bn
 
 Ensure qK change directions are computed for a vertex graph.
 """
-function _ensure_full_regimes_graph!(grh::VertexGraph)
+function _ensure_full_regimes_graph!(
+    grh::VertexGraph;
+    cancel_check=_NO_CANCEL_CHECK,
+)
+    cancel_check()
     if !grh.change_dir_qK_computed
         @info "Calculating vertices neighbor graph with qK change dir"
-        _fulfill_regimes_graph!(grh)
+        _fulfill_regimes_graph!(grh; cancel_check=cancel_check)
+        cancel_check()
         grh.change_dir_qK_computed = true
     end
+    cancel_check()
     return nothing
 end
 
-function _ensure_full_regimes_graph!(model::Bnc)
+function _ensure_full_regimes_graph!(model::Bnc; cancel_check=_NO_CANCEL_CHECK)
+    cancel_check()
     isnothing(model.vertices_graph) && error("Regime graph is not initialized.")
-    return _ensure_full_regimes_graph!(model.vertices_graph)
+    return _ensure_full_regimes_graph!(
+        model.vertices_graph; cancel_check=cancel_check)
 end
 
 """
@@ -62,12 +70,19 @@ end
 Ensure the vertex graph is built; when `full=true`, also compute qK change
 directions.
 """
-function get_regimes_graph!(bnc::Bnc; full::Bool=false)::VertexGraph
+function get_regimes_graph!(
+    bnc::Bnc;
+    full::Bool=false,
+    cancel_check=_NO_CANCEL_CHECK,
+)::VertexGraph
     # Always pass through the construction lock. `vertices_graph !== nothing`
     # is not a completion marker because the builder assembles several caches
     # before its final commit point.
-    find_all_regimes!(bnc)
-    full && _ensure_full_regimes_graph!(bnc.vertices_graph)
+    find_all_regimes!(bnc; cancel_check=cancel_check)
+    cancel_check()
+    full && _ensure_full_regimes_graph!(
+        bnc.vertices_graph; cancel_check=cancel_check)
+    cancel_check()
     return bnc.vertices_graph
 end
 
@@ -304,7 +319,9 @@ function _enumerate_paths(
     sinks::AbstractVector{Int},
     max_paths::Union{Nothing,Integer}=nothing,
     max_total_nodes::Union{Nothing,Integer}=nothing,
+    cancel_check=_NO_CANCEL_CHECK,
 )::Vector{Vector{Int}}
+    cancel_check()
     max_paths === nothing || max_paths >= 1 ||
         throw(ArgumentError("max_paths must be positive or nothing"))
     max_total_nodes === nothing || max_total_nodes >= 1 ||
@@ -317,18 +334,22 @@ function _enumerate_paths(
     @info "sinks: $sinks"
 
     active = _reachable_from_sources(g, sources) .& _can_reach_sinks(g, sinks)
+    cancel_check()
     is_sink = falses(nv(g))
     for t in sinks
         is_sink[t] = true
     end
 
     topo = topological_sort_by_dfs(g)
+    cancel_check()
     memo = Vector{Union{Nothing,Vector{Vector{Int}}}}(undef, nv(g))
     fill!(memo, nothing)
 
     @info "Start enumerating paths from sources to sinks. This may take a while if there are many paths."
     @info "Total vertices to process in topological order: $(length(topo))"
+    path_checkpoint_count = 0
     @showprogress for v in Iterators.reverse(topo)
+        cancel_check()
         active[v] || continue
         if is_sink[v]
             node_limit !== nothing && materialized_nodes >= node_limit &&
@@ -345,6 +366,8 @@ function _enumerate_paths(
             paths_nb = memo[nb]
             paths_nb === nothing && continue
             for p in paths_nb
+                path_checkpoint_count += 1
+                (path_checkpoint_count & 0xff) == 0 && cancel_check()
                 path_limit !== nothing && length(acc) >= path_limit &&
                     throw(PathEnumerationLimitExceeded(
                         :paths, path_limit, length(acc) + 1))
@@ -366,6 +389,7 @@ function _enumerate_paths(
     @info "Finished enumerating paths. Now collecting paths from sources. Total sources: $(length(sources))"
     out = Vector{Vector{Int}}()
     @showprogress for s in sources
+        cancel_check()
         active[s] || continue
         ps = memo[s]
         ps === nothing && continue
@@ -377,6 +401,7 @@ function _enumerate_paths(
     end
 
     sort!(out)
+    cancel_check()
     return out
 end
 
@@ -471,7 +496,13 @@ end
 
 Return a SISO graph for a chosen qK coordinate.
 """
-get_SISO_graph(model::Bnc, change_qK) = get_SISO_graph(get_regimes_graph!(model; full=true), change_qK)
+function get_SISO_graph(model::Bnc, change_qK; cancel_check=_NO_CANCEL_CHECK)
+    graph = get_regimes_graph!(model; full=true, cancel_check=cancel_check)
+    cancel_check()
+    oriented = get_SISO_graph(graph, change_qK)
+    cancel_check()
+    return oriented
+end
 
 
 # ============================================================================
@@ -631,12 +662,17 @@ function _connectome_to_digraph(connectome::AbstractMatrix{Bool})::SimpleDiGraph
     return g
 end
 
-function _build_reachability(g::SimpleDiGraph)::BitMatrix
+function _build_reachability(
+    g::SimpleDiGraph;
+    cancel_check=_NO_CANCEL_CHECK,
+)::BitMatrix
+    cancel_check()
     n = nv(g)
     reachable = falses(n, n)
     topo = topological_sort_by_dfs(g)
 
     for v in Iterators.reverse(topo)
+        cancel_check()
         row_v = @view reachable[v, :]
         for nb in outneighbors(g, v)
             row_v[nb] = true
@@ -646,6 +682,7 @@ function _build_reachability(g::SimpleDiGraph)::BitMatrix
             end
         end
     end
+    cancel_check()
     return reachable
 end
 
@@ -655,12 +692,14 @@ function _build_siso_problem(
     qK_grh::SimpleDiGraph,
     sources::AbstractVector{<:Integer},
     sinks::AbstractVector{<:Integer},
+    ;
+    cancel_check=_NO_CANCEL_CHECK,
 ) where {T}
     dag = SISODAG(
         qK_grh,
         sort!(Int.(collect(sources))),
         sort!(Int.(collect(sinks))),
-        _build_reachability(qK_grh),
+        _build_reachability(qK_grh; cancel_check=cancel_check),
     )
     return SISOProblem{T}(bnc_sys, Int(change_qK_idx), dag)
 end
@@ -2292,11 +2331,14 @@ function SISOPaths(
     condition_solver::Symbol=:recursive,
     max_paths::Union{Nothing,Integer}=nothing,
     max_total_nodes::Union{Nothing,Integer}=nothing,
+    cancel_check=_NO_CANCEL_CHECK,
 ) where {T}
+    cancel_check()
     change_qK_idx = locate_sym_qK(model, change_qK)
 
     if isnothing(rgm_paths)
-        qK_grh = get_SISO_graph(model, change_qK)
+        qK_grh = get_SISO_graph(model, change_qK; cancel_check=cancel_check)
+        cancel_check()
         sources, sinks = get_sources_sinks(model, qK_grh)
         rgm_paths = _enumerate_paths(
             qK_grh;
@@ -2304,16 +2346,27 @@ function SISOPaths(
             sinks,
             max_paths,
             max_total_nodes,
+            cancel_check,
         )
     else
+        cancel_check()
+        find_all_regimes!(model; cancel_check=cancel_check)
+        cancel_check()
         qK_grh = graph_from_paths(rgm_paths, n_regimes(model))
         sources_all, sinks_all = get_sources_sinks(qK_grh)
         sources = sort!(collect(sources_all))
         sinks = sort!(collect(sinks_all))
     end
 
-    problem = _build_siso_problem(model, change_qK_idx, qK_grh, sources, sinks)
-    return SISOPaths(problem, rgm_paths; condition_solver=condition_solver)
+    cancel_check()
+    problem = _build_siso_problem(
+        model, change_qK_idx, qK_grh, sources, sinks;
+        cancel_check=cancel_check,
+    )
+    cancel_check()
+    result = SISOPaths(problem, rgm_paths; condition_solver=condition_solver)
+    cancel_check()
+    return result
 end
 
 """
@@ -2409,7 +2462,9 @@ end
 """
     get_volumes(grh::SISOPaths, pth_idx=nothing; kwargs...) -> Vector{Volume}
 
-Compute volumes for SISO paths.
+Compute volumes for SISO paths. Only the unrebased estimator with no explicit
+estimator keywords uses the legacy single-value path cache. Rebased or
+customized estimates are computed ephemerally.
 """
 function get_volumes(
     grh::SISOPaths,
@@ -2420,18 +2475,27 @@ function get_volumes(
     kwargs...,
 )
     selected_idxs = _normalize_path_indices(grh, pth_idx)
-    pending = recalculate ? selected_idxs : filter(idx -> !grh.path_volume_is_calc[idx], selected_idxs)
+    unique_selected_idxs = unique(selected_idxs)
+    use_volume_cache = _volume_request_is_cacheable(rebase_K, rebase_mat, kwargs)
+    pending = (!use_volume_cache || recalculate) ? unique_selected_idxs :
+        filter(idx -> !grh.path_volume_is_calc[idx], unique_selected_idxs)
 
     if !isempty(pending)
         polys = get_polyhedra(grh, pending)
         rebasing = _prepare_rebase_matrix(grh; rebase_K=rebase_K, rebase_mat=rebase_mat)
         volumes = calc_volume(polys; rebase_mat=rebasing, kwargs...)
-        for (i, idx) in enumerate(pending)
-            grh.path_volume[idx] = volumes[i]
-            grh.path_volume_is_calc[idx] = true
+        if use_volume_cache
+            for (i, idx) in enumerate(pending)
+                grh.path_volume[idx] = volumes[i]
+                grh.path_volume_is_calc[idx] = true
+            end
+        else
+            result_by_path = Dict(zip(pending, volumes))
+            return [result_by_path[idx] for idx in selected_idxs]
         end
     end
 
+    use_volume_cache || return Volume[]
     return grh.path_volume[selected_idxs]
 end
 
@@ -2505,9 +2569,13 @@ function _calc_RO_for_single_path(
     path::AbstractVector{<:Integer},
     change_qK_idx,
     observe_x_idx,
+    ;
+    cancel_check=_NO_CANCEL_CHECK,
 )::Vector{<:Real}
+    cancel_check()
     r_ord = Vector{Float64}(undef, length(path))
     for i in eachindex(path)
+        (Int(i) & 0xff) == 0 && cancel_check()
         if !is_singular(model, path[i])
             r_ord[i] = round(Float64(get_H(model, path[i])[observe_x_idx, change_qK_idx]); digits=3)
         else
@@ -2515,6 +2583,7 @@ function _calc_RO_for_single_path(
             r_ord[i] = abs(ord) < 1e-6 ? NaN : Float64(ord) * Inf
         end
     end
+    cancel_check()
     return r_ord
 end
 
@@ -2562,7 +2631,9 @@ function get_RO_path(
     deduplicate::Bool=false,
     keep_singular::Bool=true,
     keep_nonasymptotic::Bool=true,
+    cancel_check=_NO_CANCEL_CHECK,
 )::Vector{<:Real}
+    cancel_check()
     rgm_idx_shift_pth = get_idx.(Ref(model), rgm_idx_shift_pth)
 
     ord_path = _calc_RO_for_single_path(
@@ -2570,6 +2641,7 @@ function get_RO_path(
         rgm_idx_shift_pth,
         locate_sym_qK(model, change_qK),
         locate_sym_x(model, observe_x),
+        cancel_check=cancel_check,
     )
 
     mask = _get_mask(
@@ -2586,10 +2658,13 @@ end
 function _ensure_ro_regimes_materialized!(
     model::Bnc,
     rgm_idx_for_each_paths::AbstractVector{<:AbstractVector{<:Integer}},
+    ;
+    cancel_check=nothing,
 )
     seen = Set{Int}()
     ordered_idxs = Int[]
     for path in rgm_idx_for_each_paths, idx in path
+        cancel_check === nothing || cancel_check()
         idx = Int(idx)
         if !(idx in seen)
             push!(ordered_idxs, idx)
@@ -2597,10 +2672,14 @@ function _ensure_ro_regimes_materialized!(
         end
     end
     for idx in ordered_idxs
+        cancel_check === nothing || cancel_check()
         get_regime(model, idx; inv_info=true)
     end
     return nothing
 end
+
+@inline _use_parallel_ro_paths(cancel_check) =
+    cancel_check === nothing || cancel_check === _NO_CANCEL_CHECK
 
 """
     get_RO_paths(model::Bnc, rgm_paths, args...; kwargs...) -> Vector{Vector}
@@ -2611,14 +2690,30 @@ function get_RO_paths(
     model::Bnc,
     rgm_paths::AbstractVector{<:AbstractVector},
     args...;
+    cancel_check=nothing,
     kwargs...,
 )::Vector{Vector{<:Real}}
     rgm_idx_for_each_paths = rgm_paths .|> path -> get_idx.(Ref(model), path)
-    _ensure_ro_regimes_materialized!(model, rgm_idx_for_each_paths)
+    _ensure_ro_regimes_materialized!(
+        model, rgm_idx_for_each_paths; cancel_check=cancel_check)
 
     ord_for_each_paths = Vector{Vector{<:Real}}(undef, length(rgm_idx_for_each_paths))
-    Threads.@threads for i in eachindex(rgm_idx_for_each_paths)
-        ord_for_each_paths[i] = get_RO_path(model, rgm_idx_for_each_paths[i], args...; kwargs...)
+    if _use_parallel_ro_paths(cancel_check)
+        Threads.@threads for i in eachindex(rgm_idx_for_each_paths)
+            ord_for_each_paths[i] = get_RO_path(
+                model, rgm_idx_for_each_paths[i], args...; kwargs...)
+        end
+    else
+        # Cancellation callbacks can throw typed caller exceptions. Keep the
+        # cancellable path on the parent task so LocalJobCancelled is not
+        # wrapped in TaskFailedException/CompositeException.
+        for i in eachindex(rgm_idx_for_each_paths)
+            cancel_check()
+            ord_for_each_paths[i] = get_RO_path(
+                model, rgm_idx_for_each_paths[i], args...;
+                cancel_check=cancel_check, kwargs...)
+        end
+        cancel_check()
     end
     return ord_for_each_paths
 end

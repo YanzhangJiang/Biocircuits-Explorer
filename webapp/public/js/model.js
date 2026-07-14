@@ -2,9 +2,14 @@
 
 import { state, nodeRegistry, connections } from './state.js';
 import { api, showToast, handleNodeError, escapeHtml } from './api.js';
-import { setNodeLoading, triggerAutoModelBuild } from './nodes.js';
+import { triggerAutoModelBuild } from './nodes.js';
+import { setNodeLoading } from './node-loading.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
+import {
+  beginModelBuild, invalidateModelBuilder, isCurrentModelBuild, releaseModelBuild,
+} from './model-lifecycle.js';
+import { executionDependencyConnections } from './execution-lifecycle.js';
 
 // ===== Reaction Editor =====
 export function getReactionsFromNode(nodeId) {
@@ -76,10 +81,7 @@ export function addReactionRow(nodeId, rule = '', kd = 1e-3) {
   // Add event listeners for auto-build
   [reactionInput, kdInput].forEach(input => {
     input.addEventListener('input', () => {
-      clearTimeout(input._autoTimer);
-      input._autoTimer = setTimeout(() => {
-        triggerAutoModelBuild(nodeId);
-      }, 1000);
+      triggerAutoModelBuild(nodeId, { delay: 1000 });
     });
   });
 
@@ -87,24 +89,51 @@ export function addReactionRow(nodeId, rule = '', kd = 1e-3) {
 }
 
 // ===== Build Model =====
+function captureModelBuildInput(modelBuilderNodeId, connectionResolver = executionDependencyConnections) {
+  const dependencyConnections = typeof connectionResolver === 'function'
+    ? connectionResolver()
+    : connections;
+  const conn = dependencyConnections
+    .find(c => c.toNode === modelBuilderNodeId && c.toPort === 'reactions');
+  const sourceNodeId = conn?.fromNode || null;
+  const { reactions, kds } = sourceNodeId
+    ? getReactionsFromNode(sourceNodeId)
+    : { reactions: [], kds: [] };
+  return {
+    sourceNodeId,
+    reactions,
+    kds,
+    fingerprint: JSON.stringify([sourceNodeId, reactions, kds]),
+  };
+}
+
 export async function buildModel(modelBuilderNodeId, options = {}) {
   const shouldTriggerDownstream = options.triggerDownstream !== false;
   const throwOnFailure = options.throwOnFailure === true;
-  const buildToken = Symbol(`build-model-${modelBuilderNodeId}`);
-  const fail = (message) => {
+  const connectionResolver = options.connectionResolver || executionDependencyConnections;
+  const input = captureModelBuildInput(modelBuilderNodeId, connectionResolver);
+  const existingContext = nodeRegistry[modelBuilderNodeId]?.data?.modelContext;
+  if (existingContext?.inputFingerprint && existingContext.inputFingerprint !== input.fingerprint) {
+    invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed');
+  }
+  const ticket = beginModelBuild(modelBuilderNodeId);
+  if (!ticket) {
+    const message = 'Model Builder is no longer available';
     showToast(message);
-    if (throwOnFailure) {
-      throw new Error(message);
-    }
+    if (throwOnFailure) throw new Error(message);
+    return false;
+  }
+  ticket.inputFingerprint = input.fingerprint;
+  const fail = (message) => {
+    if (!isCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
+    releaseModelBuild(modelBuilderNodeId, ticket);
+    setNodeLoading(modelBuilderNodeId, false);
+    showToast(message);
+    if (throwOnFailure) throw new Error(message);
     return false;
   };
-  // Find connected reaction source
-  const conn = connections.find(c => c.toNode === modelBuilderNodeId && c.toPort === 'reactions');
-  if (!conn) {
-    return fail('Model Builder has no reaction source connected');
-  }
-  const rnNodeId = conn.fromNode;
-  const { reactions, kds } = getReactionsFromNode(rnNodeId);
+  if (!input.sourceNodeId) return fail('Model Builder has no reaction source connected');
+  const { reactions, kds } = input;
   if (reactions.length === 0) {
     return fail('Add at least one reaction');
   }
@@ -112,14 +141,19 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     return fail('Model Builder requires Kd for every reaction (> 0)');
   }
 
-  if (nodeRegistry[modelBuilderNodeId]) {
-    nodeRegistry[modelBuilderNodeId]._buildToken = buildToken;
-  }
   setNodeLoading(modelBuilderNodeId, true);
+  let requestIsCurrent = null;
   try {
-    const data = await api('build_model', { reactions, kd: kds });
+    requestIsCurrent = () => isCurrentModelBuild(modelBuilderNodeId, ticket) &&
+      captureModelBuildInput(modelBuilderNodeId, connectionResolver).fingerprint === ticket.inputFingerprint;
+    const data = await api('build_model', { reactions, kd: kds }, { statusIsCurrent: requestIsCurrent });
     const liveInfo = nodeRegistry[modelBuilderNodeId];
-    if (!liveInfo || liveInfo._buildToken !== buildToken) {
+    const currentInput = captureModelBuildInput(modelBuilderNodeId, connectionResolver);
+    if (!liveInfo || !isCurrentModelBuild(modelBuilderNodeId, ticket)) {
+      return false;
+    }
+    if (currentInput.fingerprint !== ticket.inputFingerprint) {
+      invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed-during-build');
       return false;
     }
     const modelContext = {
@@ -134,6 +168,9 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
       artifact: data.artifact || null,
       model: data,
       qK_syms: [...data.q_sym, ...data.K_sym],
+      builtForRevision: ticket.revision,
+      inputFingerprint: ticket.inputFingerprint,
+      sourceNodeId: input.sourceNodeId,
     };
     state.sessionId = data.session_id;
     state.model = data;
@@ -162,16 +199,20 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
     return true;
   } catch (e) {
+    if (!isCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
+    if (requestIsCurrent && !requestIsCurrent()) {
+      invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed-during-build');
+      return false;
+    }
     handleNodeError(e, modelBuilderNodeId, 'Build model');
     if (throwOnFailure) {
       throw e;
     }
     return false;
   } finally {
-    if (nodeRegistry[modelBuilderNodeId]?._buildToken === buildToken) {
-      delete nodeRegistry[modelBuilderNodeId]._buildToken;
+    if (releaseModelBuild(modelBuilderNodeId, ticket)) {
+      setNodeLoading(modelBuilderNodeId, false);
     }
-    setNodeLoading(modelBuilderNodeId, false);
   }
 }
 

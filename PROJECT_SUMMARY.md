@@ -39,8 +39,10 @@ implementation revision these runtime claims inspected.
   a live scheduler.
 - The Docker workflow is configured to build and start one application image and probe its
   runtime behavior. It does not exercise Compose, Nginx, or TLS.
-- The seven targeted macOS unit tests passed locally at `01a01be`. No workflow
-  runs Xcode, so macOS remains outside CI.
+- The current working tree configures no-sign macOS host builds and unit tests
+  on `macos-15-intel` and `macos-26`. A local macOS 27 arm64 run passed the
+  build-for-testing step and all 47 unit tests on 2026-07-14; this does not
+  prove a remote workflow, UI automation, or a signed/notarized package.
 - Version and packaging checks keep the application version, packaged
   resources, image labels, and tag rules synchronized and fail closed on
   inconsistent release input.

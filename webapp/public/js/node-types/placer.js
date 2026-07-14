@@ -5,12 +5,12 @@
 // Embodies "tunable" as an experience across multiple design HANDLES:
 //   MENU      — "Show achievable menu": the reaction-order ladder this circuit can
 //               be tuned to + its regime SEQUENCE (the transitions a threshold can
-//               sit at).                                    [/api/placer_menu]
+//               sit at).                                    [/api/v1/placer_menu]
 //   SLOPE     — click a rung (or type a target RO + Solve): solve the regime
-//               polytope for a concrete kd.                 [/api/place_parameters]
+//               polytope for a concrete kd.                 [/api/v1/place_parameters]
 //   THRESHOLD — place a chosen transition (EC50/knee) at a target input dose.
-//                                                           [/api/placer_threshold]
-//   LIVE TUNE — a Kd slider re-plots the dose-response.     [/api/placer_curve]
+//                                                           [/api/v1/placer_threshold]
+//   LIVE TUNE — a Kd slider re-plots the dose-response.     [/api/v1/placer_curve]
 import { api, syncSelectOptions, escapeHtml } from '../api.js';
 import { setNodeLoading, getModelForNode, setupPlotResize, ensureModelSession,
          setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
@@ -192,7 +192,7 @@ async function solvePlacer(nodeId, targetRO) {
 
 // PROGRAM — realize the whole regime program (the design target is a program, not a
 // single slope): solve a Kd ORDERING so the swept dose-response walks the full
-// regime sequence. [/api/placer_realize_program]
+// regime sequence. [/api/v1/placer_realize_program]
 export async function realizePlacerProgram(nodeId) {
   const config = getPlacerConfig(nodeId);
   if (!config) return;
@@ -338,7 +338,7 @@ function renderSolved(nodeId, contentEl, data, summaryHtml) {
 }
 
 // LEVEL handle (numeric, quantitative layer): adjust a total so the output reaches
-// a target level at an operating input. [/api/placer_level]
+// a target level at an operating input. [/api/v1/placer_level]
 async function placeLevel(nodeId) {
   const st = ensureNodeData(nodeId).placerResult;
   if (!st) return;

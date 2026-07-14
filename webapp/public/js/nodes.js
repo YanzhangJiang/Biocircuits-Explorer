@@ -1,6 +1,6 @@
 // Biocircuits Explorer — Node CRUD, Discovery, Menu, Auto-Update & Observer Functions
 
-import { nodeRegistry, connections, setConnections, nodeIdCounter, nextNodeId, setNodeIdCounter, canvasState, scale, plotResizeObservers, nodeResizeObservers, plotInteractionGuards, getPortColor } from './state.js';
+import { nodeRegistry, connections, nodeIdCounter, nextNodeId, setNodeIdCounter, canvasState, scale, plotResizeObservers, nodeResizeObservers, plotInteractionGuards, getPortColor } from './state.js';
 import { showToast } from './api.js';
 import { applyThemeMode } from './theme.js';
 import { NODE_TYPES } from './node-types/index.js';
@@ -9,6 +9,17 @@ import { buildModel, triggerDownstreamNodes, getReactionsFromNode } from './mode
 import { commitWorkspaceSnapshot, queueWorkspaceShellSync, getNodeSerialData } from './workspace.js';
 import { refreshAtlasQueryDesigner } from './atlas.js';
 import { dispatch, record, CreateNodeCommand, RemoveNodeCommand, ChangeAttrCommand } from './commands.js';
+import {
+  invalidateModelBuildersForReactionSource,
+  modelInputRevision,
+  replaceConnectionsWithModelInvalidation,
+} from './model-lifecycle.js';
+import {
+  invalidateAtlasExecutionsDownstreamOf,
+  invalidateScanExecutionsDownstreamOf,
+  isScanConfigNodeType,
+} from './execution-lifecycle.js';
+export { setNodeLoading } from './node-loading.js';
 
 // ===== Node Discovery =====
 
@@ -36,9 +47,25 @@ export function findUpstreamNodeByType(nodeId, type) {
   return findUpstreamNode(nodeId, candidateId => nodeRegistry[candidateId]?.type === type);
 }
 
+function findUpstreamNodeInConnections(nodeId, predicate, connectionList, visited = new Set()) {
+  if (!nodeId || visited.has(nodeId)) return null;
+  visited.add(nodeId);
+  if (predicate(nodeId)) return nodeId;
+  for (const conn of connectionList) {
+    if (conn?.toNode !== nodeId) continue;
+    const found = findUpstreamNodeInConnections(conn.fromNode, predicate, connectionList, visited);
+    if (found) return found;
+  }
+  return null;
+}
+
 export function getModelContextFromBuilder(modelBuilderNodeId) {
   const data = nodeRegistry[modelBuilderNodeId]?.data;
   if (!data?.modelContext || data.built === false || !data.modelContext.sessionId) {
+    return null;
+  }
+  if (data.modelContext.builtForRevision != null &&
+      data.modelContext.builtForRevision !== modelInputRevision(modelBuilderNodeId)) {
     return null;
   }
   return data.modelContext;
@@ -76,35 +103,41 @@ const _rebuildInFlight = new Map();
 // restart, or cache eviction). The NetworkIR is the real input; the session is
 // just a cache, so this rehydrates transparently instead of forcing the user to
 // click "Run" on the Model Builder again.
-export async function ensureModelSession(nodeId) {
-  const live = getSessionIdForNode(nodeId);
-  if (live) return live;
+export async function ensureModelSession(nodeId, { connectionResolver = null } = {}) {
+  while (true) {
+    const dependencyConnections = typeof connectionResolver === 'function'
+      ? connectionResolver()
+      : connections;
+    const builderId = findUpstreamNodeInConnections(
+      nodeId,
+      candidateId => nodeRegistry[candidateId]?.type === 'model-builder',
+      dependencyConnections,
+    );
+    const live = builderId ? getModelContextFromBuilder(builderId)?.sessionId : null;
+    if (live) return live;
 
-  const builderId = findUpstreamNodeByType(nodeId, 'model-builder');
-  if (!builderId) throw new Error('Build the connected model first');
+    if (!builderId) throw new Error('Build the connected model first');
 
-  if (!_rebuildInFlight.has(builderId)) {
-    _rebuildInFlight.set(builderId, (async () => {
-      await buildModel(builderId, { triggerDownstream: false, throwOnFailure: true });
-    })().finally(() => _rebuildInFlight.delete(builderId)));
-  }
-  await _rebuildInFlight.get(builderId);
-
-  const fresh = getSessionIdForNode(nodeId);
-  if (!fresh) throw new Error('Build the connected model first');
-  return fresh;
-}
-
-function invalidateModelBuilder(modelBuilderNodeId) {
-  const info = nodeRegistry[modelBuilderNodeId];
-  if (!info) return;
-  info.data = info.data || {};
-  info.data.built = false;
-  if (info.data.modelContext) {
-    info.data.modelContext = {
-      ...info.data.modelContext,
-      sessionId: null,
-    };
+    const revision = modelInputRevision(builderId);
+    let entry = _rebuildInFlight.get(builderId);
+    if (!entry || entry.revision !== revision) {
+      const promise = (async () => {
+        await buildModel(builderId, {
+          triggerDownstream: false,
+          throwOnFailure: true,
+          connectionResolver,
+        });
+      })();
+      entry = { revision, promise };
+      _rebuildInFlight.set(builderId, entry);
+      const cleanup = () => {
+        if (_rebuildInFlight.get(builderId) === entry) _rebuildInFlight.delete(builderId);
+      };
+      promise.then(cleanup, cleanup);
+    }
+    await entry.promise;
+    // A build can be superseded while this caller is awaiting it. Loop to the
+    // current graph/revision instead of failing a caller on an obsolete result.
   }
 }
 
@@ -202,7 +235,10 @@ export function createNode(nodeType, x, y, opts = {}) {
 export function removeNode(nodeId) {
   const el = document.getElementById(nodeId);
   if (el) el.remove();
-  setConnections(connections.filter(c => c.fromNode !== nodeId && c.toNode !== nodeId));
+  replaceConnectionsWithModelInvalidation(
+    connections.filter(c => c.fromNode !== nodeId && c.toNode !== nodeId),
+    'node-removed',
+  );
   delete nodeRegistry[nodeId];
   cleanupNodeResizeObserver(nodeId);
   cleanupPlotResize(nodeId);
@@ -271,31 +307,6 @@ export function initAttrHistory(target = document) {
     record(new ChangeAttrCommand({ nodeId, key: el.id, before, after }));
     lastValue.set(el, after);
   });
-}
-
-// ===== Node Loading State =====
-export function setNodeLoading(nodeId, loading) {
-  const el = document.getElementById(nodeId);
-  if (!el) return;
-  if (loading) {
-    el.classList.add('loading');
-    // Mark all input wires as transmitting
-    const inputConns = connections.filter(c => c.toNode === nodeId);
-    inputConns.forEach(conn => {
-      const wireId = `wire-${conn.fromNode}-${conn.toNode}`;
-      const wire = document.getElementById(wireId);
-      if (wire) wire.classList.add('transmitting');
-    });
-  } else {
-    el.classList.remove('loading');
-    // Remove transmitting state from all input wires
-    const inputConns = connections.filter(c => c.toNode === nodeId);
-    inputConns.forEach(conn => {
-      const wireId = `wire-${conn.fromNode}-${conn.toNode}`;
-      const wire = document.getElementById(wireId);
-      if (wire) wire.classList.remove('transmitting');
-    });
-  }
 }
 
 // ===== Auto-Chain Generation =====
@@ -689,6 +700,16 @@ export function setupAutoUpdate(nodeId, nodeType) {
                       input.type === 'checkbox' ? 'change' : 'input';
 
     input.addEventListener(eventType, () => {
+      if (nodeType === 'network-id-definition') markReactionSourceDirty(nodeId);
+      // Atlas requests may depend on any upstream serial config (including a
+      // connected network definition). Retire visible/stored results at the
+      // input event, before the debounced serialization catches up.
+      invalidateAtlasExecutionsDownstreamOf(nodeId, 'atlas-config-input-changed');
+      if (isScanConfigNodeType(nodeType)) {
+        // Retire requests immediately; the serialized config update for text
+        // and number fields remains debounced below.
+        invalidateScanExecutionsDownstreamOf(nodeId, 'scan-config-input-changed');
+      }
       // Debounce for text inputs
       if (input.type === 'text' || input.type === 'number') {
         clearTimeout(input._autoUpdateTimer);
@@ -703,13 +724,25 @@ export function setupAutoUpdate(nodeId, nodeType) {
   });
 }
 
-export function triggerConfigUpdate(nodeId, nodeType) {
+export function triggerConfigUpdate(nodeId, nodeType, { preserveExecutionNodeId = null } = {}) {
   // Store config in node data
   const info = nodeRegistry[nodeId];
   if (!info) return;
 
   info.data = info.data || {};
-  info.data.config = getNodeSerialData(nodeId, nodeType);
+  const previousConfig = info.data.config;
+  const nextConfig = getNodeSerialData(nodeId, nodeType);
+  info.data.config = nextConfig;
+  const configChanged = JSON.stringify(previousConfig ?? null) !== JSON.stringify(nextConfig ?? null);
+  if (configChanged) {
+    invalidateAtlasExecutionsDownstreamOf(nodeId, 'atlas-config-changed');
+  }
+  if (isScanConfigNodeType(nodeType) &&
+      configChanged) {
+    invalidateScanExecutionsDownstreamOf(nodeId, 'scan-config-changed', {
+      exceptNodeId: preserveExecutionNodeId,
+    });
+  }
   if (nodeType === 'atlas-query-config') refreshAtlasQueryDesigner(nodeId);
   if (nodeType === 'network-id-definition') triggerAutoModelBuild(nodeId);
 }
@@ -740,24 +773,30 @@ export function setupAutoModelBuild(nodeId) {
 }
 
 // Trigger auto-build when reactions change
-export function triggerAutoModelBuild(reactionNodeId) {
+export function markReactionSourceDirty(reactionNodeId) {
+  const affected = invalidateModelBuildersForReactionSource(reactionNodeId, 'reaction-source-edited');
+  if (affected.length > 0) queueWorkspaceShellSync('model-dirty');
+  return affected;
+}
+
+export function triggerAutoModelBuild(reactionNodeId, { delay = 500, invalidate = true } = {}) {
   // Find all connected model-builder nodes
   const modelBuilders = connections
     .filter(c => c.fromNode === reactionNodeId && c.fromPort === 'reactions')
     .map(c => c.toNode);
 
+  const affected = invalidate ? markReactionSourceDirty(reactionNodeId) : modelBuilders;
   modelBuilders.forEach(mbId => {
     const info = nodeRegistry[mbId];
     if (info && info._autoBuildCheck) {
-      invalidateModelBuilder(mbId);
-      queueWorkspaceShellSync('model-dirty');
       // Debounce the build
       clearTimeout(info._autoBuildTimer);
       info._autoBuildTimer = setTimeout(() => {
         info._autoBuildCheck();
-      }, 500);
+      }, delay);
     }
   });
+  return affected;
 }
 
 export function triggerAllAutoModelBuilds() {
@@ -765,7 +804,7 @@ export function triggerAllAutoModelBuilds() {
     if (info.type !== 'model-builder' || !info._autoBuildCheck) return;
     // Skip nodes whose model is restored from the saved workspace. Their backend
     // session is gone (built=false, sessionId=null) but the cached model is shown;
-    // forcing a rebuild here would slam /api/build_model for every chain in the
+    // forcing a rebuild here would slam /api/v1/build_model for every chain in the
     // project at load time. User clicks Run (or Run Connected) when ready.
     if (info.data?.modelContext?.model) return;
     info._autoBuildCheck();
@@ -836,7 +875,10 @@ export async function runConnectedWorkspace() {
             throw new Error('Model Builder did not produce a usable model');
           }
         } else {
-          await NODE_TYPES[info.type].execute(nodeId);
+          await NODE_TYPES[info.type].execute(nodeId, {
+            triggerDownstream: false,
+            throwOnFailure: true,
+          });
         }
         ranCount += 1;
       } catch (error) {

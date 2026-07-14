@@ -45,7 +45,7 @@ and expose a stable bridge to the native macOS host.
 ## Outputs
 
 - Backend requests for model construction, scans, ROP, atlas, designability,
-  jobs, and import/export operations.
+  fixed-topology ROP shape optimization, jobs, and import/export operations.
 - Versioned workspace JSON containing canvas, nodes, typed connections, and the
   optional Design Agent conversation.
 - Rendered plots, tables, evidence groups, SBML downloads, and user diagnostics.
@@ -69,10 +69,27 @@ and expose a stable bridge to the native macOS host.
 `webapp/test/*.test.mjs` exercises command undo/redo, geometry, typed ports,
 event dispatch, restored-connection validation, model request recovery, reaction
 species parsing, native clipboard fallback, design-result evidence grouping, and
-the Design Spec node contract. `scan-validity-contract.test.mjs` and
+the Design Spec node contract. The ROP shape workspace contracts also cover the
+exact-card reference producer, the config/result node pair, stage-specific port
+types, request construction, persistence, and restored historical evidence.
+`scan-validity-contract.test.mjs` and
 `atlas-sqlite-policy.test.mjs` cover failed-solver gaps and the operator-only
 SQLite transport. Julia route and schema tests cover the server side of
 requests the workspace emits.
+
+The current working tree also has focused lifecycle contracts for staged
+workspace restore, model invalidation/build ownership, scan execution, and
+Atlas execution. Atlas build/query/inverse results are latest-wins: a new run,
+upstream config edit, or semantic connection change retires both the pending
+request and its previously stored result before downstream code can reuse it.
+Interactive rewiring reads the graph snapshot from gesture start, so dragging
+a wire back to its original socket remains a semantic no-op.
+`design-agent-conversation-owner-contract.test.mjs` applies the same owner rule
+to saved Design Agent conversations: turns are single-flight, restore aborts
+the previous pending turn, and delayed replies cannot cross workspace epochs.
+`model-request.test.mjs` covers Cloud job owner retirement, stale nonterminal
+cancellation, terminal no-cancel behavior, bounded polling retries, and fresh
+pre-signed URL retry without broker-result fallback.
 
 ## CI
 
@@ -100,9 +117,34 @@ the source ES modules directly.
   complete result.
 - Design Screen v0.3 shows evaluated and eligible counts; a truncated screen
   says that the unevaluated candidates remain unknown.
+- The fixed-topology shape workflow uses three distinct typed artifacts:
+  Design Target emits a pinned reference, the edit-config node emits a request,
+  and the result node emits optimizer evidence. Restored optimizer output is
+  historical until a fresh run succeeds.
 - Browser requests do not send `sqlite_path` unless an operator explicitly
   enables the page policy. Server opt-in and store-root confinement remain
   separate requirements; the browser flag is not authorization.
+- Atlas builder, query, and inverse-design outputs remain current only while
+  their node owner, input fingerprint, and committed upstream graph match.
+  Starting an upstream Atlas step synchronously retires dependent Atlas
+  outputs; an obsolete Run Connected step fails the chain instead of silently
+  continuing with an older saved result.
+- A Design Agent request owns exactly one conversation epoch and predecessor
+  chat state. Workspace restore retires any pending turn before replacing its
+  DOM, clears the previous active candidate/results, and reconstructs the right
+  pane only from the latest restored agent response; a latest response without
+  a valid card keeps the pane cleared.
+- Cloud jobs remain bound to the request owner through submission, polling, and
+  result download; an owner predicate exception retires the request. Losing the
+  owner after obtaining a nonterminal job ID settles activity and makes one
+  best-effort cancellation call, while a known terminal job is never cancelled.
+  Retryable poll errors use a bounded consecutive budget that resets after each
+  successful poll.
+- After a cloud job succeeds, the browser obtains a pre-signed result URL and
+  performs a plain direct GET. It requires an `application/json` response,
+  preserves latest-request ownership across URL lookup and download, and does
+  not fall back to relaying the large object through the broker. One retryable
+  failure may refresh the pre-signed URL and repeat the direct GET once.
 
 ## Known gaps
 
@@ -110,8 +152,10 @@ the source ES modules directly.
   regression suite; the JavaScript tests use focused harnesses.
 - There is no single JSON Schema for the complete workspace document; its shape
   is jointly owned by JavaScript serializers and the Swift decoder.
-- Browser clients still contain legacy bare `/api/` callers while the backend
-  advertises canonical versioned routes; removal needs a coordinated migration.
+- Ordinary browser compute calls and the fixed-topology optimizer use canonical
+  `/api/v1/*` routes. Broker/auth configuration and local-image transport still
+  retain their compatibility paths and need a coordinated deployment migration
+  before those aliases can be removed.
 - ESLint warnings are allowed, so warning growth is not presently a ratcheted
   quality gate.
 
@@ -128,9 +172,12 @@ the source ES modules directly.
 
 ## Verified against
 
-- Source commit: `1177a3d`
-- Evidence inspected: browser owner paths, package scripts, focused JS tests,
-  shared schemas, server routing, and CI workflow wiring.
+- Source commit: `1177a3d`; the fixed-topology shape-node extension is verified
+  against the current uncommitted working tree on 2026-07-11.
+- Evidence inspected: browser owner paths, package scripts, focused and full JS
+  tests, shared schemas, server routing, CI workflow wiring, and a local
+  real-page menu/node/port/intent/fail-closed smoke with zero console errors.
 - Historical baseline: `f9c65a5` remains the earlier catalog evidence anchor.
-- Boundary: no claim of browser visual fidelity or full user-flow behavior was
-  made without a browser end-to-end run.
+- Boundary: the local smoke did not connect the browser to a running Julia
+  optimizer, and it is not accessibility, visual-regression, release, or
+  production evidence.

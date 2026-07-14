@@ -10,16 +10,22 @@ import { cloneSerializable } from './api.js';
 
 // Lazy imports for afterRestore hooks (avoids circular deps at load time)
 let _updateROPCloudMode, _updateRegimeGraphMode, _updateROPPolyDimension;
+let _restoreRopShapeResultView, _updateRopShapeIntentVisibility;
 async function ensureHookImports() {
-  if (_updateROPCloudMode) return;
-  const [ropCloud, regimeGraph, scan] = await Promise.all([
+  if (_updateROPCloudMode && _updateRegimeGraphMode &&
+      _updateROPPolyDimension && _restoreRopShapeResultView &&
+      _updateRopShapeIntentVisibility) return;
+  const [ropCloud, regimeGraph, scan, ropShape] = await Promise.all([
     import('./rop-cloud.js'),
     import('./regime-graph.js'),
     import('./scan.js'),
+    import('./node-types/rop-shape.js'),
   ]);
   _updateROPCloudMode = ropCloud.updateROPCloudMode;
   _updateRegimeGraphMode = regimeGraph.updateRegimeGraphMode;
   _updateROPPolyDimension = scan.updateROPPolyDimension;
+  _restoreRopShapeResultView = ropShape.restoreRopShapeResultView;
+  _updateRopShapeIntentVisibility = ropShape.updateRopShapeIntentVisibility;
 }
 // Pre-load hooks at module init (non-blocking)
 ensureHookImports();
@@ -219,6 +225,41 @@ export const NODE_SCHEMAS = {
     includeConfig: true,
   },
 
+  'rop-shape-edit-config': {
+    fields: {
+      ropShapeKind:            { suffix: '-rop-shape-kind',            type: 'string', default: 'broaden' },
+      intentId:                { suffix: '-intent-id',                 type: 'string', default: 'shape-edit' },
+      leftSpan:                { suffix: '-left-span',                 type: 'string', default: '0, 2' },
+      rightSpan:               { suffix: '-right-span',                type: 'string', default: '4, 6' },
+      steps:                   { suffix: '-steps',                     type: 'string', default: '1, 5' },
+      group:                   { suffix: '-group',                     type: 'string', default: '4, 5, 6' },
+      preserve:                { suffix: '-preserve',                  type: 'string', default: '0, 1, 2, 3' },
+      anchorStep:              { suffix: '-anchor-step',               type: 'int',    default: 3 },
+      anchorTolerance:         { suffix: '-anchor-tolerance',          type: 'float',  default: 0.2 },
+      midpointTolerance:       { suffix: '-midpoint-tolerance',        type: 'float',  default: 0.2 },
+      effectTolerance:         { suffix: '-effect-tolerance',          type: 'float',  default: 0.02 },
+      minimumParameterMargin:  { suffix: '-minimum-parameter-margin',  type: 'float',  default: 0.01 },
+      sense:                   { suffix: '-sense',                     type: 'string', default: 'positive' },
+      shared:                  { suffix: '-shared',                    type: 'bool',   default: true },
+      maxPaths:                { suffix: '-max-paths',                 type: 'int',    default: 2000 },
+      maxCells:                { suffix: '-max-cells',                 type: 'int',    default: 256 },
+      maxReplays:              { suffix: '-max-replays',               type: 'int',    default: 1 },
+      requireExhaustive:       { suffix: '-require-exhaustive',        type: 'bool',   default: true },
+      replaySamplePoints:      { suffix: '-replay-sample-points',      type: 'int',    default: 281 },
+      replayMinProminence:     { suffix: '-replay-min-prominence',     type: 'float',  default: 0.5 },
+      linearIntentJson:        { suffix: '-linear-intent-json',        type: 'string' },
+    },
+    data: ['ropShapeRequest'],
+    restoreToData: ['ropShapeRequest'],
+    afterRestore(nodeId) {
+      if (_updateRopShapeIntentVisibility) {
+        _updateRopShapeIntentVisibility(nodeId);
+        return;
+      }
+      ensureHookImports().then(() => _updateRopShapeIntentVisibility?.(nodeId));
+    },
+  },
+
   'scan-2d-params': {
     fields: {
       param1_symbol: { suffix: '-param1', type: 'string' },
@@ -296,7 +337,7 @@ export const NODE_SCHEMAS = {
       n_points:     { suffix: '-points', type: 'int',   default: '200' },
       _expr:        { suffix: '-expr',   type: 'expr',  arrayKey: 'output_exprs' },
     },
-    data: ['scan1DResult'],
+    data: ['scan1DResult', 'scan1DResultMeta'],
   },
 
   'parameter-scan-2d': {
@@ -310,7 +351,7 @@ export const NODE_SCHEMAS = {
       n_grid:        { suffix: '-grid',   type: 'int',   default: '80' },
       output_expr:   { suffix: '-expr',   type: 'expr' },
     },
-    data: ['scan2DResult'],
+    data: ['scan2DResult', 'scan2DResultMeta'],
   },
 
   'rop-cloud': {
@@ -420,7 +461,7 @@ export const NODE_SCHEMAS = {
   },
 
   'scan-1d-result': {
-    data: ['scan1DResult'],
+    data: ['scan1DResult', 'scan1DResultMeta'],
   },
 
   'rop-cloud-result': {
@@ -433,12 +474,24 @@ export const NODE_SCHEMAS = {
   },
 
   'scan-2d-result': {
-    data: ['scan2DResult'],
+    data: ['scan2DResult', 'scan2DResultMeta'],
   },
 
   'rop-poly-result': {
     data: ['ropPlotData'],
     dataRaw: ['fitInnerPoints'],
+  },
+
+  'rop-shape-result': {
+    data: ['ropShapeRequest', 'ropShapeResult'],
+    restoreToData: ['ropShapeRequest', 'ropShapeResult'],
+    afterRestore(nodeId, data) {
+      if (_restoreRopShapeResultView) {
+        _restoreRopShapeResultView(nodeId, data);
+        return;
+      }
+      ensureHookImports().then(() => _restoreRopShapeResultView?.(nodeId, data));
+    },
   },
 
   'atlas-builder': {

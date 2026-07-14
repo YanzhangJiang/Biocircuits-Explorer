@@ -6,9 +6,16 @@ import { fetchAuthConfig, getIdToken, signIn } from './auth.js';
 
 let activeApiRequests = 0;
 let statusRevision = 0;
+let currentStatusClass = null;
 let readyResetTimer = null;
 const CLOUD_JOB_ENDPOINTS = new Set(['build_atlas', 'run_inverse_design']);
 const JOB_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const JOB_KNOWN_STATUSES = new Set([
+  'queued', 'running', 'cancel_requested', ...JOB_TERMINAL_STATUSES,
+]);
+const CLOUD_JOB_MAX_CONSECUTIVE_POLL_RETRIES = 2;
+const CLOUD_RESULT_MAX_ATTEMPTS = 2;
+const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function apiHeaders() {
   return {
@@ -29,6 +36,66 @@ export function escapeHtml(text) {
 }
 
 // ===== API Helpers =====
+function normalizeApiEndpoint(endpoint) {
+  let normalized = String(endpoint || '').trim().replace(/^\/+/, '');
+  const versionMatch = normalized.match(/^(?:api\/)?v(\d+)(?:\/|$)/);
+  if (versionMatch && versionMatch[1] !== '1') {
+    throw new Error(`Unsupported API version v${versionMatch[1]}.`);
+  }
+  normalized = normalized
+    .replace(/^api\/v1(?:\/|$)/, '')
+    .replace(/^api\//, '')
+    .replace(/^v1(?:\/|$)/, '');
+  if (!normalized) throw new Error('API endpoint must not be empty.');
+  return normalized;
+}
+
+function canonicalApiUrl(endpoint) {
+  return `${API}/api/v1/${normalizeApiEndpoint(endpoint)}`;
+}
+
+function responseErrorMessage(json, fallback) {
+  if (typeof json?.error === 'string' && json.error.trim()) return json.error;
+  if (typeof json?.error?.message === 'string' && json.error.message.trim()) {
+    return json.error.message;
+  }
+  return fallback;
+}
+
+function statusPredicatePasses(statusIsCurrent) {
+  if (typeof statusIsCurrent !== 'function') return true;
+  try { return !!statusIsCurrent(); }
+  catch { return false; }
+}
+
+function settleApiActivity(
+  requestStatusRevision,
+  statusIsCurrent,
+  { errorMessage = null, doneText = 'Done' } = {},
+) {
+  activeApiRequests = Math.max(0, activeApiRequests - 1);
+  const mayCommit = statusPredicatePasses(statusIsCurrent);
+  const mayReconcile = statusRevision === requestStatusRevision || currentStatusClass === 'working';
+  if (errorMessage && mayCommit) {
+    setStatus('error', errorMessage);
+    return;
+  }
+  if (!mayCommit && !mayReconcile) return;
+  if (activeApiRequests > 0) {
+    setStatus('working', `Computing... (${activeApiRequests})`);
+  } else {
+    setStatus('done', doneText);
+  }
+}
+
+function normalizedJobStatus(job) {
+  const status = String(job?.status || '').toLowerCase();
+  if (!JOB_KNOWN_STATUSES.has(status)) {
+    throw new Error(`Backend returned an unknown job status: ${status || '(missing)'}`);
+  }
+  return status;
+}
+
 function contextMatchesSession(ctx, sessionId) {
   return ctx && String(ctx.sessionId || ctx.session_id || '') === String(sessionId || '');
 }
@@ -60,7 +127,7 @@ export function enrichModelRequestPayload(data) {
 
 export async function apiSilent(endpoint, data) {
   const payload = enrichModelRequestPayload(data || {});
-  const resp = await fetch(`${API}/api/${endpoint}`, {
+  const resp = await fetch(canonicalApiUrl(endpoint), {
     method: 'POST',
     headers: apiHeaders(),
     body: JSON.stringify(payload),
@@ -70,16 +137,23 @@ export async function apiSilent(endpoint, data) {
     throw new Error('Backend server not responding');
   }
   const json = await resp.json();
-  if (json.error) throw new Error(json.error);
+  const errorMessage = responseErrorMessage(
+    json,
+    resp.ok === false ? `Backend request failed (${resp.status})` : null,
+  );
+  if (resp.ok === false || errorMessage) {
+    throw new Error(errorMessage || `Backend request failed (${resp.status})`);
+  }
   return json;
 }
 
-export async function api(endpoint, data) {
+export async function api(endpoint, data, { statusIsCurrent = null } = {}) {
   activeApiRequests += 1;
   setStatus('working', activeApiRequests > 1 ? `Computing... (${activeApiRequests})` : 'Computing...');
+  const requestStatusRevision = statusRevision;
   try {
     const payload = enrichModelRequestPayload(data || {});
-    const resp = await fetch(`${API}/api/${endpoint}`, {
+    const resp = await fetch(canonicalApiUrl(endpoint), {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify(payload),
@@ -91,25 +165,62 @@ export async function api(endpoint, data) {
     }
 
     const json = await resp.json();
-    if (json.error) {
+    const errorMessage = responseErrorMessage(
+      json,
+      resp.ok === false ? `Backend request failed (${resp.status})` : null,
+    );
+    if (resp.ok === false || errorMessage) {
       // The backend asks for the NetworkIR to be resent when it can no longer
       // resolve a model from session_id/hash alone (e.g. after a restart).
-      const apiError = new Error(json.error);
+      const apiError = new Error(errorMessage || `Backend request failed (${resp.status})`);
       if (json.need_network) apiError.needNetwork = true;
       apiError.status = resp.status;
       throw apiError;
     }
-    activeApiRequests = Math.max(0, activeApiRequests - 1);
-    if (activeApiRequests > 0) {
-      setStatus('working', `Computing... (${activeApiRequests})`);
-    } else {
-      setStatus('done', 'Done');
-    }
+    settleApiActivity(requestStatusRevision, statusIsCurrent);
     return json;
   } catch (e) {
-    activeApiRequests = Math.max(0, activeApiRequests - 1);
-    setStatus('error', e.message);
+    settleApiActivity(requestStatusRevision, statusIsCurrent, { errorMessage: e.message });
     throw e;
+  }
+}
+
+// Fixed-topology ROP shape optimization is a versioned evidence contract with
+// additional response-shape checks beyond the shared canonical v1 helper.
+export async function optimizeRopShape(request, { statusIsCurrent = null } = {}) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('ROP shape optimization request must be an object.');
+  }
+  activeApiRequests += 1;
+  setStatus('working', activeApiRequests > 1
+    ? `Optimizing ROP shape... (${activeApiRequests})`
+    : 'Optimizing ROP shape...');
+  const requestStatusRevision = statusRevision;
+  try {
+    const resp = await fetch(`${API}/api/v1/rop_shape_optimize`, {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify(request),
+    });
+    const contentType = resp.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      throw new Error('Backend server did not return the ROP shape optimization contract.');
+    }
+    const json = await resp.json();
+    if (!json || typeof json !== 'object' || Array.isArray(json)) {
+      throw new Error('Backend returned an invalid ROP shape optimization payload.');
+    }
+    const errorMessage = typeof json.error === 'string' ? json.error : json.error?.message;
+    if (!resp.ok || errorMessage) {
+      const apiError = new Error(errorMessage || `ROP shape optimization failed (${resp.status})`);
+      apiError.status = resp.status;
+      throw apiError;
+    }
+    settleApiActivity(requestStatusRevision, statusIsCurrent);
+    return json;
+  } catch (error) {
+    settleApiActivity(requestStatusRevision, statusIsCurrent, { errorMessage: error.message });
+    throw error;
   }
 }
 
@@ -135,23 +246,47 @@ async function jobApi(path, { method = 'GET', data = null } = {}) {
   });
   const contentType = resp.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
-    throw new Error(`Backend server not responding (${resp.status})`);
+    const error = new Error(`Backend server not responding (${resp.status})`);
+    error.status = resp.status;
+    error.retryable = RETRYABLE_HTTP_STATUSES.has(Number(resp.status));
+    throw error;
   }
   const json = await resp.json();
-  if (!resp.ok || json.error) {
+  if (!resp.ok || json?.error) {
+    let fallback = `Server error (${resp.status})`;
     if (resp.status === 401 || resp.status === 403) {
-      throw new Error(json.error || 'Sign in required');
+      fallback = 'Sign in required';
+    } else if (resp.status === 429) {
+      fallback = 'Daily quota exceeded — try again tomorrow.';
     }
-    if (resp.status === 429) {
-      throw new Error(json.error || 'Daily quota exceeded — try again tomorrow.');
-    }
-    throw new Error(json.error || `Server error (${resp.status})`);
+    const error = new Error(responseErrorMessage(json, fallback));
+    error.status = resp.status;
+    error.code = json?.code || json?.error?.code || null;
+    error.retryable = json?.retryable ?? json?.error?.retryable ?? null;
+    throw error;
   }
   return json;
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(attempt) {
+  return Math.min(2000, 250 * (2 ** Math.max(0, attempt - 1)));
+}
+
+function errorIsRetryable(error) {
+  if (error?.retryable != null) return error.retryable === true;
+  if (error instanceof TypeError) return true;
+  return RETRYABLE_HTTP_STATUSES.has(Number(error?.status));
+}
+
+function responseIsRetryable(response) {
+  const status = Number(response?.status);
+  // A pre-signed object URL can report an expired signature as 401/403. Refresh
+  // the URL once; the broker APIs themselves retain their normal auth semantics.
+  return status === 401 || status === 403 || RETRYABLE_HTTP_STATUSES.has(status);
 }
 
 // All /api/jobs/* endpoints route to CLOUD_API: this is the SaaS path.
@@ -169,10 +304,6 @@ export async function getJob(jobId) {
   return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
 }
 
-export async function getJobResult(jobId) {
-  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/result`, { method: 'POST', data: {} });
-}
-
 export async function getJobResultUrl(jobId) {
   return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/result-url`, { method: 'POST', data: {} });
 }
@@ -181,59 +312,190 @@ export async function cancelJob(jobId) {
   return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
 }
 
-export async function runCloudJob(kind, spec) {
+export async function runCloudJob(
+  kind,
+  spec,
+  { statusIsCurrent = null, sleepFn = sleep } = {},
+) {
   activeApiRequests += 1;
   setStatus('working', activeApiRequests > 1 ? `Submitting cloud job... (${activeApiRequests})` : 'Submitting cloud job...');
+  const requestStatusRevision = statusRevision;
+  const requestIsCurrent = () => statusPredicatePasses(statusIsCurrent);
+  const wait = typeof sleepFn === 'function' ? sleepFn : sleep;
+  let activitySettled = false;
+  let jobId = null;
+  let status = null;
+  let cancellationAttempted = false;
+  const settle = (options = {}) => {
+    if (activitySettled) return;
+    activitySettled = true;
+    settleApiActivity(requestStatusRevision, statusIsCurrent, options);
+  };
+  const bestEffortCancelNonterminalJob = async () => {
+    if (!jobId || cancellationAttempted || JOB_TERMINAL_STATUSES.has(status)) return;
+    cancellationAttempted = true;
+    try {
+      await cancelJob(jobId);
+    } catch {
+      // The obsolete owner has already settled its UI activity. Cancellation is
+      // best-effort and must never report into, or reject through, a newer owner.
+    }
+  };
+  const retireIfStale = async () => {
+    if (requestIsCurrent()) return false;
+    // Settle first so a slow cancellation endpoint cannot leave the global
+    // activity counter owned by a request that is already obsolete.
+    settle();
+    await bestEffortCancelNonterminalJob();
+    return true;
+  };
   try {
     const config = await fetchAuthConfig().catch(() => null);
+    if (await retireIfStale()) return null;
     if (config && config.enabled) {
       const token = await getIdToken();
+      if (await retireIfStale()) return null;
       if (!token) {
-        activeApiRequests = Math.max(0, activeApiRequests - 1);
-        setStatus('done', 'Ready');
         await signIn();   // redirects; control will not return.
+        settle({ doneText: 'Ready' });
         return;
       }
     }
     let job = await submitJob(kind, spec, { mode: 'aws_batch' });
-    const jobId = job.job_id;
+    jobId = job.job_id;
     if (!jobId) throw new Error('Backend did not return a job id.');
+    status = normalizedJobStatus(job);
+    if (await retireIfStale()) return null;
 
-    while (!JOB_TERMINAL_STATUSES.has(String(job.status || '').toLowerCase())) {
-      const status = String(job.status || 'queued');
-      setStatus('working', status === 'running' ? 'Cloud job running...' : 'Cloud job queued...');
-      await sleep(1500);
-      job = await getJob(jobId);
+    let pollAttempt = 0;
+    let consecutivePollFailures = 0;
+    while (!JOB_TERMINAL_STATUSES.has(status)) {
+      if (await retireIfStale()) return null;
+      const statusText = status === 'running'
+        ? 'Cloud job running...'
+        : status === 'cancel_requested'
+          ? 'Cloud job cancelling...'
+          : 'Cloud job queued...';
+      setStatus('working', statusText);
+      const pollDelay = Math.min(5000, 1500 + pollAttempt * 250);
+      pollAttempt += 1;
+      await wait(pollDelay);
+      if (await retireIfStale()) return null;
+
+      while (true) {
+        try {
+          job = await getJob(jobId);
+          status = normalizedJobStatus(job);
+          consecutivePollFailures = 0;
+          break;
+        } catch (error) {
+          if (await retireIfStale()) return null;
+          if (!errorIsRetryable(error) ||
+              consecutivePollFailures >= CLOUD_JOB_MAX_CONSECUTIVE_POLL_RETRIES) {
+            throw error;
+          }
+          consecutivePollFailures += 1;
+          setStatus(
+            'working',
+            `Cloud job status temporarily unavailable — retrying (${consecutivePollFailures}/${CLOUD_JOB_MAX_CONSECUTIVE_POLL_RETRIES})...`,
+          );
+          await wait(retryDelayMs(consecutivePollFailures));
+          if (await retireIfStale()) return null;
+        }
+      }
+      if (await retireIfStale()) return null;
     }
 
-    if (job.status !== 'succeeded') {
-      throw new Error(job.error || `Cloud job ${job.status}`);
+    if (status !== 'succeeded') {
+      throw new Error(job.error || `Cloud job ${status}`);
     }
 
-    const payload = await getJobResult(jobId);
-    activeApiRequests = Math.max(0, activeApiRequests - 1);
-    if (activeApiRequests > 0) {
-      setStatus('working', `Computing... (${activeApiRequests})`);
-    } else {
-      setStatus('done', 'Done');
+    for (let resultAttempt = 1; resultAttempt <= CLOUD_RESULT_MAX_ATTEMPTS; resultAttempt += 1) {
+      let resultLocation;
+      try {
+        resultLocation = await getJobResultUrl(jobId);
+      } catch (error) {
+        if (await retireIfStale()) return null;
+        if (resultAttempt < CLOUD_RESULT_MAX_ATTEMPTS && errorIsRetryable(error)) {
+          await wait(retryDelayMs(resultAttempt));
+          if (await retireIfStale()) return null;
+          continue;
+        }
+        throw error;
+      }
+      if (await retireIfStale()) return null;
+
+      const resultUrl = typeof resultLocation?.result_url === 'string'
+        ? resultLocation.result_url.trim()
+        : '';
+      if (!resultUrl) {
+        throw new Error('Backend did not return a cloud result URL.');
+      }
+
+      // The pre-signed object URL already contains its S3 authorization. Keep
+      // this a plain GET: broker bearer/debug headers and request bodies must not
+      // cross into the artifact request. A transient failure refreshes the
+      // pre-signed URL once; it never falls back to the broker result body.
+      let resultResponse;
+      try {
+        resultResponse = await fetch(resultUrl, { method: 'GET' });
+      } catch (error) {
+        if (await retireIfStale()) return null;
+        if (resultAttempt < CLOUD_RESULT_MAX_ATTEMPTS) {
+          await wait(retryDelayMs(resultAttempt));
+          if (await retireIfStale()) return null;
+          continue;
+        }
+        throw error;
+      }
+      if (await retireIfStale()) return null;
+      if (!resultResponse.ok) {
+        const downloadError = new Error(`Cloud result download failed (${resultResponse.status}).`);
+        downloadError.status = resultResponse.status;
+        if (resultAttempt < CLOUD_RESULT_MAX_ATTEMPTS && responseIsRetryable(resultResponse)) {
+          await wait(retryDelayMs(resultAttempt));
+          if (await retireIfStale()) return null;
+          continue;
+        }
+        throw downloadError;
+      }
+      const resultContentType = String(resultResponse.headers?.get?.('content-type') || '')
+        .split(';', 1)[0]
+        .trim()
+        .toLowerCase();
+      if (resultContentType !== 'application/json') {
+        throw new Error('Cloud result download did not return application/json.');
+      }
+
+      let payload;
+      try {
+        payload = await resultResponse.json();
+      } catch {
+        throw new Error('Cloud result download returned invalid JSON.');
+      }
+      if (await retireIfStale()) return null;
+      settle();
+      return payload;
     }
-    return payload.result;
+    throw new Error('Cloud result download retry limit exceeded.');
   } catch (e) {
-    activeApiRequests = Math.max(0, activeApiRequests - 1);
-    setStatus('error', e.message);
+    if (await retireIfStale()) return null;
+    settle({ errorMessage: e.message });
     throw e;
   }
 }
 
-export async function computeApi(endpoint, data) {
-  if (isCloudComputeEnabled() && CLOUD_JOB_ENDPOINTS.has(endpoint)) {
-    return runCloudJob(endpoint, data);
+export async function computeApi(endpoint, data, options = {}) {
+  const normalizedEndpoint = normalizeApiEndpoint(endpoint);
+  if (isCloudComputeEnabled() && CLOUD_JOB_ENDPOINTS.has(normalizedEndpoint)) {
+    return runCloudJob(normalizedEndpoint, data, options);
   }
-  return api(endpoint, data);
+  return api(normalizedEndpoint, data, options);
 }
 
 // ===== Status Badge =====
 export function setStatus(cls, text) {
+  currentStatusClass = cls;
   const badge = document.getElementById('status-badge');
   if (!badge) return;
 
@@ -267,6 +529,18 @@ export function showToast(message, duration = 2500) {
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), 300);
   }, duration);
+}
+
+// Render backend- or provider-controlled error text without asking the HTML
+// parser to interpret it. API errors may include a server-supplied `error`
+// field, so callers must not interpolate Error.message into innerHTML.
+export function renderNodeError(container, error) {
+  if (!container) return null;
+  const errorElement = document.createElement('div');
+  errorElement.className = 'node-error';
+  errorElement.textContent = error?.message || String(error ?? 'Unknown error');
+  container.replaceChildren(errorElement);
+  return errorElement;
 }
 
 // ===== Parsing Utilities =====

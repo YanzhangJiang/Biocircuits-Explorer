@@ -129,6 +129,25 @@ contracts:
     compatibility: "Envelope can be attached as a sibling to legacy flat responses."
     coverage: "runtime-shape-and-version"
 
+  - id: "job-result-manifest"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/job-result-manifest.schema.json"
+    kind: "schema-and-publication-protocol"
+    owner: "batch-hpc"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/modules/batch-hpc.md"
+    sources:
+      - "webapp/src/jobs.jl"
+      - "webapp/scripts/run_batch_job.jl"
+      - "schemas/job-result-manifest.schema.json"
+    tests:
+      - "webapp/test/jobs_artifact_validity_contract.jl"
+      - "webapp/test/runtests.jl"
+    compatibility: "New AWS records require the v1 manifest commit marker; only records without a result-protocol field use the legacy inline result verifier. A broker reading a persisted unknown future protocol keeps verification retryable, while a worker asked to execute an unsupported protocol fails the worker job. Rolling deployments must update the worker image/job definition before the submitting broker."
+    coverage: "strict-runtime-validator-mocked-object-store-and-schema-version"
+
   - id: "designability-spec"
     version_source: "schema-const"
     schemas:
@@ -165,6 +184,34 @@ contracts:
       - "webapp/test/design-target-render.test.mjs"
     compatibility: "Design Screen v0.3 adds eligible_count, evaluated_count, and truncated so callers can distinguish complete from budget-limited evaluation. The UI retains a v0.2 count fallback; recommended remains a compatibility alias for verified_recommendations, never screened_candidates."
     coverage: "direct"
+
+  - id: "rop-shape-optimization"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/rop-shape-optimize-request.schema.json"
+      - "schemas/rop-shape-optimization.schema.json"
+    kind: "schema-and-evidence"
+    owner: "rop-shape-optimization"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/contracts/scientific-evidence.md"
+      - "knowledge/modules/rop-shape-optimization.md"
+      - "knowledge/decisions/0002-rop-shape-margin-and-evidence.md"
+    sources:
+      - "schemas/rop-shape-optimize-request.schema.json"
+      - "schemas/rop-shape-optimization.schema.json"
+      - "webapp/src/rop_shape_api.jl"
+      - "webapp/src/rop_shape_optimization.jl"
+      - "webapp/src/rop_shape_replay.jl"
+      - "webapp/src/designability_feasible_regions.jl"
+    tests:
+      - "webapp/test/rop_shape_schema_contract.jl"
+      - "webapp/test/rop_shape_api_contract.jl"
+      - "webapp/test/rop_shape_optimization_contract.jl"
+      - "webapp/test/rop_shape_replay_contract.jl"
+      - "webapp/test/rop_shape_cat_benchmark.jl"
+    compatibility: "The v1 request is a fixed-topology, reference-relative, finite-budget contract. Julia is the sole NetworkIR canonicalizer; legacy inputs may set the expected canonical hash to null, while every normalized response carries the complete NetworkIR and matched hash. Exact cell geometry, parameter-only margin, bounded coverage, and sampled replay remain separate evidence layers."
+    coverage: "schema-instance-and-core-contracts"
 
   - id: "behavior-spec"
     version_source: "schema-const"
@@ -249,7 +296,7 @@ contracts:
       - "webapp/scripts/design_agent.py"
     tests:
       - "webapp/scripts/test_design_agent_contract.py"
-    compatibility: "Trace writes are best-effort and API keys are excluded; stored-instance schema validation is unknown."
+    compatibility: "Trace writes and full-card artifacts are best-effort, rotating/pruned by bounded local retention, and API keys are excluded; stored-instance schema validation is unknown."
     coverage: "workflow-partial-schema"
 
   - id: "network-identity"

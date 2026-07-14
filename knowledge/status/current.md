@@ -1,6 +1,6 @@
 # Current verified snapshot
 
-- Snapshot date: 2026-07-10
+- Snapshot date: 2026-07-11
 - Component-split revision inspected: `603635d`
 - Current implementation revision inspected: `1177a3d`
 - Historical knowledge baseline retained: `f9c65a5`
@@ -10,6 +10,11 @@
   [generated from their owners](../generated/reference.md#versions-and-configured-toolchains)
 - Scope: repository runtime and local verification evidence, not manuscript
   claims, a remote CI result, or proof that an external deployment succeeded
+
+The committed evidence anchor remains `1177a3d`. A larger fixed-topology ROP
+shape-optimization implementation is present in the current uncommitted working
+tree and is recorded separately below. It must not be described as part of
+`1177a3d` or as a released feature until it receives a commit/release identity.
 
 ## Result in plain language
 
@@ -32,6 +37,66 @@ Revision `603635d` only split the large backend module into focused component
 files. It was not intended to change behavior. Revision `1177a3d` then added the
 concurrency, work-boundary, validation, and numerical-result changes to those
 owners.
+
+## Working-tree extension: direct fixed-topology shape control
+
+The previous cat-response prototype asked whether one of three hand-picked
+operating-point changes could be built. The new working tree asks how far one
+pinned network can move a typed response edit before its declared path geometry
+or parameter bounds stop it. It then chooses a realization with remaining
+biochemical parameter room and independently replays the finite curve.
+
+This extension introduces the canonical v1-only
+`POST /api/v1/rop_shape_optimize` route, asynchronous local-job support,
+typed edits, bounded path/cell enumeration, direct per-cell LPs, explicit
+parameter-only margin, active-row/right-hand-side sensitivity, directional
+intervals, stored finite replay, Design Screen handoff, an allow-listed Agent
+tool, and a fail-closed browser workspace chain. Design Target emits a pinned
+reference only for an exact canonical finite-window card; a separate edit-config
+node constructs the typed request; a result node calls the v1 route, renders the
+evidence layers, and marks restored output as historical until rerun. The three
+artifacts use distinct strict port types and are exposed in both Web and macOS
+Add Node menus. The Design Screen candidate prior still comes from the tracked
+ROP design index (`paper_rop_periodic_table/data/slices.jsonl.gz`, or its explicit
+operator override); the optimizer request is self-contained and does not receive
+an Atlas SQLite path. The detailed owner and evidence
+boundary are in the
+[ROP shape-optimization module](../modules/rop-shape-optimization.md) and
+[decision 0002](../decisions/0002-rop-shape-margin-and-evidence.md).
+
+The frozen cat benchmark evaluated all 18 eligible paths and all 24 eligible
+cells for each of four edits with no truncation. All four direct solves found a
+non-grid geometric optimum. Three selected realizations passed complete sampled
+finite replay. The `widen_center` realization completed replay but failed its
+declared two-peak metric, demonstrating that exact witness geometry is not an
+exact nonlinear peak-feature guarantee.
+
+| Working-tree check | Local result | Boundary |
+|---|---|---|
+| Full Julia Web suite | No failing tests; the one pre-existing explicit `@test_broken` remains | Local Julia 1.12.6 process, not remote CI |
+| Shape core compatibility | 124/124 on Julia 1.12.6 and 124/124 on Julia 1.10.11 | Core LP contract only on 1.10; the full Web suite was not rerun there |
+| BindingAndCatalysis suite | All testsets passed; golden-value set 123/123 | Tested models and solver policies only |
+| Browser and Python consumers | JS suite passed (including renderer 25/25, reference producer 7/7, shape nodes 12/12); local real-page menu/node/port/intent/fail-closed smoke had zero console errors; Design Chat auth, Chat API 8/8, Design Agent 28/28, and repository Python 88/88 passed | No live LLM provider or browser-to-live-engine optimizer run |
+| Frozen cat artifact | Read-only contract 160/160; four geometric optima, three replay passes | One fixed topology and finite replay grid |
+| Repository gate | 37 maintained files, 13 schemas, and 49 routes passed regenerated and read-only checks | Local source/catalog consistency only |
+
+These are results for one pinned topology, program, bounds, compiler, and
+finite replay grid. They are not evidence of optimality over all networks,
+experimental validity, or a live provider/cloud deployment.
+
+## Working-tree macOS host maintenance
+
+The current uncommitted working tree also hardens the native shell, project
+persistence, local helper identity, browser-content boundary, and release
+packaging. The configured CI matrix now builds and runs the Swift unit target on
+`macos-15-intel` and `macos-26`. On 2026-07-14, a local macOS 27 arm64 run with
+Xcode 26.6 passed `build-for-testing` and all 47 unit tests. Browser, Design Chat,
+packaged-resource, and release-metadata contracts also passed locally.
+
+This is current working-tree evidence, not part of revision `1177a3d`. No remote
+CI result, real Cognito flow, packaged helper launch, relocatable Python input,
+Developer ID signature, notarization, stapling, Gatekeeper install, or clean-host
+qualification is claimed.
 
 The evidence below is local repository evidence. It does not establish that a
 remote workflow ran, an image was published, AWS or Slurm accepted a job, or a

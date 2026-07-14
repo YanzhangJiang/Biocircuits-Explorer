@@ -9,10 +9,11 @@
 # Security contract:
 #   BNE_CHAT_ALLOWED_ORIGIN=<exact loopback origin>   required
 #   BNE_CHAT_BEARER_TOKEN=<at least 32 characters>    required outside local dev
+#   BNE_CHAT_INSTANCE_NONCE=<at least 32 characters>  required outside local dev
 #   BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK=1        explicit local-dev-only mode
 # `webapp/start.sh` supplies the local-dev contract. The native macOS shell
 # rotates a bearer token for every helper launch and injects it into its WKWebView.
-import hmac, os, sys, json
+import hmac, os, sys, json, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,10 +24,45 @@ HOST = os.environ.get("BNE_CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BNE_CHAT_PORT", "8765"))
 ALLOWED_ORIGIN = os.environ.get("BNE_CHAT_ALLOWED_ORIGIN", "").strip()
 BEARER_TOKEN = os.environ.get("BNE_CHAT_BEARER_TOKEN", "").strip()
+INSTANCE_NONCE = os.environ.get("BNE_CHAT_INSTANCE_NONCE", "").strip()
+SERVICE_IDENTITY = "biocircuits-design-chat"
 ALLOW_UNAUTHENTICATED_LOOPBACK = os.environ.get(
     "BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK", ""
 ).strip().lower() in ("1", "true", "yes", "on")
 _LOOPBACK_ORIGIN_HOSTS = frozenset(("127.0.0.1", "localhost", "::1"))
+CHAT_TURN_MAX_CONCURRENCY_HARD_LIMIT = 32
+
+
+def _strict_positive_int(name, raw, default, *, maximum):
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    try:
+        value = int(text, 10)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{name} must be an integer between 1 and {maximum}, got {text!r}"
+        ) from error
+    if value < 1 or value > maximum or str(value) != text:
+        raise ValueError(
+            f"{name} must be an integer between 1 and {maximum}, got {text!r}"
+        )
+    return value
+
+
+def _chat_turn_max_concurrency(raw=None):
+    if raw is None:
+        raw = os.environ.get("BNE_CHAT_MAX_CONCURRENT_TURNS", "")
+    return _strict_positive_int(
+        "BNE_CHAT_MAX_CONCURRENT_TURNS",
+        raw,
+        2,
+        maximum=CHAT_TURN_MAX_CONCURRENCY_HARD_LIMIT,
+    )
+
+
+CHAT_TURN_MAX_CONCURRENCY = _chat_turn_max_concurrency()
+CHAT_TURN_SEMAPHORE = threading.BoundedSemaphore(CHAT_TURN_MAX_CONCURRENCY)
 
 
 def _is_exact_loopback_origin(origin):
@@ -61,6 +97,7 @@ def _validate_runtime_contract(
     bearer_token=BEARER_TOKEN,
     allow_unauthenticated_loopback=ALLOW_UNAUTHENTICATED_LOOPBACK,
     bind_host=HOST,
+    instance_nonce=INSTANCE_NONCE,
 ):
     if bind_host != bind_host.strip() or bind_host.lower() not in _LOOPBACK_ORIGIN_HOSTS:
         raise ValueError("BNE_CHAT_HOST must be a literal loopback host")
@@ -70,10 +107,18 @@ def _validate_runtime_contract(
             "without a path (for example http://127.0.0.1:18088)"
         )
     if allow_unauthenticated_loopback:
+        if instance_nonce and (len(instance_nonce) < 32 or instance_nonce != instance_nonce.strip()):
+            raise ValueError(
+                "BNE_CHAT_INSTANCE_NONCE must contain at least 32 non-whitespace characters"
+            )
         return
     if len(bearer_token) < 32 or bearer_token != bearer_token.strip():
         raise ValueError(
             "BNE_CHAT_BEARER_TOKEN must contain at least 32 non-whitespace characters"
+        )
+    if len(instance_nonce) < 32 or instance_nonce != instance_nonce.strip():
+        raise ValueError(
+            "BNE_CHAT_INSTANCE_NONCE must contain at least 32 non-whitespace characters"
         )
 
 def _norm_llm(llm):
@@ -159,6 +204,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
     def do_GET(self):
+        if self.path.split("?")[0] == "/identity":
+            # This endpoint deliberately contains no bearer-protected data. It
+            # lets the native shell prove process ownership before disclosing
+            # the per-launch bearer to /health.
+            return self._json(200, {
+                "service": SERVICE_IDENTITY,
+                "instance_nonce": INSTANCE_NONCE,
+            })
         if not self._authorize():
             return
         if self.path.split("?")[0] == "/health":
@@ -166,7 +219,9 @@ class Handler(BaseHTTPRequestHandler):
                        "analog": os.path.isfile(agent.ANALOG_LABELS), "contextual": os.path.isfile(agent.CONTEXTUAL_LABELS)}
             # Live compute engine: the agent can only return verified designs when this is up.
             eng = {"ready": engine.engine_ready(), "url": engine.engine_base_url()}
-            return self._json(200, {"ok": True, "families": list(corpora.keys()), "corpora": corpora,
+            return self._json(200, {"ok": True, "service": SERVICE_IDENTITY,
+                                    "instance_nonce": INSTANCE_NONCE,
+                                    "families": list(corpora.keys()), "corpora": corpora,
                                     "engine": eng}, cors=self._origin_is_allowed())
         return self._json(404, {"error": "not found"}, cors=self._origin_is_allowed())
     def do_POST(self):
@@ -182,11 +237,29 @@ class Handler(BaseHTTPRequestHandler):
         msg = (req.get("message") or "").strip()
         if not msg:
             return self._json(400, {"error": "empty message"}, cors=self._origin_is_allowed())
+        admitted = CHAT_TURN_SEMAPHORE.acquire(blocking=False)
+        if not admitted:
+            return self._json(
+                429,
+                {
+                    "error": {
+                        "code": "chat_capacity_exhausted",
+                        "message": "Design Agent capacity is full. Retry later.",
+                        "retryable": True,
+                    },
+                    "code": "chat_capacity_exhausted",
+                    "retryable": True,
+                },
+                cors=self._origin_is_allowed(),
+                extra_headers=(("Retry-After", "1"),),
+            )
         try:
             res = agent.run_turn(req.get("state") or {}, msg, _norm_llm(req.get("llm")), int(req.get("top", 3)))
             return self._json(200, res, cors=self._origin_is_allowed())
         except Exception as e:
             return self._json(500, {"error": f"chat failed: {e}"}, cors=self._origin_is_allowed())
+        finally:
+            CHAT_TURN_SEMAPHORE.release()
     def log_message(self, *a):   # never log request bodies (they carry the API key)
         try:
             sys.stderr.write(f"[chat_api] {self.command} {self.path.split('?')[0]}\n")
@@ -220,7 +293,10 @@ if __name__ == "__main__":
         raise SystemExit(2)
     parent = os.environ.get("BNE_CHAT_PARENT_PID")
     if parent and parent.isdigit():
-        import threading
         threading.Thread(target=_watch_parent, args=(int(parent),), daemon=True).start()
-    print(f"[chat_api] listening: POST http://{HOST}:{PORT}/design-chat   GET /health", flush=True)
+    print(
+        f"[chat_api] listening: POST http://{HOST}:{PORT}/design-chat   "
+        f"GET /health   max_turns={CHAT_TURN_MAX_CONCURRENCY}",
+        flush=True,
+    )
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

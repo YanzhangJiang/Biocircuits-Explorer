@@ -1,7 +1,7 @@
 ---
 title: Schema contract and coverage
-status: verified
-verified_against: 1177a3d
+status: implemented-working-tree
+verified_against: working-tree-2026-07-11
 ---
 
 # Schema contract and coverage
@@ -63,6 +63,62 @@ current producer schema.
 `screened_candidates` remain proxy-only. `verified_recommendations` remain the
 only recommendation list. The transitional `recommended` alias must equal the
 verified list, never the screened prefix.
+
+## Fixed-topology ROP shape contract
+
+The request identity is `bne-rop-shape-optimize-request/v1.0.0`; the result
+identity is `bne-rop-shape-optimization/v1.0.0`. Both schemas are hand-authored
+Draft 2020-12 contracts with runtime instance tests. The only public endpoint is
+`POST /api/v1/rop_shape_optimize`; there is no bare `/api` alias.
+
+The request is reference-relative and fixed-topology. It includes the complete
+network or complete legacy input for Julia canonicalization, the expected hash
+when known, exact finite-window design target, pinned reference, typed edit,
+optimization policy, finite work budget, and mandatory stored replay. Unknown
+fields, stale hashes, non-finite values, and unsupported replay shapes are
+rejected.
+
+The result schema does not collapse all numbers into one evidence claim. It
+keeps:
+
+- eligible/evaluated path and cell populations plus truncation;
+- the closed geometric effect limit and selected interior realization;
+- parameter-only margin with basis, dimension, equality rank, and basis matrix;
+- active compiled rows and right-hand-side shadow-price semantics;
+- per-cell and union directional intervals in the original direction units;
+- a complete sampled replay request, validity record, curve, and metrics; and
+- request, result, network, spec, reference, and artifact hashes.
+
+Schema validity alone does not prove a global optimum or a replay pass. Runtime
+semantic tests enforce that global labels require untruncated coverage, that the
+parameter margin uses the equality-feasible background subspace, and that a
+finite-shape pass requires complete valid replay. See the
+[module card](../modules/rop-shape-optimization.md) and
+[evidence decision](../decisions/0002-rop-shape-margin-and-evidence.md).
+
+## Asynchronous job result commit manifest
+
+The working-tree identity `bne-job-result-manifest/v1.0.0` is a deliberately
+small commit marker for asynchronous results. A worker validates the sibling
+result-artifact metadata and submitted config identity, serializes the result
+once, publishes `result.json`, then publishes `result-manifest.json`, and only
+then reports worker success. The manifest records the job and result kind,
+algorithm/config identity, exact byte length, JSON media type, top-level payload
+count, and SHA-256 of the serialized result.
+
+For new AWS job records, the broker downloads only the manifest (bounded to 64
+KiB) and compares it with the canonical record plus `HeadObject` length, content
+type, and worker-written SHA-256 object metadata. It does not download or
+materialize the potentially large Atlas result during status polling. Only
+records created before the protocol field existed use the legacy inline result
+validator. A broker that reads a persisted unknown future protocol keeps it
+retryable because that version mismatch is not evidence that the result itself
+is invalid. A worker asked to execute an unsupported protocol instead fails the
+worker job. Rolling deployments therefore update the worker image/job definition
+before enabling a broker that submits the new protocol.
+
+This contract proves the mocked local publication/verification protocol, not a
+live S3 transfer or AWS Batch run.
 
 ## Numerical validity fields
 
@@ -131,7 +187,10 @@ or instances the script did not load.
 
 ## Verified against
 
-- Current source commit: `1177a3d`.
+- Shape-optimization schema extension: uncommitted working tree on 2026-07-11;
+  official Draft 2020-12 instance checks and the repository gate are recorded
+  in the goal completion report.
+- Last committed implementation anchor: `1177a3d`.
 - Historical baseline: schema ownership and drift rules were audited at
   `f9c65a5`; that audit predates Design Screen v0.3 and the explicit numerical
   validity fields above.

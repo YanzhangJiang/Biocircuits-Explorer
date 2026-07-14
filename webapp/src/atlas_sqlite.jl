@@ -49,7 +49,12 @@ function _with_atlas_sqlite_write_lock(f::Function, db_or_path)
     end
 end
 
-atlas_sqlite_default_path() = normpath(joinpath(@__DIR__, "..", "atlas_store", "atlas.sqlite"))
+function atlas_sqlite_default_path()
+    configured_root = Config.atlas_store_root_override()
+    root = isempty(configured_root) ?
+        joinpath(@__DIR__, "..", "atlas_store") : configured_root
+    return normpath(joinpath(root, "atlas.sqlite"))
+end
 
 function _sqlite_path_from_raw(raw)
     _raw_haskey(raw, :sqlite_path) || return nothing
