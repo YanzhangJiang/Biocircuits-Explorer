@@ -1,7 +1,7 @@
 // Biocircuits Explorer — Model Building & Reaction Functions
 
 import { state, nodeRegistry, connections } from './state.js';
-import { api, showToast, handleNodeError, escapeHtml } from './api.js';
+import { api, showToast, handleNodeError } from './api.js';
 import { triggerAutoModelBuild } from './nodes.js';
 import { setNodeLoading } from './node-loading.js';
 import { NODE_TYPES } from './node-types/index.js';
@@ -19,6 +19,12 @@ export function getReactionsFromNode(nodeId) {
   //  - network-id-definition: resolved from a compressed atlas id
   //  - design-target:         the candidate network the user selected from the screen
   if (info?.type === 'network-id-definition' || info?.type === 'design-target') {
+    if (info.type === 'design-target') {
+      const selectionLifecycle = info.data?.selectionLifecycle;
+      if (selectionLifecycle?.state !== 'current' || selectionLifecycle?.freshness !== 'current') {
+        return { reactions: [], kds: [] };
+      }
+    }
     const config = info.data?.config || {};
     const resolved = config.resolvedDefinition || null;
     const reactions = Array.isArray(resolved?.raw_rules)

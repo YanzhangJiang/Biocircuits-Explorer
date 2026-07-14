@@ -13,6 +13,16 @@ import WebKit
 
 struct BiocircuitsExplorerMacTests {
 
+    private func workspaceFixtureData(named name: String) throws -> Data {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try Data(contentsOf: repositoryRoot
+            .appendingPathComponent("tests/fixtures/workspace", isDirectory: true)
+            .appendingPathComponent(name))
+    }
+
     @MainActor
     @Test func terminationRegistrationRejectsStaleViewCleanup() async throws {
         let coordinator = AppTerminationCoordinator()
@@ -363,6 +373,7 @@ struct BiocircuitsExplorerMacTests {
         let document = try JSONDecoder().decode(WorkspaceDocument.self, from: data)
 
         #expect(document.version == WorkspaceDocument.currentVersion)
+        #expect(document.rawObject["schema_version"] == .string(WorkspaceDocument.currentSchemaVersion))
         #expect(document.rawObject["custom"] == JSONValue.string("kept"))
         #expect(document.rawObject["nodes"] == JSONValue.array([]))
         #expect(document.rawObject["connections"] == JSONValue.array([]))
@@ -375,6 +386,106 @@ struct BiocircuitsExplorerMacTests {
         #expect(canvas["panX"] == JSONValue.number(0))
         #expect(canvas["panY"] == JSONValue.number(0))
         #expect(canvas["scale"] == JSONValue.number(1))
+    }
+
+    @Test func workspaceV1MigrationMatchesTheSharedExpectedV2Fixture() throws {
+        let source = try workspaceFixtureData(named: "valid-v1.json")
+        let expectedData = try workspaceFixtureData(named: "valid-v1.expected-v2.json")
+        let expected = try JSONDecoder().decode([String: JSONValue].self, from: expectedData)
+        let migrated = try JSONDecoder().decode(WorkspaceDocument.self, from: source)
+
+        #expect(migrated.rawObject == expected)
+        #expect(migrated.version == WorkspaceDocument.currentVersion)
+        #expect(migrated.rawObject["schema_version"] == .string(WorkspaceDocument.currentSchemaVersion))
+
+        guard
+            case let .array(nodes)? = migrated.rawObject["nodes"],
+            case let .object(model)? = nodes.first(where: { value in
+                value.objectValue?["id"] == .string("model")
+            }),
+            case let .object(modelData)? = model["data"],
+            case let .object(lifecycle)? = modelData["lifecycle"]
+        else {
+            Issue.record("Expected the migrated model result and historical lifecycle")
+            return
+        }
+        #expect(modelData["evidence"] == .object(["grade": .string("engine-computed")]))
+        #expect(lifecycle["freshness"] == .string("historical"))
+        #expect(lifecycle["evidence"] == modelData["evidence"])
+        #expect(modelData["modelContext"]?.objectValue?["sessionId"] == nil)
+        #expect(modelData["modelContext"]?.objectValue?["executionTicket"] == nil)
+        #expect(modelData["modelContext"]?.objectValue?["ownerToken"] == nil)
+    }
+
+    @Test func workspaceV1StrictConfigMatrixKeepsOnlySevenSameFamilyConnections() throws {
+        let source = try workspaceFixtureData(named: "strict-config-invalid-v1.json")
+        let migrated = try JSONDecoder().decode(WorkspaceDocument.self, from: source)
+        let connections = try #require(migrated.rawObject["connections"]?.arrayValue)
+
+        #expect(connections.count == 7)
+        let keys = Set(connections.compactMap { value -> String? in
+            guard case let .object(connection) = value,
+                  case let .string(fromNode)? = connection["fromNode"],
+                  case let .string(toNode)? = connection["toNode"]
+            else {
+                return nil
+            }
+            return "\(fromNode):\(toNode)"
+        })
+        #expect(keys == [
+            "siso-p:siso-r",
+            "scan1-p:scan1-r",
+            "scan2-p:scan2-r",
+            "cloud-p:cloud-r",
+            "fret-p:fret-r",
+            "poly-p:poly-r",
+            "placer-p:placer-r",
+        ])
+    }
+
+    @Test func workspaceV2RequiresItsSchemaIdentityAndRejectsFutureVersions() throws {
+        let missingSchema = #"{"version":2,"canvas":{},"nodes":[],"connections":[]}"#
+        let wrongSchema = #"{"version":2,"schema_version":"bne-workspace/v3.0.0","canvas":{},"nodes":[],"connections":[]}"#
+        for source in [missingSchema, wrongSchema] {
+            #expect(throws: WorkspaceDocument.WorkspaceDocumentError.self) {
+                _ = try JSONDecoder().decode(WorkspaceDocument.self, from: Data(source.utf8))
+            }
+        }
+
+        let legacyV2 = #"{"version":2,"schema_version":"bne-workspace/v2.0.0","canvas":{},"nodes":[{"id":"legacy","type":"siso-analysis","data":{}}],"connections":[]}"#
+        #expect(throws: WorkspaceDocument.WorkspaceDocumentError.self) {
+            _ = try JSONDecoder().decode(WorkspaceDocument.self, from: Data(legacyV2.utf8))
+        }
+
+        let incompatibleV2 = #"{"version":2,"schema_version":"bne-workspace/v2.0.0","canvas":{},"nodes":[{"id":"source","type":"siso-params","data":{}},{"id":"result","type":"scan-1d-result","data":{}}],"connections":[{"fromNode":"source","fromPort":"params","toNode":"result","toPort":"params"}]}"#
+        #expect(throws: WorkspaceDocument.WorkspaceDocumentError.self) {
+            _ = try JSONDecoder().decode(WorkspaceDocument.self, from: Data(incompatibleV2.utf8))
+        }
+
+        #expect(throws: WorkspaceDocument.WorkspaceDocumentError.self) {
+            _ = try JSONDecoder().decode(
+                WorkspaceDocument.self,
+                from: try workspaceFixtureData(named: "future-v3.json")
+            )
+        }
+    }
+
+    @Test func workspaceV2DowngradesCurrentLifecycleEvenWithoutSavedResultPayload() throws {
+        let source = #"{"version":2,"schema_version":"bne-workspace/v2.0.0","canvas":{},"nodes":[{"id":"atlas","type":"atlas-builder","data":{"lifecycle":{"state":"current","freshness":"current","evidence":{"evidence_grade":"current-computation"}}}}],"connections":[]}"#
+        let document = try JSONDecoder().decode(
+            WorkspaceDocument.self,
+            from: Data(source.utf8)
+        )
+        let nodes = try #require(document.rawObject["nodes"]?.arrayValue)
+        let node = try #require(nodes.first?.objectValue)
+        let data = try #require(node["data"]?.objectValue)
+        let lifecycle = try #require(data["lifecycle"]?.objectValue)
+
+        #expect(lifecycle["state"] == .string("historical"))
+        #expect(lifecycle["freshness"] == .string("historical"))
+        #expect(lifecycle["evidence"] == .object([
+            "evidence_grade": .string("current-computation"),
+        ]))
     }
 
     @Test func workspaceDocumentRejectsMalformedRequiredFields() throws {
@@ -422,6 +533,7 @@ struct BiocircuitsExplorerMacTests {
         let decoded = try JSONDecoder().decode(WorkspaceDocument.self, from: encoded)
 
         #expect(decoded.rawObject["futureTopLevel"] == JSONValue.object(["flag": JSONValue.bool(true)]))
+        #expect(decoded.rawObject["schema_version"] == .string(WorkspaceDocument.currentSchemaVersion))
         guard
             case let .array(nodes)? = decoded.rawObject["nodes"],
             case let .object(firstNode) = nodes.first
@@ -924,6 +1036,8 @@ struct BiocircuitsExplorerMacTests {
 
     @MainActor
     @Test func webShellBridgeTagsMessagesAndCommitsIdentityAfterWorkspaceApply() async throws {
+        #expect(WebShellController.supportedContractVersion == 2)
+        #expect(WebShellController.supportedWorkspaceVersion == WorkspaceDocument.currentVersion)
         let source = WebShellController.bridgeScriptSource(
             initialThemeMode: "auto",
             generation: "navigation-42",
@@ -941,6 +1055,8 @@ struct BiocircuitsExplorerMacTests {
         #expect(source.contains("return applyFileOperationLock(locked);"))
         #expect(source.contains("const trustedOrigin = \"http://127.0.0.1:18088\";"))
         #expect(source.contains("const trustedPath = \"/index-node.html\";"))
+        #expect(source.contains("metadata.contractVersion !== 2"))
+        #expect(source.contains("metadata.workspaceVersion > 2"))
         #expect(source.contains("if (window.location.origin !== trustedOrigin) return;"))
         #expect(source.contains("if (window.location.pathname !== trustedPath) return;"))
         #expect(source.contains(

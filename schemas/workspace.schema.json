@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/workspace.schema.json",
+  "title": "Biocircuits Explorer Workspace v2",
+  "description": "Portable browser/macOS workspace document. Unknown properties are intentionally retained at every extensible record boundary so the Swift host can round-trip fields owned by newer browser components. Cross-record endpoint existence and typed-port compatibility are enforced by the pure Workspace v2 validator because JSON Schema cannot join a connection endpoint to the referenced node type.",
+  "type": "object",
+  "required": ["version", "schema_version", "canvas", "nodes", "connections"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "const": 2 },
+    "schema_version": { "const": "bne-workspace/v2.0.0" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "connections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/connection" }
+    },
+    "designAgent": { "$ref": "#/$defs/designAgentConversation" }
+  },
+  "$defs": {
+    "canvas": {
+      "type": "object",
+      "required": ["panX", "panY", "scale"],
+      "additionalProperties": true,
+      "properties": {
+        "panX": {
+          "type": "number",
+          "minimum": -1000000000,
+          "maximum": 1000000000
+        },
+        "panY": {
+          "type": "number",
+          "minimum": -1000000000,
+          "maximum": 1000000000
+        },
+        "scale": {
+          "type": "number",
+          "minimum": 0.005,
+          "maximum": 3
+        }
+      }
+    },
+    "nodeType": {
+      "type": "string",
+      "enum": [
+        "ai-import",
+        "atlas-builder",
+        "atlas-inverse-result",
+        "atlas-query-config",
+        "atlas-query-result",
+        "atlas-spec",
+        "design-spec-config",
+        "design-target",
+        "fret-params",
+        "fret-result",
+        "markdown-note",
+        "model-builder",
+        "model-summary",
+        "network-id-definition",
+        "placer-params",
+        "placer-result",
+        "qk-poly-result",
+        "reaction-network",
+        "regime-graph",
+        "rop-cloud-params",
+        "rop-cloud-result",
+        "rop-poly-params",
+        "rop-poly-result",
+        "rop-shape-edit-config",
+        "rop-shape-result",
+        "sbml-export",
+        "sbml-import",
+        "scan-1d-params",
+        "scan-1d-result",
+        "scan-2d-params",
+        "scan-2d-result",
+        "siso-params",
+        "siso-result",
+        "vertices-table"
+      ]
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "x", "y", "data"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": { "$ref": "#/$defs/nodeType" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "lifecycle": { "$ref": "#/$defs/executionLifecycle" },
+            "selectionLifecycle": { "$ref": "#/$defs/executionLifecycle" }
+          }
+        }
+      }
+    },
+    "executionLifecycle": {
+      "type": "object",
+      "required": ["state", "freshness", "evidence"],
+      "additionalProperties": true,
+      "properties": {
+        "state": {
+          "enum": [
+            "empty",
+            "running",
+            "current",
+            "failed",
+            "blocked",
+            "invalidated",
+            "historical"
+          ]
+        },
+        "freshness": {
+          "enum": ["empty", "current", "invalidated", "historical"]
+        },
+        "evidence": {}
+      }
+    },
+    "portName": {
+      "type": "string",
+      "enum": [
+        "atlas",
+        "atlas-network",
+        "atlas-query",
+        "atlas-spec",
+        "designability-spec",
+        "model",
+        "params",
+        "reactions",
+        "result",
+        "rop-shape-reference",
+        "rop-shape-request",
+        "rop-shape-result"
+      ]
+    },
+    "connection": {
+      "type": "object",
+      "required": ["fromNode", "fromPort", "toNode", "toPort"],
+      "additionalProperties": true,
+      "properties": {
+        "fromNode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fromPort": { "$ref": "#/$defs/portName" },
+        "toNode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toPort": { "$ref": "#/$defs/portName" }
+      }
+    },
+    "designAgentConversation": {
+      "type": "object",
+      "required": ["convo", "chatState"],
+      "additionalProperties": true,
+      "properties": {
+        "convo": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/designAgentTurn" },
+          "maxItems": 60
+        },
+        "chatState": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "designAgentTurn": {
+      "type": "object",
+      "required": ["role"],
+      "additionalProperties": true,
+      "properties": {
+        "role": { "enum": ["user", "agent"] },
+        "text": { "type": "string" },
+        "res": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "role": { "const": "user" } },
+            "required": ["role"]
+          },
+          "then": { "required": ["text"] }
+        },
+        {
+          "if": {
+            "properties": { "role": { "const": "agent" } },
+            "required": ["role"]
+          },
+          "then": { "required": ["res"] }
+        }
+      ]
+    }
+  }
+}

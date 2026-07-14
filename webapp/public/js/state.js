@@ -40,8 +40,24 @@ export const cloudComputeState = {
   enabled: false,
 };
 
-export const WORKSPACE_DOCUMENT_VERSION = 1;
-export const WORKSPACE_SHELL_CONTRACT_VERSION = 1;
+export const WORKSPACE_DOCUMENT_VERSION = 2;
+export const WORKSPACE_SHELL_CONTRACT_VERSION = 2;
+
+// Runtime-only generation. It is deliberately independent of the persisted
+// workspace document version: replacing/restoring a workspace advances this
+// epoch so delayed async work from the previous graph cannot publish into the
+// newly installed node registry.
+let workspaceRuntimeEpoch = 0;
+export function getWorkspaceRuntimeEpoch() { return workspaceRuntimeEpoch; }
+export function advanceWorkspaceRuntimeEpoch() {
+  if (!Number.isSafeInteger(workspaceRuntimeEpoch) ||
+      workspaceRuntimeEpoch >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError('Workspace runtime epoch exhausted');
+  }
+  workspaceRuntimeEpoch += 1;
+  return workspaceRuntimeEpoch;
+}
+
 export const THEME_MODE_STORAGE_KEY = 'biocircuits-explorer.theme-mode';
 export const LEGACY_THEME_MODE_STORAGE_KEY = 'rop-explorer.theme-mode';
 export const LIGHT_THEME_STYLESHEET_ID = 'biocircuits-explorer-light-theme-stylesheet';
@@ -82,13 +98,13 @@ export function ensureDebugClientId() {
       window.sessionStorage.setItem(DEBUG_CLIENT_STORAGE_KEY, debugClientId);
       return debugClientId;
     }
-  } catch (_) {}
+  } catch {}
 
   debugClientId = createDebugClientId();
 
   try {
     window.sessionStorage.setItem(DEBUG_CLIENT_STORAGE_KEY, debugClientId);
-  } catch (_) {}
+  } catch {}
 
   return debugClientId;
 }

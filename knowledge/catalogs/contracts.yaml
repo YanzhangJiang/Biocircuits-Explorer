@@ -129,6 +129,29 @@ contracts:
     compatibility: "Envelope can be attached as a sibling to legacy flat responses."
     coverage: "runtime-shape-and-version"
 
+  - id: "workspace-document"
+    version_source: "schema-const"
+    schemas:
+      - "schemas/workspace.schema.json"
+    kind: "schema-and-migration"
+    owner: "web-workspace"
+    docs:
+      - "knowledge/contracts/schemas.md"
+      - "knowledge/modules/web-workspace.md"
+      - "knowledge/modules/macos-host.md"
+    sources:
+      - "schemas/workspace.schema.json"
+      - "webapp/public/js/workspace-v2.js"
+      - "webapp/public/js/workspace.js"
+      - "frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift"
+    tests:
+      - "webapp/test/workspace-v2-migration-contract.test.mjs"
+      - "webapp/test/workspace-load-contract.test.mjs"
+      - "tests/test_workspace_schema.py"
+      - "frontend-swift/BiocircuitsExplorerMacTests/BiocircuitsExplorerMacTests.swift"
+    compatibility: "Version 1 documents migrate deterministically to version 2; six merged legacy nodes expand into typed config/result pairs, invalid cross-family wires are diagnosed and dropped, runtime session state is removed, and restored derived results are historical. Future versions fail closed."
+    coverage: "shared-browser-native-fixture-and-draft-2020-12-instance"
+
   - id: "job-result-manifest"
     version_source: "schema-const"
     schemas:

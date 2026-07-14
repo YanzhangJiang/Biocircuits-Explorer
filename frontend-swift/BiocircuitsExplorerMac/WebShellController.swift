@@ -1818,8 +1818,8 @@ extension WebShellController: WKUIDelegate {
 
 extension WebShellController {
     static let bridgeName = "biocircuitsExplorerShell"
-    static let supportedContractVersion = 1
-    static let supportedWorkspaceVersion = 1
+    static let supportedContractVersion = 2
+    static let supportedWorkspaceVersion = 2
     static let snapshotCaptureTimeoutNanoseconds: UInt64 = 3_000_000_000
 
     static func admittedProjectID(
