@@ -1,0 +1,50 @@
+{
+  "schema_version": "bne-release-candidate-evidence/v1.0.0",
+  "release_candidate": "REPLACE_WITH_RC_ID",
+  "generated_at": "2026-07-15T00:00:00Z",
+  "overall_status": "not_run",
+  "source": {
+    "commit": null,
+    "dirty": null,
+    "configuration_sha256": null,
+    "image_digest": null,
+    "macos_artifact_sha256": null
+  },
+  "lanes": {
+    "registry": {
+      "status": "not_run",
+      "environment": null,
+      "evidence": [],
+      "rollback": { "status": "not_run", "observed_at": null, "output_sha256": null },
+      "notes": []
+    },
+    "compose_tls": {
+      "status": "not_run",
+      "environment": null,
+      "evidence": [],
+      "rollback": { "status": "not_run", "observed_at": null, "output_sha256": null },
+      "notes": []
+    },
+    "aws": {
+      "status": "not_run",
+      "environment": null,
+      "evidence": [],
+      "rollback": { "status": "not_run", "observed_at": null, "output_sha256": null },
+      "notes": []
+    },
+    "slurm": {
+      "status": "not_run",
+      "environment": null,
+      "evidence": [],
+      "rollback": { "status": "not_run", "observed_at": null, "output_sha256": null },
+      "notes": []
+    },
+    "macos": {
+      "status": "not_run",
+      "environment": null,
+      "evidence": [],
+      "rollback": { "status": "not_run", "observed_at": null, "output_sha256": null },
+      "notes": []
+    }
+  }
+}

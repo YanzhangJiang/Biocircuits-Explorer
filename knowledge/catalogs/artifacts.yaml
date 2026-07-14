@@ -78,10 +78,20 @@ artifacts:
       - "schemas/result-artifact.schema.json"
       - "schemas/target-spec.schema.json"
       - "schemas/workspace.schema.json"
+      - "schemas/release-candidate-evidence.schema.json"
     producer: "manual-with-runtime-owner"
     validator: "scripts/verify_repository.py --check"
     authority: "Each schema plus the runtime owner named in the contract catalog"
     status: "mixed-coverage-design-screen-v0.3-and-rop-shape-v1-directly-tested"
+
+  - id: "release-candidate-evidence-template"
+    kind: "verification-template"
+    paths:
+      - "operations/evidence/release-candidate.template.json"
+    producer: "authorized release operator"
+    validator: "tests/test_release_candidate_evidence.py"
+    authority: "A completed, redacted record validated against schemas/release-candidate-evidence.schema.json"
+    status: "template-only-no-external-lane-executed"
 
   - id: "designability-screen-v0.3-responses"
     kind: "runtime-output"

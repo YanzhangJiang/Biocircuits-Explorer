@@ -95,7 +95,8 @@
   align-items: center;
   gap: 7px;
   white-space: nowrap;
-  transition: color 0.15s, background 0.15s;
+  /* Theme changes must not interpolate through low-contrast text colours. */
+  transition: background 0.15s;
 }
 .view-switch button.active {
   background: rgba(255, 255, 255, 0.12);
@@ -112,7 +113,7 @@
   background: rgba(20, 30, 55, 0.05);
   border-color: rgba(20, 30, 55, 0.08);
 }
-:root[data-effective-theme="light"] .view-switch button { color: #5a6470; }
+:root[data-effective-theme="light"] .view-switch button { color: #46515d; }
 :root[data-effective-theme="light"] .view-switch button.active {
   background: #ffffff;
   color: #1b1e23;

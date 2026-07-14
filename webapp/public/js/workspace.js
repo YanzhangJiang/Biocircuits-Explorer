@@ -16,7 +16,10 @@ import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePrefere
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
 import { normalizeRestoredConnection, validateNodeConnection } from './connection-validation.js';
-import { replaceConnectionsWithModelInvalidation } from './model-lifecycle.js';
+import {
+  replaceConnectionsWithModelInvalidation,
+  restoreHistoricalModelBuild,
+} from './model-lifecycle.js';
 import { scheduleHistoricalScanPlot } from './execution-lifecycle.js';
 
 // Circular-dep imports (safe: only accessed inside function bodies at call time)
@@ -756,14 +759,18 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
   switch (type) {
     case 'model-builder': {
       if (!data.modelContext) break;
-      const cachedModel = data.modelContext.model || null;
-      const cachedQKSymbols = Array.isArray(data.modelContext.qK_syms) && data.modelContext.qK_syms.length
-        ? data.modelContext.qK_syms
+      const restoredContext = restoreHistoricalModelBuild(
+        nodeId,
+        data.modelContext,
+        data.lifecycle?.evidence || null,
+      );
+      if (!restoredContext) break;
+      const cachedModel = restoredContext.model || null;
+      const cachedQKSymbols = Array.isArray(restoredContext.qK_syms) && restoredContext.qK_syms.length
+        ? restoredContext.qK_syms
         : cachedModel ? [...(cachedModel.q_sym || []), ...(cachedModel.K_sym || [])] : [];
-      info.data.built = false;
       info.data.modelContext = cachedModel ? {
-        ...data.modelContext,
-        sessionId: null,
+        ...restoredContext,
         model: cachedModel,
         qK_syms: cachedQKSymbols,
       } : null;

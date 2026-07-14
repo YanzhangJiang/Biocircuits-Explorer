@@ -5,14 +5,14 @@
 
 // ===== Module Imports =====
 import { showToast } from './api.js';
-import { nodeRegistry } from './state.js';
+import { nodeIdCounter, nodeRegistry } from './state.js';
 import { shouldDispatchActionForEvent } from './action-events.js';
 import { initAuthUiEvents } from './auth-ui.js';
 import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
 import {
-  initSocketEvents, updateConnections,
+  initSocketEvents,
   addConnection, removeConnection, replaceConnections,
 } from './connections.js';
 import { toggleDebugConsole, initDebugConsoleEvents } from './debug-console.js';
@@ -20,9 +20,11 @@ import { NODE_TYPES, switchNoteTab } from './node-types/index.js';
 import {
   addNodeFromMenu, addQuickAddChain, removeNode, runConnectedWorkspace, runAllConnectedWorkspace,
   initNodeMenuEvents,
+  captureEditorGraphPlanningGraph, createEditorGraphPatchCommand,
   createNode, moveNode, deleteNodeWithHistory, setNodeAttr, initAttrHistory,
 } from './nodes.js';
-import { registerPerformers, initUndoKeyboard } from './commands.js';
+import { dispatch, registerPerformers, initUndoKeyboard } from './commands.js';
+import { planDesignSpecExportWorkflow } from './graph-patch.js';
 import { initEditorUI } from './editor-ui.js';
 import { addReactionRow, triggerDownstreamNodes } from './model.js';
 import {
@@ -258,32 +260,49 @@ function populateDesignSpecConfigNode(nodeId, spec) {
 }
 
 function exportDesignSpecToWorkspace(spec) {
-  if (!spec || typeof spec !== 'object') {
-    window.showToast?.('No DesignabilitySpec to export');
-    return null;
-  }
-  if (spec.schema_version !== 'bne-designability/v1.0.0') {
-    window.showToast?.('Unsupported DesignabilitySpec version');
-    return null;
-  }
-  setNodeView('workspace');
-  const specId = createNode('design-spec-config', 90, 100);
-  const targetId = createNode('design-target', 590, 100);
-  if (!specId || !targetId) {
-    window.showToast?.('Could not create the Design Spec workflow');
-    return null;
-  }
-  populateDesignSpecConfigNode(specId, spec);
-  addConnection({
-    fromNode: specId,
-    fromPort: 'designability-spec',
-    toNode: targetId,
-    toPort: 'designability-spec',
+  const plan = planDesignSpecExportWorkflow({
+    graph: captureEditorGraphPlanningGraph(),
+    nextNodeOrdinal: nodeIdCounter + 1,
+    anchor: { x: 90, y: 100 },
+    spec,
   });
-  updateConnections();
-  commitWorkspaceSnapshot('agent-design-spec-export');
-  window.showToast?.('Added Design Spec Config and Design Target to the Workspace');
-  return { specNodeId: specId, designTargetNodeId: targetId };
+  if (!plan.ok) {
+    window.showToast?.(plan.diagnostic.message);
+    return plan;
+  }
+
+  try {
+    const command = createEditorGraphPatchCommand(plan, {
+      initializeNode(nodeSpec, { nodeId }) {
+        const initialization = nodeSpec.initialization;
+        if (!initialization) return;
+        if (nodeSpec.type !== 'design-spec-config' || initialization.kind !== 'design-spec-config') {
+          throw new Error(`Unsupported Design Spec export initializer for ${nodeSpec.type}`);
+        }
+        if (!populateDesignSpecConfigNode(nodeId, initialization.spec)) {
+          throw new Error(`Could not initialize Design Spec Config node ${nodeId}`);
+        }
+      },
+    });
+    dispatch(command);
+    setNodeView('workspace');
+    window.showToast?.('Added Design Spec Config and Design Target to the Workspace');
+    return {
+      ...plan,
+      command,
+      specNodeId: plan.patch.metadata.specNodeId,
+      designTargetNodeId: plan.patch.metadata.designTargetNodeId,
+    };
+  } catch (error) {
+    const diagnostic = {
+      kind: 'error',
+      code: error?.code || 'design-spec-export-commit-failed',
+      message: error?.message || String(error),
+    };
+    console.error('[design-spec-export] Graph patch failed', error);
+    window.showToast?.(`Design Spec export failed: ${diagnostic.message}`);
+    return { ok: false, patch: null, diagnostic };
+  }
 }
 window.exportDesignSpecToWorkspace = exportDesignSpecToWorkspace;
 

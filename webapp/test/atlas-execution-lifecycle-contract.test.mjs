@@ -32,12 +32,19 @@ global.CustomEvent = class CustomEvent {
   }
 };
 
-const { nodeRegistry, connections, wiringState } = await import('../public/js/state.js');
+const {
+  advanceWorkspaceRuntimeEpoch,
+  connections,
+  nodeRegistry,
+  wiringState,
+} = await import('../public/js/state.js');
 const {
   beginAtlasNodeExecution,
   executeAtlasBuilder,
   getConnectedAtlasData,
+  inspectAtlasNodeExecution,
   isCurrentAtlasNodeExecution,
+  restoreAtlasNodeExecution,
 } = await import('../public/js/atlas.js');
 const {
   invalidateAtlasExecutionsDownstreamOf,
@@ -151,6 +158,45 @@ await test('Atlas reads the committed graph during an interactive no-op rewire',
   }
 });
 
+await test('restored Atlas data is historical, session-free, and unavailable as a current upstream', async () => {
+  Object.keys(nodeRegistry).forEach(key => delete nodeRegistry[key]);
+  connections.splice(0, connections.length);
+  nodeRegistry.builder = { type: 'atlas-builder', data: {} };
+  nodeRegistry.query = { type: 'atlas-query-result', data: {} };
+  connections.push({
+    fromNode: 'builder', fromPort: 'atlas', toNode: 'query', toPort: 'atlas',
+  });
+
+  restoreAtlasNodeExecution('builder', {
+    atlasData: {
+      network_entries: [],
+      runtime: { session_id: 'saved-session-must-not-survive' },
+    },
+    lifecycle: {
+      state: 'current', freshness: 'current', evidence: { evidence_grade: 'current-computation' },
+    },
+  });
+  const runtime = inspectAtlasNodeExecution('builder');
+  assert.equal(runtime.state, 'historical');
+  assert.equal(runtime.freshness, 'historical');
+  assert.equal(runtime.sessionId, null);
+  assert.equal(getConnectedAtlasData('query'), null);
+  assert.doesNotMatch(JSON.stringify(nodeRegistry.builder.data.atlasData), /session_?id/i);
+});
+
+await test('Atlas restore fingerprints bounded persisted inputs instead of the result payload', async () => {
+  const source = readFileSync(
+    new URL('../public/js/execution-lifecycle.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /function restoredAtlasInputIdentity[\s\S]*lastSpec[\s\S]*lastQuery[\s\S]*lastInverseRequest/);
+  assert.match(
+    source,
+    /inputFingerprint: stableFingerprint\(restoredAtlasInputIdentity\(nodeId, owner, data\)\)/,
+  );
+  assert.doesNotMatch(source, /inputFingerprint: stableFingerprint\([^\n]*data\[resultKey\]/);
+});
+
 await test('real Atlas build rejects fingerprint drift and never republishes stale data', async () => {
   Object.keys(nodeRegistry).forEach(key => delete nodeRegistry[key]);
   connections.splice(0, connections.length);
@@ -186,6 +232,46 @@ await test('real Atlas build rejects fingerprint drift and never republishes sta
     });
     assert.equal(nodeRegistry.builder.data.atlasData, undefined, 'the old result retires before fetch');
     profileInput.value = 'changed-profile';
+    resolveFetch({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ network_entries: [] }),
+    });
+    await assert.rejects(() => build, /inputs changed while it was running/);
+    assert.equal(nodeRegistry.builder.data.atlasData, undefined);
+  } finally {
+    globalThis.fetch = priorFetch;
+    globalThis.document.getElementById = priorGetElementById;
+  }
+});
+
+await test('real Atlas build rejects workspace-epoch drift', async () => {
+  Object.keys(nodeRegistry).forEach(key => delete nodeRegistry[key]);
+  connections.splice(0, connections.length);
+  nodeRegistry.spec = { type: 'atlas-spec', data: {} };
+  nodeRegistry.builder = { type: 'atlas-builder', data: {} };
+  connections.push({
+    fromNode: 'spec', fromPort: 'atlas-spec', toNode: 'builder', toPort: 'atlas-spec',
+  });
+
+  const priorFetch = globalThis.fetch;
+  const priorGetElementById = globalThis.document.getElementById;
+  const contentElement = { dataset: {}, innerHTML: '', querySelectorAll: () => [] };
+  let resolveFetch;
+  try {
+    globalThis.document.getElementById = id => {
+      if (id === 'toast-container') return toastContainer;
+      if (id === 'builder') return { classList: { add() {}, remove() {} } };
+      if (id === 'builder-content') return contentElement;
+      return null;
+    };
+    globalThis.fetch = () => new Promise(resolve => { resolveFetch = resolve; });
+    const build = executeAtlasBuilder('builder', {
+      triggerDownstream: false,
+      throwOnFailure: true,
+    });
+    advanceWorkspaceRuntimeEpoch();
     resolveFetch({
       ok: true,
       status: 200,

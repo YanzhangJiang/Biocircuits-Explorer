@@ -7,7 +7,18 @@ import { setNodeLoading } from './node-loading.js';
 import { NODE_TYPES } from './node-types/index.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
 import {
-  beginModelBuild, invalidateModelBuilder, isCurrentModelBuild, releaseModelBuild,
+  MODEL_BUILD_ENDPOINT,
+  beginModelBuild,
+  blockModelBuild,
+  commitModelBuild,
+  failModelBuild,
+  invalidateModelBuilder,
+  isCurrentModelBuild,
+  modelBuildContext,
+  modelInputRevision,
+  ownsCurrentModelBuild,
+  readCurrentModelBuildResult,
+  releaseModelBuild,
 } from './model-lifecycle.js';
 import { executionDependencyConnections } from './execution-lifecycle.js';
 
@@ -118,50 +129,72 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
   const throwOnFailure = options.throwOnFailure === true;
   const connectionResolver = options.connectionResolver || executionDependencyConnections;
   const input = captureModelBuildInput(modelBuilderNodeId, connectionResolver);
-  const existingContext = nodeRegistry[modelBuilderNodeId]?.data?.modelContext;
+  const existingContext = readCurrentModelBuildResult(modelBuilderNodeId);
   if (existingContext?.inputFingerprint && existingContext.inputFingerprint !== input.fingerprint) {
     invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed');
   }
-  const ticket = beginModelBuild(modelBuilderNodeId);
+  const beginContext = modelBuildContext(
+    modelBuilderNodeId,
+    input.fingerprint,
+    MODEL_BUILD_ENDPOINT,
+  );
+  const ticket = beginContext ? beginModelBuild(modelBuilderNodeId, beginContext) : null;
   if (!ticket) {
     const message = 'Model Builder is no longer available';
     showToast(message);
     if (throwOnFailure) throw new Error(message);
     return false;
   }
-  ticket.inputFingerprint = input.fingerprint;
-  const fail = (message) => {
-    if (!isCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
-    releaseModelBuild(modelBuilderNodeId, ticket);
-    setNodeLoading(modelBuilderNodeId, false);
+  const currentAttempt = () => {
+    const currentInput = captureModelBuildInput(modelBuilderNodeId, connectionResolver);
+    return {
+      input: currentInput,
+      context: modelBuildContext(
+        modelBuilderNodeId,
+        currentInput.fingerprint,
+        MODEL_BUILD_ENDPOINT,
+      ),
+    };
+  };
+  const requestIsCurrent = () => {
+    const current = currentAttempt();
+    return current.input.fingerprint === beginContext.inputFingerprint &&
+      !!current.context && isCurrentModelBuild(modelBuilderNodeId, ticket, current.context);
+  };
+  let preflightError = null;
+  const block = (message) => {
+    const current = currentAttempt();
+    if (!current.context || !blockModelBuild(
+      modelBuilderNodeId,
+      ticket,
+      current.context,
+      message,
+    )) return false;
     showToast(message);
-    if (throwOnFailure) throw new Error(message);
+    if (throwOnFailure) {
+      preflightError = new Error(message);
+      throw preflightError;
+    }
     return false;
   };
-  if (!input.sourceNodeId) return fail('Model Builder has no reaction source connected');
-  const { reactions, kds } = input;
-  if (reactions.length === 0) {
-    return fail('Add at least one reaction');
-  }
-  if (kds.some(kd => kd == null || kd <= 0)) {
-    return fail('Model Builder requires Kd for every reaction (> 0)');
-  }
 
   setNodeLoading(modelBuilderNodeId, true);
-  let requestIsCurrent = null;
   try {
-    requestIsCurrent = () => isCurrentModelBuild(modelBuilderNodeId, ticket) &&
-      captureModelBuildInput(modelBuilderNodeId, connectionResolver).fingerprint === ticket.inputFingerprint;
-    const data = await api('build_model', { reactions, kd: kds }, { statusIsCurrent: requestIsCurrent });
-    const liveInfo = nodeRegistry[modelBuilderNodeId];
-    const currentInput = captureModelBuildInput(modelBuilderNodeId, connectionResolver);
-    if (!liveInfo || !isCurrentModelBuild(modelBuilderNodeId, ticket)) {
-      return false;
+    if (!input.sourceNodeId) return block('Model Builder has no reaction source connected');
+    const { reactions, kds } = input;
+    if (reactions.length === 0) return block('Add at least one reaction');
+    if (kds.some(kd => kd == null || kd <= 0)) {
+      return block('Model Builder requires Kd for every reaction (> 0)');
     }
-    if (currentInput.fingerprint !== ticket.inputFingerprint) {
+
+    const data = await api('build_model', { reactions, kd: kds }, { statusIsCurrent: requestIsCurrent });
+    if (!ownsCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
+    const current = currentAttempt();
+    if (current.input.fingerprint !== beginContext.inputFingerprint) {
       invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed-during-build');
       return false;
     }
+    if (!current.context) return false;
     const modelContext = {
       sessionId: data.session_id,
       // The NetworkIR hash is the content-addressed identity of this model; the
@@ -174,10 +207,19 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
       artifact: data.artifact || null,
       model: data,
       qK_syms: [...data.q_sym, ...data.K_sym],
-      builtForRevision: ticket.revision,
-      inputFingerprint: ticket.inputFingerprint,
+      builtForRevision: modelInputRevision(modelBuilderNodeId),
+      inputFingerprint: beginContext.inputFingerprint,
       sourceNodeId: input.sourceNodeId,
     };
+    if (!commitModelBuild(modelBuilderNodeId, ticket, current.context, {
+      modelContext,
+      evidence: {
+        source_endpoint: MODEL_BUILD_ENDPOINT,
+        network_ir_hash: data.network_ir_hash || null,
+      },
+    })) return false;
+    const liveInfo = nodeRegistry[modelBuilderNodeId];
+    if (!liveInfo || liveInfo !== ticket.owner) return false;
     state.sessionId = data.session_id;
     state.model = data;
     state.qK_syms = modelContext.qK_syms;
@@ -191,11 +233,6 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
       infoText.textContent = info;
     }
 
-    // Store model builder node reference
-    liveInfo.data = liveInfo.data || {};
-    liveInfo.data.built = true;
-    liveInfo.data.modelContext = modelContext;
-
     showToast('Model built successfully');
     commitWorkspaceSnapshot('model-built');
 
@@ -205,9 +242,14 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
     }
     return true;
   } catch (e) {
-    if (!isCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
-    if (requestIsCurrent && !requestIsCurrent()) {
+    if (e === preflightError) throw e;
+    if (!ownsCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
+    const current = currentAttempt();
+    if (current.input.fingerprint !== beginContext.inputFingerprint) {
       invalidateModelBuilder(modelBuilderNodeId, 'model-input-fingerprint-changed-during-build');
+      return false;
+    }
+    if (!current.context || !failModelBuild(modelBuilderNodeId, ticket, current.context, e)) {
       return false;
     }
     handleNodeError(e, modelBuilderNodeId, 'Build model');

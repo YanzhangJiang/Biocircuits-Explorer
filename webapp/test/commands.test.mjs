@@ -152,6 +152,51 @@ test('UndoStack: onChange fires on record/undo/redo', () => {
   assert.equal(fires, 3);
 });
 
+test('UndoStack: a failed undo preserves both history stacks', () => {
+  const stack = new UndoStack(10);
+  let attempts = 0;
+  const command = {
+    kind: 'fallible-undo',
+    apply() {},
+    revert() {
+      attempts += 1;
+      throw new Error('synthetic undo failure');
+    },
+  };
+  stack.record(command);
+
+  assert.throws(() => stack.undo(), /synthetic undo failure/);
+  assert.equal(attempts, 1);
+  assert.equal(stack.depth, 1);
+  assert.equal(stack.canUndo, true);
+  assert.equal(stack.canRedo, false);
+});
+
+test('UndoStack: a failed redo remains retryable without changing undo depth', () => {
+  const stack = new UndoStack(10);
+  let failRedo = false;
+  const command = {
+    kind: 'fallible-redo',
+    apply() {
+      if (failRedo) throw new Error('synthetic redo failure');
+    },
+    revert() {},
+  };
+  command.apply();
+  stack.record(command);
+  stack.undo();
+  failRedo = true;
+
+  assert.throws(() => stack.redo(), /synthetic redo failure/);
+  assert.equal(stack.depth, 0);
+  assert.equal(stack.canUndo, false);
+  assert.equal(stack.canRedo, true);
+
+  failRedo = false;
+  assert.equal(stack.redo(), command);
+  assert.equal(stack.depth, 1);
+});
+
 // ─── End-to-end through the shared dispatch API ───
 
 test('dispatch(CreateNodeCommand): creates, undo removes, redo recreates', () => {

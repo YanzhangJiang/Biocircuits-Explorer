@@ -38,10 +38,16 @@ const {
   admitRopShapeResultForRequest,
   validatePinnedRopShapeReferenceArtifact,
   invalidateRopShapePreparedRequest,
+  prepareRopShapeRequest,
   executeRopShapeResult,
+  inspectRopShapeLifecycle,
   restoreRopShapeResultView,
 } = await import('../public/js/node-types/rop-shape.js');
-const { nodeRegistry, setConnections } = await import('../public/js/state.js');
+const {
+  advanceWorkspaceRuntimeEpoch,
+  nodeRegistry,
+  setConnections,
+} = await import('../public/js/state.js');
 
 let passed = 0;
 async function test(name, fn) {
@@ -528,13 +534,28 @@ await test('restored output requires one valid request/result pair and rejects c
   elements.set('restored-content', content);
   nodeRegistry.restored = {
     type: 'rop-shape-result',
-    data: { ropShapeRequest: valid.request, ropShapeResult: valid.result },
+    data: {
+      ropShapeRequest: valid.request,
+      ropShapeResult: valid.result,
+      sessionId: 'saved-session-must-not-survive',
+    },
   };
   assert.equal(restoreRopShapeResultView('restored', nodeRegistry.restored.data), true);
   assert.match(content.innerHTML, /Historical\/restored artifact/);
   assert.match(content.innerHTML, /ROP shape optimization/);
   assert.ok(nodeRegistry.restored.data.ropShapeRequest);
   assert.ok(nodeRegistry.restored.data.ropShapeResult);
+  assert.equal(nodeRegistry.restored.data.sessionId, undefined);
+  assert.deepEqual(nodeRegistry.restored.data.lifecycle, {
+    state: 'historical',
+    freshness: 'historical',
+    evidence: {
+      certificate_grade: valid.result.certificate_grade,
+      finite_replay_evidence_grade: valid.result.finite_replay_evidence_grade,
+      geometric_evidence_grade: valid.result.geometric_evidence_grade,
+    },
+  });
+  assert.equal(inspectRopShapeLifecycle('restored').sessionId, null);
 
   const requestB = copy(valid.request);
   requestB.edit_intent.id = 'different-saved-request';
@@ -553,13 +574,49 @@ await test('restored output requires one valid request/result pair and rejects c
   assert.equal(nodeRegistry.restored.data.ropShapeResult, undefined);
 });
 
+await test('a historical Design Target selection cannot prepare a fresh ROP Shape request', async () => {
+  const pair = benchmarkSavedPair();
+  const artifact = artifactFromSavedPair(pair);
+  nodeRegistry['historical-target'] = {
+    type: 'design-target',
+    data: {
+      config: {
+        selectedCandidateKey: artifact.selected_candidate_key,
+        ropShapeReference: artifact,
+      },
+      selectionLifecycle: {
+        state: 'historical', freshness: 'historical', evidence: { evidence_grade: 'enforced_exact' },
+      },
+    },
+  };
+  nodeRegistry['historical-config'] = { type: 'rop-shape-edit-config', data: {} };
+  installEditorControls('historical-config', pair.request);
+  setConnections([{
+    fromNode: 'historical-target',
+    fromPort: 'rop-shape-reference',
+    toNode: 'historical-config',
+    toPort: 'rop-shape-reference',
+  }]);
+
+  assert.equal(await prepareRopShapeRequest('historical-config'), null);
+  assert.equal(nodeRegistry['historical-config'].data.ropShapeRequest, undefined);
+  assert.equal(inspectRopShapeLifecycle('historical-config').state, 'blocked');
+  assert.match(
+    elements.get('historical-config-rop-shape-status').innerHTML,
+    /historical or invalidated/,
+  );
+});
+
 await test('latest result run wins and config invalidation cancels in-flight output and loading', async () => {
   const pair = benchmarkSavedPair();
   const artifact = artifactFromSavedPair(pair);
   const selectedKey = artifact.selected_candidate_key;
   nodeRegistry['race-target'] = {
     type: 'design-target',
-    data: { config: { selectedCandidateKey: selectedKey, ropShapeReference: artifact } },
+    data: {
+      config: { selectedCandidateKey: selectedKey, ropShapeReference: artifact },
+      selectionLifecycle: { state: 'current', freshness: 'current', evidence: null },
+    },
   };
   nodeRegistry['race-config'] = { type: 'rop-shape-edit-config', data: {} };
   nodeRegistry['race-result'] = { type: 'rop-shape-result', data: {} };
@@ -615,6 +672,8 @@ await test('latest result run wins and config invalidation cancels in-flight out
     assert.ok(resultB, resultContent.innerHTML);
     assert.equal(resultB.warnings[0], 'run-b-won');
     assert.equal(nodeRegistry['race-result'].data.ropShapeResult.warnings[0], 'run-b-won');
+    assert.equal(nodeRegistry['race-result'].data.lifecycle.state, 'current');
+    assert.equal(nodeRegistry['race-result'].data.lifecycle.freshness, 'current');
 
     responseFor(pending[0], 'run-a-late');
     assert.equal(await runA, null);
@@ -631,6 +690,35 @@ await test('latest result run wins and config invalidation cancels in-flight out
     responseFor(pending[2], 'run-c-stale');
     assert.equal(await runC, null);
     assert.equal(nodeRegistry['race-result'].data.ropShapeResult, undefined);
+    assert.equal(resultNode.classList.contains('loading'), false);
+    assert.equal(nodeRegistry['race-result'].data.lifecycle.state, 'invalidated');
+
+    const oldOwnerRun = executeRopShapeResult('race-result');
+    await waitForPending(pending, 4);
+    const oldOwner = nodeRegistry['race-result'];
+    nodeRegistry['race-result'] = { type: 'rop-shape-result', data: {} };
+    const replacementRun = executeRopShapeResult('race-result');
+    await waitForPending(pending, 5);
+    assert.notEqual(nodeRegistry['race-result'], oldOwner);
+
+    responseFor(pending[3], 'old-owner-stale');
+    assert.equal(await oldOwnerRun, null);
+    assert.equal(resultNode.classList.contains('loading'), true,
+      'the old owner finally must not clear replacement loading');
+    assert.equal(nodeRegistry['race-result'].data.ropShapeResult, undefined);
+
+    responseFor(pending[4], 'replacement-won');
+    const replacement = await replacementRun;
+    assert.equal(replacement.warnings[0], 'replacement-won');
+    assert.equal(nodeRegistry['race-result'].data.ropShapeResult.warnings[0], 'replacement-won');
+
+    const priorEpochRun = executeRopShapeResult('race-result');
+    await waitForPending(pending, 6);
+    advanceWorkspaceRuntimeEpoch();
+    responseFor(pending[5], 'prior-epoch-stale');
+    assert.equal(await priorEpochRun, null);
+    assert.equal(nodeRegistry['race-result'].data.ropShapeResult, undefined);
+    assert.equal(nodeRegistry['race-result'].data.lifecycle.state, 'invalidated');
     assert.equal(resultNode.classList.contains('loading'), false);
   } finally {
     globalThis.fetch = priorFetch;

@@ -240,6 +240,13 @@ authentication.
 Metrics may reveal API shape and should be restricted at the deployment edge
 when public metrics are not intended.
 
+The bounded counter `bcx_http_legacy_requests_total` records actual calls to
+declared bare `/api` compatibility aliases with method, canonicalized route
+label, and status. Canonical `/api/v1` traffic, unknown paths, and v1-only routes
+do not increment it. This counter supplies removal evidence for the declared
+`2027-05-25` sunset; it does not by itself authorize deletion, because every
+deployed client and rollback version must also be accounted for.
+
 ## Verification and change rule
 
 The unified read-only gate is:

@@ -7,25 +7,35 @@
 
 import { nodeRegistry } from './state.js';
 import { cloneSerializable } from './api.js';
+import {
+  readCurrentModelBuildResult,
+  stripSessionIdentifiers,
+} from './model-lifecycle.js';
 
 // Lazy imports for afterRestore hooks (avoids circular deps at load time)
 let _updateROPCloudMode, _updateRegimeGraphMode, _updateROPPolyDimension;
 let _restoreRopShapeResultView, _updateRopShapeIntentVisibility;
+let _restorePlacerResultView, _restoreAtlasNodeExecution;
 async function ensureHookImports() {
   if (_updateROPCloudMode && _updateRegimeGraphMode &&
       _updateROPPolyDimension && _restoreRopShapeResultView &&
-      _updateRopShapeIntentVisibility) return;
-  const [ropCloud, regimeGraph, scan, ropShape] = await Promise.all([
+      _updateRopShapeIntentVisibility && _restorePlacerResultView &&
+      _restoreAtlasNodeExecution) return;
+  const [ropCloud, regimeGraph, scan, ropShape, placer, executionLifecycle] = await Promise.all([
     import('./rop-cloud.js'),
     import('./regime-graph.js'),
     import('./scan.js'),
     import('./node-types/rop-shape.js'),
+    import('./node-types/placer.js'),
+    import('./execution-lifecycle.js'),
   ]);
   _updateROPCloudMode = ropCloud.updateROPCloudMode;
   _updateRegimeGraphMode = regimeGraph.updateRegimeGraphMode;
   _updateROPPolyDimension = scan.updateROPPolyDimension;
   _restoreRopShapeResultView = ropShape.restoreRopShapeResultView;
   _updateRopShapeIntentVisibility = ropShape.updateRopShapeIntentVisibility;
+  _restorePlacerResultView = placer.restorePlacerResultView;
+  _restoreAtlasNodeExecution = executionLifecycle.restoreAtlasNodeExecution;
 }
 // Pre-load hooks at module init (non-blocking)
 ensureHookImports();
@@ -178,6 +188,18 @@ export const NODE_SCHEMAS = {
       target_ro:  { suffix: '-target', type: 'float', default: '1' },
       kd_lo:      { suffix: '-kdlo',   type: 'float', default: '-3' },
       kd_hi:      { suffix: '-kdhi',   type: 'float', default: '3' },
+    },
+  },
+
+  'placer-result': {
+    data: ['placerResult', 'placerMenu'],
+    restoreToData: ['placerResult', 'placerMenu'],
+    afterRestore(nodeId, data) {
+      if (_restorePlacerResultView) {
+        _restorePlacerResultView(nodeId, data);
+        return;
+      }
+      ensureHookImports().then(() => _restorePlacerResultView?.(nodeId, data));
     },
   },
 
@@ -447,7 +469,9 @@ export const NODE_SCHEMAS = {
     data: ['modelContext'],
     dataRaw: ['built'],
     customSerialize(nodeId, result) {
-      result.built = !!result.built;
+      const current = readCurrentModelBuildResult(nodeId);
+      result.modelContext = stripSessionIdentifiers(current || result.modelContext);
+      result.built = !!current;
     },
   },
 
@@ -497,14 +521,35 @@ export const NODE_SCHEMAS = {
   'atlas-builder': {
     data: ['atlasData', 'lastSpec'],
     dataRaw: ['sqlitePath'],
+    afterRestore(nodeId, data) {
+      if (_restoreAtlasNodeExecution) {
+        _restoreAtlasNodeExecution(nodeId, data);
+        return;
+      }
+      ensureHookImports().then(() => _restoreAtlasNodeExecution?.(nodeId, data));
+    },
   },
 
   'atlas-query-result': {
     data: ['queryData', 'lastQuery'],
+    afterRestore(nodeId, data) {
+      if (_restoreAtlasNodeExecution) {
+        _restoreAtlasNodeExecution(nodeId, data);
+        return;
+      }
+      ensureHookImports().then(() => _restoreAtlasNodeExecution?.(nodeId, data));
+    },
   },
 
   'atlas-inverse-result': {
     data: ['inverseDesignData', 'lastInverseRequest'],
+    afterRestore(nodeId, data) {
+      if (_restoreAtlasNodeExecution) {
+        _restoreAtlasNodeExecution(nodeId, data);
+        return;
+      }
+      ensureHookImports().then(() => _restoreAtlasNodeExecution?.(nodeId, data));
+    },
   },
 };
 

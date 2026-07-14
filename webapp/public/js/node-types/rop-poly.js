@@ -1,7 +1,11 @@
 import { syncSelectOptions } from '../api.js';
 import { getNodeData } from '../state.js';
 import { getModelForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
-import { executeROPPolyResult, updateROPPolyDimension } from '../scan.js';
+import {
+  executeROPPolyResult,
+  installROPPolyConfigInvalidation,
+  updateROPPolyDimension,
+} from '../scan.js';
 
 export const ROP_POLY_TYPES = {
   'rop-poly-params': {
@@ -58,6 +62,7 @@ export const ROP_POLY_TYPES = {
       `;
     },
     onInit(nodeId) {
+      installROPPolyConfigInvalidation(nodeId);
       setupAutoUpdate(nodeId, 'rop-poly-params');
     },
     async prepare(nodeId) {

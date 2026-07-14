@@ -1,8 +1,173 @@
-import { nodeRegistry, ensureNodeData } from './state.js';
-import { api, showToast, handleNodeError, renderNodeError, syncSelectOptions } from './api.js';
-import { applyPlotLayoutTheme, getPlotTheme, hexToRgba, themeAxisTitle } from './theme.js';
-import { setNodeLoading, setupPlotResize, getQKSymbolsForNode, getModelContextForNode, ensureModelSession } from './nodes.js';
+import {
+  nodeRegistry,
+  connections,
+  ensureNodeData,
+  getWorkspaceRuntimeEpoch,
+} from './state.js';
+import { api, handleNodeError, renderNodeError, syncSelectOptions } from './api.js';
+import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
+import { setNodeLoading, setupPlotResize, getModelContextForNode, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from './execution-lifecycle-core.js';
+
+const REGIME_GRAPH_ENDPOINT = '/api/v1/build_graph';
+const REGIME_GRAPH_LIFECYCLE_KEY = '_regimeGraphLifecycle';
+
+function canonicalLifecycleValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) normalized[key] = canonicalLifecycleValue(value[key]);
+  return normalized;
+}
+
+function upstreamConnectionIdentity(nodeId) {
+  const visited = new Set();
+  const edges = [];
+  const visit = current => {
+    if (!current || visited.has(current)) return;
+    visited.add(current);
+    for (const connection of connections) {
+      if (connection?.toNode !== current) continue;
+      edges.push([connection.fromNode, connection.fromPort, connection.toNode, connection.toPort]);
+      visit(connection.fromNode);
+    }
+  };
+  visit(nodeId);
+  return edges.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function modelIdentity(nodeId) {
+  const context = getModelContextForNode(nodeId);
+  return {
+    networkIrHash: context?.networkIrHash || context?.model?.network_ir_hash || null,
+    networkIr: context?.networkIr || context?.model?.network_ir || null,
+    inputFingerprint: context?.inputFingerprint || null,
+  };
+}
+
+function readRegimeGraphConfig(nodeId) {
+  const info = nodeRegistry[nodeId];
+  const modeEl = document.getElementById(`${nodeId}-graph-mode`);
+  const changeEl = document.getElementById(`${nodeId}-change-qk`);
+  const saved = info?.data?.config || {};
+  return {
+    graphMode: modeEl?.value || saved.graphMode || 'qk',
+    changeQK: changeEl?.value || saved.changeQK || '',
+    viewMode: '3d',
+  };
+}
+
+function currentRegimeGraphContext(nodeId) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint: JSON.stringify(canonicalLifecycleValue({
+      config: readRegimeGraphConfig(nodeId),
+      model: modelIdentity(nodeId),
+      upstream: upstreamConnectionIdentity(nodeId),
+    })),
+    endpoint: REGIME_GRAPH_ENDPOINT,
+  };
+}
+
+function syncRegimeGraphLifecycle(info, lifecycle) {
+  if (!info || !lifecycle) return;
+  info.data = info.data || {};
+  info.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function regimeGraphLifecycleFor(info) {
+  if (!info[REGIME_GRAPH_LIFECYCLE_KEY]) {
+    const lifecycle = createExecutionLifecycle();
+    info[REGIME_GRAPH_LIFECYCLE_KEY] = lifecycle;
+    if (info.data?.graphData) {
+      const nodeId = Object.keys(nodeRegistry).find(id => nodeRegistry[id] === info);
+      const context = nodeId ? currentRegimeGraphContext(nodeId) : null;
+      if (context) {
+        restoreHistoricalLifecycle(lifecycle, {
+          context,
+          result: info.data.graphData,
+          evidence: info.data?.lifecycle?.evidence || null,
+        });
+        syncRegimeGraphLifecycle(info, lifecycle);
+      }
+    }
+  }
+  return info[REGIME_GRAPH_LIFECYCLE_KEY];
+}
+
+function clearRegimeGraphTimer(info) {
+  if (info?._regimeGraphPlotTimer == null) return;
+  clearTimeout(info._regimeGraphPlotTimer);
+  delete info._regimeGraphPlotTimer;
+}
+
+function settleRegimeGraphLoading(nodeId, lifecycle, ticket) {
+  if (!ticket || nodeRegistry[nodeId] !== ticket.owner) return;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.currentTicket === ticket ||
+      (runtime.currentTicket == null && runtime.loading === false)) {
+    setNodeLoading(nodeId, false);
+  }
+}
+
+export function invalidateRegimeGraphResult(nodeId, reason = 'regime-graph-input-changed') {
+  const info = nodeRegistry[nodeId];
+  if (!info || info.type !== 'regime-graph') return false;
+  const lifecycle = regimeGraphLifecycleFor(info);
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.owner === info && runtime.workspaceEpoch != null) {
+    invalidateLifecycle(lifecycle, {
+      owner: info,
+      workspaceEpoch: runtime.workspaceEpoch,
+      reason,
+    });
+  }
+  clearRegimeGraphTimer(info);
+  info.data = info.data || {};
+  delete info.data.graphData;
+  syncRegimeGraphLifecycle(info, lifecycle);
+  setNodeLoading(nodeId, false);
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  if (contentEl) {
+    contentEl.dataset.resultState = 'invalidated';
+    contentEl.innerHTML = '<span class="text-dim">Inputs changed — rebuild the Regime Graph.</span>';
+  }
+  return true;
+}
+
+export function installRegimeGraphInvalidation(nodeId) {
+  const node = document.getElementById(nodeId);
+  if (!node) return;
+  node.querySelectorAll('.auto-update').forEach(control => {
+    const eventType = control.tagName === 'SELECT' || control.type === 'checkbox' ? 'change' : 'input';
+    control.addEventListener(eventType, () => {
+      invalidateRegimeGraphResult(nodeId, 'regime-graph-config-input-changed');
+    });
+  });
+}
+
+export function inspectRegimeGraphLifecycle(nodeId) {
+  const info = nodeRegistry[nodeId];
+  return info?.type === 'regime-graph'
+    ? inspectExecutionLifecycle(regimeGraphLifecycleFor(info))
+    : null;
+}
 
 export function updateRegimeGraphMode(nodeId) {
   const modeEl = document.getElementById(`${nodeId}-graph-mode`);
@@ -15,11 +180,15 @@ export async function executeRegimeGraph(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
   if (!contentEl) return false;
 
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'regime-graph') return false;
+  const lifecycle = regimeGraphLifecycleFor(owner);
+  invalidateRegimeGraphResult(nodeId, 'regime-graph-execution-restarted');
   const modelContext = getModelContextForNode(nodeId);
   const qKSymbols = modelContext?.qK_syms || [];
   const modeEl = document.getElementById(`${nodeId}-graph-mode`);
   const changeEl = document.getElementById(`${nodeId}-change-qk`);
-  const info = nodeRegistry[nodeId];
+  const info = owner;
   const config = info?.data?.config || {};
 
   syncSelectOptions(changeEl, qKSymbols, config.changeQK || changeEl?.value, 0);
@@ -32,10 +201,32 @@ export async function executeRegimeGraph(nodeId) {
   info.data = info.data || {};
   info.data.config = { graphMode, changeQK, viewMode };
 
+  if (graphMode === 'siso' && !changeQK) {
+    const context = currentRegimeGraphContext(nodeId);
+    if (context) {
+      const ticket = beginLifecycle(lifecycle, context);
+      blockLifecycle(lifecycle, ticket, {
+        context,
+        reason: 'Select a qK coordinate for SISO graph',
+      });
+      syncRegimeGraphLifecycle(owner, lifecycle);
+    }
+    renderNodeError(contentEl, new Error('Select a qK coordinate for SISO graph'));
+    return false;
+  }
+
   setNodeLoading(nodeId, true);
+  const attemptRevision = (owner._regimeGraphAttemptRevision || 0) + 1;
+  owner._regimeGraphAttemptRevision = attemptRevision;
+  let ticket = null;
   try {
     const sessionId = await ensureModelSession(nodeId);
-    if (graphMode === 'siso' && !changeQK) throw new Error('Select a qK coordinate for SISO graph');
+    if (nodeRegistry[nodeId] !== owner ||
+        owner._regimeGraphAttemptRevision !== attemptRevision) return false;
+    const beginContext = currentRegimeGraphContext(nodeId);
+    if (!beginContext) return false;
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncRegimeGraphLifecycle(owner, lifecycle);
 
     const payload = {
       session_id: sessionId,
@@ -43,23 +234,63 @@ export async function executeRegimeGraph(nodeId) {
     };
     if (graphMode === 'siso') payload.change_qK = changeQK;
 
-    const data = await api('build_graph', payload);
-    if (nodeRegistry[nodeId]) {
-      ensureNodeData(nodeId).graphData = data;
+    const data = await api('build_graph', payload, {
+      statusIsCurrent: () => {
+        const context = currentRegimeGraphContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
+    });
+    const currentContext = currentRegimeGraphContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: data,
+      evidence: { source_endpoint: REGIME_GRAPH_ENDPOINT },
+      sessionId,
+    })) {
+      syncRegimeGraphLifecycle(owner, lifecycle);
+      return false;
     }
+    syncRegimeGraphLifecycle(owner, lifecycle);
+    if (nodeRegistry[nodeId] !== owner) return false;
+    ensureNodeData(nodeId).graphData = data;
     contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
     commitWorkspaceSnapshot('regime-graph');
-    setTimeout(() => {
+    clearRegimeGraphTimer(owner);
+    const timer = setTimeout(() => {
+      if (owner._regimeGraphPlotTimer === timer) delete owner._regimeGraphPlotTimer;
+      const context = currentRegimeGraphContext(nodeId);
+      if (nodeRegistry[nodeId] !== owner || !context ||
+          !isCurrentLifecycle(lifecycle, ticket, context)) return;
       plotRegimeGraph(data, `${nodeId}-plot`, { viewMode });
       setupPlotResize(nodeId, `${nodeId}-plot`);
     }, 50);
+    owner._regimeGraphPlotTimer = timer;
     return true;
   } catch (e) {
+    let current = false;
+    const context = currentRegimeGraphContext(nodeId);
+    if (ticket && context) {
+      current = failLifecycle(lifecycle, ticket, { context, error: e });
+    } else if (context && nodeRegistry[nodeId] === owner &&
+               owner._regimeGraphAttemptRevision === attemptRevision) {
+      ticket = beginLifecycle(lifecycle, context);
+      current = failLifecycle(lifecycle, ticket, { context, error: e });
+    }
+    syncRegimeGraphLifecycle(owner, lifecycle);
+    if (!current) return false;
     handleNodeError(e, nodeId, 'Regime graph');
-    renderNodeError(contentEl, e);
+    if (nodeRegistry[nodeId] === owner) renderNodeError(contentEl, e);
     return false;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (ticket) {
+      releaseLifecycle(lifecycle, ticket);
+      if (owner._regimeGraphAttemptRevision === attemptRevision) {
+        settleRegimeGraphLoading(nodeId, lifecycle, ticket);
+      }
+    } else if (nodeRegistry[nodeId] === owner &&
+               owner._regimeGraphAttemptRevision === attemptRevision) {
+      setNodeLoading(nodeId, false);
+    }
   }
 }
 
@@ -306,9 +537,6 @@ export function plotRegimeGraph(data, plotId, options = {}) {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }).filter(d => d > 0);
 
-  const avgDist = edgeDistances.length > 0
-    ? edgeDistances.reduce((a, b) => a + b, 0) / edgeDistances.length
-    : 1.0;
   const minDist = edgeDistances.length > 0 ? Math.min(...edgeDistances) : 0.5;
   const maxDist = edgeDistances.length > 0 ? Math.max(...edgeDistances) : 2.0;
 

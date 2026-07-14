@@ -16,7 +16,11 @@ globalThis.document = {
 globalThis.HTMLSelectElement = class HTMLSelectElement {};
 
 const { NODE_TYPES } = await import('../public/js/node-types/index.js');
-const { NODE_CONTRACTS, NODE_ROLES } = await import('../public/js/node-contracts.js');
+const {
+  LEGACY_NODE_MIGRATION_POLICY,
+  NODE_CONTRACTS,
+  NODE_ROLES,
+} = await import('../public/js/node-contracts.js');
 
 const LEGACY_RESTORE_ONLY = new Set([
   'siso-analysis',
@@ -53,6 +57,11 @@ test('exactly six merged legacy nodes are restore-only and never scheduler-runna
   for (const nodeType of actual) {
     assert.equal(NODE_TYPES[nodeType].execution.mode, 'restore-only');
   }
+  assert.deepEqual(LEGACY_NODE_MIGRATION_POLICY, {
+    restoreOnlySinceWorkspaceVersion: 2,
+    migrateSourceWorkspaceVersion: 1,
+    removeDefinitionsInWorkspaceVersion: 3,
+  });
 });
 
 test('prepare and execute operations are separate and match their descriptors', () => {

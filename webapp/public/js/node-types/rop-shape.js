@@ -6,9 +6,27 @@
 
 import { escapeHtml, optimizeRopShape } from '../api.js';
 import { renderRopShapeOptimizationResult } from '../rop-shape-render.js';
-import { connections, ensureNodeData, nodeRegistry } from '../state.js';
+import {
+  connections,
+  ensureNodeData,
+  getWorkspaceRuntimeEpoch,
+  nodeRegistry,
+} from '../state.js';
 import { setNodeLoading, setupAutoUpdate } from '../nodes.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
+import {
+  begin as beginLifecycle,
+  block as blockLifecycle,
+  commit as commitLifecycle,
+  createExecutionLifecycle,
+  fail as failLifecycle,
+  inspectExecutionLifecycle,
+  invalidate as invalidateLifecycle,
+  isCurrent as isCurrentLifecycle,
+  release as releaseLifecycle,
+  restoreHistorical as restoreHistoricalLifecycle,
+  serializeExecutionLifecycle,
+} from '../execution-lifecycle-core.js';
 
 export const ROP_SHAPE_REFERENCE_VERSION = 'bne-workspace-rop-shape-reference/v1.0.0';
 export const ROP_SHAPE_REQUEST_VERSION = 'bne-rop-shape-optimize-request/v1.0.0';
@@ -34,6 +52,8 @@ const REQUEST_KEYS = [
 ];
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const DECIMAL_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const ROP_SHAPE_PREPARE_LIFECYCLE_KEY = '_ropShapePrepareLifecycle';
+const ROP_SHAPE_RESULT_LIFECYCLE_KEY = '_ropShapeResultLifecycle';
 
 function invalid(path, message) {
   throw new Error(`Invalid ROP shape ${path}: ${message}`);
@@ -152,6 +172,87 @@ function canonicalJsonValue(value) {
 
 function sameJson(left, right) {
   return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+}
+
+function stableRopShapeFingerprint(value) {
+  return JSON.stringify(canonicalJsonValue(value));
+}
+
+function ropShapeLifecycleFor(info, key) {
+  if (!info[key]) info[key] = createExecutionLifecycle();
+  return info[key];
+}
+
+function syncRopShapeLifecycle(info, lifecycle) {
+  if (!info || !lifecycle) return;
+  info.data = info.data || {};
+  info.data.lifecycle = serializeExecutionLifecycle(lifecycle);
+}
+
+function invalidateBoundRopShapeLifecycle(info, key, reason) {
+  const lifecycle = info?.[key];
+  if (!lifecycle) return false;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.owner !== info || runtime.workspaceEpoch == null) return false;
+  const invalidated = invalidateLifecycle(lifecycle, {
+    owner: info,
+    workspaceEpoch: runtime.workspaceEpoch,
+    reason,
+  });
+  syncRopShapeLifecycle(info, lifecycle);
+  return invalidated;
+}
+
+function ropShapeLifecycleContext(nodeId, inputFingerprint) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner) return null;
+  return {
+    owner,
+    workspaceEpoch: getWorkspaceRuntimeEpoch(),
+    inputFingerprint,
+    endpoint: ROP_SHAPE_ENDPOINT,
+  };
+}
+
+function settleRopShapeLoading(nodeId, lifecycle, ticket) {
+  if (!ticket || nodeRegistry[nodeId] !== ticket.owner) return;
+  const runtime = inspectExecutionLifecycle(lifecycle);
+  if (runtime.currentTicket === ticket ||
+      (runtime.currentTicket == null && runtime.loading === false)) {
+    setNodeLoading(nodeId, false);
+  }
+}
+
+function retireObsoleteRopShapeTicket(lifecycle, ticket, context, owner) {
+  if (context) {
+    failLifecycle(lifecycle, ticket, {
+      context,
+      error: new Error('ROP shape execution no longer owns the current inputs'),
+    });
+  }
+  syncRopShapeLifecycle(owner, lifecycle);
+  return null;
+}
+
+function ropShapeEvidence(result) {
+  const evidence = {};
+  for (const key of [
+    'certificate_grade',
+    'finite_replay_evidence_grade',
+    'geometric_evidence_grade',
+  ]) {
+    if (typeof result?.[key] === 'string' && result[key]) evidence[key] = result[key];
+  }
+  return Object.keys(evidence).length ? evidence : null;
+}
+
+export function inspectRopShapeLifecycle(nodeId) {
+  const info = nodeRegistry[nodeId];
+  if (!info) return null;
+  const key = info.type === 'rop-shape-edit-config'
+    ? ROP_SHAPE_PREPARE_LIFECYCLE_KEY
+    : ROP_SHAPE_RESULT_LIFECYCLE_KEY;
+  return info[key] ? inspectExecutionLifecycle(info[key]) : null;
 }
 
 function witnessLimit(options, path) {
@@ -843,6 +944,10 @@ function currentPinnedReference(nodeId) {
   const source = nodeRegistry[connection.fromNode];
   if (!source) invalid('config input', 'upstream node is missing');
   if (source.type !== 'design-target') invalid('config input', 'must come from a Design Target node');
+  const selectionLifecycle = source.data?.selectionLifecycle;
+  if (selectionLifecycle?.state !== 'current' || selectionLifecycle?.freshness !== 'current') {
+    invalid('config input', 'upstream Design Target selection is historical or invalidated; rerun and select it again');
+  }
   const sourceConfig = source.data?.config;
   const selectedKey = requireString(sourceConfig?.selectedCandidateKey,
     'upstream config.selectedCandidateKey');
@@ -851,6 +956,74 @@ function currentPinnedReference(nodeId) {
     invalid('reference artifact.selected_candidate_key', 'does not match the current upstream selection');
   }
   return artifact;
+}
+
+function ropShapeRequestFingerprint(request) {
+  return stableRopShapeFingerprint({ endpoint: ROP_SHAPE_ENDPOINT, request });
+}
+
+function rawRopShapeEditorFingerprint(nodeId) {
+  const suffixes = [
+    '-rop-shape-kind', '-intent-id', '-left-span', '-right-span', '-steps', '-group',
+    '-preserve', '-anchor-step', '-anchor-tolerance', '-midpoint-tolerance',
+    '-effect-tolerance', '-minimum-parameter-margin', '-sense', '-shared', '-max-paths',
+    '-max-cells', '-max-replays', '-require-exhaustive', '-replay-sample-points',
+    '-replay-min-prominence', '-linear-intent-json',
+  ];
+  const fields = {};
+  for (const suffix of suffixes) {
+    const element = document.getElementById(`${nodeId}${suffix}`);
+    fields[suffix] = element?.type === 'checkbox'
+      ? element.checked === true
+      : (element?.value ?? null);
+  }
+  const referenceConnection = connections.find(connection =>
+    connection.toNode === nodeId && connection.toPort === 'rop-shape-reference');
+  return stableRopShapeFingerprint({
+    fields,
+    referenceSource: referenceConnection?.fromNode ?? null,
+    selectedCandidateKey: referenceConnection
+      ? nodeRegistry[referenceConnection.fromNode]?.data?.config?.selectedCandidateKey ?? null
+      : null,
+  });
+}
+
+function buildCurrentRopShapeRequest(nodeId) {
+  const config = readEditorConfig(nodeId);
+  const artifact = currentPinnedReference(nodeId);
+  const witnessCount = artifact.fixed_topology_reference.reference.operating_points_log10.length;
+  const intent = buildRopShapeEditIntent(config.kind, config, { witnessCount });
+  const request = buildCanonicalRopShapeRequestFromHandoff(artifact, intent, {
+    optimization: {
+      minimumParameterMargin: config.minimumParameterMargin,
+      effectTolerance: config.effectTolerance,
+    },
+    workBudget: {
+      maxPaths: config.maxPaths,
+      maxCells: config.maxCells,
+      maxReplays: config.maxReplays,
+      requireExhaustive: config.requireExhaustive,
+    },
+    replay: {
+      samplePoints: config.replaySamplePoints,
+      minProminence: config.replayMinProminence,
+    },
+  });
+  return { request, intent, witnessCount };
+}
+
+function currentRopShapePrepareContext(nodeId) {
+  if (!nodeRegistry[nodeId]) return null;
+  let inputFingerprint;
+  try {
+    inputFingerprint = ropShapeRequestFingerprint(buildCurrentRopShapeRequest(nodeId).request);
+  } catch {
+    inputFingerprint = stableRopShapeFingerprint({
+      invalid: true,
+      attempt: rawRopShapeEditorFingerprint(nodeId),
+    });
+  }
+  return ropShapeLifecycleContext(nodeId, inputFingerprint);
 }
 
 export function updateRopShapeIntentVisibility(nodeId) {
@@ -871,6 +1044,14 @@ export function updateRopShapeIntentVisibility(nodeId) {
 }
 
 export function invalidateRopShapePreparedRequest(nodeId) {
+  const info = nodeRegistry[nodeId];
+  if (info) {
+    invalidateBoundRopShapeLifecycle(
+      info,
+      ROP_SHAPE_PREPARE_LIFECYCLE_KEY,
+      'rop-shape-config-input-changed',
+    );
+  }
   delete ensureNodeData(nodeId).ropShapeRequest;
   setConfigStatus(nodeId,
     '<div class="node-info"><strong>Needs Prepare.</strong> Configuration changed; the prior request is no longer an output.</div>');
@@ -884,6 +1065,14 @@ export function invalidateRopShapePreparedRequest(nodeId) {
 export function invalidateRopShapeResultRun(nodeId, {
   message = null,
 } = {}) {
+  const info = nodeRegistry[nodeId];
+  if (info) {
+    invalidateBoundRopShapeLifecycle(
+      info,
+      ROP_SHAPE_RESULT_LIFECYCLE_KEY,
+      'rop-shape-input-changed',
+    );
+  }
   const data = ensureNodeData(nodeId);
   const current = Number.isSafeInteger(data.ropShapeRunToken) ? data.ropShapeRunToken : 0;
   data.ropShapeRunToken = current + 1;
@@ -914,43 +1103,74 @@ export async function prepareRopShapeRequest(nodeId, {
   throwOnFailure = false,
   commit = true,
 } = {}) {
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'rop-shape-edit-config') {
+    if (throwOnFailure) invalid('config node', 'is unavailable');
+    return null;
+  }
+  const lifecycle = ropShapeLifecycleFor(owner, ROP_SHAPE_PREPARE_LIFECYCLE_KEY);
+  let ticket = null;
   // A fresh prepare attempt invalidates the prior output immediately. Failed
   // validation must not leave a stale request flowing from this node.
   invalidateRopShapePreparedRequest(nodeId);
   setNodeLoading(nodeId, true);
   try {
-    const config = readEditorConfig(nodeId);
-    const artifact = currentPinnedReference(nodeId);
-    const witnessCount = artifact.fixed_topology_reference.reference.operating_points_log10.length;
-    const intent = buildRopShapeEditIntent(config.kind, config, { witnessCount });
-    const request = buildCanonicalRopShapeRequestFromHandoff(artifact, intent, {
-      optimization: {
-        minimumParameterMargin: config.minimumParameterMargin,
-        effectTolerance: config.effectTolerance,
+    const { request, intent, witnessCount } = buildCurrentRopShapeRequest(nodeId);
+    const beginContext = ropShapeLifecycleContext(nodeId, ropShapeRequestFingerprint(request));
+    if (!beginContext) return null;
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncRopShapeLifecycle(owner, lifecycle);
+    const currentContext = currentRopShapePrepareContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: request,
+      evidence: {
+        source_endpoint: ROP_SHAPE_ENDPOINT,
+        artifact_kind: 'rop-shape-request',
       },
-      workBudget: {
-        maxPaths: config.maxPaths,
-        maxCells: config.maxCells,
-        maxReplays: config.maxReplays,
-        requireExhaustive: config.requireExhaustive,
-      },
-      replay: {
-        samplePoints: config.replaySamplePoints,
-        minProminence: config.replayMinProminence,
-      },
-    });
+    })) {
+      syncRopShapeLifecycle(owner, lifecycle);
+      return null;
+    }
+    if (nodeRegistry[nodeId] !== owner) return null;
     ensureNodeData(nodeId).ropShapeRequest = cloneRopShapeJson(request, 'prepared request');
+    syncRopShapeLifecycle(owner, lifecycle);
     setConfigStatus(nodeId,
       `<div class="node-info"><strong>Prepared.</strong> ${escapeHtml(intent.kind)} over ` +
       `${witnessCount} pinned program steps; Run the connected result node.</div>`);
     if (commit) commitWorkspaceSnapshot('rop-shape-request-prepared');
     return request;
   } catch (error) {
-    setConfigStatus(nodeId, `<div class="node-error">${escapeHtml(error.message)}</div>`);
-    if (throwOnFailure) throw error;
+    let current = false;
+    if (ticket) {
+      const currentContext = currentRopShapePrepareContext(nodeId);
+      current = !!currentContext && failLifecycle(lifecycle, ticket, {
+        context: currentContext,
+        error,
+      });
+    } else {
+      const context = ropShapeLifecycleContext(nodeId, stableRopShapeFingerprint({
+        invalid: true,
+        attempt: rawRopShapeEditorFingerprint(nodeId),
+      }));
+      if (context) {
+        ticket = beginLifecycle(lifecycle, context);
+        current = blockLifecycle(lifecycle, ticket, {
+          context,
+          reason: error?.message || String(error),
+        });
+      }
+    }
+    syncRopShapeLifecycle(owner, lifecycle);
+    if (current && nodeRegistry[nodeId] === owner) {
+      setConfigStatus(nodeId, `<div class="node-error">${escapeHtml(error.message)}</div>`);
+    }
+    if (throwOnFailure && current) throw error;
     return null;
   } finally {
-    setNodeLoading(nodeId, false);
+    if (ticket) releaseLifecycle(lifecycle, ticket);
+    settleRopShapeLoading(nodeId, lifecycle, ticket);
+    if (!ticket && nodeRegistry[nodeId] === owner) setNodeLoading(nodeId, false);
   }
 }
 
@@ -965,9 +1185,30 @@ function connectedConfigNodeId(resultNodeId) {
   return connection.fromNode;
 }
 
+function currentRopShapeResultContext(nodeId) {
+  if (!nodeRegistry[nodeId]) return null;
+  let inputFingerprint;
+  try {
+    const configNodeId = connectedConfigNodeId(nodeId);
+    const request = nodeRegistry[configNodeId]?.data?.ropShapeRequest;
+    if (!request) invalid('result input', 'current prepared request is missing');
+    inputFingerprint = ropShapeRequestFingerprint(request);
+  } catch {
+    inputFingerprint = stableRopShapeFingerprint({
+      invalid: true,
+      resultNodeId: nodeId,
+      configConnection: connections.find(connection =>
+        connection.toNode === nodeId && connection.toPort === 'rop-shape-request') || null,
+    });
+  }
+  return ropShapeLifecycleContext(nodeId, inputFingerprint);
+}
+
 export async function executeRopShapeResult(nodeId, { throwOnFailure = false } = {}) {
-  const content = document.getElementById(`${nodeId}-content`);
-  let runToken = null;
+  const owner = nodeRegistry[nodeId];
+  if (!owner || owner.type !== 'rop-shape-result') return null;
+  const lifecycle = ropShapeLifecycleFor(owner, ROP_SHAPE_RESULT_LIFECYCLE_KEY);
+  let ticket = null;
   // Starting a fresh attempt immediately retires any historical/stale output,
   // even if upstream prepare fails before the backend request can begin.
   invalidateRopShapeResultRun(nodeId, { message: 'Preparing ROP shape optimization…' });
@@ -979,42 +1220,91 @@ export async function executeRopShapeResult(nodeId, { throwOnFailure = false } =
       throwOnFailure: true,
       commit: false,
     });
-    // Begin the result run only after prepare has invalidated every downstream
-    // result. The monotonic token prevents older responses from overwriting a
-    // later run or a configuration-change invalidation.
-    runToken = invalidateRopShapeResultRun(nodeId, { message: 'Running ROP shape optimization…' });
+    if (!request) return null;
+    // Begin only after prepare has invalidated every downstream result. The
+    // ticket binds the exact prepared request, owner object, workspace epoch,
+    // and canonical endpoint.
+    invalidateRopShapeResultRun(nodeId, { message: 'Running ROP shape optimization…' });
+    const beginContext = ropShapeLifecycleContext(nodeId, ropShapeRequestFingerprint(request));
+    if (!beginContext) return null;
+    ticket = beginLifecycle(lifecycle, beginContext);
+    syncRopShapeLifecycle(owner, lifecycle);
     setNodeLoading(nodeId, true);
     const rawResult = await optimizeRopShape(request, {
-      statusIsCurrent: () => isCurrentRopShapeResultRun(nodeId, runToken),
+      statusIsCurrent: () => {
+        const context = currentRopShapeResultContext(nodeId);
+        return !!context && isCurrentLifecycle(lifecycle, ticket, context);
+      },
     });
-    if (!isCurrentRopShapeResultRun(nodeId, runToken)) return null;
+    let currentContext = currentRopShapeResultContext(nodeId);
+    if (!currentContext || !isCurrentLifecycle(lifecycle, ticket, currentContext)) {
+      return retireObsoleteRopShapeTicket(lifecycle, ticket, currentContext, owner);
+    }
     const result = admitRopShapeResultForRequest(rawResult, request);
-    if (!isCurrentRopShapeResultRun(nodeId, runToken)) return null;
+    currentContext = currentRopShapeResultContext(nodeId);
+    if (!currentContext || !isCurrentLifecycle(lifecycle, ticket, currentContext)) {
+      return retireObsoleteRopShapeTicket(lifecycle, ticket, currentContext, owner);
+    }
     const rendered = renderRopShapeOptimizationResult(result);
-    if (!isCurrentRopShapeResultRun(nodeId, runToken)) return null;
+    currentContext = currentRopShapeResultContext(nodeId);
+    if (!currentContext || !commitLifecycle(lifecycle, ticket, {
+      context: currentContext,
+      result: { request, result },
+      evidence: ropShapeEvidence(result),
+    })) {
+      syncRopShapeLifecycle(owner, lifecycle);
+      return null;
+    }
+    if (nodeRegistry[nodeId] !== owner) return null;
     const resultData = ensureNodeData(nodeId);
     resultData.ropShapeRequest = cloneRopShapeJson(request, 'executed request');
     resultData.ropShapeResult = cloneRopShapeJson(result, 'executed result');
+    syncRopShapeLifecycle(owner, lifecycle);
+    if (!isCurrentLifecycle(lifecycle, ticket, currentContext)) return null;
+    const content = document.getElementById(`${nodeId}-content`);
     if (content) content.innerHTML = rendered;
     commitWorkspaceSnapshot('rop-shape-optimization');
     return result;
   } catch (error) {
-    const stillCurrent = runToken == null || isCurrentRopShapeResultRun(nodeId, runToken);
-    if (stillCurrent && content) {
+    let current = false;
+    if (ticket) {
+      const currentContext = currentRopShapeResultContext(nodeId);
+      current = !!currentContext && failLifecycle(lifecycle, ticket, {
+        context: currentContext,
+        error,
+      });
+    } else {
+      const context = ropShapeLifecycleContext(nodeId, stableRopShapeFingerprint({
+        invalid: true,
+        stage: 'prepare',
+        resultNodeId: nodeId,
+      }));
+      if (context) {
+        ticket = beginLifecycle(lifecycle, context);
+        current = blockLifecycle(lifecycle, ticket, {
+          context,
+          reason: error?.message || String(error),
+        });
+      }
+    }
+    syncRopShapeLifecycle(owner, lifecycle);
+    const content = document.getElementById(`${nodeId}-content`);
+    if (current && nodeRegistry[nodeId] === owner && content) {
       content.innerHTML = `<div class="node-error">${escapeHtml(error.message)}</div>`;
     }
-    if (throwOnFailure && stillCurrent) throw error;
+    if (throwOnFailure && current) throw error;
     return null;
   } finally {
-    if (runToken == null || isCurrentRopShapeResultRun(nodeId, runToken)) {
-      setNodeLoading(nodeId, false);
-    }
+    if (ticket) releaseLifecycle(lifecycle, ticket);
+    settleRopShapeLoading(nodeId, lifecycle, ticket);
+    if (!ticket && nodeRegistry[nodeId] === owner) setNodeLoading(nodeId, false);
   }
 }
 
 export function restoreRopShapeResultView(nodeId, data = null) {
   const content = document.getElementById(`${nodeId}-content`);
   if (!content) return false;
+  const owner = nodeRegistry[nodeId];
   const restored = data || nodeRegistry[nodeId]?.data || {};
   const liveData = nodeRegistry[nodeId]?.data;
   const historical = '<div class="design-screen-truncation-warning rop-shape-restored-warning" role="status">' +
@@ -1028,7 +1318,31 @@ export function restoreRopShapeResultView(nodeId, data = null) {
       restored.ropShapeResult,
       restored.ropShapeRequest,
     );
-    content.innerHTML = historical + renderRopShapeOptimizationResult(admitted);
+    const rendered = renderRopShapeOptimizationResult(admitted);
+    if (!owner || nodeRegistry[nodeId] !== owner) return false;
+    const lifecycle = ropShapeLifecycleFor(owner, ROP_SHAPE_RESULT_LIFECYCLE_KEY);
+    const context = ropShapeLifecycleContext(
+      nodeId,
+      ropShapeRequestFingerprint(restored.ropShapeRequest),
+    );
+    if (!context) return false;
+    restoreHistoricalLifecycle(lifecycle, {
+      context,
+      result: {
+        ropShapeRequest: restored.ropShapeRequest,
+        ropShapeResult: admitted,
+      },
+      evidence: ropShapeEvidence(admitted),
+    });
+    syncRopShapeLifecycle(owner, lifecycle);
+    const historicalResult = inspectExecutionLifecycle(lifecycle).result;
+    if (liveData) {
+      liveData.ropShapeRequest = historicalResult.ropShapeRequest;
+      liveData.ropShapeResult = historicalResult.ropShapeResult;
+      delete liveData.sessionId;
+      delete liveData.session_id;
+    }
+    content.innerHTML = historical + rendered;
     return true;
   } catch (error) {
     if (liveData) invalidateRopShapeResultRun(nodeId);

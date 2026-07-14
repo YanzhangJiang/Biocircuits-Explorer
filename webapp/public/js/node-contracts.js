@@ -6,6 +6,16 @@ import {
 
 export const NODE_ROLES = new Set(['source', 'config', 'compute', 'manual-gate', 'viewer']);
 
+// Workspace v2 always expands these merged v1 records before graph staging.
+// The definitions remain load-only for one document generation so old undo or
+// recovery snapshots fail predictably instead of becoming creatable UI nodes.
+// Workspace v3 is the declared removal boundary for the definitions themselves.
+export const LEGACY_NODE_MIGRATION_POLICY = Object.freeze({
+  restoreOnlySinceWorkspaceVersion: 2,
+  migrateSourceWorkspaceVersion: 1,
+  removeDefinitionsInWorkspaceVersion: 3,
+});
+
 // Exhaustive architectural inventory. UI category remains presentation-only;
 // role, availability, and execution mode are behavior contracts.
 export const NODE_CONTRACTS = Object.freeze({

@@ -139,7 +139,7 @@ export async function applyThemeMode(mode, options = {}) {
   if (persist) {
     try {
       window.localStorage.setItem(THEME_MODE_STORAGE_KEY, normalized);
-    } catch (_) {}
+    } catch {}
   }
 
   if (refreshPlots) {
@@ -160,7 +160,7 @@ export function storedThemeMode() {
       window.localStorage.setItem(THEME_MODE_STORAGE_KEY, normalizedLegacy);
     }
     return normalizedLegacy;
-  } catch (_) {
+  } catch {
     return 'auto';
   }
 }

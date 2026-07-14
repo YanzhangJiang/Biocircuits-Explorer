@@ -1,7 +1,11 @@
 import { nodeRegistry } from '../state.js';
 import { api, escapeHtml, renderNodeError, syncSelectOptions } from '../api.js';
 import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, setupAutoUpdate } from '../nodes.js';
-import { computeSISOResult, executeQKPolyResult } from '../siso.js';
+import {
+  computeSISOResult,
+  executeQKPolyResult,
+  installSISOConfigInvalidation,
+} from '../siso.js';
 
 export const SISO_TYPES = {
   'siso-params': {
@@ -52,6 +56,9 @@ export const SISO_TYPES = {
       `;
     },
     onInit(nodeId) {
+      // Register freshness invalidation before setupAutoUpdate installs its
+      // debounced serializer so a keystroke retires derived output immediately.
+      installSISOConfigInvalidation(nodeId);
       setupAutoUpdate(nodeId, 'siso-params');
     },
     async prepare(nodeId) {
