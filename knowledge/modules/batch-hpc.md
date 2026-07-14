@@ -247,7 +247,7 @@ unknown.
 
 ## Verified against
 
-- Source commit: `01a01be`
+- Source commit: `f2ca13c`
 - Evidence inspected: job state/contracts, worker/result schema, both HPC lock
   files, headless wrapper, Slurm entrypoints, AWS setup validators, and CI
   wiring.

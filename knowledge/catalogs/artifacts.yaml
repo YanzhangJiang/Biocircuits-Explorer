@@ -1,6 +1,6 @@
 schema_version: "bcx-artifact-catalog/v1.0.0"
 baseline_evidence_revision: "f9c65a5"
-current_verified_revision: "1177a3d"
+current_verified_revision: "f2ca13c"
 verification_command: "python3 scripts/verify_repository.py --check"
 path_base: "repository-root"
 path_policy: "posix-relative"

@@ -6,7 +6,7 @@ desired response. The central result is not merely a list of candidates: the
 product keeps a retrieved or suggested candidate separate from a result
 recomputed by the mathematics engine.
 
-The current implementation evidence anchor is `1177a3d`. Revision `f9c65a5`
+The current implementation evidence anchor is `f2ca13c`. Revision `f9c65a5`
 remains the historical evidence baseline for the maintained knowledge catalog.
 Later documentation commits may advance the branch without changing which
 implementation revision these runtime claims inspected.
@@ -39,9 +39,9 @@ implementation revision these runtime claims inspected.
   a live scheduler.
 - The Docker workflow is configured to build and start one application image and probe its
   runtime behavior. It does not exercise Compose, Nginx, or TLS.
-- The current working tree configures no-sign macOS host builds and unit tests
+- The current committed revision configures no-sign macOS host builds and unit tests
   on `macos-15-intel` and `macos-26`. A local macOS 27 arm64 run passed the
-  build-for-testing step and all 47 unit tests on 2026-07-14; this does not
+  build-for-testing step and all unit tests on 2026-07-15; this does not
   prove a remote workflow, UI automation, or a signed/notarized package.
 - Version and packaging checks keep the application version, packaged
   resources, image labels, and tag rules synchronized and fail closed on

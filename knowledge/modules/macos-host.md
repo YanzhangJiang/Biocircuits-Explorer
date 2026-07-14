@@ -113,7 +113,7 @@ of a stale secret or use of a different port is not enough.
 
 `.github/workflows/ci.yml` runs the Python chat contracts, the packaged resource
 allowlist test, version-resource lookup, and repository checks that keep release
-identity and the macOS 14 target aligned. The current working tree also adds a
+identity and the macOS 14 target aligned. The current committed revision also adds a
 no-sign `build-for-testing` plus the Swift unit bundle on `macos-15-intel` and
 `macos-26`.
 
@@ -232,10 +232,10 @@ installation.
 
 ## Verified against
 
-- Source commit: `01a01be`
-- Lifecycle/persistence extension: current uncommitted working tree on
-  2026-07-14; a local macOS 27 arm64 no-sign test build and all 47 Swift unit
-  tests passed, with no remote-CI, packaged-app, or notarization claim.
+- Source commit: `f2ca13c`
+- Lifecycle/persistence extension: a local macOS 27 arm64 no-sign test build
+  and all Swift unit tests passed on 2026-07-15, with no remote-CI,
+  packaged-app, or notarization claim.
 - Evidence inspected: Swift controllers/tests, chat enforcement/tests, WebView
   handoff, Xcode target, runtime environment allowlist, packaging scripts,
   packaged-resource allowlist/tests, and CI wiring.

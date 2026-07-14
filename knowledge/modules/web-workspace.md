@@ -77,7 +77,7 @@ types, request construction, persistence, and restored historical evidence.
 SQLite transport. Julia route and schema tests cover the server side of
 requests the workspace emits.
 
-The current working tree also has focused lifecycle contracts for staged
+The current committed revision also has focused lifecycle contracts for staged
 workspace restore, model invalidation/build ownership, scan execution, and
 Atlas execution. Atlas build/query/inverse results are latest-wins: a new run,
 upstream config edit, or semantic connection change retires both the pending
@@ -172,8 +172,8 @@ the source ES modules directly.
 
 ## Verified against
 
-- Source commit: `1177a3d`; the fixed-topology shape-node extension is verified
-  against the current uncommitted working tree on 2026-07-11.
+- Source commit: `f2ca13c`; the fixed-topology shape-node extension and lifecycle
+  contracts were locally verified on 2026-07-15.
 - Evidence inspected: browser owner paths, package scripts, focused and full JS
   tests, shared schemas, server routing, CI workflow wiring, and a local
   real-page menu/node/port/intent/fail-closed smoke with zero console errors.

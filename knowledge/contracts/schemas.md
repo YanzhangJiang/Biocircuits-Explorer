@@ -1,7 +1,7 @@
 ---
 title: Schema contract and coverage
-status: implemented-working-tree
-verified_against: working-tree-2026-07-11
+status: verified
+verified_against: f2ca13c
 ---
 
 # Schema contract and coverage
@@ -187,10 +187,10 @@ or instances the script did not load.
 
 ## Verified against
 
-- Shape-optimization schema extension: uncommitted working tree on 2026-07-11;
-  official Draft 2020-12 instance checks and the repository gate are recorded
-  in the goal completion report.
-- Last committed implementation anchor: `1177a3d`.
+- Shape-optimization schema extension: committed integration revision
+  `f2ca13c`; official Draft 2020-12 instance checks and the repository gate
+  passed locally on 2026-07-15.
+- Earlier implementation anchor: `1177a3d`.
 - Historical baseline: schema ownership and drift rules were audited at
   `f9c65a5`; that audit predates Design Screen v0.3 and the explicit numerical
   validity fields above.

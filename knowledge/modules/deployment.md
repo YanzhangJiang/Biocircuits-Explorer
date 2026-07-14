@@ -169,7 +169,7 @@ bundle.
 
 ## Verified against
 
-- Source commit: `01a01be`
+- Source commit: `f2ca13c`
 - Evidence inspected: Docker/Compose/Nginx definitions, image and host helpers,
   rollback/AWS validators, backend probes, package resources, focused tests,
   and both CI workflows.

@@ -14,7 +14,7 @@ code, test result, or versioned artifact that supports a claim.
 
 ## What is checked now
 
-The current implementation evidence anchor is `1177a3d`. Later documentation
+The current implementation evidence anchor is `f2ca13c`. Later documentation
 commits may advance the branch without changing that inspected runtime. The
 earlier revision `f9c65a5` remains the historical evidence baseline for the
 knowledge catalog.
@@ -25,7 +25,7 @@ knowledge catalog.
   1.12. Those jobs select the matching lock file, instantiate it, and load the
   mathematics engine; they do not submit work to a scheduler.
 - Browser and Python checks use Node.js 20 and Python 3.13 in CI.
-- Local P6 verification passed the complete Julia backend suite, the 126 engine
+- Local verification passed the complete Julia backend and engine
   contracts, the JavaScript suite, generated-schema checks, and deployment
   contracts. This is local evidence, not a claim that a remote workflow ran.
 - Synchronous heavy endpoints have a two-request process gate and explicit work
@@ -40,9 +40,9 @@ knowledge catalog.
   loopback, and checks health, readiness, version reporting, the browser entry
   page, and a writable job store. It does not start the full Compose, Nginx, or
   TLS stack.
-- The current working tree configures no-sign macOS host builds and unit tests
+- The current committed revision configures no-sign macOS host builds and unit tests
   on Intel macOS 15 and Apple-silicon macOS 26 runners. A local macOS 27 arm64
-  run passed the build-for-testing step and all 47 unit tests on 2026-07-14;
+  run passed the build-for-testing step and all unit tests on 2026-07-15;
   no remote workflow run, UI automation, or signed/notarized package is claimed.
 
 The configured versions and their owners are listed in the

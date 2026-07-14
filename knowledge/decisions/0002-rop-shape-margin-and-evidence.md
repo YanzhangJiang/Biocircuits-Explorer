@@ -1,7 +1,7 @@
 # 0002: Separate shape limits, parameter margin, and finite replay
 
 - Status: accepted in the 2026-07-11 working tree
-- Verified against: current working tree; commit pending
+- Verified against: `f2ca13c`
 - Historical implementation anchor: `1177a3d`
 - Owners: `rop-shape-optimization`, `designability`, `backend-runtime`
 - Supersedes: implicit use of one finite-window Chebyshev radius for both
