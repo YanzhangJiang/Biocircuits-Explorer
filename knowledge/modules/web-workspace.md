@@ -25,13 +25,20 @@ and expose a stable bridge to the native macOS host.
   `webapp/public/js/commands.js`, `webapp/public/js/nodes.js`,
   `webapp/public/js/connections.js`
 - Serialization and native bridge: `webapp/public/js/workspace.js`,
-  `webapp/public/js/node-schema.js`
+  `webapp/public/js/workspace-v2.js`, `webapp/public/js/node-schema.js`, and
+  `schemas/workspace.schema.json`
 - Type and restore safety: `webapp/public/js/port-types.js`,
   `webapp/public/js/connection-validation.js`
+- Workflow architecture: `webapp/public/js/node-contracts.js`,
+  `webapp/public/js/execution-outcome.js`,
+  `webapp/public/js/workflow-execution.js`,
+  `webapp/public/js/execution-lifecycle-core.js`, and
+  `webapp/public/js/graph-patch.js`
 - Feature UI: `webapp/public/js/node-types/`, `webapp/public/js/atlas.js`,
   `webapp/public/js/design-screen-render.js`, `webapp/public/js/plot-validity.js`,
   `webapp/public/js/atlas-sqlite-policy.js`, `webapp/public/js/sbml-io.js`
-- Tooling: `webapp/package.json`, `webapp/eslint.config.mjs`
+- Tooling: `webapp/package.json`, `webapp/eslint.config.mjs`,
+  `webapp/playwright.config.mjs`, and `webapp/e2e/`
 
 ## Inputs
 
@@ -52,13 +59,18 @@ and expose a stable bridge to the native macOS host.
 
 ## Contract sources
 
-- Workspace and shell versions plus document validation:
-  `webapp/public/js/state.js` and `webapp/public/js/workspace.js`
+- Workspace v2 migration, validation, and shell versions:
+  `webapp/public/js/state.js`, `webapp/public/js/workspace-v2.js`,
+  `webapp/public/js/workspace.js`, and `schemas/workspace.schema.json`
 - Per-node persistence: `webapp/public/js/node-schema.js` plus custom cases in
   `webapp/public/js/workspace.js`
 - Port declarations and compatibility: `webapp/public/js/node-types/index.js`,
   `webapp/public/js/port-types.js`, and
   `webapp/public/js/connection-validation.js`
+- Node roles, structured terminal outcomes, serial scheduling, result
+  freshness, and atomic graph construction:
+  `knowledge/contracts/workflow-execution.md` and its JavaScript owners listed
+  above
 - Canonical artifact shapes: `schemas/network-ir.schema.json`,
   `schemas/designability-spec.schema.json`, and
   `schemas/result-artifact.schema.json`
@@ -66,22 +78,23 @@ and expose a stable bridge to the native macOS host.
 
 ## Tests
 
-`webapp/test/*.test.mjs` exercises command undo/redo, geometry, typed ports,
-event dispatch, restored-connection validation, model request recovery, reaction
-species parsing, native clipboard fallback, design-result evidence grouping, and
-the Design Spec node contract. The ROP shape workspace contracts also cover the
-exact-card reference producer, the config/result node pair, stage-specific port
-types, request construction, persistence, and restored historical evidence.
-`scan-validity-contract.test.mjs` and
-`atlas-sqlite-policy.test.mjs` cover failed-solver gaps and the operator-only
-SQLite transport. Julia route and schema tests cover the server side of
-requests the workspace emits.
+`webapp/test/*.test.mjs` covers the exhaustive node inventory, seven strict
+configuration-port families, structured outcomes, cycle-safe serial scheduling,
+shared result lifecycle, GraphPatch rollback/Undo/Redo, Workspace v1-to-v2
+migration, command geometry, restored-connection validation, request ownership,
+numerical gaps, and feature renderers. Shared fixtures under
+`tests/fixtures/workspace/` are consumed by both JavaScript and Swift; the
+expected v2 fixture also has direct JSON Schema coverage in
+`tests/test_workspace_schema.py`.
 
-The current committed revision also has focused lifecycle contracts for staged
-workspace restore, model invalidation/build ownership, scan execution, and
-Atlas execution. Atlas build/query/inverse results are latest-wins: a new run,
-upstream config edit, or semantic connection change retires both the pending
-request and its previously stored result before downstream code can reuse it.
+Focused lifecycle contracts cover staged workspace restore, model
+invalidation/build ownership, SISO/qK, scans, ROP/FRET/polyhedron, Design
+Target/ROP shape, regime graph, Placer, Vertices, and Atlas. Model Summary is a
+synchronous, non-persisted renderer and therefore has no reusable derived-result
+lifecycle of its own.
+Atlas build/query/inverse results are latest-wins: a new run, upstream config
+edit, or semantic connection change retires both the pending request and its
+previously stored result before downstream code can reuse it.
 Interactive rewiring reads the graph snapshot from gesture start, so dragging
 a wire back to its original socket remains a semantic no-op.
 `design-agent-conversation-owner-contract.test.mjs` applies the same owner rule
@@ -93,23 +106,41 @@ pre-signed URL retry without broker-result fallback.
 
 ## CI
 
-`.github/workflows/ci.yml` runs ESLint, all tests listed by
-`npm run test:js`, Python agent contracts, the HTML language-copy sync check, the
-Julia suite, schema regeneration drift, and selected artifact validation. The
-optional esbuild bundle is not built in CI; development and shipped pages load
-the source ES modules directly.
+`.github/workflows/ci.yml` is configured to run zero-warning ESLint, all tests
+listed by `npm run test:js`, Python agent contracts, the HTML language-copy sync
+check, the Julia suite, schema/repository checks, and a real Chromium Playwright
+lane. The browser lane serves the checked-in static application on loopback and
+uses local mocked `/api/v1` responses; it includes an axe serious/critical gate
+and one deterministic topology screenshot. Workflow configuration is not proof
+that a remote run passed. The optional esbuild bundle is not built in CI;
+development and shipped pages load the source ES modules directly.
 
 ## Invariants
 
 - Mutating editor actions routed through the command model remain undoable and
   redoable with stable node identities.
-- A restored connection survives only when both ports are declared and their
-  artifact types are compatible; invalid saved wires are dropped.
-- Workspace documents newer than the supported document version fail closed.
+- Quick Add, Design Target Build & Tune, Design Agent auto-spawn, and Agent
+  DesignabilitySpec export publish one validated GraphPatch or restore the
+  complete pre-command graph, node ordinal, workspace snapshot, and Undo depth.
+  One successful patch is one Undo item and Redo preserves its planned IDs.
+- A connection survives creation, restore, paste, or Redo only when both ports
+  are declared and their exact artifact types match. The former broad
+  `ParamsConfig` type does not exist; the seven configuration families do not
+  cross-connect.
+- A workflow operation returns `bne-execution-outcome/v1`; the scheduler rejects
+  a cycle before running, executes serially in topological order, and blocks
+  descendants of failed, blocked, cancelled, stale, missing, or historical
+  upstream output without suppressing an independent branch.
+- Executable derived results keep scientific evidence separate from freshness.
+  A runtime ticket binds node owner, revision, workspace epoch, input
+  fingerprint, and endpoint; a mismatch cannot commit or clear a newer run.
+- Workspace v2 is jointly consumed by the JavaScript migration/loader, complete
+  JSON Schema, native decoder, and shared fixtures. A future version fails
+  before graph replacement; v1 merged nodes expand deterministically; restored
+  results become historical; transient session/ticket fields are stripped.
 - The native bridge and browser serializer report the same contract and
-  workspace versions.
-- Saved backend session identifiers are not trusted after reload; computation
-  nodes must rebuild the model before further backend work.
+  workspace versions. Saved backend session identifiers are never trusted
+  after reload; computation nodes rebuild before further backend work.
 - Verified, screened/proxy, minimal-certificate, and unsupported evidence remain
   visually and semantically distinct.
 - A failed or non-finite numerical sample renders as a gap. Partial responses
@@ -148,16 +179,19 @@ the source ES modules directly.
 
 ## Known gaps
 
-- CI has no real-browser end-to-end, accessibility, screenshot, or visual
-  regression suite; the JavaScript tests use focused harnesses.
-- There is no single JSON Schema for the complete workspace document; its shape
-  is jointly owned by JavaScript serializers and the Swift decoder.
-- Ordinary browser compute calls and the fixed-topology optimizer use canonical
-  `/api/v1/*` routes. Broker/auth configuration and local-image transport still
-  retain their compatibility paths and need a coordinated deployment migration
-  before those aliases can be removed.
-- ESLint warnings are allowed, so warning growth is not presently a ratcheted
-  quality gate.
+- Playwright uses mocked loopback `/api/v1` responses and Chromium. It does not
+  prove browser-to-live-Julia, Design Agent provider, AWS, Slurm, registry, or
+  production authentication behavior.
+- Accessibility coverage is a serious/critical axe gate over the key workspace
+  surface, and visual coverage is one flattened topology baseline. Broader UI
+  states, browser engines, assistive technology, and platform rendering remain
+  release and product QA work.
+- Six merged v1 nodes remain restore-only until the declared Workspace v3
+  removal boundary. Named outcome adapters preserve older boolean/value/void
+  operations while migration to native structured outcomes continues.
+- All tracked first-party clients use `/api/v1/*`, and declared bare `/api/*`
+  aliases are measured. Alias removal still requires telemetry and inventory
+  for deployed and rollback clients through the declared sunset.
 
 ## Change protocol
 
@@ -172,12 +206,13 @@ the source ES modules directly.
 
 ## Verified against
 
-- Source commit: `f2ca13c`; the fixed-topology shape-node extension and lifecycle
-  contracts were locally verified on 2026-07-15.
-- Evidence inspected: browser owner paths, package scripts, focused and full JS
-  tests, shared schemas, server routing, CI workflow wiring, and a local
-  real-page menu/node/port/intent/fail-closed smoke with zero console errors.
+- Source commit: `b91cf41`; the workflow architecture
+  and Workspace v2 extension were inspected on 2026-07-15.
+- Evidence inspected: browser owners, shared JavaScript/Swift fixtures, complete
+  Workspace Schema, focused and full JS tests, zero-warning lint, server
+  routing, and the local real-Chromium Playwright/axe/visual gate with mocked
+  canonical endpoints and zero recorded console/page errors.
 - Historical baseline: `f9c65a5` remains the earlier catalog evidence anchor.
-- Boundary: the local smoke did not connect the browser to a running Julia
-  optimizer, and it is not accessibility, visual-regression, release, or
-  production evidence.
+- Boundary: no remote CI result or browser-to-live backend/provider/cloud run is
+  claimed; the accessibility and visual scope is the bounded gate described
+  above, not general release qualification.

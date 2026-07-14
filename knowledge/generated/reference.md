@@ -76,10 +76,12 @@ owned by handlers and schemas; this table documents paths and methods only.
 | `schemas/network-ir.schema.json` | `https://biocircuits-explorer.com/schemas/network-ir.schema.json` | `ir_schema_version` | `bne-ir/v1.0.0` | `network-ir` / `backend-runtime` | generated-drift-and-runtime |
 | `schemas/reader-query.schema.json` | `bne-reader-query` | `schema_version` | `bne-reader-query/v0.1.0` | `reader-query-result` / `design-agent` | semantic-boundary-partial-schema |
 | `schemas/reader-result.schema.json` | `bne-reader-result` | `schema_version` | `bne-reader-result/v0.1.0` | `reader-query-result` / `design-agent` | semantic-boundary-partial-schema |
+| `schemas/release-candidate-evidence.schema.json` | `https://biocircuits-explorer.com/schemas/release-candidate-evidence.schema.json` | `schema_version` | `bne-release-candidate-evidence/v1.0.0` | `release-candidate-evidence` / `cross-release` | draft-2020-12-template-and-negative-instance |
 | `schemas/result-artifact.schema.json` | `https://biocircuits-explorer.com/schemas/result-artifact.schema.json` | `artifact_schema_version` | `bne-result/v1.0.0` | `result-artifact` / `backend-runtime` | runtime-shape-and-version |
 | `schemas/rop-shape-optimization.schema.json` | `https://biocircuits-explorer.com/schemas/rop-shape-optimization.schema.json` | `schema_version` | `bne-rop-shape-optimization/v1.0.0` | `rop-shape-optimization` / `rop-shape-optimization` | schema-instance-and-core-contracts |
 | `schemas/rop-shape-optimize-request.schema.json` | `https://biocircuits-explorer.com/schemas/rop-shape-optimize-request.schema.json` | `schema_version` | `bne-rop-shape-optimize-request/v1.0.0` | `rop-shape-optimization` / `rop-shape-optimization` | schema-instance-and-core-contracts |
 | `schemas/target-spec.schema.json` | `bne-target-spec` | `schema_version` | `bne-target-spec/v0.1.0` | `target-spec` / `design-agent` | partial |
+| `schemas/workspace.schema.json` | `https://biocircuits-explorer.com/schemas/workspace.schema.json` | `schema_version` | `bne-workspace/v2.0.0` | `workspace-document` / `web-workspace` | shared-browser-native-fixture-and-draft-2020-12-instance |
 
 Schema versions are derived from each schema's identity-field `const`; catalogs do not
 own a second copy of those values.

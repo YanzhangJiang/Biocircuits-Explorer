@@ -83,7 +83,10 @@ of a stale secret or use of a different port is not enough.
   `webapp/scripts/chat_api.py`
 - JavaScript bridge surface and token handoff: `WebShellController.swift`,
   `webapp/public/js/workspace.js`, and `webapp/public/js/agent-view.js`
-- Forward-compatible JSON preservation: `WorkspaceDocument.swift`
+- Workspace v2 migration, strict typed connections, historical restore, and
+  forward-compatible field preservation: `WorkspaceDocument.swift`,
+  `webapp/public/js/workspace-v2.js`, `schemas/workspace.schema.json`, and the
+  shared fixtures under `tests/fixtures/workspace/`
 - Minimum OS and release build settings: the Xcode project and
   `scripts/build_macos_dmg.sh`
 - Packaged-resource allowlist: `packaging/design-runtime-files.txt`; this list,
@@ -101,6 +104,12 @@ of a stale secret or use of a different port is not enough.
   authentication origin matching, termination registration and window-close
   interception, sequenced rename snapshots, queued-project handoff, and the
   post-rename WebKit-failure path. UI tests remain launch-template coverage.
+- Workspace tests consume the same v1 input, expected v2 document, strict
+  seven-family port matrix, and future-version fixtures as the JavaScript
+  contracts. They require exact structural equality for v1 migration,
+  reject unsupported future documents and invalid v2 connections, strip
+  nested session/ticket fields, and downgrade restored current results to
+  historical without changing their scientific evidence.
 - `webapp/scripts/test_chat_api.py` checks loopback binding, exact-origin
   validation, bearer enforcement, preflight rules, and parent-watchdog behavior.
 - `packaging/test_design_runtime.jl` stages only the resource allowlist, checks
@@ -141,12 +150,15 @@ installation.
   Native bootstrap values for HOME, loopback binding, actual port, public
   assets, and parent PID always win; image selection, local-image opt-in, and
   unrelated operator keys do not pass through.
-- Workspace documents reject unsupported future versions while preserving
-  unknown fields in supported documents. Imported canvas and node records must
-  also pass the embedded Web loader's finite-number, range, identity, node-type,
-  and shape rules. The repository verifier keeps the native supported-node set
-  equal to the Web `NODE_TYPES` registry; Swift and JavaScript bridge versions
-  advance together.
+- Workspace v2 documents reject unsupported future versions before project
+  replacement while preserving unknown extension fields in supported
+  documents. V1 merged compute nodes expand into their typed config/result
+  pairs, invalid cross-family wires fail closed, runtime session/ticket fields
+  are removed recursively, and persisted derived output restores as historical.
+  Imported canvas and node records must also pass finite-number, range,
+  identity, node-type, port, and shape rules. The repository verifier keeps the
+  native supported-node set equal to the Web `NODE_TYPES` registry; Swift,
+  JavaScript, Schema, and shared fixture versions advance together.
 - Only the exact configured HTTPS Cognito origin may remain in the embedded
   authentication context. A merely HTTPS URL, subdomain, lookalike, path, or
   malformed/disabled authentication configuration does not gain that trust.
@@ -198,7 +210,9 @@ installation.
   discovery are not exercised end to end.
 - P2 — No checked-in lane produces a Developer ID-signed and notarized DMG,
   verifies Gatekeeper on a clean macOS 14 host, or distributes updates. The
-  release script's default signature is ad hoc.
+  release script's default signature is ad hoc. The prepared external release
+  evidence schema, template, and runbook define this lane but have not executed
+  it.
 - P2 — The complete packaged app has not been launched and probed in CI. The
   release script now validates an operator-supplied Python runtime before
   signing, but no specific runtime artifact is supplied by this repository, and
@@ -232,13 +246,14 @@ installation.
 
 ## Verified against
 
-- Source commit: `f2ca13c`
+- Source commit: `b91cf41`
 - Lifecycle/persistence extension: a local macOS 27 arm64 no-sign test build
-  and all Swift unit tests passed on 2026-07-15, with no remote-CI,
-  packaged-app, or notarization claim.
+  and 51/51 Swift unit tests passed on 2026-07-15, including shared Workspace v2
+  migration fixtures, with no remote-CI, packaged-app, or notarization claim.
 - Evidence inspected: Swift controllers/tests, chat enforcement/tests, WebView
-  handoff, Xcode target, runtime environment allowlist, packaging scripts,
-  packaged-resource allowlist/tests, and CI wiring.
+  handoff, Workspace v2 JavaScript/Schema/fixture parity, Xcode target, runtime
+  environment allowlist, packaging scripts, packaged-resource allowlist/tests,
+  and CI wiring.
 - Boundary: loopback/readiness/real-port/bearer/origin/environment contracts are
   present and focused tests exist; no CI Swift run, packaged-app execution,
   signed/notarized DMG, or clean-host installation is claimed verified.

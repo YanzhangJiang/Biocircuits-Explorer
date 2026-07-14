@@ -1,7 +1,7 @@
 ---
 title: Browser workflow execution contract
-status: working-tree
-verified_against: development
+status: active
+verified_against: b91cf41
 ---
 
 # Browser workflow execution contract
@@ -95,9 +95,10 @@ allowlist plus a matching SHA-256 identity.
 ## Atomic graph construction
 
 `graph-patch.js` owns the plan/validate/stage/commit transaction used by Quick
-Add, Design Target Build & Tune, and Design Agent auto-spawn. A plan is a pure
-description with stable node IDs. `GraphPatchCommand` validates the complete
-projected graph, stages every node and connection, and publishes once.
+Add, Design Target Build & Tune, Design Agent auto-spawn, and Agent
+DesignabilitySpec export. A plan is a pure description with stable node IDs.
+`GraphPatchCommand` validates the complete projected graph, stages every node
+and connection, and publishes once.
 
 Any creation, initialization, validation, or commit failure restores the prior
 topology, node counter, workspace snapshot, and Undo depth. One successful

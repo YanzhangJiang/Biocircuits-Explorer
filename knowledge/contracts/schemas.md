@@ -1,7 +1,7 @@
 ---
 title: Schema contract and coverage
 status: verified
-verified_against: f2ca13c
+verified_against: b91cf41
 ---
 
 # Schema contract and coverage
@@ -228,6 +228,10 @@ or instances the script did not load.
 
 ## Verified against
 
+- Workspace v2 and release-candidate evidence contracts: implementation
+  revision `b91cf41`; JavaScript/Swift shared-fixture checks, Draft 2020-12
+  instance tests, and the local repository gate passed on 2026-07-15. The
+  release-candidate template remains `not_run` external evidence.
 - Shape-optimization schema extension: committed integration revision
   `f2ca13c`; official Draft 2020-12 instance checks and the repository gate
   passed locally on 2026-07-15.
