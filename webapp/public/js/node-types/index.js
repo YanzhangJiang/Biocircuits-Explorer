@@ -11,8 +11,9 @@ import { ROP_SHAPE_TYPES } from './rop-shape.js';
 import { ATLAS_TYPES } from './atlas.js';
 import { RESULT_TYPES } from './result.js';
 import { SBML_TYPES } from './sbml.js';
+import { applyNodeContracts } from '../node-contracts.js';
 
-export const NODE_TYPES = {
+const RAW_NODE_TYPES = {
   ...NOTE_TYPES,
   ...INPUT_TYPES,
   ...PROCESS_TYPES,
@@ -27,6 +28,8 @@ export const NODE_TYPES = {
   ...RESULT_TYPES,
   ...SBML_TYPES,
 };
+
+export const NODE_TYPES = applyNodeContracts(RAW_NODE_TYPES);
 
 // Prerequisite/connection validity is derived from the typed port graph
 // (see port-types.js); the former hand-maintained PREREQ_CHAIN table that

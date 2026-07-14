@@ -14,7 +14,7 @@ export const SBML_TYPES = {
     headerClass: 'header-input',
     title: 'SBML Import',
     inputs: [],
-    outputs: [{ port: 'reactions', label: 'Reactions' }],
+    outputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -45,7 +45,7 @@ export const SBML_TYPES = {
     category: 'process',
     headerClass: 'header-viewer',
     title: 'SBML Export',
-    inputs: [{ port: 'reactions', label: 'Reactions' }],
+    inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }],
     outputs: [],
     defaultWidth: 280,
     createBody(nodeId) {
@@ -58,5 +58,9 @@ export const SBML_TYPES = {
       `;
     },
     onInit() {},
+    async execute(nodeId) {
+      const { exportSbml } = await import('../sbml-io.js');
+      return exportSbml(nodeId);
+    },
   },
 };

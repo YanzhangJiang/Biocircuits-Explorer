@@ -1052,8 +1052,8 @@ export const ROP_SHAPE_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'ROP Shape Edit Config',
-    inputs: [{ port: 'rop-shape-reference', label: 'ROP Shape Reference' }],
-    outputs: [{ port: 'rop-shape-request', label: 'ROP Shape Request' }],
+    inputs: [{ port: 'rop-shape-reference', type: 'ROPShapeReferenceArtifact', label: 'ROP Shape Reference' }],
+    outputs: [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }],
     defaultWidth: 460,
     createBody(nodeId) {
       return `
@@ -1096,16 +1096,16 @@ export const ROP_SHAPE_TYPES = {
       installRopShapeRequestInvalidation(nodeId);
       setupAutoUpdate(nodeId, 'rop-shape-edit-config');
     },
-    async execute(nodeId) {
-      await prepareRopShapeRequest(nodeId, { throwOnFailure: true });
+    async prepare(nodeId) {
+      return prepareRopShapeRequest(nodeId, { throwOnFailure: true });
     },
   },
   'rop-shape-result': {
     category: 'result',
     headerClass: 'header-result',
     title: 'ROP Shape Optimization Result',
-    inputs: [{ port: 'rop-shape-request', label: 'ROP Shape Request' }],
-    outputs: [{ port: 'rop-shape-result', label: 'ROP Shape Result' }],
+    inputs: [{ port: 'rop-shape-request', type: 'ROPShapeRequestArtifact', label: 'ROP Shape Request' }],
+    outputs: [{ port: 'rop-shape-result', type: 'ROPShapeResultArtifact', label: 'ROP Shape Result' }],
     defaultWidth: 680,
     createBody(nodeId) {
       return `
@@ -1116,7 +1116,7 @@ export const ROP_SHAPE_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeRopShapeResult(nodeId, { throwOnFailure: true });
+      return executeRopShapeResult(nodeId, { throwOnFailure: true });
     },
   },
 };

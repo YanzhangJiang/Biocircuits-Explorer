@@ -23,8 +23,8 @@ export const PLACER_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'Parameter Placer Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'ParameterPlacerConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -51,7 +51,7 @@ export const PLACER_TYPES = {
       `;
     },
     onInit(nodeId) { setupAutoUpdate(nodeId, 'placer-params'); },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const model = getModelForNode(nodeId);
       if (!model) return;
       syncSelectOptions(document.getElementById(`${nodeId}-input`), model.q_sym);
@@ -63,7 +63,7 @@ export const PLACER_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'Parameter Placer',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'ParameterPlacerConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 480,
     createBody(nodeId) {
@@ -79,7 +79,7 @@ export const PLACER_TYPES = {
         </div>
       `;
     },
-    async execute(nodeId) { await executePlacerResult(nodeId); },
+    async execute(nodeId) { return realizePlacerProgram(nodeId); },
   },
 };
 
@@ -158,14 +158,14 @@ export async function loadPlacerMenu(nodeId) {
 // SLOPE — "Solve (target RO)" button uses the config's typed target.
 export async function executePlacerResult(nodeId) {
   const config = getPlacerConfig(nodeId);
-  if (!config) return;
-  if (!Number.isFinite(config.target_ro)) { alert('Enter a numeric target reaction order'); return; }
-  await solvePlacer(nodeId, config.target_ro);
+  if (!config) return false;
+  if (!Number.isFinite(config.target_ro)) { alert('Enter a numeric target reaction order'); return false; }
+  return solvePlacer(nodeId, config.target_ro);
 }
 
 async function solvePlacer(nodeId, targetRO) {
   const config = getPlacerConfig(nodeId);
-  if (!config) return;
+  if (!config) return false;
   const kdBounds = (Number.isFinite(config.kd_lo) && Number.isFinite(config.kd_hi)) ? [config.kd_lo, config.kd_hi] : null;
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
@@ -183,8 +183,10 @@ async function solvePlacer(nodeId, targetRO) {
       `<span class="summary-chip">${passBadge(data.pass)}</span>`;
     renderSolved(nodeId, contentEl, data, summary);
     commitWorkspaceSnapshot('parameter-placer');
+    return true;
   } catch (e) {
     contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    return false;
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -195,7 +197,7 @@ async function solvePlacer(nodeId, targetRO) {
 // regime sequence. [/api/v1/placer_realize_program]
 export async function realizePlacerProgram(nodeId) {
   const config = getPlacerConfig(nodeId);
-  if (!config) return;
+  if (!config) return false;
   const kdBounds = (Number.isFinite(config.kd_lo) && Number.isFinite(config.kd_hi)) ? [config.kd_lo, config.kd_hi] : null;
   setNodeLoading(nodeId, true);
   const contentEl = document.getElementById(`${nodeId}-content`);
@@ -221,8 +223,10 @@ export async function realizePlacerProgram(nodeId) {
       `target program:  ${fmtSeq(data.target_program)}    realized:  ${fmtSeq(data.measured_program)}`;
     contentEl.querySelector('.siso-summary-line')?.after(detail);
     commitWorkspaceSnapshot('parameter-placer');
+    return true;
   } catch (e) {
     contentEl.innerHTML = `<div class="node-error">${escapeHtml(e.message)}</div>`;
+    return false;
   } finally {
     setNodeLoading(nodeId, false);
   }

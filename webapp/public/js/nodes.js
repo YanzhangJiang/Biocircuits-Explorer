@@ -19,6 +19,13 @@ import {
   invalidateScanExecutionsDownstreamOf,
   isScanConfigNodeType,
 } from './execution-lifecycle.js';
+import { getSelection } from './selection.js';
+import {
+  allConnectedNodeIds,
+  connectedComponentNodeIds,
+  planWorkflowExecution,
+  runWorkflowPlan,
+} from './workflow-execution.js';
 export { setNodeLoading } from './node-loading.js';
 
 // ===== Node Discovery =====
@@ -816,7 +823,8 @@ export function triggerAllAutoModelBuilds() {
 export function isRunnableNode(nodeId) {
   const info = nodeRegistry[nodeId];
   if (!info) return false;
-  return typeof NODE_TYPES[info.type]?.execute === 'function';
+  const definition = NODE_TYPES[info.type];
+  return ['prepare', 'execute', 'manual'].includes(definition?.execution?.mode);
 }
 
 export function connectedNodeIDs() {
@@ -828,74 +836,50 @@ export function connectedNodeIDs() {
   return ids;
 }
 
+function workflowReportMessage(report) {
+  const summary = report.summary;
+  return [
+    `executed ${summary.executed}`,
+    `reused ${summary.reused}`,
+    `blocked ${summary.blocked}`,
+    `failed ${summary.failed}`,
+    `cancelled ${summary.cancelled}`,
+    `stale ${summary.stale}`,
+  ].join(' · ');
+}
+
+async function runWorkspaceScope(nodeIds, snapshotLabel) {
+  const plan = planWorkflowExecution({ nodeIds, connections, registry: nodeRegistry });
+  if (!plan.ok) {
+    const report = await runWorkflowPlan(plan, { registry: nodeRegistry, nodeTypes: NODE_TYPES });
+    showToast(plan.message);
+    return report;
+  }
+  const report = await runWorkflowPlan(plan, { registry: nodeRegistry, nodeTypes: NODE_TYPES });
+  commitWorkspaceSnapshot(snapshotLabel);
+  showToast(`Workflow ${report.status}: ${workflowReportMessage(report)}`);
+  return report;
+}
+
 export async function runConnectedWorkspace() {
-  const connectedIDs = connectedNodeIDs();
-  if (!connectedIDs.size) {
+  const selected = getSelection().filter(nodeId => nodeRegistry[nodeId]);
+  if (!selected.length) {
+    showToast('Select a node to run its connected component');
+    return null;
+  }
+  return runWorkspaceScope(
+    connectedComponentNodeIds(selected[0], connections),
+    'run-selected-component',
+  );
+}
+
+export async function runAllConnectedWorkspace() {
+  const nodeIds = allConnectedNodeIds(connections);
+  if (!nodeIds.length) {
     showToast('No connected nodes to run');
-    return;
+    return null;
   }
-
-  const runnableIDs = Array.from(connectedIDs).filter(isRunnableNode);
-  if (!runnableIDs.length) {
-    showToast('No connected executable nodes found');
-    return;
-  }
-
-  const remaining = new Set(runnableIDs);
-  let ranCount = 0;
-
-  while (remaining.size) {
-    let progressed = false;
-
-    for (const nodeId of Array.from(remaining)) {
-      const runnableDeps = connections
-        .filter(conn => conn.toNode === nodeId)
-        .map(conn => conn.fromNode)
-        .filter(isRunnableNode);
-
-      if (runnableDeps.some(depId => remaining.has(depId))) {
-        continue;
-      }
-
-      remaining.delete(nodeId);
-      progressed = true;
-
-      const info = nodeRegistry[nodeId];
-      if (!info) continue;
-
-      try {
-        if (info.type === 'model-builder' && getModelContextFromBuilder(nodeId)) {
-          ranCount += 1;
-          continue;
-        }
-
-        if (info.type === 'model-builder') {
-          await buildModel(nodeId, { triggerDownstream: false, throwOnFailure: true });
-          if (!getModelContextFromBuilder(nodeId)) {
-            throw new Error('Model Builder did not produce a usable model');
-          }
-        } else {
-          await NODE_TYPES[info.type].execute(nodeId, {
-            triggerDownstream: false,
-            throwOnFailure: true,
-          });
-        }
-        ranCount += 1;
-      } catch (error) {
-        console.error(`Run Connected failed at ${nodeId} (${info.type})`, error);
-        showToast(`Run Connected failed at ${NODE_TYPES[info.type]?.title || info.type}`);
-        return;
-      }
-    }
-
-    if (!progressed) {
-      console.warn('Run Connected stopped due to unresolved dependency cycle', Array.from(remaining));
-      break;
-    }
-  }
-
-  commitWorkspaceSnapshot('run-connected');
-  showToast(`Ran ${ranCount} connected node${ranCount === 1 ? '' : 's'}`);
+  return runWorkspaceScope(nodeIds, 'run-all-connected');
 }
 
 // ===== Menu Initialisation =====
@@ -908,6 +892,7 @@ export function initNodeMenuEvents() {
   const themeModeBtn = document.getElementById('theme-mode-btn');
   const themeModeMenu = document.getElementById('theme-mode-menu');
   const runConnectedBtn = document.getElementById('run-connected-btn');
+  const runAllConnectedBtn = document.getElementById('run-all-connected-btn');
 
   addNodeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -933,6 +918,11 @@ export function initNodeMenuEvents() {
   runConnectedBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     void runConnectedWorkspace();
+  });
+
+  runAllConnectedBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void runAllConnectedWorkspace();
   });
 
   document.addEventListener('click', (e) => {

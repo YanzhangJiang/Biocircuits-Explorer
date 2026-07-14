@@ -15,7 +15,13 @@
 export const PORT_TYPES = Object.freeze({
   NetworkIR:     'NetworkIR',      // a reaction network (feeds build_model)
   ModelArtifact: 'ModelArtifact',  // a compiled model / session
-  ParamsConfig:  'ParamsConfig',   // an analysis config (scan / siso / fret / rop)
+  SISOConfig:    'SISOConfig',
+  Scan1DConfig:  'Scan1DConfig',
+  Scan2DConfig:  'Scan2DConfig',
+  ROPCloudConfig: 'ROPCloudConfig',
+  FRETConfig:    'FRETConfig',
+  ROPPolyhedronConfig: 'ROPPolyhedronConfig',
+  ParameterPlacerConfig: 'ParameterPlacerConfig',
   PathResult:    'PathResult',     // a selected SISO path handed downstream
   AtlasSpec:     'AtlasSpec',      // an atlas build spec
   AtlasArtifact: 'AtlasArtifact',  // a built atlas / preview library
@@ -31,7 +37,6 @@ export const PORT_TYPES = Object.freeze({
 export const PORT_TYPE_OF = Object.freeze({
   reactions:       PORT_TYPES.NetworkIR,
   model:           PORT_TYPES.ModelArtifact,
-  params:          PORT_TYPES.ParamsConfig,
   result:          PORT_TYPES.PathResult,
   'atlas-spec':    PORT_TYPES.AtlasSpec,
   atlas:           PORT_TYPES.AtlasArtifact,
@@ -43,11 +48,35 @@ export const PORT_TYPE_OF = Object.freeze({
   'rop-shape-result':    PORT_TYPES.ROPShapeResultArtifact,
 });
 
-// Resolve a socket's type. A node may override per-port with a `type` field on
-// its input/output declaration; otherwise the central map applies, falling back
-// to the raw id so an unmapped port still behaves (connects only to its own id).
+const KNOWN_PORT_TYPES = new Set(Object.values(PORT_TYPES));
+
+// Resolve a socket's type. Shared ids such as `params` must declare their exact
+// family on the node definition. Unknown ids and misspelled declarations are
+// rejected instead of becoming accidental self-compatible types.
 export function portTypeOf(portId, declaredType = null) {
-  return declaredType || PORT_TYPE_OF[portId] || portId;
+  const resolved = declaredType || PORT_TYPE_OF[portId] || null;
+  return KNOWN_PORT_TYPES.has(resolved) ? resolved : null;
+}
+
+// The one resolver used by interactive wiring, restore, paste, Undo/Redo, and
+// graph transactions. Its complete identity is node type + direction + port;
+// a raw port id is not a sufficient artifact contract.
+export function resolveNodePort(nodeTypes, nodeType, direction, port) {
+  const declarationKey = direction === 'input'
+    ? 'inputs'
+    : direction === 'output'
+      ? 'outputs'
+      : null;
+  if (!declarationKey || typeof nodeType !== 'string' || typeof port !== 'string') return null;
+  const typeDef = nodeTypes?.[nodeType];
+  const declarations = typeDef?.[declarationKey];
+  if (!Array.isArray(declarations)) return null;
+  const declaration = declarations.find(entry => entry?.port === port);
+  if (!declaration) return null;
+  if (typeof declaration.type !== 'string' || !declaration.type) return null;
+  const type = portTypeOf(port, declaration.type);
+  if (!type) return null;
+  return { nodeType, direction, port, type };
 }
 
 // Compatibility aliases beyond strict equality: a directed map of
@@ -57,12 +86,16 @@ export function portTypeOf(portId, declaredType = null) {
 const COMPAT = Object.freeze({});
 
 export function portTypesCompatible(outputType, inputType) {
+  if (!KNOWN_PORT_TYPES.has(outputType) || !KNOWN_PORT_TYPES.has(inputType)) return false;
   if (outputType === inputType) return true;
   const accepted = COMPAT[outputType];
   return !!accepted && accepted.has(inputType);
 }
 
 // Convenience for connection code that holds raw port ids.
-export function portsCompatible(fromPortId, toPortId) {
-  return portTypesCompatible(portTypeOf(fromPortId), portTypeOf(toPortId));
+export function portsCompatible(fromPortId, toPortId, fromDeclaredType = null, toDeclaredType = null) {
+  return portTypesCompatible(
+    portTypeOf(fromPortId, fromDeclaredType),
+    portTypeOf(toPortId, toDeclaredType),
+  );
 }

@@ -133,14 +133,14 @@ test('whole-graph replacement invalidates on real input changes but not unrelate
   reset();
   addNode('source-a', 'reaction-network');
   addNode('source-b', 'reaction-network');
-  addNode('other-a', 'markdown-note');
-  addNode('other-b', 'markdown-note');
+  addNode('other-a', 'reaction-network');
+  addNode('other-b', 'model-builder');
   const builder = seedBuiltModel();
   const input = reactionEdge('source-a');
   setConnections([input]);
 
   replaceConnections([input, {
-    fromNode: 'other-a', fromPort: 'result', toNode: 'other-b', toPort: 'result',
+    fromNode: 'other-a', fromPort: 'reactions', toNode: 'other-b', toPort: 'reactions',
   }]);
   assert.equal(builder.data.built, true, 'unrelated graph edits must retain the model');
   assert.equal(builder._modelInputRevision ?? 0, 0);
@@ -153,10 +153,12 @@ test('whole-graph replacement invalidates on real input changes but not unrelate
 test('dragging a reaction wire back to its original socket is a semantic no-op', () => {
   reset();
   addNode('source-a', 'reaction-network');
+  addNode('other-a', 'reaction-network');
+  addNode('other-b', 'model-builder');
   const builder = seedBuiltModel();
   const before = [
     reactionEdge('source-a'),
-    { fromNode: 'other-a', fromPort: 'result', toNode: 'other-b', toPort: 'result' },
+    { fromNode: 'other-a', fromPort: 'reactions', toNode: 'other-b', toPort: 'reactions' },
   ];
   setConnections(before);
 

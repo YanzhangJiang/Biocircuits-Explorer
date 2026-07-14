@@ -7,7 +7,7 @@ export const RESULT_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'Model Summary',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 300,
     createBody(nodeId) {
@@ -16,7 +16,7 @@ export const RESULT_TYPES = {
     async execute(nodeId) {
       const contentEl = document.getElementById(`${nodeId}-content`);
       const m = getModelForNode(nodeId);
-      if (!m) { contentEl.innerHTML = '<span class="text-dim">No model built yet.</span>'; return; }
+      if (!m) { contentEl.innerHTML = '<span class="text-dim">No model built yet.</span>'; return false; }
       contentEl.innerHTML = `
         <table>
           <tr><th>Property</th><th>Value</th></tr>
@@ -32,13 +32,14 @@ export const RESULT_TYPES = {
         <div><strong>L matrix:</strong></div>
         <pre style="font-size:10px;color:#aaa;margin:4px 0;">${escapeHtml(m.L.map(r => r.map(v => String(v).padStart(3)).join(' ')).join('\n'))}</pre>
       `;
+      return true;
     },
   },
   'vertices-table': {
     category: 'result',
     headerClass: 'header-result',
     title: 'Vertices Table',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 380,
     createBody(nodeId) {
@@ -63,17 +64,20 @@ export const RESULT_TYPES = {
         });
         html += '</tbody></table>';
         contentEl.innerHTML = html;
+        return true;
       } catch (e) {
         renderNodeError(contentEl, e);
+        return false;
+      } finally {
+        setNodeLoading(nodeId, false);
       }
-      setNodeLoading(nodeId, false);
     },
   },
   'regime-graph': {
     category: 'result',
     headerClass: 'header-result',
     title: 'Regime Graph',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 840,
     defaultHeight: 840,
@@ -106,7 +110,7 @@ export const RESULT_TYPES = {
       updateRegimeGraphMode(nodeId);
     },
     async execute(nodeId) {
-      await executeRegimeGraph(nodeId);
+      return executeRegimeGraph(nodeId);
     },
   },
 };

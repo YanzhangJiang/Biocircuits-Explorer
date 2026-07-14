@@ -127,21 +127,9 @@ export const resizeState = {
   isResizing: false, resizeNode: null, resizeStartX: 0, resizeStartY: 0, resizeStartW: 0, resizeStartH: 0,
 };
 
-// ===== Port Types & Validation =====
-export const PORT_TYPES = {
-  reactions: 'reactions',
-  model: 'model',
-  params: 'params',
-  result: 'result',
-  'atlas-spec': 'atlas-spec',
-  atlas: 'atlas',
-  'atlas-query': 'atlas-query',
-  'atlas-network': 'atlas-network',
-  'rop-shape-reference': 'rop-shape-reference',
-  'rop-shape-request': 'rop-shape-request',
-  'rop-shape-result': 'rop-shape-result',
-};
-
+// ===== Port presentation =====
+// Artifact types and compatibility are owned by port-types.js. This table is
+// presentation-only: multiple strict artifact types may share one color.
 export const PORT_COLOR_GROUPS = {
   reactions: 'reactions',
   model: 'model',

@@ -13,7 +13,7 @@ export function updateRegimeGraphMode(nodeId) {
 
 export async function executeRegimeGraph(nodeId) {
   const contentEl = document.getElementById(`${nodeId}-content`);
-  if (!contentEl) return;
+  if (!contentEl) return false;
 
   const modelContext = getModelContextForNode(nodeId);
   const qKSymbols = modelContext?.qK_syms || [];
@@ -53,11 +53,14 @@ export async function executeRegimeGraph(nodeId) {
       plotRegimeGraph(data, `${nodeId}-plot`, { viewMode });
       setupPlotResize(nodeId, `${nodeId}-plot`);
     }, 50);
+    return true;
   } catch (e) {
     handleNodeError(e, nodeId, 'Regime graph');
     renderNodeError(contentEl, e);
+    return false;
+  } finally {
+    setNodeLoading(nodeId, false);
   }
-  setNodeLoading(nodeId, false);
 }
 
 // Node color encodes each regime's local Jacobian classification. Ordered

@@ -1,5 +1,5 @@
 import { setupAutoUpdate, setupTabNavigation } from '../nodes.js';
-import { executeAtlasQueryResult, executeAtlasInverseDesignResult, addAtlasBuilderRow, refreshAtlasQueryDesigner } from '../atlas.js';
+import { executeAtlasQueryResult, executeAtlasInverseDesignResult, refreshAtlasQueryDesigner } from '../atlas.js';
 import { isAtlasHttpSqlitePathEnabled } from '../atlas-sqlite-policy.js';
 
 function atlasSqlitePathHint() {
@@ -19,8 +19,8 @@ export const ATLAS_TYPES = {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'Atlas Spec',
-    inputs: [{ port: 'atlas-network', label: 'Network' }],
-    outputs: [{ port: 'atlas-spec', label: 'Spec' }],
+    inputs: [{ port: 'atlas-network', type: 'AtlasNetwork', label: 'Network' }],
+    outputs: [{ port: 'atlas-spec', type: 'AtlasSpec', label: 'Spec' }],
     defaultWidth: 420,
     defaultHeight: 620,
     createBody(nodeId) {
@@ -181,7 +181,7 @@ export const ATLAS_TYPES = {
     headerClass: 'header-parameter',
     title: 'Atlas Query Config',
     inputs: [],
-    outputs: [{ port: 'atlas-query', label: 'Query' }],
+    outputs: [{ port: 'atlas-query', type: 'AtlasQuery', label: 'Query' }],
     defaultWidth: 420,
     defaultHeight: 700,
     createBody(nodeId) {
@@ -526,7 +526,7 @@ export const ATLAS_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'Atlas Search Result',
-    inputs: [{ port: 'atlas', label: 'Atlas' }, { port: 'atlas-query', label: 'Query' }],
+    inputs: [{ port: 'atlas', type: 'AtlasArtifact', label: 'Atlas' }, { port: 'atlas-query', type: 'AtlasQuery', label: 'Query' }],
     outputs: [],
     defaultWidth: 640,
     defaultHeight: 540,
@@ -539,7 +539,7 @@ export const ATLAS_TYPES = {
       `;
     },
     async execute(nodeId, options = {}) {
-      await executeAtlasQueryResult(nodeId, options);
+      return executeAtlasQueryResult(nodeId, options);
     },
   },
   'atlas-inverse-result': {
@@ -547,9 +547,9 @@ export const ATLAS_TYPES = {
     headerClass: 'header-result',
     title: 'Atlas Inverse Design',
     inputs: [
-      { port: 'atlas-spec', label: 'Spec' },
-      { port: 'atlas', label: 'Atlas' },
-      { port: 'atlas-query', label: 'Query' },
+      { port: 'atlas-spec', type: 'AtlasSpec', label: 'Spec' },
+      { port: 'atlas', type: 'AtlasArtifact', label: 'Atlas' },
+      { port: 'atlas-query', type: 'AtlasQuery', label: 'Query' },
     ],
     outputs: [],
     defaultWidth: 700,
@@ -563,7 +563,7 @@ export const ATLAS_TYPES = {
       `;
     },
     async execute(nodeId, options = {}) {
-      await executeAtlasInverseDesignResult(nodeId, options);
+      return executeAtlasInverseDesignResult(nodeId, options);
     },
   },
 };

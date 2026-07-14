@@ -1,15 +1,15 @@
-import { api, syncSelectOptions } from '../api.js';
+import { syncSelectOptions } from '../api.js';
 import { getNodeData } from '../state.js';
-import { setNodeLoading, getModelForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
-import { executeROPPolyResult, runROPPolyhedron, updateROPPolyDimension } from '../scan.js';
+import { getModelForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
+import { executeROPPolyResult, updateROPPolyDimension } from '../scan.js';
 
 export const ROP_POLY_TYPES = {
   'rop-poly-params': {
     category: 'parameter',
     headerClass: 'header-parameter',
     title: 'ROP Polyhedron Config',
-    inputs: [{ port: 'model', label: 'Model' }],
-    outputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
+    outputs: [{ port: 'params', type: 'ROPPolyhedronConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
       return `
@@ -60,7 +60,7 @@ export const ROP_POLY_TYPES = {
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'rop-poly-params');
     },
-    async execute(nodeId) {
+    async prepare(nodeId) {
       const model = getModelForNode(nodeId);
       if (!model) return;
       const savedConfig = getNodeData(nodeId).config || {};
@@ -101,7 +101,7 @@ export const ROP_POLY_TYPES = {
     category: 'result',
     headerClass: 'header-result',
     title: 'ROP Polyhedron Result',
-    inputs: [{ port: 'params', label: 'Config' }],
+    inputs: [{ port: 'params', type: 'ROPPolyhedronConfig', label: 'Config' }],
     outputs: [],
     defaultWidth: 600,
     createBody(nodeId) {
@@ -113,14 +113,14 @@ export const ROP_POLY_TYPES = {
       `;
     },
     async execute(nodeId) {
-      await executeROPPolyResult(nodeId);
+      return executeROPPolyResult(nodeId);
     },
   },
   'rop-polyhedron': {
     category: 'viewer',
     headerClass: 'header-viewer',
     title: 'ROP Polyhedron',
-    inputs: [{ port: 'model', label: 'Model' }],
+    inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {

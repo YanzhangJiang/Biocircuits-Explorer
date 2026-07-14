@@ -6,6 +6,11 @@ import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getModelCon
 import { triggerDownstreamNodes } from './model.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
 import { NODE_TYPES } from './node-types/index.js';
+import {
+  blockedOutcome,
+  failedOutcome,
+  succeededOutcome,
+} from './execution-outcome.js';
 
 const SISO_PLOT_MODE_SINGLE = 'single';
 const SISO_PLOT_MODE_OVERLAY = 'overlay';
@@ -584,14 +589,22 @@ export async function computeSISOResult(nodeId) {
   const paramsConn = connections.find(c => c.toNode === nodeId && c.toPort === 'params');
   if (!paramsConn) {
     showToast('Connect a SISO Config node first');
-    return;
+    return blockedOutcome(nodeId, {
+      code: 'missing_siso_config',
+      message: 'Connect a SISO Config node first',
+      outputs: { result: 'missing' },
+    });
   }
 
   const paramsNode = nodeRegistry[paramsConn.fromNode];
   const config = getConnectedSISOConfig(nodeId);
   if (!paramsNode || !config) {
     showToast('SISO Config node has no configuration');
-    return;
+    return blockedOutcome(nodeId, {
+      code: 'invalid_siso_config',
+      message: 'SISO Config node has no configuration',
+      outputs: { result: 'missing' },
+    });
   }
 
   setNodeLoading(nodeId, true);
@@ -631,9 +644,20 @@ export async function computeSISOResult(nodeId) {
     } else {
       clearSISOSelection(nodeId, previousSelectedPath !== null);
     }
+    const selection = getNodeData(nodeId).selectedPath;
+    return succeededOutcome(nodeId, {
+      outputs: { result: selection?.path_idx != null ? 'present' : 'missing' },
+      code: selection?.path_idx != null ? null : 'siso_path_not_selected',
+      message: selection?.path_idx != null ? null : 'Select a current SISO path before running qK',
+    });
   } catch (e) {
     handleNodeError(e, nodeId, 'SISO behavior analysis');
     renderNodeError(contentEl, e);
+    return failedOutcome(nodeId, {
+      code: 'siso_execution_failed',
+      message: e?.message || String(e),
+      outputs: { result: 'missing' },
+    });
   } finally {
     setNodeLoading(nodeId, false);
   }
@@ -886,13 +910,19 @@ export async function executeQKPolyResult(nodeId) {
   const source = getConnectedSISOSelection(nodeId);
   if (!source) {
     if (contentEl) contentEl.innerHTML = '<span class="text-dim">Connect to a SISO Behaviors node first.</span>';
-    return;
+    return blockedOutcome(nodeId, {
+      code: 'missing_siso_source',
+      message: 'Connect to a SISO Behaviors node first',
+    });
   }
 
   const selection = source.selection;
   if (!selection) {
     if (contentEl) contentEl.innerHTML = '<span class="text-dim">Select a path in the upstream SISO Behaviors node.</span>';
-    return;
+    return blockedOutcome(nodeId, {
+      code: 'upstream_output_missing',
+      message: 'Select a current path in the upstream SISO Behaviors node',
+    });
   }
 
   setNodeLoading(nodeId, true);
@@ -917,9 +947,14 @@ export async function executeQKPolyResult(nodeId) {
         setupPlotResize(nodeId, `${nodeId}-plot`);
       }, 50);
     }
+    return succeededOutcome(nodeId);
   } catch (e) {
     handleNodeError(e, nodeId, 'qK polyhedron');
     renderNodeError(contentEl, e);
+    return failedOutcome(nodeId, {
+      code: 'qk_polyhedron_failed',
+      message: e?.message || String(e),
+    });
   } finally {
     setNodeLoading(nodeId, false);
   }

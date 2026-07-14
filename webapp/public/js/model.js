@@ -216,22 +216,23 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
   }
 }
 
-// ===== Downstream Viewer Auto-Execution =====
+// ===== Downstream UI preparation =====
 export function triggerDownstreamNodes(fromNodeId, fromPort) {
   const downstream = connections.filter(c => c.fromNode === fromNodeId && c.fromPort === fromPort);
   for (const conn of downstream) {
     const viewerInfo = nodeRegistry[conn.toNode];
     if (!viewerInfo) continue;
     const typeDef = NODE_TYPES[viewerInfo.type];
-    if (typeDef && typeDef.execute) {
+    if (typeDef && typeDef.prepare) {
       // Mark input wires as transmitting
       const wireId = `wire-${conn.fromNode}-${conn.toNode}`;
       const wire = document.getElementById(wireId);
       if (wire) wire.classList.add('transmitting');
 
-      // Execute asynchronously (don't await — run in parallel)
-      typeDef.execute(conn.toNode).catch(e => {
-        handleNodeError(e, conn.toNode, `Downstream ${viewerInfo.type}`);
+      // Preparation is UI/config-only. Scientific computation is owned by the
+      // serial workflow scheduler or the node's explicit Run action.
+      typeDef.prepare(conn.toNode).catch(e => {
+        handleNodeError(e, conn.toNode, `Prepare ${viewerInfo.type}`);
       }).finally(() => {
         // Remove transmitting state immediately after execution completes
         if (wire) wire.classList.remove('transmitting');
