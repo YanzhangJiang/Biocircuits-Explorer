@@ -2,7 +2,7 @@
 
 - Status: accepted in the 2026-07-11 working tree
 - Date: 2026-07-11
-- Verified against: current working tree; commit pending
+- Verified against: `f2ca13c`
 - Historical implementation anchor: `1177a3d`
 - Owners: `backend-runtime`, `batch-hpc`
 - Supersedes: process-wide serialization of canonical job state through

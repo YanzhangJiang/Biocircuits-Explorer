@@ -1,7 +1,7 @@
 ---
 module: backend-runtime
 status: verified
-verified_against: 1177a3d
+verified_against: f2ca13c
 ---
 
 # Backend runtime
@@ -400,7 +400,7 @@ See [runtime topology](../architecture/runtime.md) and
 
 ## Verified against
 
-- Current source commit: `1177a3d`
+- Current source commit: `f2ca13c`
 - Evidence inspected: module assembly; bind/configuration and readiness;
   per-bundle and same-hash locking; independent cache/session LRU clocks; heavy
   admission and typed budgets; path context propagation; body limits; numerical

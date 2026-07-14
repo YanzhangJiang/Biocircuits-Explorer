@@ -1,7 +1,7 @@
 ---
 title: Scientific evidence contract
-status: implemented-working-tree
-verified_against: working-tree-2026-07-11
+status: verified
+verified_against: f2ca13c
 ---
 
 # Scientific evidence contract
@@ -217,10 +217,9 @@ certify a manuscript claim that has no pinned artifact and claim entry.
 
 ## Verified against
 
-- Shape-optimization evidence extension: uncommitted working tree on
-  2026-07-11; local contract commands and boundaries are recorded in the goal
-  completion report.
-- Last committed implementation anchor: `1177a3d`.
+- Shape-optimization evidence extension: committed integration revision
+  `f2ca13c`, locally verified on 2026-07-15.
+- Earlier implementation anchor: `1177a3d`.
 - Historical baseline: retrieval-versus-verification and provenance wording was
   audited at `f9c65a5`; that historical evidence predates the explicit
   validity/partial contracts and cannot establish them.

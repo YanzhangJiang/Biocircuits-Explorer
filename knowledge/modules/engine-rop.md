@@ -1,7 +1,7 @@
 ---
 module: engine-rop
 status: verified
-verified_against: 1177a3d
+verified_against: f2ca13c
 ---
 
 # Engine: binding networks and reaction-order geometry
@@ -259,10 +259,10 @@ See [system architecture](../architecture/overview.md) and
 
 ## Verified against
 
-- Current source commit: `1177a3d`
-- Volume-estimator and cache extension: current uncommitted working tree on
-  2026-07-12, verified with the focused contract on Julia 1.10 and 1.12 and the
-  complete engine golden suite on Julia 1.12.
+- Current source commit: `f2ca13c`
+- Volume-estimator and cache extension: locally verified on 2026-07-15 with
+  the focused contract on Julia 1.10 and 1.12 and the complete engine golden
+  suite on Julia 1.12.
 - Evidence inspected: engine constructors and public APIs; regime-build
   completion locking and rollback; optional path allocation limits; scan solver
   validity and warm-start reset; backend path/bundle adapters; golden,

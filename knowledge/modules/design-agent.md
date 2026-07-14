@@ -203,9 +203,9 @@ external model provider or validate optional retrieval corpora.
 
 ## Verified against
 
-- Shape-optimization extension: uncommitted working tree on 2026-07-11, with
-  Python and repository contract results recorded in the goal completion
-  report. No external model provider or remote CI run is claimed.
+- Shape-optimization extension: committed integration revision `f2ca13c`,
+  locally verified on 2026-07-15. No external model provider or remote CI run
+  is claimed.
 - Historical source baseline: `f9c65a5`.
 - Evidence inspected: owner paths, Python contract tests, browser agent export
   tests, and CI workflow wiring.

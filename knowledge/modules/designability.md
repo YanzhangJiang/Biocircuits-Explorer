@@ -1,7 +1,7 @@
 ---
 module: designability
-status: implemented-working-tree
-verified_against: working-tree-2026-07-11
+status: verified
+verified_against: f2ca13c
 ---
 
 # Designability specification and screening
@@ -253,10 +253,9 @@ See [data provenance](../architecture/data-provenance.md),
 
 ## Verified against
 
-- Current implementation: uncommitted working tree on 2026-07-11; exact local
-  commands are recorded in the goal completion report. No remote CI run is
-  claimed.
-- Last committed implementation anchor: `1177a3d`.
+- Current implementation: committed integration revision `f2ca13c`, locally
+  verified on 2026-07-15. No remote CI run is claimed.
+- Earlier implementation anchor: `1177a3d`.
 - Historical baseline: the proxy/verified and exact/sampled evidence audit at
   `f9c65a5` remains historical context. It predates v0.3 coverage counts,
   synchronous card budgets, and complete-validity placement behavior.

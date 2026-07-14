@@ -1,7 +1,7 @@
 ---
 module: atlas
 status: verified
-verified_against: 1177a3d
+verified_against: f2ca13c
 ---
 
 # Behavior atlas and inverse design
@@ -279,7 +279,7 @@ See [data provenance](../architecture/data-provenance.md),
 
 ## Verified against
 
-- Current source commit: `1177a3d`.
+- Current source commit: `f2ca13c`.
 - Historical baseline: the Atlas identity/evidence review at `f9c65a5` remains
   historical evidence. It does not cover the current synchronous budgets,
   SQLite writer/HTTP policy, >7 identity fallback, or refinement validity rules.

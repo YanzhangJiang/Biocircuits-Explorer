@@ -1,7 +1,7 @@
 ---
 module: rop-shape-optimization
-status: implemented-working-tree
-verified_against: working-tree-2026-07-11
+status: verified
+verified_against: f2ca13c
 ---
 
 # Fixed-topology ROP shape optimization
@@ -253,11 +253,10 @@ pinned network, not a performance or chemistry-wide completeness claim.
 
 ## Verified against
 
-- Implementation state: current uncommitted working tree on 2026-07-11. The
-  completion report records exact local commands and results; no commit or
-  remote CI run is claimed.
-- Historical base: `1177a3d` remains the last committed implementation evidence
-  anchor in the maintained status page.
+- Implementation state: committed integration revision `f2ca13c`, locally
+  verified on 2026-07-15. No remote CI run is claimed.
+- Historical base: `1177a3d` remains the earlier bounded-runtime evidence
+  anchor.
 - Scope: exact only over the declared fixed-topology path/cell population and
   bounds; finite replay remains sampled and biological/external validation is
   unknown.
