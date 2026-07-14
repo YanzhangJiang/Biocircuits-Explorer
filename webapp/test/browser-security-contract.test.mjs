@@ -95,7 +95,7 @@ assert.equal(images.length, 2, 'only HTTPS and local raster/image paths should r
 assert.equal(images[0].getAttribute('alt'), '" onerror="globalThis.imagePwned=true');
 assert.equal(images[0].getAttribute('onerror'), null, 'quoted alt text must not create an event attribute');
 assert.match(images[0].getAttribute('src'), /^https:\/\/example\.com\/image\.png/);
-assert.equal(images[1].getAttribute('src'), '/api/local-image?path=%2Ftmp%2Fa%20b.png');
+assert.equal(images[1].getAttribute('src'), '/api/v1/local-image?path=%2Ftmp%2Fa%20b.png');
 assert.equal(links.length, 1, 'javascript: links must degrade to plain text');
 assert.equal(links[0].getAttribute('rel'), 'noopener noreferrer');
 assert.equal(links[0].getAttribute('target'), '_blank');
@@ -205,7 +205,7 @@ const callbackIdToken = `header.${encodedPayload}.callback`;
 const fetchCalls = [];
 globalThis.fetch = async (url, options = {}) => {
   fetchCalls.push({ url: String(url), options });
-  if (String(url).endsWith('/api/auth/config')) {
+  if (String(url).endsWith('/api/v1/auth/config')) {
     return {
       ok: true,
       status: 200,
@@ -262,7 +262,7 @@ assert.equal([...localStorage.values.values()].some(value => value.includes('cal
 await authModule.signIn({ returnTo: 'https://attacker.example/after-login' });
 assert.equal(sessionStorage.getItem(`${authPrefix}post_login_return`), '/index-node.html');
 assert.match(assignedLocations.at(-1), /^https:\/\/login\.example\.test\/oauth2\/authorize\?/);
-assert.equal(fetchCalls.filter(call => call.url.endsWith('/api/auth/config')).length, 1);
+assert.equal(fetchCalls.filter(call => call.url.endsWith('/api/v1/auth/config')).length, 1);
 
 // Server error bodies flow into Error.message. Rendering them must use a text
 // node, because the same code runs inside the privileged local WKWebView.

@@ -105,7 +105,7 @@ test('model requests keep explicit network payloads untouched', () => {
   const priorFetch = globalThis.fetch;
   try {
     globalThis.fetch = async (url) => {
-      if (url === '/api/auth/config') {
+      if (url === '/api/v1/auth/config') {
         return {
           ok: true,
           status: 200,
@@ -113,7 +113,7 @@ test('model requests keep explicit network payloads untouched', () => {
           json: async () => ({ enabled: false }),
         };
       }
-      assert.equal(url, '/api/jobs');
+      assert.equal(url, '/api/v1/jobs');
       return {
         ok: false,
         status: 422,
@@ -182,8 +182,8 @@ test('model requests keep explicit network payloads untouched', () => {
   try {
     globalThis.fetch = async (url) => {
       calls.push(url);
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') {
         return {
           ...jsonResponse(null),
           json: async () => {
@@ -192,7 +192,7 @@ test('model requests keep explicit network payloads untouched', () => {
           },
         };
       }
-      if (url === '/api/jobs/stale-after-submit/cancel') {
+      if (url === '/api/v1/jobs/stale-after-submit/cancel') {
         return jsonResponse({ job_id: 'stale-after-submit', status: 'cancel_requested' });
       }
       throw new Error(`Unexpected URL ${url}`);
@@ -222,15 +222,15 @@ test('model requests keep explicit network payloads untouched', () => {
       let cancelCount = 0;
       let pollCount = 0;
       globalThis.fetch = async (url) => {
-        if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-        if (url === '/api/jobs') {
+        if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+        if (url === '/api/v1/jobs') {
           return jsonResponse({ job_id: `stale-${submittedStatus}`, status: submittedStatus });
         }
-        if (url === `/api/jobs/stale-${submittedStatus}/cancel`) {
+        if (url === `/api/v1/jobs/stale-${submittedStatus}/cancel`) {
           cancelCount += 1;
           return jsonResponse({ status: 'cancel_requested' });
         }
-        if (url === `/api/jobs/stale-${submittedStatus}`) {
+        if (url === `/api/v1/jobs/stale-${submittedStatus}`) {
           pollCount += 1;
           return jsonResponse({ job_id: `stale-${submittedStatus}`, status: submittedStatus });
         }
@@ -261,8 +261,8 @@ test('model requests keep explicit network payloads untouched', () => {
       let requestIsCurrent = true;
       let cancelCount = 0;
       globalThis.fetch = async (url) => {
-        if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-        if (url === '/api/jobs') {
+        if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+        if (url === '/api/v1/jobs') {
           return {
             ...jsonResponse(null),
             json: async () => {
@@ -302,8 +302,8 @@ test('model requests keep explicit network payloads untouched', () => {
   try {
     globalThis.document.getElementById = id => id === 'status-badge' ? badge : null;
     globalThis.fetch = async (url) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') {
         return {
           ...jsonResponse(null),
           json: async () => {
@@ -312,7 +312,7 @@ test('model requests keep explicit network payloads untouched', () => {
           },
         };
       }
-      if (url === '/api/jobs/cancel-failure/cancel') {
+      if (url === '/api/v1/jobs/cancel-failure/cancel') {
         return jsonResponse(
           { error: { message: 'cancel temporarily unavailable', retryable: true } },
           { status: 503, ok: false },
@@ -351,9 +351,9 @@ test('model requests keep explicit network payloads untouched', () => {
   let cancelCount = 0;
   try {
     globalThis.fetch = async (url) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'predicate-throw', status: 'queued' });
-      if (url === '/api/jobs/predicate-throw/cancel') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'predicate-throw', status: 'queued' });
+      if (url === '/api/v1/jobs/predicate-throw/cancel') {
         cancelCount += 1;
         return jsonResponse({ status: 'cancel_requested' });
       }
@@ -387,9 +387,9 @@ test('model requests keep explicit network payloads untouched', () => {
       let cancelCount = 0;
       const waits = [];
       globalThis.fetch = async (url, options) => {
-        if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-        if (url === '/api/jobs') return jsonResponse({ job_id: jobId, status: 'queued' });
-        if (url === `/api/jobs/${jobId}`) {
+        if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+        if (url === '/api/v1/jobs') return jsonResponse({ job_id: jobId, status: 'queued' });
+        if (url === `/api/v1/jobs/${jobId}`) {
           pollCalls += 1;
           if (pollCalls <= retryableFailures) {
             return jsonResponse(
@@ -399,7 +399,7 @@ test('model requests keep explicit network payloads untouched', () => {
           }
           return jsonResponse({ job_id: jobId, status: 'succeeded' });
         }
-        if (url === `/api/jobs/${jobId}/result-url`) {
+        if (url === `/api/v1/jobs/${jobId}/result-url`) {
           return jsonResponse({ result_url: `https://artifacts.example/${jobId}.json` });
         }
         if (url === `https://artifacts.example/${jobId}.json`) {
@@ -424,9 +424,9 @@ test('model requests keep explicit network payloads untouched', () => {
 
     let resetPollCalls = 0;
     globalThis.fetch = async (url, options) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'poll-reset', status: 'queued' });
-      if (url === '/api/jobs/poll-reset') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'poll-reset', status: 'queued' });
+      if (url === '/api/v1/jobs/poll-reset') {
         resetPollCalls += 1;
         if ([1, 2, 4, 5].includes(resetPollCalls)) {
           return jsonResponse(
@@ -439,7 +439,7 @@ test('model requests keep explicit network payloads untouched', () => {
           status: resetPollCalls === 3 ? 'queued' : 'succeeded',
         });
       }
-      if (url === '/api/jobs/poll-reset/result-url') {
+      if (url === '/api/v1/jobs/poll-reset/result-url') {
         return jsonResponse({ result_url: 'https://artifacts.example/poll-reset.json' });
       }
       if (url === 'https://artifacts.example/poll-reset.json') {
@@ -467,9 +467,9 @@ test('model requests keep explicit network payloads untouched', () => {
   let pollCalls = 0;
   try {
     globalThis.fetch = async (url) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'poll-limit', status: 'queued' });
-      if (url === '/api/jobs/poll-limit') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'poll-limit', status: 'queued' });
+      if (url === '/api/v1/jobs/poll-limit') {
         pollCalls += 1;
         return jsonResponse(
           { error: { message: 'poll retry limit reached', retryable: true } },
@@ -497,9 +497,9 @@ test('model requests keep explicit network payloads untouched', () => {
   let pollCalls = 0;
   try {
     globalThis.fetch = async (url) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'poll-nonretryable', status: 'queued' });
-      if (url === '/api/jobs/poll-nonretryable') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'poll-nonretryable', status: 'queued' });
+      if (url === '/api/v1/jobs/poll-nonretryable') {
         pollCalls += 1;
         return jsonResponse(
           { error: { message: 'poll contract failure', retryable: false } },
@@ -528,9 +528,9 @@ test('model requests keep explicit network payloads untouched', () => {
     let resultUrlCalls = 0;
     const directUrls = [];
     globalThis.fetch = async (url, options) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'result-url-retry', status: 'succeeded' });
-      if (url === '/api/jobs/result-url-retry/result-url') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'result-url-retry', status: 'succeeded' });
+      if (url === '/api/v1/jobs/result-url-retry/result-url') {
         resultUrlCalls += 1;
         if (resultUrlCalls === 1) {
           return jsonResponse(
@@ -557,9 +557,9 @@ test('model requests keep explicit network payloads untouched', () => {
     let directAttempt = 0;
     resultUrlCalls = 0;
     globalThis.fetch = async (url, options) => {
-      if (url === '/api/auth/config') return jsonResponse({ enabled: false });
-      if (url === '/api/jobs') return jsonResponse({ job_id: 'direct-retry', status: 'succeeded' });
-      if (url === '/api/jobs/direct-retry/result-url') {
+      if (url === '/api/v1/auth/config') return jsonResponse({ enabled: false });
+      if (url === '/api/v1/jobs') return jsonResponse({ job_id: 'direct-retry', status: 'succeeded' });
+      if (url === '/api/v1/jobs/direct-retry/result-url') {
         resultUrlCalls += 1;
         return jsonResponse({ result_url: `https://artifacts.example/direct-retry-${resultUrlCalls}.json` });
       }
@@ -571,7 +571,7 @@ test('model requests keep explicit network payloads untouched', () => {
         }
         return jsonResponse({ direct_retry: true });
       }
-      if (url === '/api/jobs/direct-retry/result') {
+      if (url === '/api/v1/jobs/direct-retry/result') {
         throw new Error('broker relay must never be used');
       }
       throw new Error(`Unexpected URL ${url}`);
@@ -599,9 +599,9 @@ test('model requests keep explicit network payloads untouched', () => {
     globalThis.fetch = async (url, options) => {
       calledUrls.push(url);
       let json;
-      if (url === '/api/auth/config') json = { enabled: false };
-      else if (url === '/api/jobs') json = { job_id: 'job-1', status: submittedStatus };
-      else if (url === '/api/jobs/job-1/result-url') {
+      if (url === '/api/v1/auth/config') json = { enabled: false };
+      else if (url === '/api/v1/jobs') json = { job_id: 'job-1', status: submittedStatus };
+      else if (url === '/api/v1/jobs/job-1/result-url') {
         json = { result_url: 'https://artifacts.example/job-1/result.json?signature=one' };
       } else if (url === 'https://artifacts.example/job-1/result.json?signature=one') {
         assert.deepEqual(options, { method: 'GET' });
@@ -619,11 +619,11 @@ test('model requests keep explicit network payloads untouched', () => {
     const cloudResult = await computeApi('/api/v1/build_atlas', { spec: true });
     assert.deepEqual(cloudResult, { ok: true });
     assert.deepEqual(calledUrls, [
-      '/api/jobs',
-      '/api/jobs/job-1/result-url',
+      '/api/v1/jobs',
+      '/api/v1/jobs/job-1/result-url',
       'https://artifacts.example/job-1/result.json?signature=one',
     ]);
-    assert.equal(calledUrls.some(url => url === '/api/jobs/job-1/result'), false);
+    assert.equal(calledUrls.some(url => url === '/api/v1/jobs/job-1/result'), false);
 
     calledUrls.length = 0;
     submittedStatus = 'mystery';
@@ -631,7 +631,7 @@ test('model requests keep explicit network payloads untouched', () => {
       () => computeApi('build_atlas', { spec: true }),
       /unknown job status: mystery/,
     );
-    assert.deepEqual(calledUrls, ['/api/jobs']);
+    assert.deepEqual(calledUrls, ['/api/v1/jobs']);
 
     calledUrls.length = 0;
     submittedStatus = 'queued';
@@ -640,7 +640,7 @@ test('model requests keep explicit network payloads untouched', () => {
       statusIsCurrent: () => currentChecks++ === 0,
     });
     assert.equal(staleResult, null);
-    assert.deepEqual(calledUrls, ['/api/jobs', '/api/jobs/job-1/cancel']);
+    assert.deepEqual(calledUrls, ['/api/v1/jobs', '/api/v1/jobs/job-1/cancel']);
     passed += 1;
     console.log('  ok - cloud dispatch normalizes v1 ids and cancels stale nonterminal jobs');
   } finally {
@@ -689,7 +689,7 @@ test('model requests keep explicit network payloads untouched', () => {
       const calledUrls = [];
       globalThis.fetch = async (url, options) => {
         calledUrls.push(url);
-        if (url === '/api/jobs') {
+        if (url === '/api/v1/jobs') {
           return {
             ok: true,
             status: 200,
@@ -697,7 +697,7 @@ test('model requests keep explicit network payloads untouched', () => {
             json: async () => ({ job_id: 'job-errors', status: 'succeeded' }),
           };
         }
-        if (url === '/api/jobs/job-errors/result-url') {
+        if (url === '/api/v1/jobs/job-errors/result-url') {
           return {
             ok: true,
             status: 200,
@@ -717,7 +717,7 @@ test('model requests keep explicit network payloads untouched', () => {
         scenario.message,
       );
       assert.equal(
-        calledUrls.some(url => url === '/api/jobs/job-errors/result'),
+        calledUrls.some(url => url === '/api/v1/jobs/job-errors/result'),
         false,
         `${scenario.name} must not fall back to the broker result body`,
       );
@@ -745,7 +745,7 @@ test('model requests keep explicit network payloads untouched', () => {
     globalThis.document.getElementById = id => id === 'status-badge' ? badge : null;
     globalThis.fetch = async (url) => {
       calledUrls.push(url);
-      if (url === '/api/jobs') {
+      if (url === '/api/v1/jobs') {
         return {
           ok: true,
           status: 200,
@@ -753,7 +753,7 @@ test('model requests keep explicit network payloads untouched', () => {
           json: async () => ({ job_id: 'job-stale-url', status: 'succeeded' }),
         };
       }
-      if (url === '/api/jobs/job-stale-url/result-url') {
+      if (url === '/api/v1/jobs/job-stale-url/result-url') {
         markResultUrlStarted();
         return resultUrlReply;
       }
@@ -803,7 +803,7 @@ test('model requests keep explicit network payloads untouched', () => {
     globalThis.document.getElementById = id => id === 'status-badge' ? badge : null;
     globalThis.fetch = async (url, options) => {
       calledUrls.push(url);
-      if (url === '/api/jobs') {
+      if (url === '/api/v1/jobs') {
         return {
           ok: true,
           status: 200,
@@ -811,7 +811,7 @@ test('model requests keep explicit network payloads untouched', () => {
           json: async () => ({ job_id: 'job-stale-get', status: 'succeeded' }),
         };
       }
-      if (url === '/api/jobs/job-stale-get/result-url') {
+      if (url === '/api/v1/jobs/job-stale-get/result-url') {
         return {
           ok: true,
           status: 200,
@@ -842,7 +842,7 @@ test('model requests keep explicit network payloads untouched', () => {
 
     assert.equal(await pending, null);
     assert.deepEqual(directOptions, { method: 'GET' });
-    assert.equal(calledUrls.some(url => url === '/api/jobs/job-stale-get/result'), false);
+    assert.equal(calledUrls.some(url => url === '/api/v1/jobs/job-stale-get/result'), false);
     assert.equal(badge.textContent, 'Replacement result done');
     assert.doesNotMatch(badge.className, /error/);
 

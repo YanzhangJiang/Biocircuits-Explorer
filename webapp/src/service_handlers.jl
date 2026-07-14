@@ -36,6 +36,7 @@ end
 # / hist_observe! / gauge_set! at the call sites.
 const _METRIC_LABEL_SCHEMAS = Dict{String, Tuple}(
     "bcx_http_requests_total"         => (:method, :path, :status),
+    "bcx_http_legacy_requests_total"  => (:method, :path, :status),
     "bcx_http_request_duration_seconds" => (:method, :path),
     "bcx_uptime_seconds"              => (),
     "bcx_sessions_active"             => (),

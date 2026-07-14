@@ -289,27 +289,27 @@ function responseIsRetryable(response) {
   return status === 401 || status === 403 || RETRYABLE_HTTP_STATUSES.has(status);
 }
 
-// All /api/jobs/* endpoints route to CLOUD_API: this is the SaaS path.
+// All /api/v1/jobs/* endpoints route to CLOUD_API: this is the SaaS path.
 // In the browser CLOUD_API == '' (same-origin) so nothing changes; in the
 // macOS WebView CLOUD_API points at the EC2 broker so cloud submissions
 // hit the production backend instead of the local Julia process.
 export async function submitJob(kind, spec, execution = { mode: 'local_async' }) {
-  return jobApi(`${CLOUD_API}/api/jobs`, {
+  return jobApi(`${CLOUD_API}/api/v1/jobs`, {
     method: 'POST',
     data: { kind, spec, execution },
   });
 }
 
 export async function getJob(jobId) {
-  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/v1/jobs/${encodeURIComponent(jobId)}`, { method: 'POST', data: {} });
 }
 
 export async function getJobResultUrl(jobId) {
-  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/result-url`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/v1/jobs/${encodeURIComponent(jobId)}/result-url`, { method: 'POST', data: {} });
 }
 
 export async function cancelJob(jobId) {
-  return jobApi(`${CLOUD_API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
+  return jobApi(`${CLOUD_API}/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', data: {} });
 }
 
 export async function runCloudJob(

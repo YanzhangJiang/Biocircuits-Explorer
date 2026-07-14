@@ -88,7 +88,7 @@ export function resolveMarkdownImageSrc(rawSrc) {
   }
 
   if (localPath !== null) {
-    return `/api/local-image?path=${encodeURIComponent(localPath)}`;
+    return `/api/v1/local-image?path=${encodeURIComponent(localPath)}`;
   }
 
   // Unknown absolute schemes include javascript:, blob:, ftp:, and custom
