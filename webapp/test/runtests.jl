@@ -94,30 +94,16 @@ include("cooperative_cancel_checkpoints_contract.jl")
 include("inverse_config_contract.jl")
 include("d1_atlas_contract.jl")
 
-# REGRESSION PROBE (Task-15b): atlas.jl accesses SISOPaths.qK_grh/.sources/.sinks
-# as direct struct fields — upstream b30087f moved the graph into SISOProblem.dag.graph
-# (accessor: get_SISO_graph) and removed those fields.  Network builds fail with
-# FieldError; all atlas-query results are 0.  Detect once here and mark all
-# atlas-dependent tests as @test_skip so the suite can continue and non-atlas tests
-# pass cleanly.  Fix required in webapp/src/atlas.jl lines 2061,2067,2074,2091,2092,
-# 2139-2143,2152,2184-2185 — and analogous uses in BiocircuitsExplorerBackend.jl:312-319,606-607.
-const _PROBE_NETWORK = Dict("label"=>"probe","reactions"=>Any["A + B <-> AB"],
-                            "input_symbols"=>Any["tA"],"output_symbols"=>Any["AB"])
-const ATLAS_BUILD_OK = let
-    probe = build_behavior_atlas_from_spec(Dict("networks" => Any[_PROBE_NETWORK]))
-    ok = get(probe, "successful_network_count", 0) > 0
-    ok || @warn "ATLAS BUILD REGRESSION DETECTED — SISOPaths.qK_grh field missing; all atlas-dependent tests will be skipped"
-    ok
-end
-
-# Helper: wrap atlas-dependent testset bodies so the suite continues if the
-# build is broken.  Usage: _atlas_test() do ... end inside a @testset.
+# Atlas-dependent tests execute unconditionally. An earlier regression probe
+# (Task-15b) marked these tests @test_skip when an upstream SISOPaths field
+# migration broke atlas builds; that migration is complete and a fail-open
+# gate would hide future regressions. If an atlas build fails, the suite must
+# fail instead of silently skipping the main scientific path.
+#
+# Helper: wraps an atlas-dependent testset body. Usage:
+#   _atlas_test() do ... end inside a @testset.
 function _atlas_test(f)
-    if ATLAS_BUILD_OK
-        f()
-    else
-        @test_skip "atlas build regression (SISOPaths.qK_grh removed in b30087f; fix webapp/src/atlas.jl)"
-    end
+    f()
 end
 
 const SIMPLE_NETWORK = Dict(
