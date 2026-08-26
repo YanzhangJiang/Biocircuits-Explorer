@@ -187,7 +187,7 @@ uuid = "e2ed5e7c-b2de-5872-ae92-c73ca462fb04"
 version = "0.2.2"
 
 [[deps.BindingAndCatalysis]]
-deps = ["Arpack", "CDDLib", "Clarabel", "DataStructures", "DiffEqCallbacks", "Distributions", "GraphMakie", "Graphs", "ImageFiltering", "IntegerSmithNormalForm", "JSON3", "JuMP", "Latexify", "LinearAlgebra", "Makie", "MathOptInterface", "NonlinearSolve", "OrdinaryDiffEq", "Parameters", "Polyhedra", "Printf", "ProgressMeter", "Random", "SparseArrays", "Statistics", "StatsBase", "Symbolics"]
+deps = ["Arpack", "CDDLib", "Clarabel", "DataStructures", "DiffEqCallbacks", "Distributions", "GraphMakie", "Graphs", "ImageFiltering", "IntegerSmithNormalForm", "JSON3", "JuMP", "Latexify", "LinearAlgebra", "Makie", "MathOptInterface", "NonlinearSolve", "OrdinaryDiffEq", "Parameters", "Polyhedra", "Printf", "ProgressMeter", "Random", "SHA", "SciMLBase", "SparseArrays", "Statistics", "StatsBase", "Symbolics"]
 path = "../Bnc_julia"
 uuid = "b532a4b1-2c45-4c12-bcaf-8695372aa40c"
 version = "1.0.0-DEV"

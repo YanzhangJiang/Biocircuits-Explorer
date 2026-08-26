@@ -76,6 +76,18 @@ ROP_SHAPE_OPTIMIZATION_VERSION = "bne-rop-shape-optimization/v1.0.0"
 def _hash(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
+def _sha256_json(obj):
+    """Full content fingerprint for reusable scientific-result identity.
+
+    Trace summaries intentionally use the short `_hash` above.  A scan request,
+    however, is part of a candidate card's scientific identity and must not use
+    that display-sized prefix.
+    """
+    payload = json.dumps(
+        obj, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 def _evidence(card):
     """Honest evidence tier for an engine result (no laundering, per the harness evidence policy).
     A dose shape with shape_support over the Kd prior Π (phenotype_classify, K=8) = Tier 3b
@@ -148,7 +160,9 @@ def _spill_card(card):
 
 def _card_summary(card, result_hash):
     keep = ("family", "realized_gate", "dominant_shape", "verdict", "shape_support", "margin_decades",
-            "n_reactions", "output", "output_symbol", "inputs", "input_symbol", "kd", "rules", "evidence_tier")
+            "n_reactions", "output", "output_symbol", "inputs", "input_symbol", "kd", "rules",
+            "network_ir_hash", "request_fingerprint", "verification_status", "evidence_grade",
+            "evidence_tier", "partial")
     s = {k: card[k] for k in keep if k in card}
     s["result_hash"] = result_hash
     return s
@@ -1272,6 +1286,123 @@ def _booleanize_corners(grid):
     name = next((g for g, t in _GATE_TABLES.items() if t == bits), "custom" + "".join(map(str, bits)))
     return name, list(bits), round(min(abs(v - thr) for v in c), 3)
 
+def _is_finite_scan_number(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(float(value)))
+
+def _validated_2d_surface(xs, ys, output_grid, raw_validity_grid):
+    """Return a finite-value-masked surface and strict Boolean validity grid.
+
+    The backend validity marker remains authoritative, but a literal `true`
+    cannot make a missing/non-finite output usable.  Malformed or absent
+    validity therefore fails closed instead of silently restoring the old
+    all-points-valid behavior.
+    """
+    shape_ok = (
+        bool(xs) and bool(ys)
+        and isinstance(output_grid, list) and len(output_grid) == len(xs)
+        and all(isinstance(row, list) and len(row) == len(ys) for row in output_grid)
+        and isinstance(raw_validity_grid, list) and len(raw_validity_grid) == len(xs)
+        and all(isinstance(row, list) and len(row) == len(ys)
+                for row in raw_validity_grid)
+    )
+    if not shape_ok:
+        return [], [], False
+
+    validity_grid = []
+    masked_grid = []
+    for output_row, validity_row in zip(output_grid, raw_validity_grid):
+        normalized_validity_row = []
+        masked_row = []
+        for value, valid in zip(output_row, validity_row):
+            usable = valid is True and _is_finite_scan_number(value)
+            normalized_validity_row.append(usable)
+            masked_row.append(value if usable else None)
+        validity_grid.append(normalized_validity_row)
+        masked_grid.append(masked_row)
+    return masked_grid, validity_grid, True
+
+def _required_2d_corners_valid(validity_grid):
+    if not validity_grid or not validity_grid[0]:
+        return False
+    return all((
+        validity_grid[0][0], validity_grid[0][-1],
+        validity_grid[-1][0], validity_grid[-1][-1],
+    ))
+
+def _simulate_2d_identity(model_description, reactions, kd, input1, input2,
+                          output, requested_n_grid, fixed_qK):
+    """Build the complete, ordered identity of one effective 2D scan request."""
+    model_kd = model_description.get("kd")
+    if not isinstance(model_kd, list):
+        model_kd = list(kd)
+    network_ir = model_description.get("network_ir")
+    network_ir_hash = model_description.get("network_ir_hash")
+    model_identity = {
+        "reactions": list(reactions),
+        "kd": list(model_kd),
+        "network_ir": copy.deepcopy(network_ir),
+        "network_ir_hash": network_ir_hash,
+        "model_content_fingerprint": _sha256_json({
+            "reactions": list(reactions),
+            "kd": list(model_kd),
+            "network_ir": network_ir,
+            "network_ir_hash": network_ir_hash,
+        }),
+    }
+
+    fixed_context = None
+    if isinstance(fixed_qK, list):
+        qk_symbols = list(model_description.get("q_sym") or [])
+        qk_symbols.extend(model_description.get("K_sym") or [])
+        if len(qk_symbols) == len(fixed_qK):
+            fixed_symbols = [symbol for symbol in qk_symbols if symbol not in (input1, input2)]
+            fixed_values = [fixed_qK[index] for index, symbol in enumerate(qk_symbols)
+                            if symbol not in (input1, input2)]
+            fixed_context = {
+                "basis": "log10_qK",
+                "symbols": fixed_symbols,
+                "values": fixed_values,
+                "by_symbol": dict(zip(fixed_symbols, fixed_values)),
+                "full_qK_symbols": qk_symbols,
+                "full_fixed_qK": list(fixed_qK),
+            }
+        else:
+            # Preserve the effective backend context even if an older backend
+            # did not return enough symbol metadata to label every coordinate.
+            fixed_context = {
+                "basis": "log10_qK",
+                "full_fixed_qK": list(fixed_qK),
+            }
+
+    request_identity = {
+        "schema_version": "bne-simulate-2d-request-identity/v1.0.0",
+        "endpoint": "/api/v1/parameter_scan_2d",
+        "ordered_inputs": [input1, input2],
+        "output": output,
+        "model": model_identity,
+        "scan": {
+            "param1_min": -6.0,
+            "param1_max": 6.0,
+            "param2_min": -6.0,
+            "param2_max": 6.0,
+            "n_grid": int(requested_n_grid),
+        },
+    }
+    if fixed_context is not None:
+        request_identity["fixed_context"] = fixed_context
+    request_fingerprint = _sha256_json(request_identity)
+    card_identity = {
+        "schema_version": "bne-simulate-2d-card-identity/v1.0.0",
+        "ordered_inputs": [input1, input2],
+        "output": output,
+        "model": model_identity,
+        "request_fingerprint": request_fingerprint,
+    }
+    if fixed_context is not None:
+        card_identity["fixed_context"] = fixed_context
+    return request_identity, request_fingerprint, card_identity
+
 def _downsample_grid(xs, ys, grid, n=40):
     si = max(1, len(xs) // n); sj = max(1, len(ys) // n)
     gz = [[row[j] for j in range(0, len(row), sj)] for row in grid[::si]]
@@ -1280,8 +1411,9 @@ def _downsample_grid(xs, ys, grid, n=40):
 def simulate_2d(reactions, kd=None, input1=None, input2=None, observe_species=None, n_grid=48, **_):
     """THE 2-input compute tool. Builds the network and ACTUALLY SOLVES its 2-input response SURFACE
     over input1×input2 (a real heatmap), then reads the realized Boolean gate from the four corners.
-    Use to design/verify logic gates and analog surfaces (incl. networks not in the atlas). Returns
-    the computed surface + realized_gate + on/off margin, or {engine_offline} if the engine is down."""
+    Use to design/verify logic gates and analog surfaces (incl. networks not in the atlas). A gate,
+    feature, margin, and verified card are returned only for a complete finite-validity grid; a
+    partial grid is returned as a gap-preserving diagnostic, or {engine_offline} if unavailable."""
     reactions = list(reactions or [])
     if not reactions:
         return {"error": "simulate_2d needs a non-empty reactions list"}
@@ -1309,21 +1441,89 @@ def simulate_2d(reactions, kd=None, input1=None, input2=None, observe_species=No
     if s.get("error"):
         return {"error": f"scan_2d failed: {s.get('error')}"}
     xs, ys = s.get("param1_values") or [], s.get("param2_values") or []
-    grid = [[v for v in row] for row in (s.get("output_grid") or [])]
-    gate, bits, margin = _booleanize_corners(grid)
-    peak = _interior_peak(xs, ys, grid)          # analog "bump": interior max above the edges?
-    gx, gy, gz = _downsample_grid(xs, ys, grid, 40)
-    flat = [v for r in grid for v in r if isinstance(v, (int, float))]
+    raw_grid = [[v for v in row] for row in (s.get("output_grid") or [])
+                if isinstance(row, list)]
+    grid, validity_grid, shape_ok = _validated_2d_surface(
+        xs, ys, raw_grid, s.get("validity_grid"),
+    )
+    corners_valid = shape_ok and _required_2d_corners_valid(validity_grid)
+    all_points_valid = shape_ok and all(
+        valid is True for row in validity_grid for valid in row
+    )
+    complete = s.get("partial") is False and all_points_valid
+
+    request_identity, request_fingerprint, card_identity = _simulate_2d_identity(
+        m, reactions, kd, i1, i2, obs, int(n_grid), s.get("fixed_qK"),
+    )
+    gate = bits = margin = peak = None
+    if complete and corners_valid:
+        gate, bits, margin = _booleanize_corners(grid)
+        peak = _interior_peak(xs, ys, grid)      # only a complete surface can certify a feature
+
+    if shape_ok:
+        gx, gy, gz = _downsample_grid(xs, ys, grid, 40)
+        _, _, gv = _downsample_grid(xs, ys, validity_grid, 40)
+    else:
+        gx, gy, gz, gv = [], [], [], []
+    flat = [v for r in grid for v in r if _is_finite_scan_number(v)]
+    invalid_count = (sum(valid is not True for row in validity_grid for valid in row)
+                     if shape_ok else None)
+    effective_partial = not complete
+    incomplete_reasons = []
+    if effective_partial:
+        if not shape_ok:
+            incomplete_reasons.append("missing_or_malformed_validity_grid")
+        if s.get("partial") is not False:
+            incomplete_reasons.append("backend_marked_partial")
+        if shape_ok and not all_points_valid:
+            incomplete_reasons.append("invalid_or_nonfinite_samples")
+        if not corners_valid:
+            incomplete_reasons.append("invalid_required_corner")
     result = {"family": "logic", "reactions": reactions, "kd": kd, "input1": i1, "input2": i2,
               "observe_species": obs, "realized_gate": gate, "gate_corners_00_01_10_11": bits,
               "margin_decades": margin, "interior_peak": peak,
+              "verification_status": ("diagnostic_partial" if effective_partial else "complete"),
+              "evidence_grade": ("current-computation-partial-diagnostic"
+                                   if effective_partial else "current-computation-complete"),
+              "evidence_tier": ("Diagnostic · incomplete 2-input scan"
+                                if effective_partial else None),
+              "evidence_warning": (("The computed surface contains invalid or incomplete evidence. "
+                                    "It cannot certify a realized gate, margin, interior feature, "
+                                    "or recommendation.") if effective_partial else None),
+              "incomplete_reasons": incomplete_reasons,
+              "partial": effective_partial, "backend_partial": s.get("partial"),
+              "invalid_point_count": invalid_count, "required_corners_valid": corners_valid,
               "surface_min": round(min(flat), 3) if flat else None,
               "surface_max": round(max(flat), 3) if flat else None, "n_grid": len(xs),
-              "evidence_tier": "engine-verified (this session)"}
+              "validity_grid": validity_grid,
+              "request_identity": request_identity,
+              "request_fingerprint": request_fingerprint,
+              "card_identity": card_identity}
+    if effective_partial:
+        result.update({
+            "surface": {"x": gx, "y": gy, "z": gz, "validity_grid": gv,
+                        "input1": i1, "input2": i2, "observe": obs},
+        })
+        # Partial surfaces remain available to the tool caller as an explicitly
+        # labelled diagnostic, but they never enter the Agent's verified-card path.
+        return result
+
     card = {"family": "logic", "realized_gate": gate or "surface", "inputs": [i1, i2],
             "output": obs, "margin_decades": margin, "rules": reactions, "kd": kd,
             "interior_peak": peak,
-            "surface": {"x": gx, "y": gy, "z": gz, "input1": i1, "input2": i2, "observe": obs}}
+            "network_ir": copy.deepcopy(m.get("network_ir")),
+            "network_ir_hash": m.get("network_ir_hash"),
+            "model_identity": card_identity["model"],
+            "request_identity": request_identity,
+            "request_fingerprint": request_fingerprint,
+            "card_identity": card_identity,
+            "partial": False, "validity_grid": validity_grid,
+            "verification_status": "complete",
+            "evidence_grade": "current-computation-complete",
+            "surface": {"x": gx, "y": gy, "z": gz, "validity_grid": gv,
+                        "input1": i1, "input2": i2, "observe": obs}}
+    if "fixed_context" in card_identity:
+        card["fixed_context"] = card_identity["fixed_context"]
     ev = _evidence(card); card["evidence"] = ev; card["evidence_tier"] = ev["label"]
     result["evidence_tier"] = ev["label"]; result["_card"] = card
     return result
@@ -2512,7 +2712,7 @@ TOOLSPEC = [
          "observe_species": {"type": "string", "description": "the observed output species, e.g. 'C_A_B' (omit to use the main product)"}},
          "required": ["reactions"], "additionalProperties": False}},
     {"name": "simulate_2d",
-     "description": "RUN THE LIVE ENGINE on a TWO-INPUT network: build it and actually solve its 2-input response SURFACE over input1×input2 (a real computed heatmap), then read the realized Boolean gate from the four corners. Use this to design/verify logic gates and analog surfaces (incl. networks not in the atlas). Returns the computed surface + realized_gate + on/off margin. engine_offline ⇒ do not fabricate.",
+     "description": "RUN THE LIVE ENGINE on a TWO-INPUT network: build it and solve its 2-input response SURFACE over input1×input2. A complete finite-validity grid returns the realized Boolean gate and margin. A partial/invalid grid is diagnostic only, preserves gaps, and cannot certify a gate, feature, or candidate. engine_offline ⇒ do not fabricate.",
      "parameters": {"type": "object", "properties": {
          "reactions": {"type": "array", "items": {"type": "string"}},
          "kd": {"type": "array", "items": {"type": "number"}, "description": "dissociation constant per reaction (default all 1.0)"},
@@ -2585,12 +2785,14 @@ THE LOOP for any design request:
 3. COMPUTE it on the engine:
    - 1-INPUT dose-response → `simulate` (returns the curve + the phenotype shape + robustness). When
      verifying a seed, pass its input_symbol and observe_species. You do not set the sweep window.
-   - 2-INPUT gate / response surface → `simulate_2d` (returns the real input1×input2 surface heatmap +
-     the realized Boolean gate read from the corners + the on/off margin).
+   - 2-INPUT gate / response surface → `simulate_2d` (a complete finite-validity grid returns the real
+     heatmap, realized corner gate, and margin; a partial grid is diagnostic only and verifies none
+     of those features).
 4. VERIFY against the request. If it doesn't match (wrong shape/gate, low robustness/margin), REFINE —
    change kd, add/alter a reaction, pick a different input/observable — and re-simulate. Iterate.
-5. Present only engine-computed candidates, citing their computed shape/gate + robustness/margin, and
-   reply in the user's language. KD MATTERS: state the kd you used (every candidate carries its kd).
+5. Present only complete engine-computed candidates, citing their computed shape/gate +
+   robustness/margin. Explain partial diagnostics as incomplete and do not name a realized gate from
+   them. Reply in the user's language. KD MATTERS: state the kd you used (every candidate carries its kd).
 
 The system's STANDARD dose (1-input) class labels are exactly: monotone_activation,
 activation_with_saturation, monotone_repression, repression_with_floor, thresholded_activation,
@@ -2770,7 +2972,14 @@ def run_turn(state, message, llm_cfg=None, top=3):
                 holder["info"]["invalid_designability_spec_cards"] = holder["info"].get("invalid_designability_spec_cards", 0) + 1
                 return res
             if card:
-                key = tuple(card.get("rules") or []) + (card.get("input_symbol") or "", card.get("realized_gate") or "")
+                request_fingerprint = card.get("request_fingerprint")
+                if (isinstance(request_fingerprint, str)
+                        and len(request_fingerprint) == 64):
+                    key = ("request_fingerprint", request_fingerprint)
+                else:
+                    key = tuple(card.get("rules") or []) + (
+                        card.get("input_symbol") or "", card.get("realized_gate") or "",
+                    )
                 if key not in seen:
                     seen.add(key); holder["verified"].append(card)
                     holder["family"] = card.get("family") or holder["family"] or "dose_shape"

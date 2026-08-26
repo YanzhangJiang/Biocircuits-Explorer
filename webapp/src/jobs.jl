@@ -376,6 +376,7 @@ const JOB_STATUS_TRANSITIONS = Dict(
 const LOCAL_JOB_KINDS = Set([
     "build_atlas",
     "build_atlas_library",
+    "compute_ro_field",
     "merge_atlas_library",
     "query_atlas",
     "run_inverse_design",
@@ -1028,11 +1029,51 @@ function _job_public_record(record::AbstractDict)
         haskey(record, key) && (out[key] = deepcopy(record[key]))
     end
 
+    if String(get(record, "kind", "")) == "compute_ro_field"
+        namespace = String(get(
+            record, "ro_field_artifact_namespace", "ro-field"))
+        plan_ref = namespace == "ro-field-sparse-v2" ?
+            "job://$(job_id)/$(namespace)/plans/$(record["ro_field_plan_sha256"])" :
+            "job://$(job_id)/ro-field/plan"
+        ro_field = Dict{String,Any}(
+            "plan_sha256" => String(record["ro_field_plan_sha256"]),
+            "network_ir_sha256" => String(record["ro_field_network_ir_sha256"]),
+            "resume_from" => deepcopy(get(record, "resume_from", nothing)),
+        )
+        if namespace != "ro-field"
+            ro_field["artifact_namespace"] = namespace
+            ro_field["plan_ref"] = plan_ref
+        end
+        if haskey(record, "latest_checkpoint_sha256")
+            checkpoint_hash = String(record["latest_checkpoint_sha256"])
+            ro_field["checkpoint_sha256"] = checkpoint_hash
+            ro_field["committed_work_unit_count"] = Int(get(
+                record, "committed_work_unit_count", 0))
+            ro_field["committed_point_count"] = Int(get(
+                record, "committed_point_count", 0))
+            ro_field["committed_payload_bytes"] = Int(get(
+                record, "committed_payload_bytes", 0))
+            ro_field["checkpoint_ref"] =
+                "job://$(job_id)/$(namespace)/checkpoints/$(checkpoint_hash)"
+        end
+        if Bool(get(record, "result_available", false)) &&
+           haskey(record, "ro_field_dataset_manifest_sha256")
+            manifest_hash = String(record["ro_field_dataset_manifest_sha256"])
+            ro_field["dataset_manifest_sha256"] = manifest_hash
+            ro_field["dataset_manifest_ref"] =
+                "job://$(job_id)/$(namespace)/manifests/$(manifest_hash)"
+        end
+        out["ro_field"] = ro_field
+    end
+
     out["artifacts"]["input"] = "job://$(job_id)/input"
     out["artifacts"]["status"] = "job://$(job_id)/status"
     if Bool(get(record, "result_available", false))
         out["result_ref"] = "job://$(job_id)/result"
         out["artifacts"]["result"] = out["result_ref"]
+        haskey(record, "result_manifest_uri") &&
+            (out["artifacts"]["result_manifest"] =
+                "job://$(job_id)/result-manifest")
     end
 
     return out
@@ -1289,6 +1330,28 @@ function _apply_job_transition_unlocked!(record::AbstractDict,
     return true
 end
 
+function _guard_compute_ro_field_job_identity!(record::AbstractDict,
+                                               candidate::AbstractDict)
+    String(get(record, "kind", "")) == "compute_ro_field" || return nothing
+    immutable_keys = (
+        "job_id", "kind", "executor", "user_sub", "created_at", "spec",
+        "expected_artifact_config_hash", "ro_field_plan_sha256",
+        "ro_field_network_ir_sha256", "ro_field_artifact_namespace",
+        "resume_from", "input_path",
+        "status_path", "record_path", "result_path", "input_uri",
+        "status_uri", "result_uri", "result_protocol_version",
+        "result_manifest_path", "result_manifest_uri",
+    )
+    for key in immutable_keys
+        haskey(record, key) == haskey(candidate, key) || throw(ArgumentError(
+            "compute_ro_field immutable job field $(key) cannot be added or removed"))
+        haskey(record, key) || continue
+        isequal(record[key], candidate[key]) || throw(ArgumentError(
+            "compute_ro_field immutable job field $(key) cannot change"))
+    end
+    return nothing
+end
+
 function _commit_job_candidate_unlocked_with_ops!(record::AbstractDict,
                                                   candidate::AbstractDict,
                                                   ops::_JobPersistenceOps)
@@ -1296,6 +1359,7 @@ function _commit_job_candidate_unlocked_with_ops!(record::AbstractDict,
     # in-memory dictionary. A pre-rename failure leaves both views at the
     # previous revision. Once rename commits, memory advances even when the
     # following directory fsync needs a readiness-driven retry.
+    _guard_compute_ro_field_job_identity!(record, candidate)
     candidate["state_revision"] = _next_job_state_revision(record)
     persistence = _persist_job_record_unlocked_with_ops(candidate, ops)
     persistence.committed || error(
@@ -1435,6 +1499,12 @@ function get_biocircuits_job_result(job_id::AbstractString; user_sub::AbstractSt
     record = _job_record(job_id)
     record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
     _check_user_owns_record(record, user_sub, job_id)
+    if String(get(record, "kind", "")) == "compute_ro_field"
+        verification = _verify_job_result_artifact(record)
+        verification.status == :valid || throw(ArgumentError(
+            "RO-field result artifacts no longer validate: " *
+            verification.error))
+    end
     result_uri = String(get(record, "result_uri", _job_result_path(job_id)))
     return Dict(
         "job" => status,
@@ -1475,13 +1545,16 @@ function _now_iso_timestamp_after(seconds::Integer)
     return Dates.format(Dates.now(Dates.UTC) + Dates.Second(seconds), dateformat"yyyy-mm-ddTHH:MM:SSZ")
 end
 
-function _execute_local_job(kind::AbstractString, spec; cancel_check::Function=_no_cancel_check)
+function _execute_local_job(kind::AbstractString, spec;
+                            cancel_check::Function=_no_cancel_check,
+                            job_context=Dict{String,Any}())
     # Wrap every local-job result in the bne-result envelope (as a sibling
     # `artifact` field) so the persisted result and its `result_ref` are
     # self-describing: algorithm + version, input network hashes, and a config
     # hash of the spec for reproducibility.
     cancel_check()
-    result = _dispatch_local_job(kind, spec; cancel_check=cancel_check)
+    result = _dispatch_local_job(
+        kind, spec; cancel_check=cancel_check, job_context=job_context)
     cancel_check()
     result isa AbstractDict && haskey(result, "artifact") && return result
     return attach_artifact!(result, kind;
@@ -1489,7 +1562,9 @@ function _execute_local_job(kind::AbstractString, spec; cancel_check::Function=_
         config = spec)
 end
 
-function _dispatch_local_job(kind::AbstractString, spec; cancel_check::Function=_no_cancel_check)
+function _dispatch_local_job(kind::AbstractString, spec;
+                             cancel_check::Function=_no_cancel_check,
+                             job_context=Dict{String,Any}())
     if kind == "build_atlas"
         return build_behavior_atlas_from_spec(spec; cancel_check=cancel_check)
     elseif kind == "build_atlas_library"
@@ -1503,6 +1578,9 @@ function _dispatch_local_job(kind::AbstractString, spec; cancel_check::Function=
     elseif kind == "rop_shape_optimize"
         return optimize_rop_shape_request(
             spec; synchronous=false, cancel_check=cancel_check)
+    elseif kind == "compute_ro_field"
+        return compute_ro_field_job(
+            spec; job_context=job_context, cancel_check=cancel_check)
     else
         throw(ArgumentError("Unsupported local job kind: $(kind)"))
     end
@@ -1556,6 +1634,10 @@ function _job_result_identity(result,
         "Result artifact `algorithm.config_hash` is required for an asynchronous job result."))
     String(actual_config_hash) == String(expected_config_hash) || throw(ArgumentError(
         "Result artifact config identity does not match the submitted job spec."))
+    if String(kind) == "compute_ro_field"
+        validate_ro_field_job_result!(
+            result, job_id, String(expected_config_hash))
+    end
 
     return Dict{String, Any}(
         "artifact_schema_version" => String(metadata["artifact_schema_version"]),
@@ -1767,7 +1849,8 @@ end
 
 function _finish_local_job!(job_id::AbstractString;
                             succeeded::Bool,
-                            error=nothing)
+                            error=nothing,
+                            success_updates::AbstractDict=Dict{Symbol,Any}())
     _with_job_lock(job_id) do
         record = _job_record_locked(job_id)
         record === nothing && return (applied=false, record=nothing)
@@ -1787,6 +1870,15 @@ function _finish_local_job!(job_id::AbstractString;
                 :result_available => succeeded,
                 :progress => Dict("message" => succeeded ? "Completed" : "Failed"),
             )
+            if succeeded
+                for (key, value) in pairs(success_updates)
+                    symbol = key isa Symbol ? key : Symbol(String(key))
+                    symbol in (:status, :state_revision, :result_available) &&
+                        throw(ArgumentError(
+                            "success_updates cannot override job lifecycle fields"))
+                    updates[symbol] = deepcopy(value)
+                end
+            end
             !succeeded && (updates[:error] = error === nothing ? "Local job failed" : String(error))
         else
             return (applied=false, record=_job_snapshot(record))
@@ -1829,7 +1921,50 @@ function _run_local_job!(job_id::String, kind::String, spec,
                 return nothing
             end
 
-            result = _execute_local_job(kind, spec; cancel_check=cancel_check)
+            execution_record = _job_record(job_id)
+            execution_record === nothing && error(
+                "Local job record disappeared before execution")
+            job_context = Dict{String,Any}(
+                "job_id" => job_id,
+                "job_root" => _job_dir(job_id),
+                "user_sub" => String(get(
+                    execution_record, "user_sub", ANONYMOUS_USER_SUB)),
+            )
+            if kind == "compute_ro_field"
+                job_context["publish_checkpoint"] = function (checkpoint)
+                    transition = _job_transition!(
+                        job_id,
+                        "running";
+                        expected=("running",),
+                        latest_checkpoint_sha256=
+                            checkpoint["checkpoint_sha256"],
+                        committed_work_unit_count=
+                            checkpoint["committed_work_unit_count"],
+                        committed_point_count=
+                            checkpoint["committed_point_count"],
+                        committed_payload_bytes=
+                            checkpoint["committed_payload_bytes"],
+                        progress=Dict{String,Any}(
+                            "message" => "RO-field checkpoint committed",
+                            "committed_work_unit_count" =>
+                                checkpoint["committed_work_unit_count"],
+                            "committed_point_count" =>
+                                checkpoint["committed_point_count"],
+                            "committed_payload_bytes" =>
+                                checkpoint["committed_payload_bytes"],
+                        ),
+                    )
+                    transition.applied || begin
+                        cancel_check()
+                        error("RO-field checkpoint could not be linearized")
+                    end
+                    return nothing
+                end
+            end
+            result = _execute_local_job(
+                kind, spec;
+                cancel_check=cancel_check,
+                job_context=job_context)
 
             # Do not publish a result once cancellation has been observed.  A
             # cancellation racing the following artifact write is handled by
@@ -1846,9 +1981,53 @@ function _run_local_job!(job_id::String, kind::String, spec,
             end
 
             record = _job_record(job_id)
-            result_uri = record === nothing ? _job_result_path(job_id) : String(get(record, "result_uri", _job_result_path(job_id)))
-            _write_json_uri(result_uri, result)
-            _finish_local_job!(job_id; succeeded=true)
+            result_uri = record === nothing ? _job_result_path(job_id) :
+                String(get(record, "result_uri", _job_result_path(job_id)))
+            success_updates = Dict{Symbol,Any}()
+            if kind == "compute_ro_field"
+                record === nothing && error(
+                    "Local RO-field job record disappeared before publication")
+                manifest_uri = String(record["result_manifest_uri"])
+                expected_config_hash = String(
+                    record["expected_artifact_config_hash"])
+                cancel_check()
+                outer_manifest = _publish_job_result_with_manifest(
+                    result,
+                    job_id,
+                    kind,
+                    expected_config_hash,
+                    result_uri,
+                    manifest_uri,
+                )
+                cancel_check()
+                descriptor = result["ro_field_job_result"]
+                linked = _job_transition!(
+                    job_id,
+                    "running";
+                    expected=("running",),
+                    ro_field_dataset_manifest_sha256=
+                        descriptor["dataset_manifest_sha256"],
+                )
+                linked.applied || begin
+                    cancel_check()
+                    error("RO-field manifest identity could not be linearized")
+                end
+                record = _job_record(job_id)
+                record === nothing && error(
+                    "Local RO-field job record disappeared before verification")
+                verification = _verify_job_result_artifact(record)
+                verification.status == :valid || error(
+                    "Published local RO-field result failed manifest verification: " *
+                    verification.error)
+                success_updates[:ro_field_dataset_manifest_sha256] =
+                    descriptor["dataset_manifest_sha256"]
+                success_updates[:ro_field_outer_result_sha256] =
+                    outer_manifest["result"]["sha256"]
+            else
+                _write_json_uri(result_uri, result)
+            end
+            _finish_local_job!(
+                job_id; succeeded=true, success_updates=success_updates)
         catch err
             if err isa LocalJobCancelled
                 _job_transition!(job_id, "cancelled";
@@ -2148,6 +2327,9 @@ end
 function _job_artifact_config(kind::AbstractString, spec)
     if String(kind) == "rop_shape_optimize"
         return _rop_shape_normalize_request(spec; synchronous=false).normalized
+    elseif String(kind) == "compute_ro_field"
+        normalized = normalize_ro_field_job_spec(spec)
+        return normalized["plan"]["identity"]
     end
     return spec
 end
@@ -2158,6 +2340,16 @@ end
 # produce a different timestamp and therefore a different artifact hash.
 function _prepare_job_spec_and_artifact_identity(kind::AbstractString, raw_spec)
     submitted_spec = _materialize(raw_spec)
+    if String(kind) == "compute_ro_field"
+        normalized = normalize_ro_field_job_spec(submitted_spec)
+        plan_hash = String(normalized["plan"]["plan_sha256"])
+        _canonical_hash(normalized["plan"]["identity"]) == plan_hash ||
+            error("RO-field plan hash disagrees with the shared canonical hash")
+        return (
+            spec=normalized,
+            expected_artifact_config_hash=plan_hash,
+        )
+    end
     artifact_config = _job_artifact_config(kind, submitted_spec)
     worker_spec = String(kind) == "rop_shape_optimize" ?
         Dict{String, Any}(_materialize(artifact_config)) : submitted_spec
@@ -2515,7 +2707,42 @@ function _verify_job_result_artifact(record::AbstractDict)
         error="Unsupported job result protocol version: $(protocol); deploy a compatible verifier.",
         verification_mode=:manifest,
     )
-    return _verify_manifest_job_result_artifact(record)
+    verification = _verify_manifest_job_result_artifact(record)
+    verification.status == :valid || return verification
+    String(get(record, "kind", "")) == "compute_ro_field" ||
+        return verification
+
+    result_uri = String(get(record, "result_uri", ""))
+    result = try
+        _read_json_uri(result_uri)
+    catch err
+        return (
+            status=:retryable_error,
+            error="Cannot reload the committed RO-field result: " *
+                sprint(showerror, err),
+            verification_mode=:manifest_and_nested_ro_field,
+        )
+    end
+    try
+        validate_ro_field_job_result!(
+            result,
+            String(get(record, "job_id", "")),
+            String(get(record, "expected_artifact_config_hash", ""));
+            record=record,
+        )
+    catch err
+        return (
+            status=:invalid,
+            error="Committed RO-field nested artifacts are invalid: " *
+                sprint(showerror, err),
+            verification_mode=:manifest_and_nested_ro_field,
+        )
+    end
+    return (
+        status=:valid,
+        error="",
+        verification_mode=:manifest_and_nested_ro_field,
+    )
 end
 
 function _required_config(value, name::AbstractString)
@@ -3674,6 +3901,10 @@ function submit_biocircuits_job_from_spec(
     if !(mode in ("local", "local_async", "aws_batch", "batch"))
         throw(ArgumentError("Unsupported job execution mode: $(mode)"))
     end
+    if kind == "compute_ro_field" && mode in ("aws_batch", "batch")
+        throw(ArgumentError(
+            "compute_ro_field is local_async-only until shared object-store chunk publication is implemented."))
+    end
 
     # Parse and validate the process-local cache bound before quota consumption
     # or durable publication. Runtime configuration errors must not surface
@@ -3688,6 +3919,8 @@ function submit_biocircuits_job_from_spec(
         _raw_get(raw, :spec, Dict{String, Any}()),
     )
     spec = prepared.spec
+    kind == "compute_ro_field" &&
+        validate_ro_field_resume_parent!(spec, user_sub)
     submission_plan = executor == "aws_batch" ?
         _prepare_aws_batch_submission_plan(
             job_id,
@@ -3739,6 +3972,26 @@ function submit_biocircuits_job_from_spec(
             "result_uri" => _job_result_path(job_id),
         )
 
+        if kind == "compute_ro_field"
+            plan = spec["plan"]
+            record["ro_field_plan_sha256"] = plan["plan_sha256"]
+            if spec["schema_version"] == RO_FIELD_SPARSE_JOB_SPEC_VERSION
+                record["ro_field_network_ir_sha256"] =
+                    plan["identity"]["network_ir_sha256"]
+                record["ro_field_artifact_namespace"] =
+                    "ro-field-sparse-v2"
+            else
+                record["ro_field_network_ir_sha256"] =
+                    plan["identity"]["computation_spec"]["network_ir_sha256"]
+            end
+            record["resume_from"] = deepcopy(spec["resume_from"])
+            record["result_protocol_version"] = JOB_RESULT_PROTOCOL_VERSION
+            record["result_manifest_path"] =
+                _job_result_manifest_path(job_id)
+            record["result_manifest_uri"] =
+                _job_result_manifest_path(job_id)
+        end
+
         aws_input_payload = nothing
         if executor == "aws_batch"
             record["result_protocol_version"] = JOB_RESULT_PROTOCOL_VERSION
@@ -3775,6 +4028,12 @@ function submit_biocircuits_job_from_spec(
                     "result" => record["result_uri"],
                 ),
             )
+            if kind == "compute_ro_field"
+                initial_payload["result_protocol_version"] =
+                    JOB_RESULT_PROTOCOL_VERSION
+                initial_payload["artifacts"]["result_manifest"] =
+                    record["result_manifest_uri"]
+            end
             _write_json_uri(record["input_uri"], initial_payload)
         end
 

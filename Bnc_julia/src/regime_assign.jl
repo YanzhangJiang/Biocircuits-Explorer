@@ -61,11 +61,39 @@ function assign_regime_qK(Bnc::Bnc ; x::AbstractVector{<:Real}, input_logspace::
     return assign_regime_qK(Bnc, logqK; input_logspace=true, kwargs...)
 end
 """
-    assign_regime_qK(bnc::Bnc, qK; input_logspace=false, asymptotic_only=false, eps=0, return_idx=false)
+    assign_regime_qK(bnc::Bnc, qK; input_logspace=false, asymptotic_only=false,
+        eps=0, return_idx=false, strict=false, membership=nothing)
 
-Assign a regime given qK coordinates.
+Assign a regime given qK coordinates. The legacy `membership=:relaxed` policy
+admits the caller's `eps` tolerance and retains the documented best-fit
+fallback. `membership=:closed_cell` uses the Float64 closed-cell inequalities,
+requires `eps == 0`, and returns `0` for an index request (or `nothing` for a
+permutation request) when no cell contains the point. `strict=true` is a
+compatibility alias for `membership=:closed_cell` and likewise rejects a
+nonzero `eps`; it is not an exact-real arithmetic claim.
 """
-function assign_regime_qK(Bnc::Bnc, qK::AbstractVector{<:Real}; input_logspace::Bool=false, asymptotic_only::Bool=false, eps=0, return_idx::Bool=false) 
+function assign_regime_qK(
+    Bnc::Bnc,
+    qK::AbstractVector{<:Real};
+    input_logspace::Bool=false,
+    asymptotic_only::Bool=false,
+    eps=0,
+    return_idx::Bool=false,
+    strict::Bool=false,
+    membership::Union{Nothing,Symbol}=nothing,
+)
+    membership_policy = if membership === nothing
+        strict ? :closed_cell : :relaxed
+    else
+        membership
+    end
+    membership_policy in (:relaxed, :closed_cell) || throw(ArgumentError(
+        "membership must be :relaxed or :closed_cell"))
+    strict && membership_policy != :closed_cell && throw(ArgumentError(
+        "strict=true is compatible only with membership=:closed_cell"))
+    membership_policy == :closed_cell && eps != 0 && throw(ArgumentError(
+        "membership=:closed_cell requires eps == 0"))
+
     real_only = asymptotic_only ? true : nothing
     all_vertice_idx = get_regimes(Bnc, singular=false, asymptotic = real_only, return_idx = true)
     # @show all_vertice_idx
@@ -85,6 +113,8 @@ function assign_regime_qK(Bnc::Bnc, qK::AbstractVector{<:Real}; input_logspace::
             return return_idx ? idx : get_perm(Bnc, idx)
         end
     end
+    membership_policy == :closed_cell &&
+        return return_idx ? 0 : nothing
     @warn("All vertex conditions failed for logqK=$logqK. Returning the best-fit vertex.")
     idx = all_vertice_idx[findmax(record)[2]]
     return return_idx ? idx : get_perm(Bnc, idx)

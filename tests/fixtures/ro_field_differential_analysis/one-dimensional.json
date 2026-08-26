@@ -1,0 +1,65 @@
+{
+  "schema_version": "bne-ro-field-differential-analysis/v1.0.0",
+  "analysis_id": "ro-differential-e1fdd55a1c89f858ecb582b3",
+  "analysis_sha256": "e1fdd55a1c89f858ecb582b313f42d017f18a7c417dba4c12a0120e05ea50691",
+  "source_field_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_data_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "coordinate_contract": {
+    "axis_order": ["u"],
+    "output_order": ["z"],
+    "log_basis": "log10",
+    "derivative_semantics": "d_output_log_ratio_per_input_log_ratio_in_declared_coordinates"
+  },
+  "integrability": {
+    "status": "insufficient_grid",
+    "complete": false,
+    "input_dimension": 1,
+    "output_count": 1,
+    "total_face_count": 0,
+    "evaluated_face_count": 0,
+    "invalid_face_count": 0,
+    "violating_face_count": 0,
+    "absolute_tolerance": 1e-8,
+    "relative_tolerance": 1e-6,
+    "pair_summaries": []
+  },
+  "curvature": {
+    "status": "complete",
+    "complete": true,
+    "cell_shape": [1],
+    "total_cell_count": 1,
+    "evaluated_cell_count": 1,
+    "invalid_cell_count": 0,
+    "flatten_order": "row_major_last_axis_fastest",
+    "validity": [true],
+    "gradient_jacobian_shape": [1, 1, 1, 1],
+    "gradient_jacobian_values": [0.0],
+    "symmetric_hessian_shape": [1, 1, 1, 1],
+    "symmetric_hessian_values": [0.0],
+    "mixed_output_curvature_shape": [1, 1, 1, 1],
+    "mixed_output_curvature_values": [null],
+    "antisymmetry_residual_shape": [1, 1],
+    "antisymmetry_residual_values": [0.0],
+    "hessian_eigenvalues_shape": [1, 1, 1],
+    "hessian_eigenvalues_values": [0.0]
+  },
+  "synergy": {
+    "policy": "positive_log_cross_curvature",
+    "threshold": 1e-8,
+    "classification_shape": [1, 1, 1, 1],
+    "classification_values": ["not_applicable"],
+    "pair_summaries": [],
+    "interpretation": "coordinate_scale_and_window_dependent_not_causal_or_mechanistic"
+  },
+  "evidence": {
+    "evidence_class": "sampled_finite_difference_diagnostic",
+    "claim_scope": "declared_finite_grid_and_tolerances_only",
+    "integrability_claim": "insufficient_grid",
+    "validity_policy": "invalid_is_gap",
+    "limitations": [
+      "A consistent finite grid is not a continuum integrability proof.",
+      "Finite differences depend on the declared coordinates, scale, and cell windows.",
+      "The synergy label is an explicit cross-curvature convention, not a causal or mechanistic claim."
+    ]
+  }
+}

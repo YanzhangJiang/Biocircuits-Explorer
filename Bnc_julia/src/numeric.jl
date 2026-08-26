@@ -74,7 +74,8 @@ Compute reaction-order-like sensitivities over a trajectory.
 # Arguments
 - `bnc`: Binding network model.
 - `x_mat`: Matrix of species concentrations (rows = time points).
-- `q_mat`: Optional matrix of totals/binding constants.
+- `q_mat`: Optional matrix whose first `bnc.d` columns are the conserved totals.
+  When omitted, the totals are reconstructed from each row of `x_mat`.
 
 # Keyword Arguments
 - `x_idx`: Indices of species to include.
@@ -84,60 +85,40 @@ Compute reaction-order-like sensitivities over a trajectory.
 # Returns
 - 3D array of sensitivities with shape `(time, x_idx, qK_idx)`.
 """
-function get_reaction_order(Bnc::Bnc, x_mat::Matrix{<:Real}, q_mat::Union{Matrix{<:Real},Nothing}=nothing;
-    x_idx::Union{Vector{Int},Nothing}=nothing,
-    qK_idx::Union{Vector{Int},Nothing}=nothing,
+function get_reaction_order(Bnc::Bnc, x_mat::AbstractMatrix{<:Real}, q_mat::Union{AbstractMatrix{<:Real},Nothing}=nothing;
+    x_idx::Union{AbstractVector{<:Integer},Nothing}=nothing,
+    qK_idx::Union{AbstractVector{<:Integer},Nothing}=nothing,
     only_q::Bool=false,
 )::Array{Float64,3}
-    # Get the reaction order from the resulting matrix, where a regime is calculated for each row by formula.
-    # x_mat: Matrix of x values, each row is a different time point
-    # q_mat: Matrix of qK values, each row is a different time point
-    # x_idx: Indices of x to be calculated, default is all indices
-    # qK_idx: Indices of qK to be calculated, default is all indices
-    q_mat = isnothing(q_mat) ? x2qK(Bnc, x_mat'; input_logspace=false, output_logspace=false, only_q=true)' : q_mat
-    x_idx = isnothing(x_idx) ? (1:Bnc.n) : x_idx
-    qK_idx = isnothing(qK_idx) ? (1:Bnc.n) : qK_idx
+    size(x_mat, 2) == Bnc.n || throw(DimensionMismatch(
+        "x_mat must have $(Bnc.n) species columns; got $(size(x_mat, 2))"))
+    if !isnothing(q_mat)
+        size(q_mat, 1) == size(x_mat, 1) || throw(DimensionMismatch(
+            "q_mat and x_mat must have the same number of rows"))
+        size(q_mat, 2) >= Bnc.d || throw(DimensionMismatch(
+            "q_mat must have at least $(Bnc.d) conserved-total columns"))
+    end
+
+    x_idx = isnothing(x_idx) ? collect(1:Bnc.n) : Int.(x_idx)
+    qK_idx = isnothing(qK_idx) ? collect(1:Bnc.n) : Int.(qK_idx)
     if only_q
-        qK_idx = qK_idx[findall(i->i<=Bnc.d, qK_idx)] # only keep the indices for q
+        qK_idx = filter(<=(Bnc.d), qK_idx)
     end
+    all(i -> 1 <= i <= Bnc.n, x_idx) || throw(BoundsError(1:Bnc.n, x_idx))
+    all(i -> 1 <= i <= Bnc.n, qK_idx) || throw(BoundsError(1:Bnc.n, qK_idx))
 
-    flag = length(qK_idx) <= length(x_idx)
-
-    A = sparse(_idx_val2Mtx(collect(x_idx),1,Bnc.n)) # x*n
-    B = sparse(_idx_val2Mtx(collect(qK_idx),1,Bnc.n)) # q * n
-
-    regimes = Array{Float64,3}(undef,size(x_mat, 1),length(x_idx), length(qK_idx)) # initialize the regimes array to storage. t have to be the last value to make storage continuous
-    tmp_regime = flag ? Matrix{Float64}(undef, Bnc.n, length(qK_idx)) : Matrix{Float64}(undef, Bnc.n, length(x_idx))
-    # temporary matrix to store the result of regime
-    # Get the regimes from the resulting matrix,where a regime is calculated for each row.
-    
-    Jt = copy(Bnc._LNt_sparse)
-    Jt_lu = copy(Bnc._LNt_lu)
-
-    Jt_left = @view(Jt.nzval[1:length(Bnc.L.nzval)])
-    
-    function _update_Jt!(Jt_left, x::AbstractArray{<:Real}, q::AbstractArray{<:Real})
-        x_view = @view(x[Bnc._I])
-        @. Jt_left = x_view * Bnc._Lt_sparse.nzval ./ q[Bnc._J]
-        return nothing
-    end
-
-    if flag # qK_idx is shorter
-        for (i, (x, q)) in enumerate(zip(eachrow(x_mat), eachrow(q_mat)))
-            _update_Jt!(Jt_left, x, q)
-            lu!(Jt_lu, Jt) # recalculate the LU decomposition of Jt
-            ldiv!(tmp_regime, Jt_lu', B')
-            regimes[i,:,:] .= A * tmp_regime
+    reaction_orders = Array{Float64,3}(
+        undef, size(x_mat, 1), length(x_idx), length(qK_idx))
+    for i in axes(x_mat, 1)
+        x = @view x_mat[i, :]
+        jacobian = if isnothing(q_mat)
+            ∂logx_∂logqK(Bnc; x=x)
+        else
+            ∂logx_∂logqK(Bnc; x=x, qK=@view(q_mat[i, :]))
         end
-    else
-        for (i, (x, q)) in enumerate(zip(eachrow(x_mat), eachrow(q_mat)))
-            _update_Jt!(Jt_left, x, q)
-            lu!(Jt_lu, Jt) # recalculate the LU decomposition of Jt
-            ldiv!(tmp_regime, Jt_lu, A')
-            regimes[i,:,:] .= (B * tmp_regime)'
-        end
+        @views reaction_orders[i, :, :] .= jacobian[x_idx, qK_idx]
     end
-    return regimes
+    return reaction_orders
 end
 
 
@@ -262,7 +243,6 @@ end
 
 
 # for now as the perm is not defined , we shall 
-
 
 
 

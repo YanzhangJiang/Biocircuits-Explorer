@@ -187,6 +187,7 @@ const SYNC_HEAVY_HANDLER_NAMES = Set{Symbol}((
     :handle_design_search,
     :handle_design_screen,
     :handle_rop_shape_optimize,
+    :handle_ro_field,
 ))
 
 const _SYNC_HEAVY_GATE_LOCK = ReentrantLock()

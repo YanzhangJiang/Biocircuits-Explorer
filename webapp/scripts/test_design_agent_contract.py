@@ -420,6 +420,218 @@ def rop_shape_backend_response():
 
 
 class DesignAgentContractTests(unittest.TestCase):
+    @staticmethod
+    def _simulate_2d_model():
+        return {
+            "session_id": "session-2d",
+            "q_sym": ["tA", "tB", "tC"],
+            "K_sym": ["K1"],
+            "x_sym": ["Y", "Z"],
+            "product_species": ["Y"],
+            "kd": [2.0],
+            "network_ir_hash": "a" * 64,
+            "network_ir": {
+                "ir_schema_version": "bne-network-ir/v1.0.0",
+                "reactions": [{"rule": "A + B <-> Y", "kd": 2.0}],
+            },
+        }
+
+    @staticmethod
+    def _simulate_2d_scan(output_grid, validity_grid, partial):
+        n_rows = len(output_grid)
+        n_cols = len(output_grid[0]) if output_grid else 0
+        return {
+            "param1_values": list(range(n_rows)),
+            "param2_values": list(range(n_cols)),
+            "output_grid": copy.deepcopy(output_grid),
+            "validity_grid": copy.deepcopy(validity_grid),
+            "partial": partial,
+            "fixed_qK": [0.0, 0.0, 1.25, 0.3010299956639812],
+        }
+
+    def test_simulate_2d_complete_surface_preserves_gate_and_full_identity(self):
+        grid = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.5, 0.8],
+            [0.0, 0.8, 2.0],
+        ]
+        scan = self._simulate_2d_scan(grid, [[True] * 3 for _ in range(3)], False)
+
+        with mock.patch.object(
+                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
+            result = design_agent.simulate_2d(
+                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
+                observe_species="Y", n_grid=3,
+            )
+
+        self.assertIs(result["partial"], False)
+        self.assertEqual(result["realized_gate"], "AND")
+        self.assertEqual(result["gate_corners_00_01_10_11"], [0, 0, 0, 1])
+        self.assertEqual(result["verification_status"], "complete")
+        self.assertEqual(result["validity_grid"], [[True] * 3 for _ in range(3)])
+        card = result["_card"]
+        self.assertEqual(card["inputs"], ["tA", "tB"])
+        self.assertEqual(card["output"], "Y")
+        self.assertEqual(card["model_identity"]["kd"], [2.0])
+        self.assertEqual(card["network_ir_hash"], "a" * 64)
+        self.assertEqual(card["network_ir"], self._simulate_2d_model()["network_ir"])
+        self.assertEqual(card["fixed_context"]["by_symbol"], {
+            "tC": 1.25,
+            "K1": 0.3010299956639812,
+        })
+        self.assertEqual(len(card["request_fingerprint"]), 64)
+        self.assertEqual(
+            card["card_identity"]["request_fingerprint"],
+            card["request_fingerprint"],
+        )
+        self.assertEqual(
+            card["request_identity"]["model"]["network_ir_hash"], "a" * 64,
+        )
+        self.assertEqual(card["surface"]["validity_grid"], [[True] * 3 for _ in range(3)])
+        summary = design_agent._card_summary(card, "artifact-hash")
+        self.assertEqual(summary["request_fingerprint"], card["request_fingerprint"])
+        self.assertEqual(summary["network_ir_hash"], "a" * 64)
+        self.assertIs(summary["partial"], False)
+
+        model = self._simulate_2d_model()
+        changed_model = copy.deepcopy(model)
+        changed_model["kd"] = [3.0]
+        changed_model["network_ir_hash"] = "b" * 64
+        variants = [
+            design_agent._simulate_2d_identity(
+                model, ["A + B <-> Y"], [2.0], "tB", "tA", "Y", 3,
+                scan["fixed_qK"],
+            )[1],
+            design_agent._simulate_2d_identity(
+                model, ["A + B <-> Y"], [2.0], "tA", "tB", "Z", 3,
+                scan["fixed_qK"],
+            )[1],
+            design_agent._simulate_2d_identity(
+                changed_model, ["A + B <-> Y"], [3.0], "tA", "tB", "Y", 3,
+                scan["fixed_qK"],
+            )[1],
+            design_agent._simulate_2d_identity(
+                model, ["A + B <-> Y"], [2.0], "tA", "tB", "Y", 3,
+                [0.0, 0.0, 2.25, 0.3010299956639812],
+            )[1],
+        ]
+        self.assertEqual(len({card["request_fingerprint"], *variants}), 5)
+
+    def test_simulate_2d_invalid_corner_is_masked_and_withholds_verified_card(self):
+        scan = self._simulate_2d_scan(
+            [[0.0, 0.0], [1.0, 99.0]],
+            [[True, True], [True, False]],
+            True,
+        )
+
+        with mock.patch.object(
+                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
+            result = design_agent.simulate_2d(
+                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
+                observe_species="Y", n_grid=2,
+            )
+
+        self.assertIs(result["partial"], True)
+        self.assertEqual(result["verification_status"], "diagnostic_partial")
+        self.assertEqual(result["evidence_grade"], "current-computation-partial-diagnostic")
+        self.assertIsNone(result["realized_gate"])
+        self.assertIsNone(result["gate_corners_00_01_10_11"])
+        self.assertIsNone(result["margin_decades"])
+        self.assertIsNone(result["interior_peak"])
+        self.assertIs(result["required_corners_valid"], False)
+        self.assertEqual(result["invalid_point_count"], 1)
+        self.assertEqual(result["surface_max"], 1.0)
+        self.assertIsNone(result["surface"]["z"][-1][-1])
+        self.assertEqual(result["surface"]["validity_grid"], [[True, True], [True, False]])
+        self.assertNotIn("_card", result)
+
+    def test_simulate_2d_any_partial_surface_cannot_certify_gate_or_feature(self):
+        validity = [[True] * 3 for _ in range(3)]
+        validity[1][1] = False
+        scan = self._simulate_2d_scan(
+            [[0.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 2.0]],
+            validity,
+            True,
+        )
+
+        with mock.patch.object(
+                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
+            result = design_agent.simulate_2d(
+                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
+                observe_species="Y", n_grid=3,
+            )
+
+        self.assertIs(result["required_corners_valid"], True)
+        self.assertIs(result["partial"], True)
+        self.assertIsNone(result["realized_gate"])
+        self.assertIsNone(result["interior_peak"])
+        self.assertNotIn("_card", result)
+        self.assertIn("invalid_or_nonfinite_samples", result["incomplete_reasons"])
+
+    def test_simulate_2d_missing_validity_fails_closed(self):
+        scan = self._simulate_2d_scan(
+            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
+        )
+        scan.pop("validity_grid")
+
+        with mock.patch.object(
+                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
+            result = design_agent.simulate_2d(
+                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
+                observe_species="Y", n_grid=2,
+            )
+
+        self.assertIs(result["partial"], True)
+        self.assertEqual(result["validity_grid"], [])
+        self.assertIsNone(result["realized_gate"])
+        self.assertNotIn("_card", result)
+        self.assertIn("missing_or_malformed_validity_grid", result["incomplete_reasons"])
+
+    def test_simulate_2d_request_fingerprint_prevents_cross_request_deduplication(self):
+        base_card = {
+            "family": "logic",
+            "rules": ["A + B <-> Y"],
+            "kd": [2.0],
+            "realized_gate": "AND",
+            "inputs": ["tA", "tB"],
+            "output": "Y",
+        }
+        results = [
+            {"_card": {**base_card, "request_fingerprint": "1" * 64}},
+            {"_card": {**base_card, "inputs": ["tB", "tA"],
+                       "request_fingerprint": "2" * 64}},
+        ]
+
+        def fake_simulate_2d(**_kwargs):
+            return results.pop(0)
+
+        def fake_runner(_history, _message, dispatch, _cfg, max_iters=12):
+            dispatch("simulate_2d", {})
+            dispatch("simulate_2d", {})
+            return "done", [{"role": "user", "content": "two scans"}]
+
+        with mock.patch.dict(
+                design_agent.TOOLS_DISPATCH, {"simulate_2d": fake_simulate_2d}, clear=False), \
+             mock.patch.object(design_agent, "_run_anthropic", fake_runner), \
+             mock.patch.object(design_agent, "_write_trace", lambda _trace: None), \
+             mock.patch.object(design_agent, "_spill_card", lambda _card: "cardhash"):
+            response = design_agent.run_turn(
+                {}, "two scans",
+                {"provider": "anthropic", "api_key": "test-key",
+                 "base_url": "https://example.invalid", "model": "test"},
+                top=1,
+            )
+
+        self.assertEqual(len(response["cards"]), 2)
+        self.assertEqual(
+            [card["request_fingerprint"] for card in response["cards"]],
+            ["1" * 64, "2" * 64],
+        )
+
     def test_engine_client_uses_canonical_routes_and_materializes_reactions_once(self):
         calls = []
 

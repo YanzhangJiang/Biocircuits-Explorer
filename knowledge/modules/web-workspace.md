@@ -37,6 +37,9 @@ and expose a stable bridge to the native macOS host.
 - Feature UI: `webapp/public/js/node-types/`, `webapp/public/js/atlas.js`,
   `webapp/public/js/design-screen-render.js`, `webapp/public/js/plot-validity.js`,
   `webapp/public/js/atlas-sqlite-policy.js`, `webapp/public/js/sbml-io.js`
+- Standalone experimental RO-field viewer: `webapp/public/ro-field-demo.html`,
+  `webapp/public/js/ro-field-demo.js`, and
+  `webapp/public/js/ro-field-render.js`
 - Tooling: `webapp/package.json`, `webapp/eslint.config.mjs`,
   `webapp/playwright.config.mjs`, and `webapp/e2e/`
 
@@ -104,6 +107,14 @@ the previous pending turn, and delayed replies cannot cross workspace epochs.
 cancellation, terminal no-cancel behavior, bounded polling retries, and fresh
 pre-signed URL retry without broker-result fallback.
 
+`ro-field-render.test.mjs` covers non-symmetric last-axis-fastest tensor layout,
+invalid null gaps, exact cells with multiple labels, facets and singular strata,
+non-uniform sampled coordinates rendered as fixed-size discrete markers with an
+explicit no-interpolation label, future-version/storage rejection, and the rule
+that rank greater than two needs an explicit 2D slice rather than an invented
+browser projection. This page is a
+standalone demo and does not add a Workspace v2 node or native document field.
+
 ## CI
 
 `.github/workflows/ci.yml` is configured to run zero-warning ESLint, all tests
@@ -146,6 +157,11 @@ development and shipped pages load the source ES modules directly.
 - A failed or non-finite numerical sample renders as a gap. Partial responses
   display that boundary and cannot be made visually indistinguishable from a
   complete result.
+- The experimental RO-field viewer renders only bounded inline v1 artifacts.
+  Sampled values stay discrete markers at their declared coordinates; blank
+  space is explicitly unsampled and not interpolated. The viewer preserves
+  set-valued labels and singular/gap warnings and never collapses a
+  higher-dimensional field into an undeclared 2D projection.
 - Design Screen v0.3 shows evaluated and eligible counts; a truncated screen
   says that the unevaluated candidates remain unknown.
 - The fixed-topology shape workflow uses three distinct typed artifacts:
@@ -192,6 +208,8 @@ development and shipped pages load the source ES modules directly.
 - All tracked first-party clients use `/api/v1/*`, and declared bare `/api/*`
   aliases are measured. Alias removal still requires telemetry and inventory
   for deployed and rollback clients through the declared sunset.
+- The RO-field page is not integrated into the typed Workspace/native menus and
+  has no browser-side chunk loader or interactive high-dimensional slicer.
 
 ## Change protocol
 

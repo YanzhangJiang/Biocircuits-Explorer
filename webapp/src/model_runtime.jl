@@ -231,6 +231,7 @@ const MODEL_BUNDLE_HANDLER_NAMES = Set{Symbol}((
     :handle_placer_threshold,
     :handle_placer_realize_program,
     :handle_placer_level,
+    :handle_ro_field,
 ))
 
 function _request_model_bundle(handler_name::Symbol, body)

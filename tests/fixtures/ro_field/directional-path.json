@@ -1,0 +1,117 @@
+{
+  "schema_version": "bne-ro-field/v1.0.0",
+  "field_id": "contract-directional-diagonal",
+  "representation": "directional_path",
+  "partial": false,
+  "domain": {
+    "domain_kind": "axis_aligned_log_box",
+    "coordinate_space": "dimensionless_log_ratio",
+    "log_basis": "log10",
+    "axis_order": ["input_a", "input_b"],
+    "axes": [
+      {
+        "axis_id": "input_a",
+        "symbol": "tA",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -1.0, "upper": 1.0 }
+      },
+      {
+        "axis_id": "input_b",
+        "symbol": "tB",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -1.0, "upper": 1.0 }
+      }
+    ],
+    "fixed_background": []
+  },
+  "outputs": {
+    "output_order": ["output_x"],
+    "items": [
+      {
+        "output_id": "output_x",
+        "symbol": "x",
+        "observable_kind": "species_concentration",
+        "reference": { "value": 1.0, "unit": "uM" }
+      }
+    ]
+  },
+  "component_order": [
+    { "output_id": "output_x", "input_axis_id": "input_a" },
+    { "output_id": "output_x", "input_axis_id": "input_b" }
+  ],
+  "data": {
+    "path": {
+      "kind": "polyline",
+      "parameterization": "gamma(s) = (s, s), s in [-1, 1]",
+      "vertices": [[-1.0, -1.0], [1.0, 1.0]]
+    },
+    "path_shape": [3, 2],
+    "output_shape": [3, 1],
+    "reaction_order_shape": [3, 1, 2],
+    "directional_order_shape": [3, 1],
+    "flatten_order": "row_major_last_axis_fastest",
+    "path_parameter_values": [-1.0, 0.0, 1.0],
+    "input_log_coordinates": [-1.0, -1.0, 0.0, 0.0, 1.0, 1.0],
+    "output_values": [-2.0, 0.0, 2.0],
+    "reaction_order_values": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    "directional_reaction_order_values": [2.0, 2.0, 2.0],
+    "regime_ids": ["cell_all", "cell_all", "cell_all"],
+    "validity": [true, true, true]
+  },
+  "coverage": {
+    "population_kind": "path_samples",
+    "eligible_count": 3,
+    "evaluated_count": 3,
+    "valid_count": 3,
+    "invalid_count": 0,
+    "omitted_count": 0,
+    "enumeration_complete": true,
+    "truncated": false,
+    "truncation": null,
+    "budget": {
+      "work_unit_kind": "path_samples",
+      "max_evaluated_items": 16,
+      "max_stored_items": 16,
+      "max_payload_bytes": 1048576,
+      "deadline_seconds": 10.0
+    },
+    "storage": {
+      "mode": "inline",
+      "complete": true,
+      "stored_count": 3,
+      "payload_bytes": 384,
+      "content_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "artifacts": []
+    }
+  },
+  "evidence": {
+    "evidence_class": "directional_derived",
+    "status": "complete",
+    "claim_scope": "declared_domain_model_configuration_only",
+    "validity_policy": "invalid_is_gap",
+    "completeness_claim": "complete_over_declared_population",
+    "limitations": [
+      "This diagonal pullback is a contract fixture and does not make a path-independent surface claim."
+    ]
+  },
+  "provenance": {
+    "producer": "tests/test_ro_field_schema.py",
+    "source_revision_status": "known",
+    "source_commit": "9b05d021060fb1750a94ed90f6400405e2368e17",
+    "source_dirty": true,
+    "network_ir_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "domain_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "algorithm": {
+      "name": "directional-pullback-contract-fixture",
+      "version": "1",
+      "configuration_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "parent_artifact_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "created_at": "2026-07-17T00:00:00Z",
+    "reproduce_command": "python3 tests/test_ro_field_schema.py"
+  }
+}

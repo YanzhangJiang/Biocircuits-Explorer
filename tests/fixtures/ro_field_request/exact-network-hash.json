@@ -1,0 +1,67 @@
+{
+  "schema_version": "bne-ro-field-request/v1.0.0",
+  "network_ir_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "representation": "exact_cell_complex",
+  "domain": {
+    "domain_kind": "axis_aligned_log_box",
+    "coordinate_space": "dimensionless_log_ratio",
+    "log_basis": "log10",
+    "axis_order": ["input_a", "input_b"],
+    "axes": [
+      {
+        "axis_id": "input_a",
+        "symbol": "tA",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -2.0, "upper": 2.0 }
+      },
+      {
+        "axis_id": "input_b",
+        "symbol": "tB",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -2.0, "upper": 2.0 }
+      }
+    ],
+    "fixed_background": [
+      {
+        "parameter_id": "kd_ab",
+        "symbol": "Kd1",
+        "coordinate_kind": "binding_constant",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "log_value": 0.0
+      }
+    ]
+  },
+  "outputs": {
+    "output_order": ["output_ab"],
+    "items": [
+      {
+        "output_id": "output_ab",
+        "symbol": "AB",
+        "observable_kind": "species_concentration",
+        "reference": { "value": 1.0, "unit": "uM" }
+      }
+    ]
+  },
+  "exact_options": {
+    "geometry_tolerance": 1e-9,
+    "limits": {
+      "max_candidate_regimes": 16,
+      "max_cells": 16,
+      "max_singular_strata": 16,
+      "max_pair_checks": 120,
+      "max_facets": 64
+    }
+  },
+  "work_budget": {
+    "work_unit_kind": "source_regime_candidates",
+    "max_evaluated_items": 16,
+    "max_stored_items": 16,
+    "max_payload_bytes": 1048576,
+    "deadline_seconds": 10.0
+  },
+  "storage": { "mode": "chunked" }
+}

@@ -1,4 +1,29 @@
 export x2qK, qK2x, x_traj_with_qK_change, x_traj_with_q_change, x_traj_cat, qK_traj_cat, q_traj_cat
+export QK2XWorkLimitExceeded
+
+struct QK2XWorkLimitExceeded <: Exception
+    phase::Symbol
+    requested::Int
+    limit::Int
+end
+
+function Base.showerror(io::IO, error::QK2XWorkLimitExceeded)
+    print(io, "qK2x ", error.phase, " requires ", error.requested,
+        ", exceeding limit=", error.limit)
+end
+
+function _qk2x_optional_positive_limit(value, label::AbstractString)
+    value === nothing && return nothing
+    value isa Integer && !(value isa Bool) || throw(ArgumentError(
+        "$label must be an integer or nothing"))
+    converted = try
+        Int(value)
+    catch
+        throw(ArgumentError("$label must fit in Int"))
+    end
+    converted > 0 || throw(ArgumentError("$label must be positive"))
+    return converted
+end
 
 # ----------------Functions for mapping between qK space and x space----------------------------------
 
@@ -66,7 +91,8 @@ end
 """
     qK2x(bnc::Bnc, qK; K=nothing, logK=nothing, input_logspace=false, output_logspace=false,
         startlogx=nothing, startlogqK=nothing, use_vtx=false, method=:homotopy,
-        reltol=1e-8, abstol=1e-10, kwargs...) -> Vector
+        reltol=1e-8, abstol=1e-10, cancel_check=nothing,
+        max_rhs_evaluations=nothing, kwargs...) -> Vector
 
 Map from totals/binding constants (`qK`) to species concentrations `x`.
 
@@ -84,6 +110,10 @@ Map from totals/binding constants (`qK`) to species concentrations `x`.
 - `use_vtx`: Use regime-based closed form when `true`.
 - `method`: Solver method (`:homotopy` or NonlinearSolve symbol).
 - `reltol`, `abstol`: Solver tolerances.
+- `cancel_check`: Optional cooperative cancellation callback.  The homotopy
+  path checks it before the solve and at every right-hand-side evaluation.
+- `max_rhs_evaluations`: Optional positive hard cap for homotopy right-hand-
+  side evaluations.
 - `kwargs...`: Passed through to the solver.
 
 # Returns
@@ -99,6 +129,8 @@ function qK2x(Bnc::Bnc, qK::AbstractVector{<:Real};
     reltol = 1e-8,
     abstol = 1e-10,
     status::Union{Nothing,Base.RefValue{Symbol}}=nothing,
+    cancel_check=nothing,
+    max_rhs_evaluations=nothing,
     kwargs...
 )::Vector{Float64}
     # Map from qK space to x space using homotopy or nonlinear solving.
@@ -107,6 +139,9 @@ function qK2x(Bnc::Bnc, qK::AbstractVector{<:Real};
     # Define the start point
 
 
+    cancel_check === nothing || cancel_check()
+    rhs_limit = _qk2x_optional_positive_limit(
+        max_rhs_evaluations, "max_rhs_evaluations")
     endlogqK = input_logspace ? qK : log10.(qK)
 
     helper = use_vtx ? nothing : _integration_helper!(Bnc)
@@ -142,12 +177,15 @@ function qK2x(Bnc::Bnc, qK::AbstractVector{<:Real};
                 save_start=false,
                 reltol = reltol,
                 abstol = abstol,
+                cancel_check=cancel_check,
+                max_rhs_evaluations=rhs_limit,
                 kwargs...
             )
             status !== nothing && (status[] = SciMLBase.successful_retcode(sol.retcode) ? :success : :failure)
             sol.u[end]
         end
 
+    cancel_check === nothing || cancel_check()
     logx = output_logspace ? logx : exp10.(logx)
     return logx
 end
@@ -441,6 +479,8 @@ function _logx_traj_with_logqK_change(Bnc::Bnc,
     abstol=1e-9,
     ensure_manifold::Bool=true, # Make sure the trajectory stays on the manifold defined by Lx=q and Nlogx=logK
     npoints::Union{Nothing, Integer}=nothing,
+    cancel_check=nothing,
+    max_rhs_evaluations=nothing,
     kwargs... #other Optional arguments for ODE solver
 )::ODESolution
     # println("_logx_traj_with_logqK_change get kwargs: ", kwargs)
@@ -448,9 +488,32 @@ function _logx_traj_with_logqK_change(Bnc::Bnc,
 
     
     # Prepare starting x if not given
-    u0 = isnothing(startlogx) ? qK2x(Bnc, startlogqK; input_logspace=true, output_logspace=true) : startlogx
+    cancel_check === nothing || cancel_check()
+    rhs_limit = _qk2x_optional_positive_limit(
+        max_rhs_evaluations, "max_rhs_evaluations")
+    rhs_evaluations = Ref(0)
+    u0 = isnothing(startlogx) ? qK2x(
+        Bnc,
+        startlogqK;
+        input_logspace=true,
+        output_logspace=true,
+        cancel_check=cancel_check,
+        max_rhs_evaluations=rhs_limit,
+    ) : startlogx
     p = get_homotopy_param(Bnc, startlogqK, endlogqK)
-    f! = get_homotopy_ode(Bnc)
+    base_f! = get_homotopy_ode(Bnc)
+    f! = if cancel_check === nothing && rhs_limit === nothing
+        base_f!
+    else
+        function (du, u, parameters, time)
+            cancel_check === nothing || cancel_check()
+            rhs_evaluations[] += 1
+            rhs_limit === nothing || rhs_evaluations[] <= rhs_limit ||
+                throw(QK2XWorkLimitExceeded(
+                    :rhs_evaluations, rhs_evaluations[], rhs_limit))
+            return base_f!(du, u, parameters, time)
+        end
+    end
 
     callback = if !ensure_manifold
             CB.CallbackSet()
@@ -485,6 +548,7 @@ function _logx_traj_with_logqK_change(Bnc::Bnc,
                 saveat=range(0,1,npoints),tstops=range(0,1,npoints),
                  kwargs...)
             end
+    cancel_check === nothing || cancel_check()
     return sol
 end
 

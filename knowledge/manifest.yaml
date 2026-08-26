@@ -186,6 +186,16 @@ documents:
     kind: "architecture-decision"
     owner: "backend-runtime"
     status: "accepted-working-tree"
+  - id: "0005-multi-input-reaction-order-field"
+    path: "knowledge/decisions/0005-multi-input-reaction-order-field.md"
+    kind: "architecture-decision"
+    owner: "engine-rop"
+    status: "accepted-working-tree"
+  - id: "0006-multi-input-ro-field-research-roadmap"
+    path: "knowledge/decisions/0006-multi-input-ro-field-research-roadmap.md"
+    kind: "architecture-decision"
+    owner: "engine-rop"
+    status: "accepted-working-tree"
   - id: "context-pack-policy"
     path: "knowledge/context-packs/README.md"
     kind: "process"
@@ -201,6 +211,8 @@ accepted_decisions:
   - "0002-rop-shape-margin-and-evidence"
   - "0003-aws-batch-at-most-once-submission"
   - "0004-job-state-stripes-and-bounded-cache"
+  - "0005-multi-input-reaction-order-field"
+  - "0006-multi-input-ro-field-research-roadmap"
 active_context_packs: []
 
 non_authoritative_by_default:

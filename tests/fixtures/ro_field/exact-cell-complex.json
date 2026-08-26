@@ -1,0 +1,301 @@
+{
+  "schema_version": "bne-ro-field/v1.0.0",
+  "field_id": "contract-heterodimer-cell-complex-2d",
+  "representation": "exact_cell_complex",
+  "partial": true,
+  "domain": {
+    "domain_kind": "axis_aligned_log_box",
+    "coordinate_space": "dimensionless_log_ratio",
+    "log_basis": "log10",
+    "axis_order": ["input_a", "input_b"],
+    "axes": [
+      {
+        "axis_id": "input_a",
+        "symbol": "tA",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -2.0, "upper": 2.0 }
+      },
+      {
+        "axis_id": "input_b",
+        "symbol": "tB",
+        "coordinate_kind": "conserved_total",
+        "orientation": "increasing_physical_value",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "bounds": { "lower": -2.0, "upper": 2.0 }
+      }
+    ],
+    "fixed_background": [
+      {
+        "parameter_id": "kd_ab",
+        "symbol": "KdAB",
+        "coordinate_kind": "binding_constant",
+        "reference": { "value": 1.0, "unit": "uM" },
+        "log_value": 0.0
+      }
+    ]
+  },
+  "outputs": {
+    "output_order": ["output_ab"],
+    "items": [
+      {
+        "output_id": "output_ab",
+        "symbol": "AB",
+        "observable_kind": "species_concentration",
+        "reference": { "value": 1.0, "unit": "uM" }
+      }
+    ]
+  },
+  "component_order": [
+    { "output_id": "output_ab", "input_axis_id": "input_a" },
+    { "output_id": "output_ab", "input_axis_id": "input_b" }
+  ],
+  "data": {
+    "coefficient_encoding": "float64",
+    "source_candidate_regime_count": 4,
+    "regular_candidate_regime_count": 3,
+    "cell_order": ["cell-low", "cell-b-dominant", "cell-a-dominant"],
+    "cells": [
+      {
+        "cell_id": "cell-low",
+        "dimension": 2,
+        "status": "regular",
+        "vertices": [[-2.0, -2.0], [0.0, -2.0], [0.0, 0.0], [-2.0, 0.0]],
+        "area": 4.0,
+        "source_regime_ids": ["regime-1"],
+        "label_order": ["cell-low-label-1"],
+        "affine_labels": [
+          {
+            "label_id": "cell-low-label-1",
+            "source_regime_ids": ["regime-1"],
+            "output_offset": [0.0],
+            "reaction_order_matrix": [[1.0, 1.0]]
+          }
+        ],
+        "set_valued": false
+      },
+      {
+        "cell_id": "cell-b-dominant",
+        "dimension": 2,
+        "status": "regular",
+        "vertices": [[-2.0, 0.0], [0.0, 0.0], [2.0, 2.0], [-2.0, 2.0]],
+        "area": 6.0,
+        "source_regime_ids": ["regime-2"],
+        "label_order": ["cell-b-dominant-label-1"],
+        "affine_labels": [
+          {
+            "label_id": "cell-b-dominant-label-1",
+            "source_regime_ids": ["regime-2"],
+            "output_offset": [0.0],
+            "reaction_order_matrix": [[1.0, 0.0]]
+          }
+        ],
+        "set_valued": false
+      },
+      {
+        "cell_id": "cell-a-dominant",
+        "dimension": 2,
+        "status": "regular",
+        "vertices": [[0.0, -2.0], [2.0, -2.0], [2.0, 2.0], [0.0, 0.0]],
+        "area": 6.0,
+        "source_regime_ids": ["regime-3"],
+        "label_order": ["cell-a-dominant-label-1"],
+        "affine_labels": [
+          {
+            "label_id": "cell-a-dominant-label-1",
+            "source_regime_ids": ["regime-3"],
+            "output_offset": [0.0],
+            "reaction_order_matrix": [[0.0, 1.0]]
+          }
+        ],
+        "set_valued": false
+      }
+    ],
+    "facet_order": [
+      "facet-x-low-bottom",
+      "facet-x-low-top",
+      "facet-x-high",
+      "facet-y-low-left",
+      "facet-y-low-right",
+      "facet-y-high",
+      "facet-low-a",
+      "facet-low-b",
+      "facet-a-b-singular"
+    ],
+    "facets": [
+      {
+        "facet_id": "facet-x-low-bottom",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[-2.0, -2.0], [-2.0, 0.0]],
+        "incident_cell_ids": ["cell-low"],
+        "singular_stratum_ids": [],
+        "normal": [1.0, 0.0],
+        "offset": 2.0,
+        "mixed_sign": false,
+        "domain_side": "axis1_lower"
+      },
+      {
+        "facet_id": "facet-x-low-top",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[-2.0, 0.0], [-2.0, 2.0]],
+        "incident_cell_ids": ["cell-b-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [1.0, 0.0],
+        "offset": 2.0,
+        "mixed_sign": false,
+        "domain_side": "axis1_lower"
+      },
+      {
+        "facet_id": "facet-x-high",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[2.0, -2.0], [2.0, 2.0]],
+        "incident_cell_ids": ["cell-a-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [1.0, 0.0],
+        "offset": -2.0,
+        "mixed_sign": false,
+        "domain_side": "axis1_upper"
+      },
+      {
+        "facet_id": "facet-y-low-left",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[-2.0, -2.0], [0.0, -2.0]],
+        "incident_cell_ids": ["cell-low"],
+        "singular_stratum_ids": [],
+        "normal": [0.0, 1.0],
+        "offset": 2.0,
+        "mixed_sign": false,
+        "domain_side": "axis2_lower"
+      },
+      {
+        "facet_id": "facet-y-low-right",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[0.0, -2.0], [2.0, -2.0]],
+        "incident_cell_ids": ["cell-a-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [0.0, 1.0],
+        "offset": 2.0,
+        "mixed_sign": false,
+        "domain_side": "axis2_lower"
+      },
+      {
+        "facet_id": "facet-y-high",
+        "dimension": 1,
+        "kind": "domain_boundary",
+        "endpoints": [[-2.0, 2.0], [2.0, 2.0]],
+        "incident_cell_ids": ["cell-b-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [0.0, 1.0],
+        "offset": -2.0,
+        "mixed_sign": false,
+        "domain_side": "axis2_upper"
+      },
+      {
+        "facet_id": "facet-low-a",
+        "dimension": 1,
+        "kind": "regime_transition",
+        "endpoints": [[0.0, -2.0], [0.0, 0.0]],
+        "incident_cell_ids": ["cell-low", "cell-a-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [1.0, 0.0],
+        "offset": 0.0,
+        "mixed_sign": false,
+        "domain_side": null
+      },
+      {
+        "facet_id": "facet-low-b",
+        "dimension": 1,
+        "kind": "regime_transition",
+        "endpoints": [[-2.0, 0.0], [0.0, 0.0]],
+        "incident_cell_ids": ["cell-low", "cell-b-dominant"],
+        "singular_stratum_ids": [],
+        "normal": [0.0, 1.0],
+        "offset": 0.0,
+        "mixed_sign": false,
+        "domain_side": null
+      },
+      {
+        "facet_id": "facet-a-b-singular",
+        "dimension": 1,
+        "kind": "singular_boundary",
+        "endpoints": [[0.0, 0.0], [2.0, 2.0]],
+        "incident_cell_ids": ["cell-b-dominant", "cell-a-dominant"],
+        "singular_stratum_ids": ["stratum-diagonal"],
+        "normal": [0.7071067811865476, -0.7071067811865476],
+        "offset": 0.0,
+        "mixed_sign": true,
+        "domain_side": null
+      }
+    ],
+    "singular_stratum_order": ["stratum-diagonal"],
+    "singular_strata": [
+      {
+        "stratum_id": "stratum-diagonal",
+        "dimension": 1,
+        "vertices": [[0.0, 0.0], [2.0, 2.0]],
+        "source_regime_ids": ["regime-4"],
+        "nullities": [1],
+        "reasons": ["singular_regime"]
+      }
+    ],
+    "gaps": []
+  },
+  "coverage": {
+    "population_kind": "cell_complex_items",
+    "eligible_count": 4,
+    "evaluated_count": 4,
+    "valid_count": 3,
+    "invalid_count": 1,
+    "omitted_count": 0,
+    "enumeration_complete": true,
+    "truncated": false,
+    "truncation": null,
+    "budget": {
+      "work_unit_kind": "source_regime_candidates",
+      "max_evaluated_items": 16,
+      "max_stored_items": 16,
+      "max_payload_bytes": 1048576,
+      "deadline_seconds": 10.0
+    },
+    "storage": {
+      "mode": "inline",
+      "complete": true,
+      "stored_count": 4,
+      "payload_bytes": 4096,
+      "content_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "artifacts": []
+    }
+  },
+  "evidence": {
+    "evidence_class": "exact_polyhedral",
+    "status": "partial",
+    "claim_scope": "declared_domain_model_configuration_only",
+    "validity_policy": "invalid_is_gap",
+    "completeness_claim": "no_positive_claim",
+    "limitations": [
+      "The lower-dimensional singular stratum is retained explicitly and prevents a complete single-valued positive claim."
+    ]
+  },
+  "provenance": {
+    "producer": "tests/test_ro_field_schema.py",
+    "source_revision_status": "known",
+    "source_commit": "9b05d021060fb1750a94ed90f6400405e2368e17",
+    "source_dirty": true,
+    "network_ir_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "domain_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "algorithm": {
+      "name": "analytic-heterodimer-cell-complex-fixture",
+      "version": "1",
+      "configuration_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "parent_artifact_sha256": null,
+    "created_at": "2026-07-17T00:00:00Z",
+    "reproduce_command": "python3 tests/test_ro_field_schema.py"
+  }
+}
