@@ -284,6 +284,18 @@ final class DesignChatBackendController: ObservableObject {
         _ = requestStop()
     }
 
+    /// Stops the helper and waits (graceful SIGTERM, then SIGKILL) for the
+    /// child process to exit. The quit-preparation path must use this instead
+    /// of the fire-and-forget `stop()` so the app cannot terminate before the
+    /// Python helper has left, orphaning it.
+    func stopAndWait() async {
+        let processToStop = requestStop()
+        guard let processToStop else {
+            return
+        }
+        _ = try? await LocalProcessShutdown.waitForExitOrKill(processToStop)
+    }
+
     @discardableResult
     private func requestStop() -> Process? {
         launchLifecycle.advance()
