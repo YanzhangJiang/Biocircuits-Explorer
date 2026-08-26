@@ -403,7 +403,9 @@ test('model requests keep explicit network payloads untouched', () => {
           return jsonResponse({ result_url: `https://artifacts.example/${jobId}.json` });
         }
         if (url === `https://artifacts.example/${jobId}.json`) {
-          assert.deepEqual(options, { method: 'GET' });
+          assert.equal(options.method, 'GET');
+          assert.equal(options.body, undefined);
+          assert.ok(options.signal instanceof AbortSignal, 'result download keeps its timeout signal');
           return jsonResponse({ recovered_after: retryableFailures });
         }
         if (url.endsWith('/cancel')) {
@@ -443,7 +445,9 @@ test('model requests keep explicit network payloads untouched', () => {
         return jsonResponse({ result_url: 'https://artifacts.example/poll-reset.json' });
       }
       if (url === 'https://artifacts.example/poll-reset.json') {
-        assert.deepEqual(options, { method: 'GET' });
+        assert.equal(options.method, 'GET');
+        assert.equal(options.body, undefined);
+        assert.ok(options.signal instanceof AbortSignal, 'result download keeps its timeout signal');
         return jsonResponse({ retry_counter_reset: true });
       }
       throw new Error(`Unexpected URL ${url}`);
@@ -542,7 +546,9 @@ test('model requests keep explicit network payloads untouched', () => {
       }
       if (url === 'https://artifacts.example/result-url-retry-fresh.json') {
         directUrls.push(url);
-        assert.deepEqual(options, { method: 'GET' });
+        assert.equal(options.method, 'GET');
+        assert.equal(options.body, undefined);
+        assert.ok(options.signal instanceof AbortSignal, 'result download keeps its timeout signal');
         return jsonResponse({ result_url_retry: true });
       }
       throw new Error(`Unexpected URL ${url}`);
@@ -565,7 +571,9 @@ test('model requests keep explicit network payloads untouched', () => {
       }
       if (url.startsWith('https://artifacts.example/direct-retry-')) {
         directAttempt += 1;
-        assert.deepEqual(options, { method: 'GET' });
+        assert.equal(options.method, 'GET');
+        assert.equal(options.body, undefined);
+        assert.ok(options.signal instanceof AbortSignal, 'result download keeps its timeout signal');
         if (directAttempt === 1) {
           return jsonResponse({ error: 'expired signature' }, { status: 403, ok: false });
         }
@@ -604,7 +612,9 @@ test('model requests keep explicit network payloads untouched', () => {
       else if (url === '/api/v1/jobs/job-1/result-url') {
         json = { result_url: 'https://artifacts.example/job-1/result.json?signature=one' };
       } else if (url === 'https://artifacts.example/job-1/result.json?signature=one') {
-        assert.deepEqual(options, { method: 'GET' });
+        assert.equal(options.method, 'GET');
+        assert.equal(options.body, undefined);
+        assert.ok(options.signal instanceof AbortSignal, 'result download keeps its timeout signal');
         json = { ok: true };
       }
       else throw new Error(`Unexpected URL ${url}`);
@@ -706,7 +716,9 @@ test('model requests keep explicit network payloads untouched', () => {
           };
         }
         if (url === 'https://artifacts.example/job-errors/result.json') {
-          assert.deepEqual(options, { method: 'GET' }, `${scenario.name} must stay a plain GET`);
+          assert.equal(options.method, 'GET', `${scenario.name} must stay a plain GET`);
+          assert.equal(options.body, undefined);
+          assert.ok(options.signal instanceof AbortSignal);
           return scenario.response;
         }
         throw new Error(`Unexpected URL ${url}`);
@@ -841,7 +853,9 @@ test('model requests keep explicit network payloads untouched', () => {
     });
 
     assert.equal(await pending, null);
-    assert.deepEqual(directOptions, { method: 'GET' });
+    assert.equal(directOptions.method, 'GET');
+    assert.equal(directOptions.body, undefined);
+    assert.ok(directOptions.signal instanceof AbortSignal, 'stale result download keeps its timeout signal');
     assert.equal(calledUrls.some(url => url === '/api/v1/jobs/job-stale-get/result'), false);
     assert.equal(badge.textContent, 'Replacement result done');
     assert.doesNotMatch(badge.className, /error/);
