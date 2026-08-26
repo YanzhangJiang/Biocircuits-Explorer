@@ -34,6 +34,21 @@ export RESULT_ARTIFACT_SCHEMA_VERSION, artifact_metadata, attach_artifact!, wrap
 export DESIGNABILITY_SPEC_VERSION, normalize_designability_spec, design_screen_from_spec
 export ROP_SHAPE_OPTIMIZE_REQUEST_VERSION, ROP_SHAPE_OPTIMIZATION_VERSION
 export ROP_SHAPE_REPLAY_VERSION, analyze_two_peak_curve, optimize_rop_shape_request
+export RO_FIELD_REQUEST_VERSION, RO_FIELD_SCHEMA_VERSION
+export ROFieldRequestError, NormalizedROFieldRequest
+export normalize_ro_field_request, validate_ro_field_document!, validate_ro_field_payload!, produce_ro_field
+export RO_FIELD_DIFFERENTIAL_ANALYSIS_VERSION, RO_FIELD_DIFFERENTIAL_REQUEST_VERSION
+export analyze_ro_field_differential, validate_ro_field_differential_analysis!
+export RO_FIELD_CHUNK_PLAN_SCHEMA_VERSION, RO_FIELD_WORK_UNIT_SCHEMA_VERSION, RO_FIELD_CHUNK_SCHEMA_VERSION, RO_FIELD_CHECKPOINT_SCHEMA_VERSION, RO_FIELD_DATASET_MANIFEST_SCHEMA_VERSION
+export ROFieldChunkLimits, ROFieldChunkLimitExceeded, ROFieldChunkContractError, build_ro_field_chunk_plan, validate_ro_field_chunk_plan!, ro_field_chunk_plan_sha256, ro_field_plan_work_units, validate_ro_field_work_unit!, ro_field_work_unit_sha256, build_ro_field_chunk, validate_ro_field_chunk!, canonical_ro_field_chunk_bytes, ro_field_chunk_sha256, write_ro_field_chunk!, read_ro_field_chunk, build_ro_field_checkpoint, validate_ro_field_checkpoint!, resume_ro_field_work_units, build_ro_field_dataset_manifest, validate_ro_field_dataset_manifest!
+export RO_FIELD_SLICE_SPEC_SCHEMA_VERSION, RO_FIELD_SLICE_SCHEMA_VERSION, RO_FIELD_SLICE_ALGORITHM_VERSION, ROFieldSliceLimits, ROFieldSliceLimitExceeded, ROFieldSliceContractError, build_ro_field_slice, validate_ro_field_slice!
+export RO_FIELD_CAMPAIGN_MANIFEST_VERSION, RO_FIELD_CAMPAIGN_SHARD_RESULT_VERSION, RO_FIELD_CAMPAIGN_CORPUS_LOCK_VERSION, RO_FIELD_CAMPAIGN_QC_VERSION, ROFieldCampaignLimits, ROFieldCampaignLimitExceeded, build_ro_field_campaign_manifest, validate_ro_field_campaign_manifest!, run_ro_field_campaign_demo_shard, validate_ro_field_campaign_shard_result!, merge_ro_field_campaign_shards, validate_ro_field_campaign_corpus_lock!, audit_ro_field_campaign_corpus, validate_ro_field_campaign_qc!
+export RO_FIELD_JOB_SPEC_VERSION, RO_FIELD_JOB_RESULT_VERSION, RO_FIELD_SPARSE_REQUEST_VERSION, RO_FIELD_SPARSE_JOB_SPEC_VERSION, RO_FIELD_SPARSE_PLAN_VERSION, RO_FIELD_SPARSE_JOB_RESULT_VERSION, RO_FIELD_SPARSE_JOB_ALGORITHM_VERSION, RO_FIELD_SPARSE_NUMERICAL_POLICY_VERSION
+export normalize_ro_field_job_spec, validate_ro_field_resume_parent!, compute_ro_field_job, validate_ro_field_job_result!, normalize_ro_field_sparse_job_spec, validate_ro_field_sparse_resume_parent!, validate_ro_field_sparse_job_result!
+export RO_CELL_COMPLEX_MAGIC, RO_CELL_COMPLEX_CODEC_VERSION, RO_CELL_COMPLEX_IDENTITY_KIND, ROFieldIdentityError
+export canonical_ro_field_data_bytes, ro_field_data_sha256, canonical_ro_field_document_bytes, ro_field_artifact_sha256, canonical_ro_cell_complex_payload, encode_ro_cell_complex_blob, decode_ro_cell_complex_blob, ro_cell_complex_hash
+export RO_FIELD_SIGNATURE_SCHEMA_VERSION, RO_FIELD_SIGNATURE_CLASSIFIER_VERSION, RO_FIELD_SIGNATURE_SCOPE, ROFieldSignatureConfig, ROFieldSignatureLimitExceeded, classify_ro_cell_complex, ro_field_signature_identity_payload, validate_ro_field_signature!
+export RO_FIELD_ATLAS_SCHEMA_VERSION, RO_FIELD_ATLAS_QUERY_SCHEMA_VERSION, RO_FIELD_ATLAS_QUERY_RESULT_SCHEMA_VERSION, ROFieldAtlasInput, ROFieldAtlasConfig, ROFieldAtlasLimitExceeded, ROFieldComponentFilter, ROFieldGradientFilter, ROFieldAtlasQuerySpec, build_ro_field_atlas, query_ro_field_atlas, atlas_sqlite_save_ro_field_artifact!, atlas_sqlite_load_ro_field_artifact, atlas_sqlite_query_ro_field_artifacts, atlas_sqlite_save_ro_field_signature!, atlas_sqlite_load_ro_field_signature, atlas_sqlite_query_ro_field_signatures
 
 using HTTP
 using JSON3
@@ -87,11 +102,8 @@ include(joinpath(@__DIR__, "canonicalization.jl"))
 # is dependency order; routing stays last because it resolves every handler at
 # load time. `webapp/test/backend_assembly_contract.jl` guards that structure.
 include(joinpath(@__DIR__, "runtime_lifecycle.jl"))
-
 include(joinpath(@__DIR__, "request_support.jl"))
-
 include(joinpath(@__DIR__, "sync_work_budget.jl"))
-
 include(joinpath(@__DIR__, "path_work_budget.jl"))
 
 include(joinpath(@__DIR__, "analysis_serializers.jl"))
@@ -101,7 +113,10 @@ include(joinpath(@__DIR__, "analysis_computation.jl"))
 include(joinpath(@__DIR__, "cancellation.jl"))
 include(joinpath(@__DIR__, "atlas.jl"))
 include(joinpath(@__DIR__, "behavior_program_codec.jl"))
+include(joinpath(@__DIR__, "ro_field_identity.jl"))
+include(joinpath(@__DIR__, "ro_field_behavior.jl"))
 include(joinpath(@__DIR__, "atlas_sqlite.jl"))
+include(joinpath(@__DIR__, "ro_field_atlas.jl"))
 include(joinpath(@__DIR__, "inverse_design.jl"))
 include(joinpath(@__DIR__, "atlas_build_budget.jl"))
 include(joinpath(@__DIR__, "atlas_corpus_budget.jl"))
@@ -123,7 +138,14 @@ export verify_cognito_jwt
 include(joinpath(@__DIR__, "service_handlers.jl"))
 
 include(joinpath(@__DIR__, "model_runtime.jl"))
-
+include(joinpath(@__DIR__, "ro_field_contract.jl"))
+include(joinpath(@__DIR__, "ro_field_chunks.jl"))
+include(joinpath(@__DIR__, "ro_field_slices.jl"))
+include(joinpath(@__DIR__, "ro_field_campaign.jl"))
+include(joinpath(@__DIR__, "ro_field_jobs.jl"))
+include(joinpath(@__DIR__, "ro_field_sparse_jobs.jl"))
+include(joinpath(@__DIR__, "ro_field_differential.jl"))
+include(joinpath(@__DIR__, "ro_field_api.jl"))
 include(joinpath(@__DIR__, "model_handlers.jl"))
 
 include(joinpath(@__DIR__, "parameter_placement.jl"))

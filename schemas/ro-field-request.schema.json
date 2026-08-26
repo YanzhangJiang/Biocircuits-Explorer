@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/ro-field-request.schema.json",
+  "title": "Biocircuits Explorer multi-input reaction-order field request",
+  "description": "Strict bounded request contract for producing a sampled grid or exact fixed-background 2D RO field. Exactly one model source is selected: an inline canonical NetworkIR, a previously canonicalized NetworkIR hash, or an in-memory session id. The portable contract can request non-inline output storage; a synchronous runtime may reject unsupported storage modes with a structured budget/capability response.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "representation",
+    "domain",
+    "outputs",
+    "work_budget",
+    "storage"
+  ],
+  "properties": {
+    "schema_version": { "const": "bne-ro-field-request/v1.0.0" },
+    "network": { "$ref": "#/$defs/fullNetworkIR" },
+    "network_ir_hash": { "$ref": "#/$defs/sha256" },
+    "session_id": { "$ref": "#/$defs/safeId" },
+    "representation": { "enum": ["sampled_grid", "exact_cell_complex"] },
+    "domain": { "$ref": "ro-field.schema.json#/$defs/inputDomain" },
+    "outputs": { "$ref": "ro-field.schema.json#/$defs/outputSpec" },
+    "sampling": { "$ref": "#/$defs/sampling" },
+    "exact_options": { "$ref": "#/$defs/exactOptions" },
+    "work_budget": {
+      "allOf": [
+        { "$ref": "ro-field.schema.json#/$defs/resourceBudget" },
+        {
+          "type": "object",
+          "properties": {
+            "max_evaluated_items": { "maximum": 4096 },
+            "max_stored_items": { "maximum": 4096 },
+            "max_payload_bytes": { "maximum": 4194304 },
+            "deadline_seconds": {
+              "oneOf": [
+                { "type": "number", "exclusiveMinimum": 0, "maximum": 30 },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "storage": { "$ref": "#/$defs/storageRequest" }
+  },
+  "oneOf": [
+    {
+      "required": ["network"],
+      "not": { "anyOf": [{ "required": ["network_ir_hash"] }, { "required": ["session_id"] }] }
+    },
+    {
+      "required": ["network_ir_hash"],
+      "not": { "anyOf": [{ "required": ["network"] }, { "required": ["session_id"] }] }
+    },
+    {
+      "required": ["session_id"],
+      "not": { "anyOf": [{ "required": ["network"] }, { "required": ["network_ir_hash"] }] }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "representation": { "const": "sampled_grid" } },
+        "required": ["representation"]
+      },
+      "then": {
+        "required": ["sampling"],
+        "not": { "required": ["exact_options"] },
+        "properties": {
+          "domain": {
+            "properties": {
+              "axis_order": { "maxItems": 4 },
+              "axes": { "maxItems": 4 }
+            }
+          },
+          "outputs": {
+            "properties": {
+              "output_order": { "maxItems": 4 },
+              "items": { "maxItems": 4 }
+            }
+          },
+          "work_budget": {
+            "properties": { "work_unit_kind": { "const": "solver_samples" } }
+          }
+        }
+      },
+      "else": {
+        "not": { "required": ["sampling"] },
+        "properties": {
+          "domain": {
+            "properties": {
+              "axis_order": { "minItems": 2, "maxItems": 2 },
+              "axes": {
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "allOf": [
+                    { "$ref": "ro-field.schema.json#/$defs/inputAxis" },
+                    {
+                      "properties": {
+                        "coordinate_kind": { "const": "conserved_total" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "outputs": {
+            "properties": {
+              "output_order": { "maxItems": 4 },
+              "items": { "maxItems": 4 }
+            }
+          },
+          "work_budget": {
+            "properties": { "work_unit_kind": { "const": "source_regime_candidates" } }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "safeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "fullNetworkIR": {
+      "allOf": [
+        { "$ref": "network-ir.schema.json" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ir_schema_version",
+            "label",
+            "species",
+            "reactions",
+            "observables",
+            "parameter_distributions",
+            "compartments",
+            "provenance",
+            "extensions"
+          ],
+          "properties": {
+            "ir_schema_version": { "const": "bne-ir/v1.0.0" },
+            "label": { "type": "string" },
+            "species": { "type": "array" },
+            "reactions": { "type": "array", "minItems": 1 },
+            "observables": { "type": "array" },
+            "parameter_distributions": { "type": "array" },
+            "compartments": { "type": "array" },
+            "provenance": { "type": "object" },
+            "extensions": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "axis_coordinates"],
+      "properties": {
+        "scheme": { "const": "cartesian_product" },
+        "axis_coordinates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "number" }
+          },
+          "description": "One strictly increasing log-coordinate vector per domain axis, in axis_order. Semantic validation enforces rank, order, and declared bounds."
+        }
+      }
+    },
+    "exactOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["geometry_tolerance", "limits"],
+      "properties": {
+        "geometry_tolerance": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1e-6,
+          "description": "Absolute Float64 geometry tolerance in engine log10 coordinates. Semantic validation also limits it to 1e-6 of the shortest declared-domain side; it is never a caller-controlled coverage allowance."
+        },
+        "limits": { "$ref": "#/$defs/exactLimits" }
+      }
+    },
+    "exactLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_candidate_regimes",
+        "max_cells",
+        "max_singular_strata",
+        "max_pair_checks",
+        "max_facets"
+      ],
+      "properties": {
+        "max_candidate_regimes": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "max_cells": { "type": "integer", "minimum": 1, "maximum": 128 },
+        "max_singular_strata": { "type": "integer", "minimum": 1, "maximum": 128 },
+        "max_pair_checks": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "max_facets": { "type": "integer", "minimum": 1, "maximum": 512 }
+      }
+    },
+    "storageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["inline", "chunked", "artifact_reference"] }
+      }
+    }
+  }
+}

@@ -46,6 +46,54 @@ struct EngineCancelProbe <: Exception end
 # Keep the heavy progress meters quiet during the suite.
 ENV["BNC_NO_PROGRESS"] = "1"
 
+@testset "regime bounds are available without plotting dependencies" begin
+    @test !any(find_bounds(fill(7, 3, 4)))
+
+    impulse = zeros(Int, 3, 3)
+    impulse[2, 2] = 1
+    @test find_bounds(impulse) == BitMatrix([
+        0 1 0
+        1 1 1
+        0 1 0
+    ])
+
+    corner_impulse = zeros(Int, 3, 3)
+    corner_impulse[1, 1] = 1
+    @test find_bounds(corner_impulse) == BitMatrix([
+        1 1 0
+        1 0 0
+        0 0 0
+    ])
+
+    # Preserve the historical Laplacian predicate: opposing label changes can
+    # cancel numerically even though individual neighbours differ.
+    cancellation = [
+        2 1 2
+        2 2 2
+        2 3 2
+    ]
+    @test !find_bounds(cancellation)[2, 2]
+
+    overflow_guard = zeros(Int, 3, 3)
+    overflow_guard[1, 2] = typemax(Int)
+    overflow_guard[3, 2] = typemax(Int)
+    overflow_guard[2, 1] = 1
+    overflow_guard[2, 3] = 1
+    @test find_bounds(overflow_guard)[2, 2]
+
+    mixed_integer_types = Matrix{Integer}(undef, 3, 3)
+    fill!(mixed_integer_types, Int8(0))
+    mixed_integer_types[2, 2] = Int16(1)
+    @test find_bounds(mixed_integer_types) == BitMatrix([
+        0 1 0
+        1 1 1
+        0 1 0
+    ])
+
+    @test_throws MethodError find_bounds(zeros(Float64, 2, 2))
+    @test find_bounds(zeros(Int, 0, 3)) == falses(0, 3)
+end
+
 @testset "SISO path enumeration enforces pre-allocation limits" begin
     # Six chained diamonds have 2^6 source-to-sink paths while using only 19
     # vertices. This makes the exponential relationship deterministic without
@@ -330,6 +378,29 @@ end
 end
 
 include(joinpath(@__DIR__, "volume_reproducibility_contract.jl"))
+include(joinpath(@__DIR__, "multi_input_ro_field_contract.jl"))
+include(joinpath(@__DIR__, "ro_cell_complex_contract.jl"))
+include(joinpath(@__DIR__, "ro_cell_complex_3d_contract.jl"))
+include(joinpath(@__DIR__, "ro_coordinate_chart_contract.jl"))
+include(joinpath(@__DIR__, "ro_nonlinear_coordinate_chart_contract.jl"))
+include(joinpath(@__DIR__, "ro_observable_chart_contract.jl"))
+include(joinpath(@__DIR__, "ro_regular_sheet_contract.jl"))
+include(joinpath(@__DIR__, "ro_regular_root_census_contract.jl"))
+include(joinpath(@__DIR__, "ro_fold_event_census_contract.jl"))
+include(joinpath(@__DIR__, "ro_fold_branch_incidence_contract.jl"))
+include(joinpath(@__DIR__, "ro_branch_indexed_field_contract.jl"))
+include(joinpath(@__DIR__, "ro_spectral_hopf_event_census_contract.jl"))
+include(joinpath(@__DIR__, "ro_hopf_lyapunov_census_contract.jl"))
+include(joinpath(@__DIR__, "ro_hopf_periodic_orbit_germ_contract.jl"))
+include(joinpath(@__DIR__, "ro_periodic_fourier_identity_contract.jl"))
+include(joinpath(@__DIR__, "ro_field_differential_contract.jl"))
+include(joinpath(@__DIR__, "ro_field_uncertainty_contract.jl"))
+include(joinpath(@__DIR__, "ro_stratified_field_contract.jl"))
+include(joinpath(@__DIR__, "ro_stratified_field_3d_contract.jl"))
+include(joinpath(@__DIR__, "ro_singular_selection_contract.jl"))
+include(joinpath(@__DIR__, "ro_sparse_sampler_contract.jl"))
+include(joinpath(@__DIR__, "ro_dynamic_hysteresis_contract.jl"))
+include(joinpath(@__DIR__, "ro_dynamic_trajectory_contract.jl"))
 
 # =============================================================================
 @testset "BindingAndCatalysis golden-value suite" begin

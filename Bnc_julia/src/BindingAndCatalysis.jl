@@ -26,6 +26,7 @@ import CDDLib
 using Graphs
 import Printf
 import JSON3
+import SHA
 const _BNC_HEADLESS = lowercase(get(ENV, "BNC_HEADLESS", "")) in ("1", "true", "yes", "on")
 
 if !_BNC_HEADLESS
@@ -641,6 +642,7 @@ include(joinpath(@__DIR__,"Catalysis_regime.jl"))
 include(joinpath(@__DIR__,"Bnc_regime.jl"))
 
 include(joinpath(@__DIR__,"regime_assign.jl"))
+include(joinpath(@__DIR__,"regime_bounds.jl"))
 include(joinpath(@__DIR__,"SISO.jl"))
 include(joinpath(@__DIR__,"symbolics.jl"))
 if !_BNC_HEADLESS
@@ -652,6 +654,29 @@ include(joinpath(@__DIR__,"old_api.jl"))
 # Relocated user code, included AFTER old_api.jl (dependencies first).
 include(joinpath(@__DIR__, "rop", "rop_change_paths.jl"))
 include(joinpath(@__DIR__, "rop", "rop_overlay.jl"))
+include(joinpath(@__DIR__, "rop", "ro_field.jl"))
+include(joinpath(@__DIR__, "rop", "ro_cell_complex.jl"))
+include(joinpath(@__DIR__, "rop", "ro_cell_complex_3d.jl"))
+include(joinpath(@__DIR__, "rop", "ro_coordinate_chart.jl"))
+include(joinpath(@__DIR__, "rop", "ro_nonlinear_coordinate_chart.jl"))
+include(joinpath(@__DIR__, "rop", "ro_observable_chart.jl"))
+include(joinpath(@__DIR__, "rop", "ro_regular_sheet.jl"))
+include(joinpath(@__DIR__, "rop", "ro_regular_root_census.jl"))
+include(joinpath(@__DIR__, "rop", "ro_fold_event_census.jl"))
+include(joinpath(@__DIR__, "rop", "ro_fold_branch_incidence.jl"))
+include(joinpath(@__DIR__, "rop", "ro_branch_indexed_field.jl"))
+include(joinpath(@__DIR__, "rop", "ro_spectral_hopf_event_census.jl"))
+include(joinpath(@__DIR__, "rop", "ro_hopf_lyapunov_census.jl"))
+include(joinpath(@__DIR__, "rop", "ro_hopf_periodic_orbit_germ.jl"))
+include(joinpath(@__DIR__, "rop", "ro_periodic_fourier_identity.jl"))
+include(joinpath(@__DIR__, "rop", "ro_field_differential.jl"))
+include(joinpath(@__DIR__, "rop", "ro_field_uncertainty.jl"))
+include(joinpath(@__DIR__, "rop", "ro_stratified_field.jl"))
+include(joinpath(@__DIR__, "rop", "ro_stratified_field_3d.jl"))
+include(joinpath(@__DIR__, "rop", "ro_singular_selection.jl"))
+include(joinpath(@__DIR__, "rop", "ro_sparse_sampler.jl"))
+include(joinpath(@__DIR__, "rop", "ro_dynamic_hysteresis.jl"))
+include(joinpath(@__DIR__, "rop", "ro_dynamic_trajectory.jl"))
 include(joinpath(@__DIR__, "rop", "rop_periodic_table.jl"))
 include(joinpath(@__DIR__, "rop", "rop_plot.jl"))
 include(joinpath(@__DIR__, "rop", "rop_exports.jl"))

@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/ro-field-differential-analysis.schema.json",
+  "title": "Finite-grid differential analysis of a multi-input RO field",
+  "description": "A separately identified diagnostic derived from one complete inline sampled bne-ro-field/v1 artifact. Consistency is scoped to the tested finite grid; synergy is an explicit coordinate- and window-dependent cross-curvature convention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analysis_id",
+    "analysis_sha256",
+    "source_field_sha256",
+    "source_data_sha256",
+    "coordinate_contract",
+    "integrability",
+    "curvature",
+    "synergy",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "bne-ro-field-differential-analysis/v1.0.0"
+    },
+    "analysis_id": {
+      "type": "string",
+      "pattern": "^ro-differential-[0-9a-f]{24}$"
+    },
+    "analysis_sha256": { "$ref": "#/$defs/sha256" },
+    "source_field_sha256": { "$ref": "#/$defs/sha256" },
+    "source_data_sha256": { "$ref": "#/$defs/sha256" },
+    "coordinate_contract": { "$ref": "#/$defs/coordinateContract" },
+    "integrability": { "$ref": "#/$defs/integrability" },
+    "curvature": { "$ref": "#/$defs/curvature" },
+    "synergy": { "$ref": "#/$defs/synergy" },
+    "evidence": { "$ref": "#/$defs/evidence" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonnegativeInteger": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "finiteNumber": {
+      "type": "number"
+    },
+    "nullableFiniteNumber": {
+      "oneOf": [
+        { "$ref": "#/$defs/finiteNumber" },
+        { "type": "null" }
+      ]
+    },
+    "shape": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonnegativeInteger" }
+    },
+    "axisPair": {
+      "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/positiveInteger" },
+        { "$ref": "#/$defs/positiveInteger" }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "coordinateContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "axis_order",
+        "output_order",
+        "log_basis",
+        "derivative_semantics"
+      ],
+      "properties": {
+        "axis_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "output_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "log_basis": { "enum": ["log10", "natural_log"] },
+        "derivative_semantics": {
+          "const": "d_output_log_ratio_per_input_log_ratio_in_declared_coordinates"
+        }
+      }
+    },
+    "integrabilityPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "axis_pair",
+        "total_face_count",
+        "evaluated_face_count",
+        "invalid_face_count",
+        "violating_face_count",
+        "max_abs_circulation",
+        "max_abs_mixed_partial_mismatch",
+        "max_abs_output_edge_residual",
+        "max_normalized_residual",
+        "worst_face_base_index",
+        "worst_output_index"
+      ],
+      "properties": {
+        "axis_pair": { "$ref": "#/$defs/axisPair" },
+        "total_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "evaluated_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "invalid_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "violating_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "max_abs_circulation": { "$ref": "#/$defs/nullableFiniteNumber" },
+        "max_abs_mixed_partial_mismatch": { "$ref": "#/$defs/nullableFiniteNumber" },
+        "max_abs_output_edge_residual": { "$ref": "#/$defs/nullableFiniteNumber" },
+        "max_normalized_residual": { "$ref": "#/$defs/nullableFiniteNumber" },
+        "worst_face_base_index": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/positiveInteger" }
+        },
+        "worst_output_index": {
+          "oneOf": [
+            { "$ref": "#/$defs/positiveInteger" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "integrability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "complete",
+        "input_dimension",
+        "output_count",
+        "total_face_count",
+        "evaluated_face_count",
+        "invalid_face_count",
+        "violating_face_count",
+        "absolute_tolerance",
+        "relative_tolerance",
+        "pair_summaries"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "consistent_on_tested_grid",
+            "discrete_inconsistent",
+            "unknown_gap",
+            "insufficient_grid"
+          ]
+        },
+        "complete": { "type": "boolean" },
+        "input_dimension": { "$ref": "#/$defs/positiveInteger" },
+        "output_count": { "$ref": "#/$defs/positiveInteger" },
+        "total_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "evaluated_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "invalid_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "violating_face_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "absolute_tolerance": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "relative_tolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pair_summaries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/integrabilityPair" }
+        }
+      }
+    },
+    "curvature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "complete",
+        "cell_shape",
+        "total_cell_count",
+        "evaluated_cell_count",
+        "invalid_cell_count",
+        "flatten_order",
+        "validity",
+        "gradient_jacobian_shape",
+        "gradient_jacobian_values",
+        "symmetric_hessian_shape",
+        "symmetric_hessian_values",
+        "mixed_output_curvature_shape",
+        "mixed_output_curvature_values",
+        "antisymmetry_residual_shape",
+        "antisymmetry_residual_values",
+        "hessian_eigenvalues_shape",
+        "hessian_eigenvalues_values"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["complete", "partial", "no_valid_cells", "insufficient_grid"]
+        },
+        "complete": { "type": "boolean" },
+        "cell_shape": { "$ref": "#/$defs/shape" },
+        "total_cell_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "evaluated_cell_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "invalid_cell_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "flatten_order": { "const": "row_major_last_axis_fastest" },
+        "validity": {
+          "type": "array",
+          "items": { "type": "boolean" }
+        },
+        "gradient_jacobian_shape": { "$ref": "#/$defs/shape" },
+        "gradient_jacobian_values": { "$ref": "#/$defs/nullableNumberArray" },
+        "symmetric_hessian_shape": { "$ref": "#/$defs/shape" },
+        "symmetric_hessian_values": { "$ref": "#/$defs/nullableNumberArray" },
+        "mixed_output_curvature_shape": { "$ref": "#/$defs/shape" },
+        "mixed_output_curvature_values": { "$ref": "#/$defs/nullableNumberArray" },
+        "antisymmetry_residual_shape": { "$ref": "#/$defs/shape" },
+        "antisymmetry_residual_values": { "$ref": "#/$defs/nullableNumberArray" },
+        "hessian_eigenvalues_shape": { "$ref": "#/$defs/shape" },
+        "hessian_eigenvalues_values": { "$ref": "#/$defs/nullableNumberArray" }
+      }
+    },
+    "nullableNumberArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nullableFiniteNumber" }
+    },
+    "synergyPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "axis_pair",
+        "output_index",
+        "evaluated_cell_count",
+        "positive_count",
+        "negative_count",
+        "neutral_count",
+        "unknown_gap_count"
+      ],
+      "properties": {
+        "axis_pair": { "$ref": "#/$defs/axisPair" },
+        "output_index": { "$ref": "#/$defs/positiveInteger" },
+        "evaluated_cell_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "positive_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "negative_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "neutral_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "unknown_gap_count": { "$ref": "#/$defs/nonnegativeInteger" }
+      }
+    },
+    "synergy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "threshold",
+        "classification_shape",
+        "classification_values",
+        "pair_summaries",
+        "interpretation"
+      ],
+      "properties": {
+        "policy": { "const": "positive_log_cross_curvature" },
+        "threshold": { "type": "number", "minimum": 0 },
+        "classification_shape": { "$ref": "#/$defs/shape" },
+        "classification_values": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "synergistic_under_policy",
+              "antagonistic_under_policy",
+              "neutral_under_policy",
+              "unknown_gap",
+              "not_applicable"
+            ]
+          }
+        },
+        "pair_summaries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/synergyPair" }
+        },
+        "interpretation": {
+          "const": "coordinate_scale_and_window_dependent_not_causal_or_mechanistic"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_class",
+        "claim_scope",
+        "integrability_claim",
+        "validity_policy",
+        "limitations"
+      ],
+      "properties": {
+        "evidence_class": { "const": "sampled_finite_difference_diagnostic" },
+        "claim_scope": { "const": "declared_finite_grid_and_tolerances_only" },
+        "integrability_claim": {
+          "enum": [
+            "consistent_on_tested_grid",
+            "discrete_inconsistent",
+            "unknown_gap",
+            "insufficient_grid"
+          ]
+        },
+        "validity_policy": { "const": "invalid_is_gap" },
+        "limitations": {
+          "type": "array",
+          "minItems": 3,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/ro-field.schema.json",
+  "title": "Biocircuits Explorer multi-input reaction-order field",
+  "description": "Strict interchange contract for bne-ro-field/v1. A field is defined on an ordered log-coordinate input domain and carries ordered outputs and reaction-order components. The three representations are independent artifacts: a sampled tensor, an asymptotic polyhedral cell complex, or a one-dimensional directional pullback. This contract does not reinterpret the SISO RPB1 sequence identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "field_id",
+    "representation",
+    "partial",
+    "domain",
+    "outputs",
+    "component_order",
+    "data",
+    "coverage",
+    "evidence",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": "bne-ro-field/v1.0.0" },
+    "field_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "description": "Artifact-local identity. Scientific reuse also requires the provenance hashes."
+    },
+    "representation": {
+      "enum": ["sampled_grid", "exact_cell_complex", "directional_path"]
+    },
+    "partial": {
+      "type": "boolean",
+      "description": "True when enumeration/storage was truncated or any evaluated point/cell is invalid, singular, unknown, or otherwise unusable for the artifact's positive claim."
+    },
+    "domain": { "$ref": "#/$defs/inputDomain" },
+    "outputs": { "$ref": "#/$defs/outputSpec" },
+    "component_order": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reactionOrderComponent" },
+      "description": "Fastest-to-slowest order of the final reaction-order component axis after the domain axes. It must be the declared output/input Cartesian product; semantic validators enforce that relationship."
+    },
+    "data": {},
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "evidence": { "$ref": "#/$defs/evidence" },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "representation": { "const": "sampled_grid" },
+        "data": { "$ref": "#/$defs/sampledGrid" },
+        "coverage": {
+          "properties": { "population_kind": { "const": "grid_points" } }
+        },
+        "evidence": {
+          "properties": { "evidence_class": { "const": "sampled_numerical" } }
+        }
+      }
+    },
+    {
+      "properties": {
+        "representation": { "const": "exact_cell_complex" },
+        "domain": {
+          "properties": {
+            "axis_order": { "minItems": 2, "maxItems": 2 },
+            "axes": { "minItems": 2, "maxItems": 2 }
+          }
+        },
+        "data": { "$ref": "#/$defs/exactCellComplex" },
+        "coverage": {
+          "properties": { "population_kind": { "const": "cell_complex_items" } }
+        },
+        "evidence": {
+          "properties": { "evidence_class": { "const": "exact_polyhedral" } }
+        }
+      }
+    },
+    {
+      "properties": {
+        "representation": { "const": "directional_path" },
+        "data": { "$ref": "#/$defs/directionalPath" },
+        "coverage": {
+          "properties": { "population_kind": { "const": "path_samples" } }
+        },
+        "evidence": {
+          "properties": { "evidence_class": { "const": "directional_derived" } }
+        }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "partial": { "const": false } },
+        "required": ["partial"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "enumeration_complete": { "const": true },
+              "truncated": { "const": false },
+              "invalid_count": { "const": 0 },
+              "omitted_count": { "const": 0 },
+              "storage": {
+                "properties": { "complete": { "const": true } }
+              }
+            }
+          },
+          "evidence": {
+            "properties": {
+              "status": { "const": "complete" },
+              "completeness_claim": { "const": "complete_over_declared_population" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": { "truncated": { "const": true } },
+            "required": ["truncated"]
+          }
+        },
+        "required": ["coverage"]
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "coverage": {
+            "properties": {
+              "enumeration_complete": { "const": false },
+              "omitted_count": { "type": "integer", "minimum": 1 },
+              "truncation": { "$ref": "#/$defs/truncation" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "properties": { "status": { "const": "complete" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["evidence"]
+      },
+      "then": { "properties": { "partial": { "const": false } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "representation": { "const": "exact_cell_complex" },
+          "data": {
+            "anyOf": [
+              {
+                "properties": {
+                  "cells": {
+                    "contains": {
+                      "properties": { "set_valued": { "const": true } },
+                      "required": ["set_valued"]
+                    }
+                  }
+                },
+                "required": ["cells"]
+              },
+              {
+                "properties": { "singular_strata": { "minItems": 1 } },
+                "required": ["singular_strata"]
+              },
+              {
+                "properties": { "gaps": { "minItems": 1 } },
+                "required": ["gaps"]
+              }
+            ]
+          }
+        },
+        "required": ["representation", "data"]
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "coverage": {
+            "properties": { "invalid_count": { "minimum": 1 } }
+          },
+          "evidence": {
+            "properties": {
+              "status": { "const": "partial" },
+              "completeness_claim": { "const": "no_positive_claim" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableNumber": { "type": ["number", "null"] },
+    "referenceScale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "number", "exclusiveMinimum": 0 },
+        "unit": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "description": "The log coordinate is log_base(physical_value / reference.value) in the declared unit."
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lower", "upper"],
+      "properties": {
+        "lower": { "type": "number" },
+        "upper": { "type": "number" }
+      },
+      "description": "Closed bounds in the domain's declared log basis. A semantic validator must enforce lower < upper."
+    },
+    "inputAxis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "axis_id",
+        "symbol",
+        "coordinate_kind",
+        "orientation",
+        "reference",
+        "bounds"
+      ],
+      "properties": {
+        "axis_id": { "$ref": "#/$defs/identifier" },
+        "symbol": { "$ref": "#/$defs/nonEmptyString" },
+        "coordinate_kind": {
+          "enum": ["conserved_total", "binding_constant", "external_control"]
+        },
+        "orientation": { "const": "increasing_physical_value" },
+        "reference": { "$ref": "#/$defs/referenceScale" },
+        "bounds": { "$ref": "#/$defs/bounds" }
+      }
+    },
+    "fixedBackgroundParameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameter_id", "symbol", "coordinate_kind", "reference", "log_value"],
+      "properties": {
+        "parameter_id": { "$ref": "#/$defs/identifier" },
+        "symbol": { "$ref": "#/$defs/nonEmptyString" },
+        "coordinate_kind": {
+          "enum": ["conserved_total", "binding_constant", "external_control"]
+        },
+        "reference": { "$ref": "#/$defs/referenceScale" },
+        "log_value": { "type": "number" }
+      }
+    },
+    "inputDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain_kind",
+        "coordinate_space",
+        "log_basis",
+        "axis_order",
+        "axes",
+        "fixed_background"
+      ],
+      "properties": {
+        "domain_kind": { "const": "axis_aligned_log_box" },
+        "coordinate_space": { "const": "dimensionless_log_ratio" },
+        "log_basis": { "enum": ["log10", "natural_log"] },
+        "axis_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" },
+          "description": "Canonical input-axis order used by every shape and flattened value array."
+        },
+        "axes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/inputAxis" },
+          "description": "Axis definitions. The axis_id sequence must equal axis_order."
+        },
+        "fixed_background": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/fixedBackgroundParameter" },
+          "description": "All non-swept q/K/control coordinates fixed for this artifact. They are part of behavior identity."
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_id", "symbol", "observable_kind", "reference"],
+      "properties": {
+        "output_id": { "$ref": "#/$defs/identifier" },
+        "symbol": { "$ref": "#/$defs/nonEmptyString" },
+        "observable_kind": {
+          "enum": ["species_concentration", "positive_linear_observable"]
+        },
+        "reference": { "$ref": "#/$defs/referenceScale" }
+      }
+    },
+    "outputSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_order", "items"],
+      "properties": {
+        "output_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/output" },
+          "description": "The output_id sequence must equal output_order."
+        }
+      }
+    },
+    "reactionOrderComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_id", "input_axis_id"],
+      "properties": {
+        "output_id": { "$ref": "#/$defs/identifier" },
+        "input_axis_id": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "shape": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+    "numericOrNullArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nullableNumber" }
+    },
+    "sampledGrid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampling_scheme",
+        "axis_coordinates",
+        "grid_shape",
+        "output_shape",
+        "reaction_order_shape",
+        "flatten_order",
+        "output_values",
+        "reaction_order_values",
+        "regime_ids",
+        "validity"
+      ],
+      "properties": {
+        "sampling_scheme": {
+          "enum": ["cartesian_product", "adaptive_sparse_points"]
+        },
+        "axis_coordinates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "number" }
+          },
+          "description": "One coordinate vector per domain axis, in axis_order. For adaptive_sparse_points these arrays contain one coordinate per stored point."
+        },
+        "grid_shape": { "$ref": "#/$defs/shape" },
+        "output_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 2 }
+          ],
+          "description": "Domain shape followed by output count."
+        },
+        "reaction_order_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 3 }
+          ],
+          "description": "Domain shape followed by output count and input count."
+        },
+        "flatten_order": {
+          "enum": ["row_major_last_axis_fastest", "column_major_first_axis_fastest"]
+        },
+        "output_values": { "$ref": "#/$defs/numericOrNullArray" },
+        "reaction_order_values": { "$ref": "#/$defs/numericOrNullArray" },
+        "regime_ids": {
+          "type": "array",
+          "items": { "type": ["string", "null"] }
+        },
+        "validity": {
+          "type": "array",
+          "items": { "type": "boolean" },
+          "description": "One flag per evaluated domain sample. False entries are gaps; their null numeric values cannot be scored or plotted as zero."
+        }
+      }
+    },
+    "coefficient": {
+      "oneOf": [
+        { "type": "number" },
+        { "type": "string", "pattern": "^-?[0-9]+(?:/[1-9][0-9]*)?$" }
+      ]
+    },
+    "halfspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coefficients", "upper_bound", "source"],
+      "properties": {
+        "coefficients": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/coefficient" }
+        },
+        "upper_bound": { "$ref": "#/$defs/coefficient" },
+        "source": {
+          "enum": ["regime", "domain_lower", "domain_upper", "singular_boundary"]
+        }
+      }
+    },
+    "polyhedron": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["halfspaces"],
+      "properties": {
+        "halfspaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/halfspace" }
+        }
+      }
+    },
+    "matrix": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "$ref": "#/$defs/coefficient" }
+      }
+    },
+    "point": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number" }
+    },
+    "affineLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label_id",
+        "source_regime_ids",
+        "output_offset",
+        "reaction_order_matrix"
+      ],
+      "properties": {
+        "label_id": { "$ref": "#/$defs/identifier" },
+        "source_regime_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "output_offset": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/coefficient" }
+        },
+        "reaction_order_matrix": { "$ref": "#/$defs/matrix" }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell_id",
+        "dimension",
+        "status",
+        "vertices",
+        "area",
+        "source_regime_ids",
+        "label_order",
+        "affine_labels",
+        "set_valued"
+      ],
+      "properties": {
+        "cell_id": { "$ref": "#/$defs/identifier" },
+        "dimension": { "const": 2 },
+        "status": { "enum": ["regular", "set_valued"] },
+        "vertices": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/point" },
+          "description": "Counter-clockwise polygon vertices, rotated so the lexicographically smallest vertex is first."
+        },
+        "area": { "type": "number", "exclusiveMinimum": 0 },
+        "polyhedron": { "$ref": "#/$defs/polyhedron" },
+        "source_regime_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "label_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "affine_labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/affineLabel" }
+        },
+        "set_valued": {
+          "type": "boolean",
+          "description": "True exactly when coincident source regimes retain more than one distinct affine label."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "regular" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "set_valued": { "const": false },
+              "label_order": { "minItems": 1, "maxItems": 1 },
+              "affine_labels": { "minItems": 1, "maxItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "set_valued" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "set_valued": { "const": true },
+              "label_order": { "minItems": 2 },
+              "affine_labels": { "minItems": 2 }
+            }
+          }
+        }
+      ]
+    },
+    "facet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "facet_id",
+        "dimension",
+        "kind",
+        "endpoints",
+        "incident_cell_ids",
+        "singular_stratum_ids",
+        "normal",
+        "offset",
+        "mixed_sign",
+        "domain_side"
+      ],
+      "properties": {
+        "facet_id": { "$ref": "#/$defs/identifier" },
+        "dimension": { "const": 1 },
+        "kind": { "enum": ["domain_boundary", "regime_transition", "singular_boundary"] },
+        "endpoints": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/point" },
+          "description": "Positive-length segment endpoints in lexicographic order."
+        },
+        "polyhedron": { "$ref": "#/$defs/polyhedron" },
+        "incident_cell_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "singular_stratum_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "normal": { "$ref": "#/$defs/point" },
+        "offset": { "type": "number" },
+        "mixed_sign": { "type": "boolean" },
+        "domain_side": {
+          "oneOf": [
+            { "enum": ["axis1_lower", "axis1_upper", "axis2_lower", "axis2_upper"] },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "domain_boundary" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "incident_cell_ids": { "minItems": 1, "maxItems": 1 },
+              "domain_side": { "type": "string" }
+            }
+          },
+          "else": {
+            "properties": {
+              "incident_cell_ids": { "minItems": 2, "maxItems": 2 },
+              "domain_side": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "singular_boundary" } },
+            "required": ["kind"]
+          },
+          "then": { "properties": { "singular_stratum_ids": { "minItems": 1 } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "regime_transition" } },
+            "required": ["kind"]
+          },
+          "then": { "properties": { "singular_stratum_ids": { "maxItems": 0 } } }
+        }
+      ]
+    },
+    "singularStratum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stratum_id",
+        "dimension",
+        "vertices",
+        "source_regime_ids",
+        "nullities",
+        "reasons"
+      ],
+      "properties": {
+        "stratum_id": { "$ref": "#/$defs/identifier" },
+        "dimension": { "enum": [0, 1] },
+        "vertices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/point" }
+        },
+        "source_regime_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "nullities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["singular_regime", "lower_dimensional_slice"] }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "dimension": { "const": 0 } },
+            "required": ["dimension"]
+          },
+          "then": { "properties": { "vertices": { "minItems": 1, "maxItems": 1 } } },
+          "else": { "properties": { "vertices": { "minItems": 2, "maxItems": 2 } } }
+        }
+      ]
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_id", "reason", "region"],
+      "properties": {
+        "gap_id": { "$ref": "#/$defs/identifier" },
+        "reason": {
+          "enum": ["singular", "higher_nullity", "invalid_geometry", "unclassified", "truncated"]
+        },
+        "region": { "$ref": "#/$defs/polyhedron" },
+        "detail": { "type": "string" }
+      }
+    },
+    "exactCellComplex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coefficient_encoding",
+        "source_candidate_regime_count",
+        "regular_candidate_regime_count",
+        "cell_order",
+        "cells",
+        "facet_order",
+        "facets",
+        "singular_stratum_order",
+        "singular_strata",
+        "gaps"
+      ],
+      "properties": {
+        "coefficient_encoding": {
+          "enum": ["float64", "integer_or_rational_string"]
+        },
+        "source_candidate_regime_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Complete number of asymptotic source regimes inspected before clipping to the declared fixed-background domain. This is the source_regime_candidates work population, not the serialized cell-complex-item population."
+        },
+        "regular_candidate_regime_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of inspected source regimes that produced a full-dimensional regular candidate before coincident geometry was deduplicated."
+        },
+        "cell_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "cells": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/cell" }
+        },
+        "facet_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "facets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/facet" }
+        },
+        "singular_stratum_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "singular_strata": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/singularStratum" }
+        },
+        "gaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/gap" }
+        }
+      }
+    },
+    "pathDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "parameterization", "vertices"],
+      "properties": {
+        "kind": { "enum": ["axis_sweep", "polyline", "declared_curve_samples"] },
+        "parameterization": { "$ref": "#/$defs/nonEmptyString" },
+        "vertices": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    "directionalPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "path_shape",
+        "output_shape",
+        "reaction_order_shape",
+        "directional_order_shape",
+        "flatten_order",
+        "path_parameter_values",
+        "input_log_coordinates",
+        "output_values",
+        "reaction_order_values",
+        "directional_reaction_order_values",
+        "regime_ids",
+        "validity"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/pathDefinition" },
+        "path_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 2, "maxItems": 2 }
+          ],
+          "description": "Sample count followed by input count."
+        },
+        "output_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 2, "maxItems": 2 }
+          ],
+          "description": "Sample count followed by output count."
+        },
+        "reaction_order_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 3, "maxItems": 3 }
+          ],
+          "description": "Sample count, output count, input count."
+        },
+        "directional_order_shape": {
+          "allOf": [
+            { "$ref": "#/$defs/shape" },
+            { "minItems": 2, "maxItems": 2 }
+          ],
+          "description": "Sample count followed by output count."
+        },
+        "flatten_order": {
+          "const": "row_major_last_axis_fastest"
+        },
+        "path_parameter_values": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "input_log_coordinates": { "$ref": "#/$defs/numericOrNullArray" },
+        "output_values": { "$ref": "#/$defs/numericOrNullArray" },
+        "reaction_order_values": { "$ref": "#/$defs/numericOrNullArray" },
+        "directional_reaction_order_values": { "$ref": "#/$defs/numericOrNullArray" },
+        "regime_ids": {
+          "type": "array",
+          "items": { "type": ["string", "null"] }
+        },
+        "validity": {
+          "type": "array",
+          "items": { "type": "boolean" }
+        }
+      }
+    },
+    "truncation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "detail"],
+      "properties": {
+        "reason": {
+          "enum": [
+            "work_budget",
+            "time_budget",
+            "storage_budget",
+            "cancelled",
+            "operator_limit",
+            "other"
+          ]
+        },
+        "detail": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "resourceBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_unit_kind",
+        "max_evaluated_items",
+        "max_stored_items",
+        "max_payload_bytes",
+        "deadline_seconds"
+      ],
+      "properties": {
+        "work_unit_kind": {
+          "enum": ["solver_samples", "source_regime_candidates", "path_samples"]
+        },
+        "max_evaluated_items": { "type": "integer", "minimum": 1 },
+        "max_stored_items": { "type": "integer", "minimum": 1 },
+        "max_payload_bytes": { "type": "integer", "minimum": 1 },
+        "deadline_seconds": {
+          "oneOf": [
+            { "type": "number", "exclusiveMinimum": 0 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "artifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "media_type", "sha256", "byte_length", "item_count"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/nonEmptyString" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byte_length": { "type": "integer", "minimum": 0 },
+        "item_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "complete", "stored_count", "payload_bytes", "content_sha256", "artifacts"],
+      "properties": {
+        "mode": { "enum": ["inline", "chunked", "artifact_reference"] },
+        "complete": { "type": "boolean" },
+        "stored_count": { "type": "integer", "minimum": 0 },
+        "payload_bytes": { "type": "integer", "minimum": 0 },
+        "content_sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/artifactReference" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "inline" } }, "required": ["mode"] },
+          "then": { "properties": { "artifacts": { "maxItems": 0 } } },
+          "else": { "properties": { "artifacts": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "population_kind",
+        "eligible_count",
+        "evaluated_count",
+        "valid_count",
+        "invalid_count",
+        "omitted_count",
+        "enumeration_complete",
+        "truncated",
+        "truncation",
+        "budget",
+        "storage"
+      ],
+      "properties": {
+        "population_kind": { "enum": ["grid_points", "cell_complex_items", "path_samples"] },
+        "eligible_count": { "type": "integer", "minimum": 0 },
+        "evaluated_count": { "type": "integer", "minimum": 0 },
+        "valid_count": { "type": "integer", "minimum": 0 },
+        "invalid_count": { "type": "integer", "minimum": 0 },
+        "omitted_count": { "type": "integer", "minimum": 0 },
+        "enumeration_complete": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "truncation": {
+          "oneOf": [
+            { "$ref": "#/$defs/truncation" },
+            { "type": "null" }
+          ]
+        },
+        "budget": { "$ref": "#/$defs/resourceBudget" },
+        "storage": { "$ref": "#/$defs/storage" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "enumeration_complete": { "const": true } },
+            "required": ["enumeration_complete"]
+          },
+          "then": {
+            "properties": {
+              "truncated": { "const": false },
+              "truncation": { "type": "null" },
+              "omitted_count": { "const": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "truncated": { "const": false } },
+            "required": ["truncated"]
+          },
+          "then": { "properties": { "truncation": { "type": "null" } } }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_class",
+        "status",
+        "claim_scope",
+        "validity_policy",
+        "completeness_claim",
+        "limitations"
+      ],
+      "properties": {
+        "evidence_class": {
+          "enum": ["sampled_numerical", "exact_polyhedral", "directional_derived"]
+        },
+        "status": { "enum": ["complete", "partial", "failed", "unknown"] },
+        "claim_scope": { "const": "declared_domain_model_configuration_only" },
+        "validity_policy": { "const": "invalid_is_gap" },
+        "completeness_claim": {
+          "enum": [
+            "complete_over_declared_population",
+            "best_over_evaluated_prefix",
+            "no_positive_claim"
+          ]
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "algorithm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "configuration_sha256"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "source_revision_status",
+        "source_commit",
+        "source_dirty",
+        "network_ir_sha256",
+        "domain_sha256",
+        "algorithm",
+        "created_at",
+        "reproduce_command"
+      ],
+      "properties": {
+        "producer": { "$ref": "#/$defs/nonEmptyString" },
+        "source_revision_status": { "enum": ["known", "unknown"] },
+        "source_commit": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            { "type": "null" }
+          ]
+        },
+        "source_dirty": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "null" }
+          ]
+        },
+        "network_ir_sha256": { "$ref": "#/$defs/sha256" },
+        "domain_sha256": { "$ref": "#/$defs/sha256" },
+        "algorithm": { "$ref": "#/$defs/algorithm" },
+        "parent_artifact_sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "created_at": { "type": "string", "format": "date-time" },
+        "reproduce_command": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source_revision_status": { "const": "known" } },
+            "required": ["source_revision_status"]
+          },
+          "then": {
+            "properties": {
+              "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+              "source_dirty": { "type": "boolean" }
+            }
+          },
+          "else": {
+            "properties": {
+              "source_commit": { "type": "null" },
+              "source_dirty": { "type": "null" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

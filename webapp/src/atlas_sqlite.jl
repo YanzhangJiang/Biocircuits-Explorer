@@ -1,4 +1,4 @@
-const ATLAS_SQLITE_SCHEMA_VERSION = "0.3.0"
+const ATLAS_SQLITE_SCHEMA_VERSION = "0.5.0"
 const ATLAS_SQLITE_SELECT_BATCH_SIZE = 400
 const ATLAS_SQLITE_BUSY_TIMEOUT_MS = 120000
 const ATLAS_SQLITE_LOCK_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0)
@@ -606,8 +606,12 @@ function atlas_sqlite_init!(db::SQLite.DB)
     _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_path_change ON path_records (change_signature, output_symbol)")
 
     _atlas_sqlite_execute(db,
-        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
-        ("schema_version", ATLAS_SQLITE_SCHEMA_VERSION),
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO NOTHING",
+        # This function is the historical 0.3 baseline.  The 0.4 migration
+        # advances metadata inside its own transaction only after every new
+        # table and index succeeds.
+        ("schema_version", "0.3.0"),
     )
     _atlas_sqlite_execute(db,
         "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
@@ -634,10 +638,159 @@ struct AtlasSqliteMigration
     apply::Function   # (db::SQLite.DB) -> Any
 end
 
+function _apply_atlas_sqlite_0_4_0!(db::SQLite.DB)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS ro_cell_complex_identities (
+            cell_complex_hash TEXT PRIMARY KEY,
+            codec_magic TEXT NOT NULL CHECK(codec_magic = 'RPB2'),
+            codec_version INTEGER NOT NULL,
+            identity_kind TEXT NOT NULL CHECK(identity_kind = 'exact_cell_complex_v1'),
+            blob BLOB NOT NULL,
+            axis_count INTEGER NOT NULL,
+            output_count INTEGER NOT NULL,
+            cell_count INTEGER NOT NULL,
+            facet_count INTEGER NOT NULL,
+            singular_stratum_count INTEGER NOT NULL
+        )
+        """)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS ro_field_artifacts (
+            artifact_sha256 TEXT PRIMARY KEY,
+            field_id TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            representation TEXT NOT NULL,
+            network_ir_sha256 TEXT NOT NULL,
+            domain_sha256 TEXT NOT NULL,
+            data_sha256 TEXT NOT NULL,
+            cell_complex_hash TEXT REFERENCES ro_cell_complex_identities(cell_complex_hash),
+            partial INTEGER NOT NULL CHECK(partial IN (0, 1)),
+            storage_mode TEXT NOT NULL CHECK(storage_mode = 'inline'),
+            axis_count INTEGER NOT NULL,
+            output_count INTEGER NOT NULL,
+            eligible_count INTEGER NOT NULL,
+            evaluated_count INTEGER NOT NULL,
+            valid_count INTEGER NOT NULL,
+            invalid_count INTEGER NOT NULL,
+            omitted_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            field_json TEXT NOT NULL
+        )
+        """)
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_fields_network_representation " *
+        "ON ro_field_artifacts (network_ir_sha256, representation)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_fields_domain_sha256 " *
+        "ON ro_field_artifacts (domain_sha256)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_fields_field_id " *
+        "ON ro_field_artifacts (field_id)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_fields_cell_complex_hash " *
+        "ON ro_field_artifacts (cell_complex_hash)")
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
+        ("schema_version", "0.4.0"),
+    )
+    return db
+end
+
+function _apply_atlas_sqlite_0_5_0!(db::SQLite.DB)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS ro_field_signatures (
+            signature_sha256 TEXT PRIMARY KEY,
+            artifact_sha256 TEXT NOT NULL
+                REFERENCES ro_field_artifacts(artifact_sha256) ON DELETE CASCADE,
+            schema_version TEXT NOT NULL
+                CHECK(schema_version = 'bne-ro-field-signature/v1.0.0'),
+            classifier_version TEXT NOT NULL
+                CHECK(classifier_version = 'regular-cell-gradient/v1.0.0'),
+            scope TEXT NOT NULL
+                CHECK(scope = 'regular_cell_interiors_excluding_declared_lower_dimensional_strata'),
+            config_sha256 TEXT NOT NULL,
+            signature_json_sha256 TEXT NOT NULL,
+            classifiable INTEGER NOT NULL CHECK(classifiable IN (0, 1)),
+            zero_tolerance REAL NOT NULL,
+            max_cells INTEGER NOT NULL,
+            max_facets INTEGER NOT NULL,
+            max_matrix_elements INTEGER NOT NULL,
+            axis_count INTEGER NOT NULL,
+            output_count INTEGER NOT NULL,
+            internal_facet_count INTEGER NOT NULL,
+            mixed_sign_facet_count INTEGER NOT NULL,
+            coupled_jump_count INTEGER NOT NULL,
+            excluded_stratum_count INTEGER NOT NULL,
+            signature_json TEXT NOT NULL,
+            UNIQUE(artifact_sha256, classifier_version, config_sha256)
+        )
+        """)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS ro_field_component_features (
+            signature_sha256 TEXT NOT NULL
+                REFERENCES ro_field_signatures(signature_sha256) ON DELETE CASCADE,
+            output_position INTEGER NOT NULL CHECK(output_position >= 1),
+            axis_position INTEGER NOT NULL CHECK(axis_position >= 1),
+            output_id TEXT NOT NULL,
+            axis_id TEXT NOT NULL,
+            classification TEXT NOT NULL CHECK(classification IN (
+                'zero', 'strictly_positive', 'nonnegative_variable',
+                'strictly_negative', 'nonpositive_variable',
+                'sign_changing', 'unknown'
+            )),
+            PRIMARY KEY (signature_sha256, output_position, axis_position)
+        ) WITHOUT ROWID
+        """)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS ro_field_output_gradient_features (
+            signature_sha256 TEXT NOT NULL
+                REFERENCES ro_field_signatures(signature_sha256) ON DELETE CASCADE,
+            output_position INTEGER NOT NULL CHECK(output_position >= 1),
+            output_id TEXT NOT NULL,
+            gradient_family TEXT NOT NULL CHECK(gradient_family IN (
+                'all_zero', 'all_nonnegative', 'all_nonpositive',
+                'opposed_axis_signs', 'sign_changing', 'other_mixed', 'unknown'
+            )),
+            PRIMARY KEY (signature_sha256, output_position)
+        ) WITHOUT ROWID
+        """)
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_field_signatures_artifact " *
+        "ON ro_field_signatures (artifact_sha256)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_field_signatures_classifiable " *
+        "ON ro_field_signatures (classifiable, signature_sha256)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_field_components_classification " *
+        "ON ro_field_component_features " *
+        "(classification, output_id, axis_id, signature_sha256)")
+    _atlas_sqlite_execute(db,
+        "CREATE INDEX IF NOT EXISTS idx_ro_field_gradients_family " *
+        "ON ro_field_output_gradient_features " *
+        "(gradient_family, output_id, signature_sha256)")
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
+        ("schema_version", "0.5.0"),
+    )
+    return db
+end
+
 const ATLAS_SQLITE_MIGRATIONS = AtlasSqliteMigration[
     AtlasSqliteMigration("0.3.0",
         "Initial schema captured by atlas_sqlite_init!",
         _ -> nothing),
+    AtlasSqliteMigration("0.4.0",
+        "Add inline multi-input RO-field artifacts and RPB2 exact-cell-complex identities",
+        _apply_atlas_sqlite_0_4_0!),
+    AtlasSqliteMigration("0.5.0",
+        "Add normalized, artifact-bound multi-input RO-field behavior signatures",
+        _apply_atlas_sqlite_0_5_0!),
 ]
 
 function _ensure_schema_migrations_table!(db::SQLite.DB)
@@ -2804,4 +2957,1694 @@ end
 
 function atlas_sqlite_append_atlas!(db_path::AbstractString, atlas; kwargs...)
     return _atlas_sqlite_with_db(db -> atlas_sqlite_append_atlas!(db, atlas; kwargs...), db_path)
+end
+
+# ─── Multi-input reaction-order field artifacts (schema 0.4.0) ──────────────
+
+function _atlas_sqlite_ro_field_counts(document)
+    domain = _ro_field_identity_get(document, "domain")
+    outputs = _ro_field_identity_get(document, "outputs")
+    coverage = _ro_field_identity_get(document, "coverage")
+    return (
+        axis_count=length(_ro_field_identity_vector(domain, "axis_order")),
+        output_count=length(_ro_field_identity_vector(outputs, "output_order")),
+        eligible_count=_ro_field_identity_int(coverage, "eligible_count"),
+        evaluated_count=_ro_field_identity_int(coverage, "evaluated_count"),
+        valid_count=_ro_field_identity_int(coverage, "valid_count"),
+        invalid_count=_ro_field_identity_int(coverage, "invalid_count"),
+        omitted_count=_ro_field_identity_int(coverage, "omitted_count"),
+    )
+end
+
+function _atlas_sqlite_single_ro_field_row(db::SQLite.DB, artifact_sha256::AbstractString)
+    query = _atlas_sqlite_query(db,
+        "SELECT * FROM ro_field_artifacts WHERE artifact_sha256 = ? LIMIT 1",
+        (String(artifact_sha256),),
+    )
+    try
+        for row in query
+            return Dict{String, Any}(
+                String(name) => row[name] for name in propertynames(row)
+            )
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return nothing
+end
+
+function _atlas_sqlite_single_ro_identity_row(db::SQLite.DB, cell_complex_hash::AbstractString)
+    query = _atlas_sqlite_query(db,
+        "SELECT * FROM ro_cell_complex_identities WHERE cell_complex_hash = ? LIMIT 1",
+        (String(cell_complex_hash),),
+    )
+    try
+        for row in query
+            return Dict{String, Any}(
+                String(name) => row[name] for name in propertynames(row)
+            )
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return nothing
+end
+
+function _atlas_sqlite_ro_field_row_string(row, key::AbstractString)
+    value = row[String(key)]
+    _atlas_sqlite_is_nullish(value) && return nothing
+    return String(value)
+end
+
+function _atlas_sqlite_ro_field_row_int(row, key::AbstractString)
+    value = row[String(key)]
+    _atlas_sqlite_is_nullish(value) && return nothing
+    return Int(value)
+end
+
+function _atlas_sqlite_verify_ro_identity_row!(
+    row,
+    expected_hash::AbstractString,
+    expected_blob::Vector{UInt8},
+    counts,
+    document,
+)
+    row === nothing && _ro_field_identity_error(
+        :missing_identity,
+        "RO-field artifact references a missing RPB2 identity",
+    )
+    _atlas_sqlite_ro_field_row_string(row, "cell_complex_hash") == expected_hash ||
+        _ro_field_identity_error(:identity_mismatch, "RPB2 identity hash column does not match")
+    _atlas_sqlite_ro_field_row_string(row, "codec_magic") == "RPB2" ||
+        _ro_field_identity_error(:identity_mismatch, "RPB2 identity has the wrong codec magic")
+    _atlas_sqlite_ro_field_row_int(row, "codec_version") == RO_CELL_COMPLEX_CODEC_VERSION ||
+        _ro_field_identity_error(:identity_mismatch, "RPB2 identity has the wrong codec version")
+    _atlas_sqlite_ro_field_row_string(row, "identity_kind") == RO_CELL_COMPLEX_IDENTITY_KIND ||
+        _ro_field_identity_error(:identity_mismatch, "RPB2 identity has the wrong identity kind")
+    stored_blob = UInt8.(collect(row["blob"]))
+    stored_blob == expected_blob ||
+        _ro_field_identity_error(:identity_collision, "RPB2 hash conflict has different blob bytes")
+    ro_cell_complex_hash(stored_blob) == expected_hash ||
+        _ro_field_identity_error(:identity_hash_mismatch, "stored RPB2 bytes do not match their key")
+    decoded = decode_ro_cell_complex_blob(stored_blob)
+    _ro_field_canonical_json(decoded) == _ro_field_canonical_json(canonical_ro_cell_complex_payload(document)) ||
+        _ro_field_identity_error(:identity_payload_mismatch, "stored RPB2 payload does not match the field")
+
+    data = _ro_field_identity_get(document, "data")
+    expected_cell_count = length(_ro_field_identity_vector(data, "cells"))
+    expected_facet_count = length(_ro_field_identity_vector(data, "facets"))
+    expected_stratum_count = length(_ro_field_identity_vector(data, "singular_strata"))
+    _atlas_sqlite_ro_field_row_int(row, "axis_count") == counts.axis_count ||
+        _ro_field_identity_error(:identity_metadata_mismatch, "RPB2 axis_count is corrupt")
+    _atlas_sqlite_ro_field_row_int(row, "output_count") == counts.output_count ||
+        _ro_field_identity_error(:identity_metadata_mismatch, "RPB2 output_count is corrupt")
+    _atlas_sqlite_ro_field_row_int(row, "cell_count") == expected_cell_count ||
+        _ro_field_identity_error(:identity_metadata_mismatch, "RPB2 cell_count is corrupt")
+    _atlas_sqlite_ro_field_row_int(row, "facet_count") == expected_facet_count ||
+        _ro_field_identity_error(:identity_metadata_mismatch, "RPB2 facet_count is corrupt")
+    _atlas_sqlite_ro_field_row_int(row, "singular_stratum_count") == expected_stratum_count ||
+        _ro_field_identity_error(:identity_metadata_mismatch, "RPB2 singular_stratum_count is corrupt")
+    return nothing
+end
+
+function _atlas_sqlite_insert_or_verify_ro_identity!(
+    db::SQLite.DB,
+    document,
+    blob::Vector{UInt8},
+    cell_complex_hash::AbstractString,
+    counts,
+)
+    data = _ro_field_identity_get(document, "data")
+    _atlas_sqlite_execute(db,
+        """
+        INSERT OR IGNORE INTO ro_cell_complex_identities (
+            cell_complex_hash, codec_magic, codec_version, identity_kind, blob,
+            axis_count, output_count, cell_count, facet_count, singular_stratum_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            String(cell_complex_hash),
+            "RPB2",
+            RO_CELL_COMPLEX_CODEC_VERSION,
+            RO_CELL_COMPLEX_IDENTITY_KIND,
+            blob,
+            counts.axis_count,
+            counts.output_count,
+            length(_ro_field_identity_vector(data, "cells")),
+            length(_ro_field_identity_vector(data, "facets")),
+            length(_ro_field_identity_vector(data, "singular_strata")),
+        ),
+    )
+    row = _atlas_sqlite_single_ro_identity_row(db, cell_complex_hash)
+    _atlas_sqlite_verify_ro_identity_row!(
+        row,
+        cell_complex_hash,
+        blob,
+        counts,
+        document,
+    )
+    return nothing
+end
+
+"""
+Persist one validated inline RO-field document and return its content keys.
+
+Sampled and partial exact artifacts retain only the full artifact/data hashes.
+A complete, gap-free, single-valued exact complex is additionally interned as
+an RPB2 `exact_cell_complex_v1` identity before the artifact row is written.
+"""
+function atlas_sqlite_save_ro_field_artifact!(db::SQLite.DB, document)
+    atlas_sqlite_init!(db)
+    doc = _validate_ro_field_storage_document!(document)
+    counts = _atlas_sqlite_ro_field_counts(doc)
+    representation = String(_ro_field_identity_get(doc, "representation"))
+    field_json = _ro_field_canonical_json(doc)
+    artifact_sha256 = _ro_field_sha256(_ro_field_utf8_bytes(field_json))
+    data_sha256 = ro_field_data_sha256(doc)
+
+    provenance = _ro_field_identity_get(doc, "provenance")
+    network_ir_sha256 = _ro_field_identity_sha256_text(
+        _ro_field_identity_get(provenance, "network_ir_sha256"),
+        "provenance.network_ir_sha256",
+    )
+    domain_sha256 = _ro_field_identity_sha256_text(
+        _ro_field_identity_get(provenance, "domain_sha256"),
+        "provenance.domain_sha256",
+    )
+    created_at = String(_ro_field_identity_get(provenance, "created_at"))
+    field_id = String(_ro_field_identity_get(doc, "field_id"))
+    partial = _ro_field_identity_bool(doc, "partial")
+
+    identity_blob = nothing
+    cell_complex_hash = nothing
+    if representation == "exact_cell_complex" && !partial
+        identity_blob = encode_ro_cell_complex_blob(doc)
+        cell_complex_hash = ro_cell_complex_hash(identity_blob)
+    end
+
+    _with_atlas_sqlite_write_lock(db) do
+        _atlas_sqlite_transaction(db) do
+            if identity_blob !== nothing
+                _atlas_sqlite_insert_or_verify_ro_identity!(
+                    db,
+                    doc,
+                    identity_blob,
+                    cell_complex_hash,
+                    counts,
+                )
+            end
+
+            _atlas_sqlite_execute(db,
+                """
+                INSERT OR IGNORE INTO ro_field_artifacts (
+                    artifact_sha256, field_id, schema_version, representation,
+                    network_ir_sha256, domain_sha256, data_sha256, cell_complex_hash,
+                    partial, storage_mode, axis_count, output_count,
+                    eligible_count, evaluated_count, valid_count, invalid_count,
+                    omitted_count, created_at, field_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_sha256,
+                    field_id,
+                    String(_ro_field_identity_get(doc, "schema_version")),
+                    representation,
+                    network_ir_sha256,
+                    domain_sha256,
+                    data_sha256,
+                    cell_complex_hash,
+                    partial ? 1 : 0,
+                    "inline",
+                    counts.axis_count,
+                    counts.output_count,
+                    counts.eligible_count,
+                    counts.evaluated_count,
+                    counts.valid_count,
+                    counts.invalid_count,
+                    counts.omitted_count,
+                    created_at,
+                    field_json,
+                ),
+            )
+
+            # INSERT OR IGNORE handles retries; a hash collision or inconsistent
+            # retry must still fail closed by comparing the canonical bytes.
+            row = _atlas_sqlite_single_ro_field_row(db, artifact_sha256)
+            row === nothing && _ro_field_identity_error(
+                :storage_failure,
+                "RO-field artifact insert did not produce a row",
+            )
+            stored_json = _atlas_sqlite_ro_field_row_string(row, "field_json")
+            stored_json == field_json || _ro_field_identity_error(
+                :artifact_collision,
+                "RO-field artifact hash conflict has different canonical bytes",
+            )
+            _atlas_sqlite_ro_field_row_string(row, "data_sha256") == data_sha256 ||
+                _ro_field_identity_error(:artifact_collision, "RO-field data hash differs on retry")
+            _atlas_sqlite_ro_field_row_string(row, "cell_complex_hash") == cell_complex_hash ||
+                _ro_field_identity_error(:artifact_collision, "RO-field RPB2 identity differs on retry")
+        end
+    end
+
+    return Dict{String, Any}(
+        "artifact_sha256" => artifact_sha256,
+        "data_sha256" => data_sha256,
+        "cell_complex_hash" => cell_complex_hash,
+    )
+end
+
+function atlas_sqlite_save_ro_field_artifact!(db_path::AbstractString, document)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_save_ro_field_artifact!(db, document),
+        db_path,
+    )
+end
+
+function _atlas_sqlite_verify_ro_field_columns!(row, document, counts, artifact_sha256, data_sha256, cell_complex_hash)
+    provenance = _ro_field_identity_get(document, "provenance")
+    coverage = _ro_field_identity_get(document, "coverage")
+    expected = Dict{String, Any}(
+        "artifact_sha256" => artifact_sha256,
+        "field_id" => String(_ro_field_identity_get(document, "field_id")),
+        "schema_version" => String(_ro_field_identity_get(document, "schema_version")),
+        "representation" => String(_ro_field_identity_get(document, "representation")),
+        "network_ir_sha256" => String(_ro_field_identity_get(provenance, "network_ir_sha256")),
+        "domain_sha256" => String(_ro_field_identity_get(provenance, "domain_sha256")),
+        "data_sha256" => data_sha256,
+        "cell_complex_hash" => cell_complex_hash,
+        "storage_mode" => "inline",
+        "created_at" => String(_ro_field_identity_get(provenance, "created_at")),
+    )
+    for (key, value) in expected
+        _atlas_sqlite_ro_field_row_string(row, key) == value ||
+            _ro_field_identity_error(:artifact_metadata_mismatch, "RO-field $(key) column is corrupt")
+    end
+    int_expected = Dict{String, Int}(
+        "partial" => _ro_field_identity_bool(document, "partial") ? 1 : 0,
+        "axis_count" => counts.axis_count,
+        "output_count" => counts.output_count,
+        "eligible_count" => counts.eligible_count,
+        "evaluated_count" => counts.evaluated_count,
+        "valid_count" => counts.valid_count,
+        "invalid_count" => counts.invalid_count,
+        "omitted_count" => counts.omitted_count,
+    )
+    for (key, value) in int_expected
+        _atlas_sqlite_ro_field_row_int(row, key) == value ||
+            _ro_field_identity_error(:artifact_metadata_mismatch, "RO-field $(key) column is corrupt")
+    end
+    _ro_field_identity_int(coverage, "evaluated_count") == counts.evaluated_count ||
+        _ro_field_identity_error(:artifact_metadata_mismatch, "RO-field coverage changed during load")
+    return nothing
+end
+
+"Load one inline artifact and re-verify its data, full-document, RPB2, and FK identities."
+function atlas_sqlite_load_ro_field_artifact(db::SQLite.DB, artifact_sha256::AbstractString)
+    atlas_sqlite_init!(db)
+    row = _atlas_sqlite_single_ro_field_row(db, artifact_sha256)
+    row === nothing && return nothing
+    field_json = _atlas_sqlite_ro_field_row_string(row, "field_json")
+    field_json === nothing && _ro_field_identity_error(:corrupt_artifact, "RO-field field_json is NULL")
+    document = try
+        _ro_field_materialize(JSON3.read(field_json))
+    catch err
+        _ro_field_identity_error(:corrupt_artifact, "RO-field field_json is invalid: $(sprint(showerror, err))")
+    end
+    doc = _validate_ro_field_storage_document!(document)
+    canonical_json = _ro_field_canonical_json(doc)
+    canonical_json == field_json || _ro_field_identity_error(
+        :noncanonical_artifact,
+        "stored RO-field JSON is not canonical",
+    )
+    actual_artifact_sha256 = _ro_field_sha256(_ro_field_utf8_bytes(canonical_json))
+    actual_artifact_sha256 == String(artifact_sha256) || _ro_field_identity_error(
+        :artifact_hash_mismatch,
+        "stored RO-field document does not match its artifact key",
+    )
+    data_sha256 = ro_field_data_sha256(doc)
+    counts = _atlas_sqlite_ro_field_counts(doc)
+    representation = String(_ro_field_identity_get(doc, "representation"))
+    partial = _ro_field_identity_bool(doc, "partial")
+    stored_cell_hash = _atlas_sqlite_ro_field_row_string(row, "cell_complex_hash")
+
+    expected_cell_hash = nothing
+    if representation == "exact_cell_complex" && !partial
+        blob = encode_ro_cell_complex_blob(doc)
+        expected_cell_hash = ro_cell_complex_hash(blob)
+        stored_cell_hash == expected_cell_hash || _ro_field_identity_error(
+            :foreign_identity_mismatch,
+            "RO-field artifact does not reference its recomputed RPB2 identity",
+        )
+        identity_row = _atlas_sqlite_single_ro_identity_row(db, expected_cell_hash)
+        _atlas_sqlite_verify_ro_identity_row!(
+            identity_row,
+            expected_cell_hash,
+            blob,
+            counts,
+            doc,
+        )
+    elseif stored_cell_hash !== nothing
+        _ro_field_identity_error(
+            :unexpected_identity,
+            "only complete exact cell complexes may reference an RPB2 identity",
+        )
+    end
+
+    _atlas_sqlite_verify_ro_field_columns!(
+        row,
+        doc,
+        counts,
+        actual_artifact_sha256,
+        data_sha256,
+        expected_cell_hash,
+    )
+    return doc
+end
+
+function atlas_sqlite_load_ro_field_artifact(db_path::AbstractString, artifact_sha256::AbstractString)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_load_ro_field_artifact(db, artifact_sha256),
+        db_path,
+    )
+end
+
+"Query verified RO-field artifacts by indexed identity fields."
+function atlas_sqlite_query_ro_field_artifacts(
+    db::SQLite.DB;
+    network_ir_sha256=nothing,
+    representation=nothing,
+    domain_sha256=nothing,
+    field_id=nothing,
+    cell_complex_hash=nothing,
+    limit::Integer=100,
+    include_documents::Bool=false,
+)
+    1 <= limit <= 1000 || throw(ArgumentError("RO-field query limit must be between 1 and 1000"))
+    atlas_sqlite_init!(db)
+    clauses = String[]
+    params = Any[]
+    for (column, value) in (
+        ("network_ir_sha256", network_ir_sha256),
+        ("representation", representation),
+        ("domain_sha256", domain_sha256),
+        ("field_id", field_id),
+        ("cell_complex_hash", cell_complex_hash),
+    )
+        value === nothing && continue
+        push!(clauses, "$(column) = ?")
+        push!(params, String(value))
+    end
+    where_sql = isempty(clauses) ? "" : " WHERE " * join(clauses, " AND ")
+    sql = "SELECT artifact_sha256 FROM ro_field_artifacts" * where_sql *
+          " ORDER BY created_at DESC, artifact_sha256 ASC LIMIT ?"
+    push!(params, Int(limit))
+
+    hashes = String[]
+    query = _atlas_sqlite_query(db, sql, Tuple(params))
+    try
+        for row in query
+            push!(hashes, String(row[:artifact_sha256]))
+        end
+    finally
+        DBInterface.close!(query)
+    end
+
+    results = Dict{String, Any}[]
+    for hash in hashes
+        document = atlas_sqlite_load_ro_field_artifact(db, hash)
+        document === nothing && _ro_field_identity_error(
+            :concurrent_delete,
+            "RO-field artifact disappeared during a verified query",
+        )
+        provenance = _ro_field_identity_get(document, "provenance")
+        result = Dict{String, Any}(
+            "artifact_sha256" => hash,
+            "field_id" => String(_ro_field_identity_get(document, "field_id")),
+            "representation" => String(_ro_field_identity_get(document, "representation")),
+            "network_ir_sha256" => String(_ro_field_identity_get(provenance, "network_ir_sha256")),
+            "domain_sha256" => String(_ro_field_identity_get(provenance, "domain_sha256")),
+            "data_sha256" => ro_field_data_sha256(document),
+        )
+        include_documents && (result["document"] = document)
+        push!(results, result)
+    end
+    return results
+end
+
+function atlas_sqlite_query_ro_field_artifacts(db_path::AbstractString; kwargs...)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_query_ro_field_artifacts(db; kwargs...),
+        db_path,
+    )
+end
+
+# ─── Versioned RO-field behavior signatures (schema 0.5.0) ────────────────
+
+const _ATLAS_SQLITE_RO_SIGNATURE_HASH_PATTERN = r"^[0-9a-f]{64}$"
+const _ATLAS_SQLITE_RO_SIGNATURE_ID_PATTERN =
+    r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+const _ATLAS_SQLITE_RO_COMPONENT_CLASSES = Set((
+    "zero",
+    "strictly_positive",
+    "nonnegative_variable",
+    "strictly_negative",
+    "nonpositive_variable",
+    "sign_changing",
+    "unknown",
+))
+const _ATLAS_SQLITE_RO_GRADIENT_FAMILIES = Set((
+    "all_zero",
+    "all_nonnegative",
+    "all_nonpositive",
+    "opposed_axis_signs",
+    "sign_changing",
+    "other_mixed",
+    "unknown",
+))
+
+"A signature is valid in isolation but cannot be trusted in this SQLite store."
+struct ROFieldSignatureStorageError <: Exception
+    code::Symbol
+    message::String
+end
+
+function Base.showerror(io::IO, err::ROFieldSignatureStorageError)
+    print(io, "RO-field signature storage error [", err.code, "]: ",
+        err.message)
+end
+
+_atlas_sqlite_ro_signature_error(code::Symbol, message::AbstractString) =
+    throw(ROFieldSignatureStorageError(code, String(message)))
+
+function _atlas_sqlite_validate_ro_signature!(signature)
+    isdefined(@__MODULE__, :validate_ro_field_signature!) ||
+        _atlas_sqlite_ro_signature_error(
+            :classifier_unavailable,
+            "ro_field_behavior.jl must be loaded before storing signatures",
+        )
+    validated = getfield(@__MODULE__, :validate_ro_field_signature!)(signature)
+    # The shared trust boundary returns its normalized document.  Retain a
+    # compatibility fallback to the caller value if a validation-only revision
+    # returns `nothing`; either form is materialized before persistence.
+    return _ro_field_materialize(validated === nothing ? signature : validated)
+end
+
+function _atlas_sqlite_ro_signature_text(value, path::AbstractString)
+    value isa AbstractString || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "$(path) must be a string",
+    )
+    return String(value)
+end
+
+function _atlas_sqlite_ro_signature_hash(value, path::AbstractString)
+    text = _atlas_sqlite_ro_signature_text(value, path)
+    occursin(_ATLAS_SQLITE_RO_SIGNATURE_HASH_PATTERN, text) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "$(path) must be 64 lowercase hexadecimal characters",
+        )
+    return text
+end
+
+function _atlas_sqlite_ro_signature_int(value, path::AbstractString)
+    (value isa Integer && !(value isa Bool)) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "$(path) must be an integer",
+        )
+    return try
+        Int(value)
+    catch
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "$(path) is outside the supported integer range",
+        )
+    end
+end
+
+function _atlas_sqlite_ro_signature_object(value, path::AbstractString)
+    value isa AbstractDict || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "$(path) must be an object",
+    )
+    return value
+end
+
+function _atlas_sqlite_ro_signature_array(value, path::AbstractString)
+    (value isa AbstractVector || value isa Tuple) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "$(path) must be an array",
+        )
+    return collect(value)
+end
+
+function _atlas_sqlite_ro_signature_ids(value, path::AbstractString)
+    raw = _atlas_sqlite_ro_signature_array(value, path)
+    ids = String[]
+    for (index, item) in enumerate(raw)
+        identifier = _atlas_sqlite_ro_signature_text(
+            item, "$(path)[$(index)]")
+        occursin(_ATLAS_SQLITE_RO_SIGNATURE_ID_PATTERN, identifier) ||
+            _atlas_sqlite_ro_signature_error(
+                :invalid_signature,
+                "$(path)[$(index)] is not a safe identifier",
+            )
+        push!(ids, identifier)
+    end
+    allunique(ids) || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "$(path) must contain unique identifiers",
+    )
+    return ids
+end
+
+function _atlas_sqlite_ro_signature_normalized_rows(signature)
+    axis_ids = _atlas_sqlite_ro_signature_ids(
+        signature["axis_ids"], "axis_ids")
+    output_ids = _atlas_sqlite_ro_signature_ids(
+        signature["output_ids"], "output_ids")
+    length(axis_ids) == 2 || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "axis_ids must contain exactly two identifiers",
+    )
+    isempty(output_ids) && _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "output_ids must not be empty",
+    )
+
+    component_rows = NamedTuple[]
+    components = _atlas_sqlite_ro_signature_array(
+        signature["component_classifications"],
+        "component_classifications",
+    )
+    for (index, raw) in enumerate(components)
+        item = _atlas_sqlite_ro_signature_object(
+            raw, "component_classifications[$(index)]")
+        output_id = _atlas_sqlite_ro_signature_text(
+            item["output_id"],
+            "component_classifications[$(index)].output_id",
+        )
+        axis_id = _atlas_sqlite_ro_signature_text(
+            item["axis_id"],
+            "component_classifications[$(index)].axis_id",
+        )
+        classification = _atlas_sqlite_ro_signature_text(
+            item["classification"],
+            "component_classifications[$(index)].classification",
+        )
+        output_position = findfirst(==(output_id), output_ids)
+        axis_position = findfirst(==(axis_id), axis_ids)
+        output_position === nothing && _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "component output_id is absent from output_ids",
+        )
+        axis_position === nothing && _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "component axis_id is absent from axis_ids",
+        )
+        classification in _ATLAS_SQLITE_RO_COMPONENT_CLASSES ||
+            _atlas_sqlite_ro_signature_error(
+                :unsupported_feature,
+                "unknown component classification $(classification)",
+            )
+        push!(component_rows, (
+            output_position=output_position,
+            axis_position=axis_position,
+            output_id=output_id,
+            axis_id=axis_id,
+            classification=classification,
+        ))
+    end
+    expected_component_positions = Set(
+        (output_position, axis_position)
+        for output_position in eachindex(output_ids),
+            axis_position in eachindex(axis_ids)
+    )
+    actual_component_positions = Set(
+        (row.output_position, row.axis_position) for row in component_rows)
+    actual_component_positions == expected_component_positions &&
+        length(component_rows) == length(expected_component_positions) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "component classifications must cover each ordered output/axis pair exactly once",
+        )
+    sort!(component_rows; by=row ->
+        (row.output_position, row.axis_position))
+
+    gradient_rows = NamedTuple[]
+    gradients = _atlas_sqlite_ro_signature_array(
+        signature["gradient_families"], "gradient_families")
+    for (index, raw) in enumerate(gradients)
+        item = _atlas_sqlite_ro_signature_object(
+            raw, "gradient_families[$(index)]")
+        output_id = _atlas_sqlite_ro_signature_text(
+            item["output_id"],
+            "gradient_families[$(index)].output_id",
+        )
+        family = _atlas_sqlite_ro_signature_text(
+            item["gradient_family"],
+            "gradient_families[$(index)].gradient_family",
+        )
+        output_position = findfirst(==(output_id), output_ids)
+        output_position === nothing && _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "gradient output_id is absent from output_ids",
+        )
+        family in _ATLAS_SQLITE_RO_GRADIENT_FAMILIES ||
+            _atlas_sqlite_ro_signature_error(
+                :unsupported_feature,
+                "unknown gradient family $(family)",
+            )
+        push!(gradient_rows, (
+            output_position=output_position,
+            output_id=output_id,
+            gradient_family=family,
+        ))
+    end
+    Set(row.output_position for row in gradient_rows) ==
+        Set(eachindex(output_ids)) &&
+        length(gradient_rows) == length(output_ids) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_signature,
+            "gradient families must cover each ordered output exactly once",
+        )
+    sort!(gradient_rows; by=row -> row.output_position)
+    return axis_ids, output_ids, component_rows, gradient_rows
+end
+
+function _atlas_sqlite_ro_signature_metadata(signature)
+    axis_ids, output_ids, component_rows, gradient_rows =
+        _atlas_sqlite_ro_signature_normalized_rows(signature)
+    config = _atlas_sqlite_ro_signature_object(
+        signature["config"], "config")
+    features = _atlas_sqlite_ro_signature_object(
+        signature["features"], "features")
+    diagnostics = _atlas_sqlite_ro_signature_object(
+        signature["diagnostics"], "diagnostics")
+    zero_tolerance = config["zero_tolerance"]
+    (zero_tolerance isa Real && !(zero_tolerance isa Bool) &&
+     isfinite(zero_tolerance)) || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "config.zero_tolerance must be finite",
+    )
+    classifiable = signature["classifiable"]
+    classifiable isa Bool || _atlas_sqlite_ro_signature_error(
+        :invalid_signature,
+        "classifiable must be a boolean",
+    )
+    canonical_json = _ro_field_canonical_json(signature)
+    return (
+        signature_sha256=_atlas_sqlite_ro_signature_hash(
+            signature["signature_sha256"], "signature_sha256"),
+        artifact_sha256=_atlas_sqlite_ro_signature_hash(
+            signature["field_sha256"], "field_sha256"),
+        schema_version=_atlas_sqlite_ro_signature_text(
+            signature["schema_version"], "schema_version"),
+        classifier_version=_atlas_sqlite_ro_signature_text(
+            signature["classifier_version"], "classifier_version"),
+        scope=_atlas_sqlite_ro_signature_text(
+            signature["scope"], "scope"),
+        config_sha256=canonical_hash(config),
+        signature_json_sha256=_ro_field_sha256(
+            _ro_field_utf8_bytes(canonical_json)),
+        classifiable=classifiable,
+        zero_tolerance=Float64(zero_tolerance),
+        max_cells=_atlas_sqlite_ro_signature_int(
+            config["max_cells"], "config.max_cells"),
+        max_facets=_atlas_sqlite_ro_signature_int(
+            config["max_facets"], "config.max_facets"),
+        max_matrix_elements=_atlas_sqlite_ro_signature_int(
+            config["max_matrix_elements"],
+            "config.max_matrix_elements",
+        ),
+        axis_count=length(axis_ids),
+        output_count=length(output_ids),
+        internal_facet_count=_atlas_sqlite_ro_signature_int(
+            features["internal_facet_count"],
+            "features.internal_facet_count",
+        ),
+        mixed_sign_facet_count=_atlas_sqlite_ro_signature_int(
+            features["mixed_sign_facet_count"],
+            "features.mixed_sign_facet_count",
+        ),
+        coupled_jump_count=_atlas_sqlite_ro_signature_int(
+            features["coupled_jump_count"],
+            "features.coupled_jump_count",
+        ),
+        excluded_stratum_count=_atlas_sqlite_ro_signature_int(
+            diagnostics["excluded_lower_dimensional_strata_count"],
+            "diagnostics.excluded_lower_dimensional_strata_count",
+        ),
+        canonical_json=canonical_json,
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+        component_rows=component_rows,
+        gradient_rows=gradient_rows,
+    )
+end
+
+function _atlas_sqlite_ro_signature_finite(value, path::AbstractString)
+    (value isa Real && !(value isa Bool)) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_artifact_geometry,
+            "$(path) must be numeric",
+        )
+    result = Float64(value)
+    isfinite(result) || _atlas_sqlite_ro_signature_error(
+        :invalid_artifact_geometry,
+        "$(path) must be finite",
+    )
+    return result
+end
+
+function _atlas_sqlite_ro_signature_point(value, path::AbstractString)
+    coordinates = _ro_field_identity_vector(
+        Dict{String,Any}("point" => value), "point")
+    length(coordinates) == 2 || _atlas_sqlite_ro_signature_error(
+        :invalid_artifact_geometry,
+        "$(path) must contain two coordinates",
+    )
+    return (
+        _atlas_sqlite_ro_signature_finite(
+            coordinates[1], "$(path)[1]"),
+        _atlas_sqlite_ro_signature_finite(
+            coordinates[2], "$(path)[2]"),
+    )
+end
+
+
+function _atlas_sqlite_ro_signature_ordered_records(
+    data,
+    order_key::AbstractString,
+    records_key::AbstractString,
+    id_key::AbstractString,
+)
+    order = String.(_ro_field_identity_vector(data, order_key))
+    records = _ro_field_identity_vector(data, records_key)
+    by_id = Dict{String,Any}()
+    for record in records
+        identifier = String(_ro_field_identity_get(record, id_key))
+        haskey(by_id, identifier) && _atlas_sqlite_ro_signature_error(
+            :invalid_artifact_geometry,
+            "$(records_key) contains duplicate $(id_key) $(identifier)",
+        )
+        by_id[identifier] = record
+    end
+    length(order) == length(records) && allunique(order) &&
+        Set(order) == Set(keys(by_id)) ||
+        _atlas_sqlite_ro_signature_error(
+            :invalid_artifact_geometry,
+            "$(order_key) does not identify $(records_key) exactly once",
+        )
+    return order, Any[by_id[identifier] for identifier in order]
+end
+
+"Rebuild the classifier's small exact complex from its stored canonical data."
+function _atlas_sqlite_ro_signature_complex_from_artifact(
+    artifact,
+    output_count::Int,
+)
+    domain_raw = _ro_field_identity_get(artifact, "domain")
+    axes = _ro_field_identity_vector(domain_raw, "axes")
+    length(axes) == 2 || _atlas_sqlite_ro_signature_error(
+        :invalid_artifact_geometry,
+        "exact signature artifacts must contain two domain axes",
+    )
+    lower = Float64[]
+    upper = Float64[]
+    for (index, axis) in enumerate(axes)
+        bounds = _ro_field_identity_get(axis, "bounds")
+        push!(lower, _atlas_sqlite_ro_signature_finite(
+            _ro_field_identity_get(bounds, "lower"),
+            "domain.axes[$(index)].bounds.lower",
+        ))
+        push!(upper, _atlas_sqlite_ro_signature_finite(
+            _ro_field_identity_get(bounds, "upper"),
+            "domain.axes[$(index)].bounds.upper",
+        ))
+    end
+    domain = ROInputDomain2D((1, 2), lower, upper, zeros(2))
+    domain_area = (upper[1] - lower[1]) * (upper[2] - lower[2])
+
+    data = _ro_field_identity_get(artifact, "data")
+    cell_order, raw_cells = _atlas_sqlite_ro_signature_ordered_records(
+        data, "cell_order", "cells", "cell_id")
+    cell_id_map = Dict(
+        identifier => index for (index, identifier) in enumerate(cell_order))
+    cells = ROCell2D[]
+    for (cell_index, raw_cell) in enumerate(raw_cells)
+        vertices_raw = _ro_field_identity_vector(raw_cell, "vertices")
+        vertices = NTuple{2,Float64}[
+            _atlas_sqlite_ro_signature_point(
+                point, "data.cells[$(cell_index)].vertices")
+            for point in vertices_raw
+        ]
+        labels_raw = _ro_field_identity_vector(
+            raw_cell, "affine_labels")
+        label_order = String.(_ro_field_identity_vector(
+            raw_cell, "label_order"))
+        labels_by_id = Dict{String,Any}()
+        for raw_label in labels_raw
+            label_id = String(_ro_field_identity_get(
+                raw_label, "label_id"))
+            haskey(labels_by_id, label_id) &&
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "cell contains duplicate affine label $(label_id)",
+                )
+            labels_by_id[label_id] = raw_label
+        end
+        length(label_order) == length(labels_raw) &&
+            allunique(label_order) &&
+            Set(label_order) == Set(keys(labels_by_id)) ||
+            _atlas_sqlite_ro_signature_error(
+                :invalid_artifact_geometry,
+                "cell label_order does not identify affine_labels exactly once",
+            )
+        labels = ROAffineLabel2D[]
+        for (label_index, label_id) in enumerate(label_order)
+            raw_label = labels_by_id[label_id]
+            matrix_raw = _ro_field_identity_vector(
+                raw_label, "reaction_order_matrix")
+            length(matrix_raw) == output_count ||
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "affine label output dimension does not match output_order",
+                )
+            matrix = Matrix{Float64}(undef, output_count, 2)
+            for output_index in 1:output_count
+                row = _ro_field_identity_vector(
+                    Dict{String,Any}("row" => matrix_raw[output_index]),
+                    "row",
+                )
+                length(row) == 2 ||
+                    _atlas_sqlite_ro_signature_error(
+                        :invalid_artifact_geometry,
+                        "affine label rows must contain two components",
+                    )
+                for axis_index in 1:2
+                    matrix[output_index, axis_index] =
+                        _atlas_sqlite_ro_signature_finite(
+                            row[axis_index],
+                            "affine label reaction_order_matrix",
+                        )
+                end
+            end
+            offsets_raw = _ro_field_identity_vector(
+                raw_label, "output_offset")
+            length(offsets_raw) == output_count ||
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "affine label output_offset dimension is invalid",
+                )
+            offsets = Float64[
+                _atlas_sqlite_ro_signature_finite(
+                    value, "affine label output_offset")
+                for value in offsets_raw
+            ]
+            push!(labels, ROAffineLabel2D(
+                [label_index], matrix, offsets))
+        end
+        set_valued = _ro_field_identity_bool(raw_cell, "set_valued")
+        push!(cells, ROCell2D(
+            cell_index,
+            vertices,
+            _atlas_sqlite_ro_signature_finite(
+                _ro_field_identity_get(raw_cell, "area"),
+                "data.cells[$(cell_index)].area",
+            ),
+            [cell_index],
+            labels,
+            set_valued,
+        ))
+    end
+
+    stratum_order, raw_strata =
+        _atlas_sqlite_ro_signature_ordered_records(
+            data,
+            "singular_stratum_order",
+            "singular_strata",
+            "stratum_id",
+        )
+    stratum_id_map = Dict(
+        identifier => index
+        for (index, identifier) in enumerate(stratum_order))
+    strata = ROSingularStratum2D[]
+    for (stratum_index, raw_stratum) in enumerate(raw_strata)
+        vertices = NTuple{2,Float64}[
+            _atlas_sqlite_ro_signature_point(
+                point,
+                "data.singular_strata[$(stratum_index)].vertices",
+            ) for point in _ro_field_identity_vector(
+                raw_stratum, "vertices")
+        ]
+        nullities = Int[
+            _atlas_sqlite_ro_signature_int(
+                value, "singular_strata.nullities")
+            for value in _ro_field_identity_vector(
+                raw_stratum, "nullities")
+        ]
+        reasons = Symbol.(String.(_ro_field_identity_vector(
+            raw_stratum, "reasons")))
+        push!(strata, ROSingularStratum2D(
+            stratum_index,
+            _atlas_sqlite_ro_signature_int(
+                _ro_field_identity_get(raw_stratum, "dimension"),
+                "singular_strata.dimension",
+            ),
+            vertices,
+            [stratum_index],
+            nullities,
+            reasons,
+        ))
+    end
+
+    _, raw_facets = _atlas_sqlite_ro_signature_ordered_records(
+        data, "facet_order", "facets", "facet_id")
+    facets = ROFacet2D[]
+    for (facet_index, raw_facet) in enumerate(raw_facets)
+        endpoints_raw = _ro_field_identity_vector(raw_facet, "endpoints")
+        length(endpoints_raw) == 2 ||
+            _atlas_sqlite_ro_signature_error(
+                :invalid_artifact_geometry,
+                "facet endpoints must contain two points",
+            )
+        endpoints = (
+            _atlas_sqlite_ro_signature_point(
+                endpoints_raw[1], "facet.endpoints[1]"),
+            _atlas_sqlite_ro_signature_point(
+                endpoints_raw[2], "facet.endpoints[2]"),
+        )
+        incident_ids = Int[]
+        for raw_id in _ro_field_identity_vector(
+            raw_facet, "incident_cell_ids")
+            identifier = String(raw_id)
+            haskey(cell_id_map, identifier) ||
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "facet references unknown cell $(identifier)",
+                )
+            push!(incident_ids, cell_id_map[identifier])
+        end
+        singular_ids = Int[]
+        for raw_id in _ro_field_identity_vector(
+            raw_facet, "singular_stratum_ids")
+            identifier = String(raw_id)
+            haskey(stratum_id_map, identifier) ||
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "facet references unknown singular stratum $(identifier)",
+                )
+            push!(singular_ids, stratum_id_map[identifier])
+        end
+        normal_raw = _ro_field_identity_vector(raw_facet, "normal")
+        length(normal_raw) == 2 ||
+            _atlas_sqlite_ro_signature_error(
+                :invalid_artifact_geometry,
+                "facet normal must have two components",
+            )
+        normal = (
+            _atlas_sqlite_ro_signature_finite(
+                normal_raw[1], "facet.normal[1]"),
+            _atlas_sqlite_ro_signature_finite(
+                normal_raw[2], "facet.normal[2]"),
+        )
+        raw_domain_side = _ro_field_identity_optional(
+            raw_facet, "domain_side", nothing)
+        domain_side = raw_domain_side === nothing ? nothing :
+            Symbol(String(raw_domain_side))
+        serialized_kind = String(_ro_field_identity_get(raw_facet, "kind"))
+        kind = serialized_kind == "domain_boundary" ? :domain : :internal
+        push!(facets, ROFacet2D(
+            facet_index,
+            kind,
+            endpoints,
+            incident_ids,
+            singular_ids,
+            normal,
+            _atlas_sqlite_ro_signature_finite(
+                _ro_field_identity_get(raw_facet, "offset"),
+                "facet.offset",
+            ),
+            _ro_field_identity_bool(raw_facet, "mixed_sign"),
+            domain_side,
+        ))
+    end
+
+    covered_area = sum(cell.area for cell in cells)
+    geometry_tolerance = 1e-9
+    area_tolerance = geometry_tolerance * max(1.0, domain_area)
+    positive_area_overlap = covered_area > domain_area + area_tolerance
+    gap_area = positive_area_overlap ? nothing :
+        max(0.0, domain_area - covered_area)
+    coverage = _ro_field_identity_get(artifact, "coverage")
+    declared_complete =
+        _ro_field_identity_bool(coverage, "enumeration_complete") &&
+        !_ro_field_identity_bool(coverage, "truncated") &&
+        _ro_field_identity_int(coverage, "omitted_count") == 0 &&
+        isempty(_ro_field_identity_vector(data, "gaps"))
+    geometry_complete = !positive_area_overlap &&
+        abs(covered_area - domain_area) <= area_tolerance
+    coverage_complete = declared_complete && geometry_complete
+    has_ambiguity = positive_area_overlap ||
+        any(cell -> cell.set_valued, cells)
+    return ROCellComplex2D(
+        domain,
+        collect(1:output_count),
+        cells,
+        facets,
+        strata,
+        _atlas_sqlite_ro_signature_int(
+            _ro_field_identity_get(
+                data, "source_candidate_regime_count"),
+            "data.source_candidate_regime_count",
+        ),
+        _atlas_sqlite_ro_signature_int(
+            _ro_field_identity_get(
+                data, "regular_candidate_regime_count"),
+            "data.regular_candidate_regime_count",
+        ),
+        domain_area,
+        covered_area,
+        gap_area,
+        coverage_complete,
+        has_ambiguity,
+        geometry_tolerance,
+    )
+end
+
+function _atlas_sqlite_verify_ro_signature_artifact!(
+    db::SQLite.DB,
+    signature,
+    metadata,
+)
+    artifact = atlas_sqlite_load_ro_field_artifact(
+        db, metadata.artifact_sha256)
+    artifact === nothing && _atlas_sqlite_ro_signature_error(
+        :foreign_artifact,
+        "field_sha256 does not identify a stored RO-field artifact",
+    )
+    String(_ro_field_identity_get(artifact, "representation")) ==
+        "exact_cell_complex" || _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "behavior signatures may reference exact_cell_complex artifacts only",
+        )
+    domain = _ro_field_identity_get(artifact, "domain")
+    artifact_axis_ids = String.(
+        _ro_field_identity_vector(domain, "axis_order"))
+    artifact_axis_ids == metadata.axis_ids ||
+        _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "signature axis_ids do not match the referenced artifact axis_order",
+        )
+    outputs = _ro_field_identity_get(artifact, "outputs")
+    artifact_output_ids = String.(
+        _ro_field_identity_vector(outputs, "output_order"))
+    artifact_output_ids == metadata.output_ids ||
+        _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "signature output_ids do not match the referenced artifact output_order",
+        )
+
+    # Counts are non-scientific foreign-key guards: they prove that a valid
+    # signature was not merely re-hashed and attached to a different complex
+    # that happens to use the same axis/output labels.
+    data = _ro_field_identity_get(artifact, "data")
+    cells = _ro_field_identity_vector(data, "cells")
+    facets = _ro_field_identity_vector(data, "facets")
+    strata = _ro_field_identity_vector(data, "singular_strata")
+    diagnostics = _atlas_sqlite_ro_signature_object(
+        signature["diagnostics"], "diagnostics")
+    _atlas_sqlite_ro_signature_int(
+        diagnostics["regular_cell_count"],
+        "diagnostics.regular_cell_count",
+    ) == length(cells) || _atlas_sqlite_ro_signature_error(
+        :foreign_artifact,
+        "signature regular-cell count does not match the referenced artifact",
+    )
+    _atlas_sqlite_ro_signature_int(
+        diagnostics["facet_count"],
+        "diagnostics.facet_count",
+    ) == length(facets) || _atlas_sqlite_ro_signature_error(
+        :foreign_artifact,
+        "signature facet count does not match the referenced artifact",
+    )
+    metadata.excluded_stratum_count == length(strata) ||
+        _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "signature excluded-stratum count does not match the referenced artifact",
+        )
+    internal_facet_count = count(facets) do facet
+        String(_ro_field_identity_get(facet, "kind")) != "domain_boundary"
+    end
+    metadata.internal_facet_count == internal_facet_count ||
+        _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "signature internal-facet count does not match the referenced artifact",
+        )
+
+    complex = _atlas_sqlite_ro_signature_complex_from_artifact(
+        artifact, metadata.output_count)
+    config_raw = _atlas_sqlite_ro_signature_object(
+        signature["config"], "config")
+    config_type = getfield(@__MODULE__, :ROFieldSignatureConfig)
+    config = config_type(
+        zero_tolerance=config_raw["zero_tolerance"],
+        max_cells=config_raw["max_cells"],
+        max_facets=config_raw["max_facets"],
+        max_matrix_elements=config_raw["max_matrix_elements"],
+    )
+    expected = getfield(@__MODULE__, :classify_ro_cell_complex)(
+        complex,
+        metadata.artifact_sha256;
+        axis_ids=metadata.axis_ids,
+        output_ids=metadata.output_ids,
+        config=config,
+    )
+    _ro_field_canonical_json(expected) ==
+        _ro_field_canonical_json(signature) ||
+        _atlas_sqlite_ro_signature_error(
+            :signature_artifact_mismatch,
+            "signature features do not match the referenced exact artifact",
+        )
+    return artifact
+end
+
+function _atlas_sqlite_single_ro_signature_row(
+    db::SQLite.DB,
+    signature_sha256::AbstractString,
+)
+    query = _atlas_sqlite_query(db,
+        "SELECT * FROM ro_field_signatures WHERE signature_sha256 = ? LIMIT 1",
+        (String(signature_sha256),),
+    )
+    try
+        for row in query
+            return Dict{String,Any}(
+                String(name) => row[name] for name in propertynames(row))
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return nothing
+end
+
+function _atlas_sqlite_conflicting_ro_signature_row(
+    db::SQLite.DB,
+    artifact_sha256::AbstractString,
+    classifier_version::AbstractString,
+    config_sha256::AbstractString,
+)
+    query = _atlas_sqlite_query(db,
+        "SELECT signature_sha256 FROM ro_field_signatures " *
+        "WHERE artifact_sha256 = ? AND classifier_version = ? " *
+        "AND config_sha256 = ? LIMIT 1",
+        (String(artifact_sha256), String(classifier_version),
+         String(config_sha256)),
+    )
+    try
+        for row in query
+            return String(row[:signature_sha256])
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return nothing
+end
+
+function _atlas_sqlite_ro_signature_child_rows(
+    db::SQLite.DB,
+    table::AbstractString,
+    signature_sha256::AbstractString,
+    order_columns::AbstractString,
+)
+    table in ("ro_field_component_features",
+              "ro_field_output_gradient_features") ||
+        throw(ArgumentError("unsupported RO-field signature child table"))
+    query = _atlas_sqlite_query(db,
+        "SELECT * FROM $(table) WHERE signature_sha256 = ? " *
+        "ORDER BY $(order_columns)",
+        (String(signature_sha256),),
+    )
+    rows = Dict{String,Any}[]
+    try
+        for row in query
+            push!(rows, Dict{String,Any}(
+                String(name) => row[name] for name in propertynames(row)))
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    return rows
+end
+
+function _atlas_sqlite_verify_ro_signature_row!(row, metadata, db::SQLite.DB)
+    row === nothing && _atlas_sqlite_ro_signature_error(
+        :missing_signature,
+        "signature insert or load did not produce a row",
+    )
+    string_expected = (
+        "signature_sha256" => metadata.signature_sha256,
+        "artifact_sha256" => metadata.artifact_sha256,
+        "schema_version" => metadata.schema_version,
+        "classifier_version" => metadata.classifier_version,
+        "scope" => metadata.scope,
+        "config_sha256" => metadata.config_sha256,
+        "signature_json_sha256" => metadata.signature_json_sha256,
+        "signature_json" => metadata.canonical_json,
+    )
+    for (column, expected) in string_expected
+        _atlas_sqlite_ro_field_row_string(row, column) == expected ||
+            _atlas_sqlite_ro_signature_error(
+                :signature_collision,
+                "stored $(column) differs from the validated signature",
+            )
+    end
+    int_expected = (
+        "classifiable" => (metadata.classifiable ? 1 : 0),
+        "max_cells" => metadata.max_cells,
+        "max_facets" => metadata.max_facets,
+        "max_matrix_elements" => metadata.max_matrix_elements,
+        "axis_count" => metadata.axis_count,
+        "output_count" => metadata.output_count,
+        "internal_facet_count" => metadata.internal_facet_count,
+        "mixed_sign_facet_count" => metadata.mixed_sign_facet_count,
+        "coupled_jump_count" => metadata.coupled_jump_count,
+        "excluded_stratum_count" => metadata.excluded_stratum_count,
+    )
+    for (column, expected) in int_expected
+        _atlas_sqlite_ro_field_row_int(row, column) == expected ||
+            _atlas_sqlite_ro_signature_error(
+                :signature_collision,
+                "stored $(column) differs from the validated signature",
+            )
+    end
+    stored_tolerance = row["zero_tolerance"]
+    (!_atlas_sqlite_is_nullish(stored_tolerance) &&
+     Float64(stored_tolerance) == metadata.zero_tolerance) ||
+        _atlas_sqlite_ro_signature_error(
+            :signature_collision,
+            "stored zero_tolerance differs from the validated signature",
+        )
+
+    component_rows = _atlas_sqlite_ro_signature_child_rows(
+        db,
+        "ro_field_component_features",
+        metadata.signature_sha256,
+        "output_position, axis_position",
+    )
+    length(component_rows) == length(metadata.component_rows) ||
+        _atlas_sqlite_ro_signature_error(
+            :normalized_feature_mismatch,
+            "stored component-feature count differs from the signature",
+        )
+    for (stored, expected) in zip(component_rows, metadata.component_rows)
+        (_atlas_sqlite_ro_field_row_int(stored, "output_position") ==
+             expected.output_position &&
+         _atlas_sqlite_ro_field_row_int(stored, "axis_position") ==
+             expected.axis_position &&
+         _atlas_sqlite_ro_field_row_string(stored, "output_id") ==
+             expected.output_id &&
+         _atlas_sqlite_ro_field_row_string(stored, "axis_id") ==
+             expected.axis_id &&
+         _atlas_sqlite_ro_field_row_string(stored, "classification") ==
+             expected.classification) ||
+            _atlas_sqlite_ro_signature_error(
+                :normalized_feature_mismatch,
+                "stored component feature differs from the signature",
+            )
+    end
+
+    gradient_rows = _atlas_sqlite_ro_signature_child_rows(
+        db,
+        "ro_field_output_gradient_features",
+        metadata.signature_sha256,
+        "output_position",
+    )
+    length(gradient_rows) == length(metadata.gradient_rows) ||
+        _atlas_sqlite_ro_signature_error(
+            :normalized_feature_mismatch,
+            "stored gradient-feature count differs from the signature",
+        )
+    for (stored, expected) in zip(gradient_rows, metadata.gradient_rows)
+        (_atlas_sqlite_ro_field_row_int(stored, "output_position") ==
+             expected.output_position &&
+         _atlas_sqlite_ro_field_row_string(stored, "output_id") ==
+             expected.output_id &&
+         _atlas_sqlite_ro_field_row_string(stored, "gradient_family") ==
+             expected.gradient_family) ||
+            _atlas_sqlite_ro_signature_error(
+                :normalized_feature_mismatch,
+                "stored gradient feature differs from the signature",
+            )
+    end
+    return nothing
+end
+
+"""
+Persist one validated `bne-ro-field-signature/v1.0.0` signature.
+
+The referenced exact RO-field artifact must already exist.  Signature identity
+is recomputed by `validate_ro_field_signature!`; SQLite then binds that trusted
+document to the artifact's exact axis/output order and stores normalized query
+features in the same write-locked transaction.
+"""
+function atlas_sqlite_save_ro_field_signature!(db::SQLite.DB, signature)
+    atlas_sqlite_init!(db)
+    document = _atlas_sqlite_validate_ro_signature!(signature)
+    metadata = _atlas_sqlite_ro_signature_metadata(document)
+    _atlas_sqlite_verify_ro_signature_artifact!(db, document, metadata)
+
+    _with_atlas_sqlite_write_lock(db) do
+        _atlas_sqlite_transaction(db) do
+            # Close the validation/write race without re-running the expensive
+            # artifact decoder while the write lock is held.
+            _atlas_sqlite_single_ro_field_row(
+                db, metadata.artifact_sha256) === nothing &&
+                _atlas_sqlite_ro_signature_error(
+                    :concurrent_delete,
+                    "referenced RO-field artifact disappeared before insert",
+                )
+            _atlas_sqlite_execute(db,
+                """
+                INSERT OR IGNORE INTO ro_field_signatures (
+                    signature_sha256, artifact_sha256, schema_version,
+                    classifier_version, scope, config_sha256,
+                    signature_json_sha256, classifiable, zero_tolerance,
+                    max_cells, max_facets, max_matrix_elements,
+                    axis_count, output_count, internal_facet_count,
+                    mixed_sign_facet_count, coupled_jump_count,
+                    excluded_stratum_count, signature_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    metadata.signature_sha256,
+                    metadata.artifact_sha256,
+                    metadata.schema_version,
+                    metadata.classifier_version,
+                    metadata.scope,
+                    metadata.config_sha256,
+                    metadata.signature_json_sha256,
+                    metadata.classifiable ? 1 : 0,
+                    metadata.zero_tolerance,
+                    metadata.max_cells,
+                    metadata.max_facets,
+                    metadata.max_matrix_elements,
+                    metadata.axis_count,
+                    metadata.output_count,
+                    metadata.internal_facet_count,
+                    metadata.mixed_sign_facet_count,
+                    metadata.coupled_jump_count,
+                    metadata.excluded_stratum_count,
+                    metadata.canonical_json,
+                ),
+            )
+
+            row = _atlas_sqlite_single_ro_signature_row(
+                db, metadata.signature_sha256)
+            if row === nothing
+                conflicting_hash =
+                    _atlas_sqlite_conflicting_ro_signature_row(
+                        db,
+                        metadata.artifact_sha256,
+                        metadata.classifier_version,
+                        metadata.config_sha256,
+                    )
+                conflicting_hash === nothing &&
+                    _atlas_sqlite_ro_signature_error(
+                        :storage_failure,
+                        "signature insert did not produce a row",
+                    )
+                _atlas_sqlite_ro_signature_error(
+                    :determinism_conflict,
+                    "artifact/config already maps to signature $(conflicting_hash)",
+                )
+            end
+
+            for feature in metadata.component_rows
+                _atlas_sqlite_execute(db,
+                    """
+                    INSERT OR IGNORE INTO ro_field_component_features (
+                        signature_sha256, output_position, axis_position,
+                        output_id, axis_id, classification
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        metadata.signature_sha256,
+                        feature.output_position,
+                        feature.axis_position,
+                        feature.output_id,
+                        feature.axis_id,
+                        feature.classification,
+                    ),
+                )
+            end
+            for feature in metadata.gradient_rows
+                _atlas_sqlite_execute(db,
+                    """
+                    INSERT OR IGNORE INTO ro_field_output_gradient_features (
+                        signature_sha256, output_position, output_id,
+                        gradient_family
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        metadata.signature_sha256,
+                        feature.output_position,
+                        feature.output_id,
+                        feature.gradient_family,
+                    ),
+                )
+            end
+            _atlas_sqlite_verify_ro_signature_row!(row, metadata, db)
+        end
+    end
+    return Dict{String,Any}(
+        "signature_sha256" => metadata.signature_sha256,
+        "artifact_sha256" => metadata.artifact_sha256,
+        "config_sha256" => metadata.config_sha256,
+        "signature_json_sha256" => metadata.signature_json_sha256,
+    )
+end
+
+function atlas_sqlite_save_ro_field_signature!(
+    db_path::AbstractString,
+    signature,
+)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_save_ro_field_signature!(db, signature),
+        db_path,
+    )
+end
+
+"Load and re-verify the full signature, normalized rows, and referenced artifact."
+function atlas_sqlite_load_ro_field_signature(
+    db::SQLite.DB,
+    signature_sha256::AbstractString,
+)
+    requested_hash = _atlas_sqlite_ro_signature_hash(
+        signature_sha256, "signature_sha256")
+    atlas_sqlite_init!(db)
+    row = _atlas_sqlite_single_ro_signature_row(db, requested_hash)
+    row === nothing && return nothing
+    stored_json = _atlas_sqlite_ro_field_row_string(row, "signature_json")
+    stored_json === nothing && _atlas_sqlite_ro_signature_error(
+        :corrupt_signature,
+        "stored signature_json is NULL",
+    )
+    document = try
+        _ro_field_materialize(JSON3.read(stored_json))
+    catch err
+        _atlas_sqlite_ro_signature_error(
+            :corrupt_signature,
+            "stored signature_json is invalid: $(sprint(showerror, err))",
+        )
+    end
+    _ro_field_canonical_json(document) == stored_json ||
+        _atlas_sqlite_ro_signature_error(
+            :noncanonical_signature,
+            "stored signature_json is not canonical",
+        )
+    document = _atlas_sqlite_validate_ro_signature!(document)
+    metadata = _atlas_sqlite_ro_signature_metadata(document)
+    metadata.signature_sha256 == requested_hash ||
+        _atlas_sqlite_ro_signature_error(
+            :signature_hash_mismatch,
+            "stored signature does not match its primary key",
+        )
+    _atlas_sqlite_verify_ro_signature_artifact!(db, document, metadata)
+    _atlas_sqlite_verify_ro_signature_row!(row, metadata, db)
+    return document
+end
+
+function atlas_sqlite_load_ro_field_signature(
+    db_path::AbstractString,
+    signature_sha256::AbstractString,
+)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_load_ro_field_signature(
+            db, signature_sha256),
+        db_path,
+    )
+end
+
+function _atlas_sqlite_ro_signature_filter_text(
+    value,
+    name::AbstractString,
+)
+    value === nothing && return nothing
+    value isa AbstractString || value isa Symbol || throw(ArgumentError(
+        "$(name) must be a string or symbol"))
+    return String(value)
+end
+
+"""
+Query verified stored signatures by normalized component/gradient features.
+
+An empty vector means only that no stored row matched the declared filters.  It
+is retrieval evidence and never an impossibility claim about network space.
+"""
+function atlas_sqlite_query_ro_field_signatures(
+    db::SQLite.DB;
+    artifact_sha256=nothing,
+    classifiable=nothing,
+    component_classification=nothing,
+    component_output_id=nothing,
+    component_axis_id=nothing,
+    gradient_family=nothing,
+    gradient_output_id=nothing,
+    limit::Integer=100,
+    include_signatures::Bool=false,
+)
+    1 <= limit <= 1000 || throw(ArgumentError(
+        "RO-field signature query limit must be between 1 and 1000"))
+    classifiable === nothing || classifiable isa Bool ||
+        throw(ArgumentError("classifiable must be a boolean or nothing"))
+    artifact_filter = _atlas_sqlite_ro_signature_filter_text(
+        artifact_sha256, "artifact_sha256")
+    if artifact_filter !== nothing
+        occursin(_ATLAS_SQLITE_RO_SIGNATURE_HASH_PATTERN,
+            artifact_filter) || throw(ArgumentError(
+                "artifact_sha256 must contain 64 lowercase hexadecimal characters"))
+    end
+    component_class = _atlas_sqlite_ro_signature_filter_text(
+        component_classification, "component_classification")
+    component_class === nothing ||
+        component_class in _ATLAS_SQLITE_RO_COMPONENT_CLASSES ||
+        throw(ArgumentError(
+            "unsupported component classification: $(component_class)"))
+    component_output = _atlas_sqlite_ro_signature_filter_text(
+        component_output_id, "component_output_id")
+    component_axis = _atlas_sqlite_ro_signature_filter_text(
+        component_axis_id, "component_axis_id")
+    gradient = _atlas_sqlite_ro_signature_filter_text(
+        gradient_family, "gradient_family")
+    gradient === nothing || gradient in _ATLAS_SQLITE_RO_GRADIENT_FAMILIES ||
+        throw(ArgumentError("unsupported gradient family: $(gradient)"))
+    gradient_output = _atlas_sqlite_ro_signature_filter_text(
+        gradient_output_id, "gradient_output_id")
+    for (name, value) in (
+        ("component_output_id", component_output),
+        ("component_axis_id", component_axis),
+        ("gradient_output_id", gradient_output),
+    )
+        value === nothing && continue
+        occursin(_ATLAS_SQLITE_RO_SIGNATURE_ID_PATTERN, value) ||
+            throw(ArgumentError("$(name) is not a safe identifier"))
+    end
+
+    atlas_sqlite_init!(db)
+    clauses = String[]
+    params = Any[]
+    if artifact_filter !== nothing
+        push!(clauses, "s.artifact_sha256 = ?")
+        push!(params, artifact_filter)
+    end
+    if classifiable !== nothing
+        push!(clauses, "s.classifiable = ?")
+        push!(params, classifiable ? 1 : 0)
+    end
+    if component_class !== nothing || component_output !== nothing ||
+       component_axis !== nothing
+        child_clauses = ["c.signature_sha256 = s.signature_sha256"]
+        if component_class !== nothing
+            push!(child_clauses, "c.classification = ?")
+            push!(params, component_class)
+        end
+        if component_output !== nothing
+            push!(child_clauses, "c.output_id = ?")
+            push!(params, component_output)
+        end
+        if component_axis !== nothing
+            push!(child_clauses, "c.axis_id = ?")
+            push!(params, component_axis)
+        end
+        push!(clauses,
+            "EXISTS (SELECT 1 FROM ro_field_component_features c WHERE " *
+            join(child_clauses, " AND ") * ")")
+    end
+    if gradient !== nothing || gradient_output !== nothing
+        child_clauses = ["g.signature_sha256 = s.signature_sha256"]
+        if gradient !== nothing
+            push!(child_clauses, "g.gradient_family = ?")
+            push!(params, gradient)
+        end
+        if gradient_output !== nothing
+            push!(child_clauses, "g.output_id = ?")
+            push!(params, gradient_output)
+        end
+        push!(clauses,
+            "EXISTS (SELECT 1 FROM ro_field_output_gradient_features g WHERE " *
+            join(child_clauses, " AND ") * ")")
+    end
+    where_sql = isempty(clauses) ? "" :
+        " WHERE " * join(clauses, " AND ")
+    sql = "SELECT s.signature_sha256 FROM ro_field_signatures s" *
+        where_sql * " ORDER BY s.signature_sha256 ASC LIMIT ?"
+    push!(params, Int(limit))
+
+    hashes = String[]
+    query = _atlas_sqlite_query(db, sql, Tuple(params))
+    try
+        for row in query
+            push!(hashes, String(row[:signature_sha256]))
+        end
+    finally
+        DBInterface.close!(query)
+    end
+    results = Dict{String,Any}[]
+    for signature_hash in hashes
+        signature = atlas_sqlite_load_ro_field_signature(
+            db, signature_hash)
+        signature === nothing && _atlas_sqlite_ro_signature_error(
+            :concurrent_delete,
+            "signature disappeared during a verified query",
+        )
+        result = Dict{String,Any}(
+            "signature_sha256" => signature_hash,
+            "artifact_sha256" => String(signature["field_sha256"]),
+            "schema_version" => String(signature["schema_version"]),
+            "classifier_version" => String(
+                signature["classifier_version"]),
+            "scope" => String(signature["scope"]),
+            "classifiable" => Bool(signature["classifiable"]),
+            "component_classifications" =>
+                signature["component_classifications"],
+            "gradient_families" => signature["gradient_families"],
+        )
+        include_signatures && (result["signature"] = signature)
+        push!(results, result)
+    end
+    return results
+end
+
+function atlas_sqlite_query_ro_field_signatures(
+    db_path::AbstractString;
+    kwargs...,
+)
+    return _atlas_sqlite_with_db(
+        db -> atlas_sqlite_query_ro_field_signatures(db; kwargs...),
+        db_path,
+    )
 end

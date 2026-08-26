@@ -55,6 +55,12 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
     # Shape optimization is introduced as v1-only. It has no bare-/api alias,
     # so new clients cannot acquire a dependency on the sunset surface.
     APIRouteContract("/api/v1/rop_shape_optimize", "/api/rop_shape_optimize", ("POST",), :handle_rop_shape_optimize, nothing, :exact),
+    # Multi-input reaction-order fields are additive and v1-only. Existing
+    # SISO/RPB1 clients must not acquire a legacy alias with different meaning.
+    APIRouteContract("/api/v1/ro_field", "/api/ro_field", ("POST",), :handle_ro_field, nothing, :exact),
+    # Differential diagnostics are separately identified and never mutate the
+    # source RO-field artifact or its scientific evidence class.
+    APIRouteContract("/api/v1/ro_field/differential", "/api/ro_field/differential", ("POST",), :handle_ro_field_differential, nothing, :exact),
     APIRouteContract("/api/v1/validate_designability_spec", "/api/validate_designability_spec", ("POST",), :handle_validate_designability_spec, "/api/validate_designability_spec", :exact),
     APIRouteContract("/api/v1/design_labels", "/api/design_labels", ("POST",), :handle_design_labels, "/api/design_labels", :exact),
     APIRouteContract("/api/v1/atlas_landscape_2d", "/api/atlas_landscape_2d", ("POST",), :handle_atlas_landscape_2d, "/api/atlas_landscape_2d", :exact),

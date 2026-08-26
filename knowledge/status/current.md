@@ -99,6 +99,424 @@ carry hashed, redacted observations plus rollback evidence for Registry,
 Compose/TLS, AWS, Slurm, and macOS. This pack is prepared but unexecuted: all
 five external outcomes remain unknown until an authorized run records them.
 
+## Working-tree extension: bounded multi-input reaction-order fields
+
+The scoped `codex/multi-input-ro-field` working tree, based on `9b05d02`, adds
+the demonstration-scale P0--P4 migration in
+[decision 0005](../decisions/0005-multi-input-reaction-order-field.md). This is
+current local working-tree evidence dated 2026-07-17; it does not move the
+committed implementation anchor `b91cf41` above.
+
+The local multi-input quantity is now a matrix field `R(u) = dz/du`, not a
+longer one-dimensional sequence. P0 defines strict request/artifact contracts
+and invalid-as-gap semantics. P1 samples one to four ordered input axes and
+outputs under a 4,096-point synchronous cap, including a true `2 x 2 x 2`
+three-input demonstration. P2 constructs a complete fixed-background exact 2D
+Float64/asymptotic cell complex with labelled cells, facets, incidence,
+singular strata, ambiguity, and point classification. Its publication boundary
+reconstructs complete non-overlapping polygon and facet coverage and does not
+let a caller-provided geometry tolerance weaken that certificate.
+
+P3 adds the v1-only `POST /api/v1/ro_field` inline endpoint, standalone strict
+viewer, a new RPB2 exact-complex identity, and append-only SQLite 0.4 artifact
+storage without changing RPB1. P4 adds regular-cell behavior signatures, an
+explicit corpus of at most eight supplied records, bounded corpus-scoped
+queries, and SQLite 0.5 normalized signature indexes. Loads rebuild the exact
+complex and rerun the classifier before accepting a stored signature.
+
+The following table is the earlier P0--P4 snapshot. It is retained only to
+preserve that dated evidence; the current P5--P9 verification is recorded below
+and supersedes these numbers as a current total.
+
+| Working-tree check | Local result | Boundary |
+|---|---|---|
+| Artifact/request schemas | 11/11 and 8/8 focused semantic contracts passed | Finite fixtures, including invalid and partial cases |
+| BindingAndCatalysis suite | 385/385 passed; sampled field 38/38, exact 2D complex 82/82, golden values 145/145 | Small tested networks; no large-rank performance claim |
+| Full Julia Web suite | 135 testsets: 4,652 passed, 0 failed/errors, and one pre-existing explicit `@test_broken` | Local Julia process, not remote CI |
+| RO-field focused backend | API 117/117, identity/storage 44/44, behavior 70/70, finite Atlas 85/85, signature storage 69/69 | Explicit bounded examples and fault injection only |
+| Browser and Python consumers | Zero-warning lint; full JavaScript suite passed including RO-field renderer 14/14; Chat API 12/12, Design Agent 44/44, repository Python 130/130 | No live model provider, cloud path, or native Workspace integration |
+| Live RO-field page | Two browser-to-local-Julia 3 x 3 sampled requests rendered, including non-uniform coordinates; nine fixed-radius point glyphs, explicit no-interpolation semantics, and zero console warnings/errors | Sampled 2D demonstration only; not an exact-complex, provider, cloud, or performance run |
+| Repository gate | 42 maintained files, 18 schemas, and 50 routes regenerated successfully | Local source/catalog/link consistency only |
+
+This migration proves that the code can represent, compute, validate, store,
+classify, query, and display small multi-input fields. The P5 working-tree
+extension now also admits full-rank affine correlated-input charts; checks
+sampled circulation, mixed partials, and output-edge integrals; retains raw and
+symmetric curvature; applies one explicitly named finite-window synergy policy;
+and certifies/queries a complete declared Float64/PWA 2D regular extension using
+intact MIMO Clarke matrix generators. Its directional values are fixed-direction
+images of those generators, not tangent-cone Bouligand derivatives. The separate
+v1-only differential endpoint hashes
+those diagnostics without changing the source field identity. These results are
+finite-grid or regular-limit evidence, not continuum, causal, singular-branch,
+dynamic, or experimental proof.
+
+The current P5n source adds a separately versioned, bounded declarative
+quadratic input chart. It stores ordered source/control names and unit labels,
+references, a closed finite domain, a reference Jacobian, and one symmetric
+control Hessian per source component. Construction admits only the reference
+Jacobian; every evaluated point recomputes numerical rank and conditioning and
+rejects a local fold/non-immersion or grey-zone result. First-order matrix/tensor
+pullbacks use that local Jacobian. The scalar second-order path retains both
+`J' * H_theta * J` and the chart-Hessian term, with source derivatives bound to
+the chart declaration hash, scalar output name/unit, exact source point,
+component order, and unit labels. First-order arrays must likewise declare the
+exact source axis and evaluated point; those caller declarations are checked,
+but the finite API cannot independently prove that an upstream producer labelled
+the array honestly. This is pointwise local-immersion evidence only: global
+injectivity, self-overlap exclusion, chart-transition covariance, and chart-
+calibration uncertainty are not implemented.
+
+P5o separately adds finite declarative C2 affine/quadratic observable maps. The
+chart binds source/output order, opaque unit labels, references, a closed source
+domain, coefficients, limits, and content identity. Jet composition computes
+`R_y = J_phi R_z` and retains both `J_phi H_z` and
+`H_phi[R_z,R_z]`. This layer performs no dimensional algebra or unit conversion,
+and it does not implement general ratio, log-sum, normalized-occupancy, or other
+non-polynomial observables.
+
+P5r0.1 now has a separate engine owner and focused contract. A square declarative
+polynomial system owns ordered states/controls, unit labels, canonical monomials,
+hard limits, and content identity; every admitted Float64 declaration is treated
+as its exact binary rational. For an affine predictor plus a remainder box, the
+implementation substitutes the complete tube `x=p(u)+delta` into each residual
+and combines like terms exactly. Derivatives with respect to `delta` enclose
+`F_x`; derivatives with respect to `u` at fixed `delta` enclose the correlated
+path quantity `G=F_u+F_x*S`; and `F_u=G-F_x*S` is reconstructed symbolically for
+the published partial-Jacobian enclosure. Publication requires strict
+coordinate-wise Krawczyk inclusion, an exact full-rank preconditioner,
+`beta < 1`, positive control/state tubes, and a complete replay. It also binds
+`G` into the v1.1.0 certificate, uses it to enclose `dx/du`, and can prove a
+directed parent-to-child branch bridge when a separately certified overlap tube
+contains both entire patch tubes.
+
+The positive claim is deliberately local to the declared tube: P5r0 proves one
+root for every control and uniqueness inside that tube, but
+`roots_outside_declared_tube_excluded` is always false. It does not certify a
+global branch population, folds/Hopf events, native log-coordinate residuals,
+or chemistry extraction. P5r1 remains design-only and would require a direct
+pinned interval dependency for native log/transcendental residuals. Ordinary
+solver-success and point-inverse results remain numerical evidence unless they
+are independently covered by a passed P5r0 certificate.
+
+P8s0 now consumes those certificates in a separate branch-indexed field owner.
+One content-bound dynamics declaration explicitly says that the polynomial
+equations are `dx/dt`; time and state-rate units are retained as identity labels,
+but no dimensional algebra or physical-model truth is inferred. Every supplied
+patch and bridge is replayed under one cumulative exact-operation cap. Replayed
+bridges form evidence-relative connected components, not a complete global
+branch taxonomy. On each patch, exact interval row-Gershgorin right bounds
+certify uniform local asymptotic stability only when every bound is negative;
+a positive exact trace lower bound certifies instability, with `trace/n` as a
+lower bound on the rightmost real part; all other cases remain
+`unknown_stability`. The same patch publishes the ordered state response
+enclosure `d log(x_i)/d log(u_j) = (u_j/x_i) dx_i/du_j` for every control axis.
+
+A P8s0 multistability witness selects one uniformly stable patch from each of
+at least two replayed components over one common positive control box. Exact
+restricted state tubes must be strictly separated for every branch pair, which
+proves only that at least that many distinct stable roots exist throughout the
+box. It does not prove that the stable-root population is complete, exclude
+folds outside the selected tubes, enclose fold/Hopf boundaries, certify global
+continuation, or establish true hysteresis; every corresponding strong flag is
+forced false. Authority requires complete source replay, not the top-level hash
+alone. P5r0.1 closes the previously observed artificial state/control-width
+failure for nonlinear translated branches such as
+`-(x-u)(x-u-1)(x-u-2)` by using the exact `(u,delta)` composition for the full
+tube. It does not eliminate ordinary interval wrapping between terms of that
+composed polynomial, and a tube that cannot pass the unchanged strict
+Krawczyk/budget gates remains unknown.
+
+P8s1a now adds a separate exact-dyadic complete regular-root census inside one
+declared affine moving state domain. It cumulatively replays a canonical
+population of full-control-box P5r0.1 patches, maps every complete patch tube
+onto exactly one cell of a finite remainder tensor grid in a shared affine slope
+coordinate, composes `F(p(u)+delta,u)` once, and exhaustively classifies every
+grid cell. A non-patch cell must exclude zero in at least one exact residual
+component; an unresolved cell rejects publication. Consequently a passed
+certificate proves exactly `N` regular roots for every control in the box,
+complete continuation of those `N` sheets across that box, and a complete empty
+fold-event set inside the declared moving state domain. Public authority requires
+complete replay against the system, patch population, grid, and work limits,
+not the top-level content hash.
+
+This is not global branch completion. Roots outside the declared moving state
+domain remain unknown; all patches must use the same affine slope and span the
+same complete control box; ordinary interval wrapping can reject a valid cover;
+and stability is not classified. Stable-root population completeness, Hopf
+events, fold-containing domains, global continuation, native
+log/transcendental residuals, and true hysteresis remain outside P8s1a.
+
+P8s1b0 now adds a separately versioned complete simple-fold event census for an
+exactly one-control polynomial system. It builds the exact augmented polynomial
+map `H=(F,det(F_x))`, translates every tensor cell about its exact center, and
+requires each cell either to exclude zero in one component of `H` or to prove
+one strict augmented Krawczyk root with `beta < 1`. Exhausting the declared
+positive `(x,lambda)` domain therefore proves that every singular equilibrium
+inside it is one of the reported isolated augmented roots. Nonsingularity of
+the augmented Jacobian supplies the corank-one, control-transversality, and
+quadratic nondegeneracy conditions for a simple fold. Authority requires full
+replay of the system, partition, event seeds, preconditioners, cell decisions,
+and cumulative limits; a hash or a failed numerical root search is insufficient.
+
+P8s1b1 attaches one such event to two local regular half-branches without
+claiming a global branch graph. It declaratively promotes one selected original
+state coordinate to the local continuation control, proves that a central
+P5r0.1 chart contains the event, bridges both complete half-patches to that
+central chart, and maps each half-tube strictly inside a replayed
+original-coordinate regular patch. The covered event-to-half corridors must
+stay inside the complete P8s1b0 census domain and be disjoint from the certified
+root enclosure of every other fold event. A three-fold adversarial fixture
+therefore rejects a purported adjacency when another fold lies between the
+selected event and half-patch.
+
+These two contracts remain deliberately local and polynomial. They do not prove
+which side of the original control has two roots, stability or stable-root
+population completeness, remote component identity, a global branch graph,
+fold sheets for two or more controls, Hopf events, native log/transcendental
+residuals, global continuation, or true hysteresis.
+
+P8s1c0 now adds `bne-ro-simple-spectral-hopf-event-census/v1.0.0`. It requires
+an explicit exactly one-control polynomial dynamics binding, constructs
+`P(s)=det(sI-F_x)` with
+`P(i*sqrt(z))=E(z)+i*sqrt(z)*O(z)`, and exhausts one exact-dyadic state/control/
+frequency-squared tensor cover from `z=0` to strictly beyond an
+exact uniform spectral bound. Every reported event passes strict augmented
+Krawczyk inclusion, excludes `det(F_x)=0`, has `z>0`, and has a nonsingular
+augmented Jacobian; the resulting determinant identity proves an algebraically
+simple imaginary pair with nonzero real-part crossing speed, thereby rejecting
+a repeated same-frequency pair. Complete pairwise separation of event
+state/control projections separately rejects distinct-frequency double-Hopf
+points at one equilibrium. Authority belongs to a
+source-bound replay of the complete parent census, not to a local event hash.
+The focused contract passes 104/104 with bounds checking on Julia 1.10.11 and
+1.12.6. A direct read-only audit found no remaining P0/P1/P2 issue after
+cumulative-work, determinant-leaf, projection-pair, parent-authority, and
+cancellation fixes. By itself this is not a first-Lyapunov, nonlinear-Hopf,
+criticality, periodic-orbit, stability-completeness, multi-control-sheet,
+native-residual, global-continuation, or hysteresis certificate.
+
+P8s1c1 now adds `bne-ro-complete-nondegenerate-hopf-census/v1.0.0`. It first
+preflights all child populations, dimensions, tensor sizes, preconditioners,
+fixed exact square-root work, and known cumulative operations, then completely
+replays the source-bound P8s1c0 parent. Every parent event must appear exactly
+once. Full complex bordered right and Hermitian-adjoint systems, `A` and
+second-harmonic resolvents, raw second/third state derivatives, unit-`q`
+normalization, and the fixed Kuznetsov formula produce an exact interval `l1`
+that must exclude zero. A passed complete lift therefore certifies every parent
+event as a nondegenerate local Hopf point with center-manifold supercritical or
+subcritical sign. The focused contract passes 102/102 with bounds checking on
+Julia 1.10.11 and 1.12.6. Its final direct read-only audit found no remaining
+P0/P1/P2 after pre-replay resource, local-record structure, nonnormal-frequency,
+two-event canonicalization, and child-stage cancellation hardening. It does not
+orient the original-control periodic-orbit side, construct or attach a
+validated periodic-orbit branch, certify full-state periodic-orbit stability,
+or establish stability completeness, multi-control Hopf sheets, native
+residuals, global continuation, or hysteresis.
+
+P8s1c2a now adds
+`bne-ro-complete-hopf-periodic-orbit-germ-census/v1.0.0`. It completely
+replays P8s1c1 and its P8s1c0 parent, then lifts every parent event exactly
+once. With equations ordered `(F...,E,O)` and variables ordered
+`(x...,lambda,z)`, the parent bound `norm(I-C*DH,Inf)<1` fixes
+`sign(det(DH))=sign(det(C))`. Combining
+`det(DH)=det(F_x)*Delta` with the P8s1c0 crossing formula gives
+
+```text
+sign(d Re(mu)/d lambda) = -sign(det(C))*sign(det(F_x)),
+sign(lambda-lambda_*)   = -sign(l1)*sign(d Re(mu)/d lambda).
+```
+
+The classical nondegenerate Hopf theorem therefore supplies a theorem-level
+local periodic-orbit germ incident to each event, the original-control side
+for sufficiently small nonzero but unquantified amplitude, and radial
+attraction (`l1<0`) or repulsion (`l1>0`) on the center manifold. The focused
+contract passes 155/155 with bounds checking on Julia 1.10.11 and 1.12.6.
+This is not an explicit periodic-orbit enclosure, validated branch,
+quantitative amplitude radius, Floquet spectrum, full-state stability result,
+periodic-orbit population census, global continuation, or hysteresis proof.
+P8s1c2b/P8s1c2c and P8s2 remain design-only.
+
+The pre-c2b proof-kernel foundation now adds
+`bne-ro-exact-real-fourier-series/v1.0.0` and
+`bne-ro-exact-polynomial-periodic-fourier-residual-audit/v1.0.0`. For one
+submitted finite-support trigonometric parameterization, it replays the bound
+polynomial dynamics declaration and evaluates
+`omega*d_theta(x)-F(x,u)` through every source-generated Laurent mode with
+exact `Rational{BigInt}` direct convolution. The versioned rectangular-complex
+weighted `l1_nu` receipt reports the retained Galerkin head and every omitted
+residual mode separately. A nonconstant positive-frequency parameterization is
+one exact ODE periodic solution only when the complete residual is exactly
+zero. The focused contract passes 172/172 with bounds checking on Julia
+1.10.11 and 1.12.6, including the adversarial case in which every retained
+Galerkin equation is zero but mode `k=2` is not. Source-bound replay, derived-
+metric reconstruction, separate input/output bandwidth limits, bounded exact
+arithmetic/canonical payloads, and cooperative final-publication cancellation
+prevent a child self-hash from acting as authority. This layer proves no
+infinite-tail/radii enclosure, nearby-orbit uniqueness, periodic-orbit branch,
+quantitative amplitude interval, Hopf incidence, minimal period, Floquet or
+full-state stability, orbit-population completeness, global continuation, or
+hysteresis; it is not P8s1c2b0.
+
+The subsequent P6 working-tree foundation now has two deliberately disjoint
+local asynchronous paths. The original sampled `compute_ro_field` path
+content-addresses deterministic Cartesian plans, work units, chunks,
+checkpoints, and complete manifests. Resume creates a child from the same
+owner's terminal failed/cancelled parent and reuses only verified committed
+chunks from the same scientific plan. Result reads revalidate the nested
+plan/checkpoint/manifest/chunk chain.
+
+The new adaptive v2 path turns the deterministic sparse sampler into a pure
+prepare/commit/finalize state machine and then into a separate `local_async`
+Job. One multi-index is one backend work unit. Plan, batch, point chunk, state,
+checkpoint, terminal result, and dataset manifest are content-addressed; an
+uncommitted CAS object left by cancellation cannot enter resume lineage. A
+child resumes only from the parent's linearized checkpoint, and final reads
+perform one metered authoritative forward replay of every committed transition
+plus the plan/terminal/result relationship. The plan also binds the selected
+Project/Manifest, engine tree, and `webapp/src/**/*.jl` tree as module-load-
+frozen identities, plus Julia and SciML package identities, explicit
+homotopy/Tsit5 tolerances, per-point step/RHS caps,
+strict Float64 closed-cell membership without best-fit fallback, and a bounded
+replay-work model. Resume replay and artifact copying share one cumulative
+meter. Plan/model reconstruction precedes that artifact-chain meter. Terminal
+result, terminal checkpoint, and manifest bytes are reserved before first
+publication, while plan/initial/superseded/orphan objects remain outside a
+complete disk-quota claim. The homotopy checks cancellation at every RHS
+evaluation; a changed runtime lock cannot extend an older checkpoint. The Web
+path admits at most 512 sparse work
+units. The v1 Cartesian identity and behavior remain unchanged. Both paths are
+local-only and capped research contracts; AWS/Slurm, shared object
+storage, remote leases, multi-process work stealing, safe orphan GC, and
+cluster recovery remain unimplemented.
+
+Strict slice artifacts now select exactly two free axes from verified 3D or 4D
+Cartesian chunk datasets. They reuse source values and gaps with no interpolation
+or new evaluation, and default validation requires the plan, manifest, and
+chunks together. This proves consistency with the supplied manifest root, not
+the authenticity of an untrusted root. The trust anchor must come from the Job
+or storage boundary.
+
+P7 adds a Float64 `D=3` face-lattice construction with complete enumerated
+cell/facet/ridge/vertex incidence, common refinement, closure, volume, and Euler
+checks for explicit affine cell specifications. Its publication gate interprets
+the admitted Float64 domain and halfspaces as their bit-exact dyadic rationals
+and requires exact pair dimension/non-overlap, opposing support, support/domain
+coverage, and volume equality to agree with the Float64 construction. It does
+not exact-recompute the complete ridge/vertex lattice and is not an automatic
+chemistry extractor, arbitrary-precision-input or arbitrary-real geometry API,
+or a `D >= 4` exact-incidence implementation. The existing persisted RPB2
+identity remains the 2D contract.
+
+P7b adds an exact regular-extension integrability certificate for that complete
+contractible `D=3` box. It interprets admitted Float64 coefficients as exact
+dyadic rationals, checks each atomic facet on a three-point affine basis,
+reconstructs induced potential-offset jumps, checks every deterministic
+dual-graph cotree cycle, and reports supplied affine-potential continuity
+separately. It is not a holed-domain period/cohomology certificate, a singular-
+branch selection, a `D=3` Clarke query, or a `D >= 4` result.
+
+P8a adds content-bound local identifiability and uncertainty evidence: whitened
+sensitivity rank with an explicit numerical grey zone, PSD-factor delta
+propagation, declared ensembles or typed bounded explicit coordinate
+populations, typed gaps, and computed synthetic coverage. The legacy-named
+interval path validates completeness only of the explicitly enumerated finite
+coordinate population; it does not certify continuum coverage of the enclosing
+box. Its external feature-bound certificate is content-bound and checked
+against valid rows, but the engine records that it did not reprove that
+certificate. Synthetic coverage is explicitly not
+experimental calibration, and none of these artifacts claims global
+identifiability, causal validity, or biological validation. A singular-stratum
+selector additionally requires a complete declared candidate-population
+receipt plus bound stability, reachability, residual, and branch identities; an
+incomplete or set-valued population remains unknown. Completeness is currently
+caller-declared receipt consistency: counts/content/hashes are checked, but the
+enumerator and referenced stability/trace contents are not replayed.
+
+P8b contains a finite supplied-protocol classifier that separates a finite loop,
+an untrusted-callback finite-rate-lag candidate, and a conditional equilibrium-
+branch loop. Its declarative polynomial branch path recomputes equilibrium
+residuals/local stability but does not integrate the ODE.
+
+P8c is a separate finite model-backed numerical trajectory. It integrates one
+declarative polynomial vector field from one declared initial state under a
+scalar monotone ramp, binds runtime and model/trajectory solver identities,
+compares Tsit5 and Vern7, and requires a decreasing child to bind and fully
+replay one unlinked increasing predecessor. The vector-field identity now owns
+the model time unit, and the protocol binds a structured swept-control/model-
+time rate-unit identity before constructing its time grid. Cross-solver agreement is not a
+validated error enclosure; model residual evidence is explicitly unknown, and
+the trace has no branch/switch certificate. Therefore
+`validated_error_enclosure`, `branch_switch_certified`,
+`qualifies_as_dynamic_hysteresis`, `global_reachability_certified`, and
+`basin_completeness_certified` remain false. Static multiple roots and one
+finite trajectory never upgrade to true hysteresis. The older P8b
+`complete_dynamic_reachability_evidence` and
+`branch_switch_hysteresis_certified` flags likewise remain false.
+
+P9 now prepares deterministic campaign manifests, immutable shard results,
+deterministic metadata merge/corpus-lock artifacts, and an independent
+identity-map population recount. The enumeration-only reporter names 5,240
+supported networks, 41,666
+two-dimensional field-plan groups, 69,402 all-rank field-plan groups, and
+12,041,474 points in the declared dense `17 x 17` two-dimensional population.
+These are preparation counts, not computed fields or successful Atlas records.
+Only an at-most-eight-work-unit local demonstration is executable. The complete
+campaign has not received separate authorization and has not run. Its corpus
+lock proves only the complete declared result-metadata population; QC explicitly
+does not recompute addressed field contents or observe external execution.
+
+### Local verification ledger
+
+The current local cycle repeated both complete Julia owner suites after the
+P5--P9 implementation, the runtime-identity/replay-budget audit fixes, the
+P5r0.1 exact polynomial regular-sheet integration, P8s0 branch-indexed field,
+P8s1a complete regular-root census, P8s1b0 complete simple-fold census, and
+P8s1b1 local fold/regular-sheet incidence, P8s1c0 complete simple spectral-
+event census, P8s1c1 complete nondegenerate local-Hopf lift, and P8s1c2a
+theorem-level local periodic-orbit germ integration, plus the pre-c2b exact
+finite-support Fourier residual foundation.
+All rows are local source/contract evidence, not remote CI, a live cluster, or
+an executed complete Atlas campaign.
+
+| Verified check | Local result | Boundary |
+|---|---|---|
+| BindingAndCatalysis owner suite | Exit 0 after pre-c2b exact Fourier integration; all testsets passed, including affine chart 64/64, P5r0.1 106/106, P8s1a 90/90, P8s1b0 78/78, P8s1b1 70/70, P8s0 76/76, P8s1c0 104/104, P8s1c1 102/102, P8s1c2a 155/155, pre-c2b exact Fourier 172/172, D3 exact integrability 151/151, sparse v2 284/284, P8b 782/782, P8c 151/151, and golden values 145/145; the final headless regime-boundary contract passed 8/8 after its last type-boundary hardening | Julia 1.12.6 local process; finite fixtures and policies |
+| Earlier feature audits | P7, P8a, and P8b each ended with P0=0, P1=0, P2=0 for their then-scoped contracts | Review of implemented contracts, not a theorem beyond their declared scope |
+| Final runtime/replay audit | Found two P1 issues (load-time identity drift and split resume meters); both were fixed, the focused/full suites rerun, and a final independent review found no new P0/P1. Remaining P2 boundaries are documented: no complete CAS/disk quota; plan/model reconstruction precedes the replay meter; shallow validation is an internal trust path; and distributed runtime identity still needs thread/BLAS/libm/CPU/artifact-ABI fields | Independent code review plus adversarial A/B, cumulative-cap, copy-time tamper, and raw-constructor tests |
+| Julia Web/backend owner suite | Exit 0 after pre-c2b exact Fourier integration and the headless regime-boundary repair; 5188 pass, 0 fail/error, and one pre-existing explicit broken test across 5189 assertions; schema drift 57/57, API routes 363/363, backend assembly 199/199, numerical endpoints 25/25, and adaptive sparse Job 141/141 | Standard Web project with headless engine loading on a local Julia 1.12.6 process; no remote provider/cloud execution |
+| Phenotyper | 35/35 | Local finite pipeline fixtures |
+| Cross-version focused/HPC | P5r0.1 106/106, P8s1a 90/90, P8s1b0 78/78, P8s1b1 70/70, P8s0 76/76, P8s1c0 104/104, P8s1c1 102/102, P8s1c2a 155/155, pre-c2b exact Fourier identity 172/172, sparse engine 284/284, and Web adaptive Job 141/141 passed on Julia 1.10.11; the exact Fourier contract also passed 172/172 on Julia 1.12.6; headless lock selection, instantiate, and package load passed on Julia 1.10.11 and 1.12.6 | Package/lock selection and focused contracts; no live Slurm scheduler |
+| Browser JavaScript | Zero-warning lint and complete JavaScript suite passed, including RO-field renderer 14/14 | Node contracts; no browser-to-live-backend rerun in this final cycle |
+| Python consumers/contracts | Chat API 12/12, Design Agent 44/44, Reader 15/15, repository Python 134/134 | No live LLM provider or external service |
+| Repository gate | Generated then read-only verified: 43 maintained files, 20 schemas, 51 routes | Local catalog/schema/link consistency |
+
+The current increment also has the following independently repeated focused
+evidence.
+
+| Current incremental check | Local result | Boundary |
+|---|---|---|
+| `D=3` exact integrability | 151/151 | Explicit-affine contractible Float64/dyadic fixtures; no holes or `D >= 4` |
+| Affine chart admission | 64/64 | Detached public snapshots, content-seal mutation detection, and raw-constructor revalidation; affine charts only |
+| Nonlinear input-chart contract | 135/135 on Julia 1.12.6 and included in the exit-0 complete engine owner suite; this final 135-test contract was not rerun on Julia 1.10.11 | Declarative quadratic maps and pointwise numerical immersion only; first-order caller labels are checked but not independently proven; no global injectivity, overlap covariance, or calibration uncertainty |
+| Observable-chart contract | 75/75 on Julia 1.10.11 and 1.12.6 | Finite declarative affine/quadratic maps; unit labels only, with no general ratio/log-sum contract |
+| P5r0.1 exact polynomial regular sheet | 106/106 on Julia 1.10.11 and 1.12.6 | Exact-dyadic full-tube substitution with one- and two-input nonlinear translated fixtures; uniqueness only inside each declared positive tube, bridge-relative branch identity, no outside-root/global-branch/native-log claim |
+| P8s0 branch-indexed polynomial regular field | 76/76 on Julia 1.10.11 and 1.12.6 with bounds checking | Replayed P5r0.1 patches/bridges, conservative exact stability, ordered state log responses, and separated stable-root lower-bound witnesses; no complete population, bifurcation-boundary, global-continuation, or hysteresis claim |
+| P8s1a complete regular-root census | 90/90 on Julia 1.10.11 and 1.12.6 with bounds checking | Exhaustive exact-dyadic tensor cover, including nonlinear two-input and two-state/two-input fixtures; complete roots and an empty fold set only inside one declared affine moving domain, with no outside-root, stability-complete, Hopf, fold-containing-domain, global, native-log, or hysteresis claim |
+| P8s1b0 complete simple-fold event census | 78/78 on Julia 1.10.11 and 1.12.6 with bounds checking | Exhaustive exact-dyadic `H=(F,det(F_x))` cover for exactly one control; complete isolated simple folds only inside one declared positive augmented domain, with no adjacent-sheet, stability, multi-control event-sheet, native-log, global, or hysteresis claim |
+| P8s1b1 local fold/regular-sheet incidence | 70/70 on Julia 1.10.11 and 1.12.6 with bounds checking | Declarative local fold chart, two replayed half-branch bridges, strict original-patch tube containment, and a complete-census corridor excluding intervening folds; no original-control two-root-side, remote-component, stability, global-graph, Hopf, or hysteresis claim |
+| P8s1c0 complete simple spectral-event census | 104/104 on Julia 1.10.11 and 1.12.6 with bounds checking; included in the exit-0 complete engine and Web owner suites on Julia 1.12.6 | Exhaustive source-bound `H=(F,E(z),O(z))` cover from zero to beyond a uniform spectral bound for exactly one polynomial dynamics control; complete isolated simple transverse spectral crossings only, with no first-Lyapunov, nonlinear-Hopf, criticality, periodic-orbit, multi-control, native-log, global, or hysteresis claim |
+| P8s1c1 complete nondegenerate local-Hopf lift | 102/102 on Julia 1.10.11 and 1.12.6 with bounds checking; included in the exit-0 complete engine and Web owner suites on Julia 1.12.6; final direct read-only audit found no remaining P0/P1/P2 | Complete replayed lift of every P8s1c0 parent event through bordered eigen/adjoint systems, both resolvents, raw `B/C`, and a unit-`q` Kuznetsov `l1` interval excluding zero; center-manifold criticality only, with no original-control side, explicit periodic-orbit incidence, full-state orbit stability, multi-control, native-log, global, or hysteresis claim |
+| P8s1c2a theorem-level local periodic-orbit germ lift | 155/155 on Julia 1.10.11 and 1.12.6 with bounds checking; included in the exit-0 complete engine and Web owner suites on Julia 1.12.6; final direct read-only audit found no remaining P0/P1/P2 | Complete c0/c1 replay and one theorem-level germ per nondegenerate Hopf event; strict crossing orientation, original-control side, and center-manifold radial attraction/repulsion for sufficiently small nonzero but unquantified amplitude; no explicit orbit enclosure, validated branch, quantitative amplitude radius, Floquet/full-state stability, orbit-population completeness, multi-control, native-log, global, or hysteresis claim |
+| Pre-c2b exact finite-support Fourier residual identity | 172/172 on Julia 1.10.11 and 1.12.6 with bounds checking; included in the exit-0 complete engine and Web owner suites on Julia 1.12.6; independent mathematical and authority/resource audits found no remaining P0/P1/P2 | Complete source-generated exact Laurent residual for one submitted polynomial-ODE parameterization, with Galerkin-head/omitted-tail separation and source-bound replay; no infinite-tail/radii theorem, nearby-orbit enclosure or uniqueness, branch, quantitative amplitude, Hopf incidence, minimal-period, Floquet/full-state stability, population, global, or hysteresis claim |
+| Sparse v2 pure transitions | 284/284 on Julia 1.10.11 and 1.12.6 | Finite deterministic policy and portable-token/replay contracts; no continuum error theorem |
+| P8b/P8c dynamics | P8b 782/782; P8c 151/151 | Finite deterministic polynomial fixtures; no validated error, branch switch, basin theorem, or true hysteresis |
+| Web adaptive sparse Job | 141/141 on Julia 1.10.11 and 1.12.6; legacy Cartesian Job 62/62 | Process-local CAS and lifecycle fixtures; one real heterodimer batch, no shared store or remote executor |
+
+The ordered remaining implementation, independent-QC, and authorization gates
+are in
+[decision 0006](../decisions/0006-multi-input-ro-field-research-roadmap.md).
+
 ## Integrated extension: direct fixed-topology shape control
 
 The previous cat-response prototype asked whether one of three hand-picked

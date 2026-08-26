@@ -31,6 +31,135 @@ The contract catalog distinguishes four kinds of evidence:
 invalid.” Upgrade such a claim only after adding an identified producer fixture
 and a validator that actually loads it.
 
+## Multi-input reaction-order field v1
+
+`bne-ro-field/v1.0.0` is the strict additive interchange contract for a
+reaction-order response over an ordered multi-input log domain. The top-level
+discriminator separates three artifacts:
+
+- `sampled_grid` carries output and reaction-order tensors plus one validity flag
+  per evaluated domain point;
+- `exact_cell_complex` v1 carries canonical counter-clockwise 2D cell vertices,
+  areas, ordered affine labels, facet endpoints/incidence/line geometry, explicit
+  singular strata, and gaps; an optional H-representation may be retained but is
+  not the canonical 2D interchange geometry; and
+- `directional_path` carries a declared one-dimensional pullback through a field,
+  including both the full local matrix and the path-direction product.
+
+Input axis order, log basis, dimensionless reference scales, closed bounds, fixed
+background, output order, and output/input component order are explicit identity
+fields. Coverage records eligible, evaluated, valid, invalid, omitted, and stored
+populations together with work/storage budgets. A truncated or incompletely stored
+artifact is `partial` even when all retained entries are numerically valid. Invalid
+numeric entries are null gaps, not zeros.
+
+JSON Schema cannot compare an arbitrary-rank shape with flattened array lengths or
+prove that cell incidence is closed. The focused contract test therefore also
+checks axis/output/component links, tensor ranks and lengths, cell/facet references,
+population arithmetic, and partial-state consistency. Small tracked examples cover
+all three representations:
+[`sampled_grid`](../../tests/fixtures/ro_field/sampled-grid.json),
+[`exact_cell_complex`](../../tests/fixtures/ro_field/exact-cell-complex.json), and
+[`directional_path`](../../tests/fixtures/ro_field/directional-path.json).
+
+Coincident source regimes are deduplicated by geometry without discarding their
+distinct affine labels. A cell is `set_valued` exactly when it retains more than
+one such label. Any singular stratum or set-valued cell makes the artifact
+`partial`, contributes invalid coverage, and forces `no_positive_claim`; complete
+enumeration alone cannot turn lower-dimensional or ambiguous evidence into a
+single-valued field.
+
+The companion request identity is `bne-ro-field-request/v1.0.0`. Exactly one model
+source is allowed: a complete inline NetworkIR, a canonical `network_ir_hash`, or
+an in-memory `session_id`. Sampled requests require ordered Cartesian coordinates;
+exact requests prohibit sampling and are restricted to two conserved-total axes.
+Both branches carry finite work/payload/deadline bounds. Exact construction exposes
+the five builder limits (`max_candidate_regimes`, `max_cells`,
+`max_singular_strata`, `max_pair_checks`, and `max_facets`) with synchronous hard
+caps. The portable schema can express `inline`, `chunked`, or
+`artifact_reference` output storage. Schema validity is not a capability promise:
+a synchronous implementation may reject the two non-inline modes with a structured
+response rather than silently changing storage semantics. Tracked request examples
+exercise inline NetworkIR, hash, and session sources in
+[`tests/fixtures/ro_field_request`](../../tests/fixtures/ro_field_request).
+
+The schemas and fixtures establish interchange structure only. Their bounded
+runtime owners add separate evidence: `sample_reaction_order_field` demonstrates
+sampled tensors through three inputs; `build_ro_cell_complex` constructs exact
+fixed-background 2D geometry; `POST /api/v1/ro_field` publishes inline sampled or
+exact fields; SQLite 0.4 stores verified field documents and eligible RPB2
+identities; SQLite 0.5 adds normalized, artifact-recomputed regular-cell
+signature indexes; and the experimental `/ro-field-demo.html` page renders 2D results or
+requires an explicit slice for higher rank. The synchronous runtime rejects
+`chunked` and `artifact_reference` before computation, so their presence in the
+portable request schema is not a storage-capability claim.
+
+The versioned regular-cell signature and explicit finite-corpus Atlas are local
+Julia contracts, not additional interchange-schema representations. They index at
+most eight caller-declared exact 2D records, exclude declared lower-dimensional
+strata, classify ambiguous/gapped fields as unknown, and scope zero-match results
+to the declared demo corpus or evaluated subset. They do not enumerate network
+space.
+
+No Workspace/native document integration is claimed. The synchronous endpoint
+still rejects `chunked` and `artifact_reference`, but a separate local
+`compute_ro_field` Job protocol now realizes deterministic Cartesian plans as
+content-addressed work units, chunks, checkpoints, and complete manifests.
+Resume creates a new child Job with immutable parent/checkpoint lineage; result
+reads revalidate the nested artifacts. Strict server-generated 2D slices reuse
+verified Cartesian source points without interpolation. These local runtime
+contracts do not add a new representation to RO Field v1, provide a remote
+executor, or authorize a complete Atlas campaign. Existing SISO RPB1 payloads
+retain their sequence identity; they are not migrated or re-labelled by these
+schemas. The mathematical and resource decision is recorded in
+[`0005-multi-input-reaction-order-field`](../decisions/0005-multi-input-reaction-order-field.md).
+
+An additional sparse-v2 runtime protocol is deliberately disjoint from that
+Cartesian Job and from the RO Field v1 interchange Schema. Its request/spec,
+plan, result, batch, state, point-chunk, checkpoint, terminal, and manifest
+identities use v2 discriminators and the `ro-field-sparse-v2` local namespace;
+none is a fourth `bne-ro-field/v1.0.0` representation. The strict owner is
+[`ro_field_sparse_jobs.jl`](../../webapp/src/ro_field_sparse_jobs.jl), backed by
+the engine state machine in
+[`ro_sparse_sampler.jl`](../../Bnc_julia/src/rop/ro_sparse_sampler.jl). One
+adaptive multi-index batch is one work unit, and each checkpoint binds the
+prior state, prepared batch, ordered point-result chunk, and next state.
+
+Sparse-v2 remains `local_async` and single-process. Submission performs bounded
+record/control-artifact admission; the child worker performs one metered
+authoritative forward replay of the named parent checkpoint before reuse, and
+result publication/reads replay the complete plan-transition-terminal chain
+once. Unreferenced CAS files are not committed
+evidence. The plan transitively binds every artifact to a server-derived
+numerical-execution policy: module-load-frozen active lock, engine source, and
+Web source tree, explicit homotopy/Tsit5 tolerances and work caps, in-RHS
+cancellation, strict Float64 closed-cell regime membership, and bounded replay
+work. Resume copy shares that artifact-chain meter; bounded plan/model
+reconstruction occurs before it. A runtime-lock mismatch
+fails before a
+child can evaluate or extend the parent. The focused runtime contract is
+[`ro_field_sparse_job_contract.jl`](../../webapp/test/ro_field_sparse_job_contract.jl).
+This path supplies no shared object store, remote executor, multi-process work
+stealing/recovery, or artifact garbage collection, and it does not make strict
+Cartesian slices consumers of adaptive data.
+
+The phased theory, chunk/job, sparse-sampling, exact-3D, uncertainty, dynamics,
+and campaign gates are recorded in
+[`0006-multi-input-ro-field-research-roadmap`](../decisions/0006-multi-input-ro-field-research-roadmap.md).
+
+The working tree also has a strict runtime identity for
+`bne-ro-field-differential-analysis/v1.0.0`. It is derived from a complete inline
+sampled v1 field, stores its own source and analysis hashes, and keeps
+finite-grid consistency and cross-curvature policy wording separate from the
+source field's evidence class. Its hand-authored analysis and request Schemas are
+[`ro-field-differential-analysis.schema.json`](../../schemas/ro-field-differential-analysis.schema.json)
+and
+[`ro-field-differential-request.schema.json`](../../schemas/ro-field-differential-request.schema.json).
+The tracked analytic fixture is loaded by a semantic Python contract, while the
+Julia owner tests multidimensional tensor, gap, policy, tamper, and HTTP behavior.
+These schemas are separate contracts and must not be inferred from the base
+RO-field Schema.
+
 ## Workspace document v2
 
 The complete browser/native document identity is `bne-workspace/v2.0.0` and is

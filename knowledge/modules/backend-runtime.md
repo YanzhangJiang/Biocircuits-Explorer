@@ -76,6 +76,123 @@ override wins in either mode.
   the bounded `bcx_http_legacy_requests_total` counter by method, canonicalized
   route, and status. Canonical v1, unknown, and v1-only paths do not increment it.
 
+## Working-tree bounded RO-field endpoint
+
+`POST /api/v1/ro_field` is additive and has no legacy alias. It runs under the
+heavy synchronous gate and the resolved model-bundle lock. The request boundary
+validates axis/output identity, references, the full fixed background, tensor
+rank, exact-builder limits, and storage mode before computation. It produces
+only complete inline response artifacts; a deadline, work limit, or final
+payload limit returns structured HTTP 422 with `scientific_infeasibility=false`
+and stores nothing.
+
+The runtime admits sampled fields through four axes/four outputs and 4,096 grid
+points, or an exact two-total cell complex within the caps in decision 0005.
+Canonical data bytes and hashes, UTC provenance, invalid-as-null blocks, and
+singular/set-valued partial evidence are revalidated before publication. The
+exact trust boundary rebuilds the polygon-edge closure: facets may segment a
+long edge at a T-junction, but together they must cover every edge exactly once,
+with geometry-derived incidence, boundary kind/side, and singular references.
+Regular single-valued affine labels must agree at both ends of every internal
+facet. Missing, duplicate, overlapping, extra, or discontinuous geometry is
+rejected rather than published.
+
+The request tolerance is capped at `1e-6` absolutely and at `1e-6` of the
+shortest engine-coordinate side. An unsupported tolerance returns a structured
+422 before computation; an incomplete post-compute geometry returns a distinct
+structured 422 and is never stored. The endpoint is not an asynchronous job,
+chunk service, or full Atlas builder.
+
+`POST /api/v1/ro_field/differential` is a second v1-only route. It accepts one
+already validated complete inline sampled field plus bounded tolerances/work
+limits and emits a separately hashed
+`bne-ro-field-differential-analysis/v1.0.0` artifact. The artifact records
+finite-grid integrability, raw/symmetric curvature, invalid cells, and the
+explicit `positive_log_cross_curvature` convention. It does not mutate the
+source field identity, prove continuum integrability, or claim causal synergy.
+
+## Working-tree chunked RO-field jobs and strict slices
+
+The P6 working-tree path separates scientific identity from runtime placement.
+`ro_field_chunks.jl` freezes one deterministic bounded plan, its ordered work
+units, canonical JSON chunks, linearized checkpoints, and a complete dataset
+manifest. Plan, work-unit, chunk, checkpoint, and manifest identities are
+SHA-256 content addresses. Each manifest/checkpoint entry carries the exact
+canonical chunk byte count as well as valid/invalid counts, and invalid samples
+remain typed gaps. Local chunk publication is atomic and write-once: an existing
+path is accepted only when its bytes match the requested content identity.
+
+`compute_ro_field` is integrated with the durable six-state Job lifecycle
+(`queued`, `running`, `succeeded`, `failed`, `cancel_requested`, `cancelled`),
+but is deliberately `local_async` only. A resume request creates a new child
+job; it may name only the same owner's terminal failed/cancelled parent, the
+same frozen scientific plan, and that parent's linearized checkpoint. Verified
+committed chunks are reused and only missing deterministic work units are
+evaluated. Result publication and later result reads revalidate the plan,
+checkpoint, manifest, every addressed chunk, cumulative payload accounting,
+and submitted resume lineage. AWS/Batch submission fails closed until a shared
+object-store chunk protocol exists.
+
+A disjoint sparse-v2 branch keeps the same `compute_ro_field` Job kind but uses
+`bne-ro-field-job-spec/v2.0.0`, an independent scientific plan identity, and the
+`ro-field-sparse-v2` artifact namespace. It accepts a complete inline NetworkIR
+plus a bounded one-to-four-control affine chart, evaluates the complete source
+q/K Jacobian, and stores the output-major/input-minor chart pullback without
+inventing Cartesian axis coordinates. One adaptive multi-index batch is one
+work unit. Plan, prepared batch, ordered point chunk, prior/next state, terminal
+result, checkpoint, and manifest documents are separate write-once content
+addresses. A checkpoint binds every transition as
+prior-state/batch/chunk/next-state, so a cancellation may leave an unreferenced
+CAS object but cannot make it committed evidence.
+
+The plan includes a server-derived numerical execution policy rather than only
+nominal solver labels. It binds module-load-frozen Project/Manifest, engine, and
+`webapp/src/**/*.jl` source identities plus Julia and critical SciML package
+versions, explicit
+homotopy/Tsit5 tolerances, per-point step and RHS caps, strict Float64
+closed-cell regime membership, and replay-work limits over actual artifact and
+scheduler/transition work. Cancellation is checked
+on each homotopy
+RHS evaluation. The local path accepts at most 512 multi-index work units, and
+a runtime-lock change makes old resume artifacts foreign instead of mixing old
+and new numerical chunks.
+
+Sparse-v2 submission performs only bounded ownership/status/identity and
+control-artifact admission checks. A resumed child then performs one metered
+authoritative forward replay of the parent's linearized checkpoint before
+copying or extending it; it never trusts an uncommitted object or reevaluates a
+committed batch. Final publication and every result read replay the plan and all
+addressed transitions once, reconstruct the terminal state, and invoke the
+engine's plan-and-terminal-state result validator. Shallow engine validation is
+reserved for current-process or already-authoritatively-replayed state. Terminal
+result, checkpoint, and manifest bytes are charged before first publication;
+plan, initial/superseded checkpoints, and orphan objects are not a complete disk
+quota. This branch is also `local_async` only and fails closed for AWS/Batch.
+The replay meter starts after bounded plan parsing and model/runtime
+reconstruction, so it is not an end-to-end worker CPU or wall-clock budget.
+It is a runtime protocol parallel to the Cartesian v1 job, not a new
+representation or compatibility widening of RO Field v1.
+
+`ro_field_slices.jl` constructs an exact-index/no-interpolation two-dimensional
+view over a verified
+three- or four-dimensional Cartesian chunk dataset. It selects source coordinate
+indices, projects only the two ordered free-axis columns, retains source gaps,
+and performs neither interpolation nor new field evaluation. Default validation
+requires the complete plan-manifest-chunk chain; structure-only legacy
+validation is an explicit downgraded opt-in. Count, scalar, payload, and raw-tree
+budgets are checked before a loader callback or result allocation. This proves
+consistency with the supplied manifest root; authenticity of that root remains
+the responsibility of the trusted job/store boundary.
+
+The same module assembly contains P9 campaign-manifest, immutable shard-result,
+deterministic merge, corpus-lock, and independent identity-map recount helpers.
+They execute at most an eight-work-unit local demonstration. A prepared external
+manifest carries `manifest_preparation_is_not_execution_authority` and cannot be
+executed by this runtime without separate authorization and a separately owned
+executor. The corpus lock and second-pass QC cover the complete declared result
+metadata population; they explicitly do not recompute the field artifacts
+behind their hashes and never assert external execution.
+
 ## Non-goals
 
 - Owning mathematical ROP semantics; those belong to `Bnc_julia`.
@@ -85,6 +202,10 @@ override wins in either mode.
   processes or replicas.
 - Providing a fair queue, request deadlines, or cancellation for synchronous
   handlers; those callers receive fail-fast capacity/budget responses.
+- Treating a prepared campaign manifest as authorization to run a large local,
+  cloud, or cluster population.
+- Authenticating a caller-supplied chunk-manifest root without a trusted
+  job/store record that pins that root.
 - Treating solver convergence as analytic or biological proof.
 - Providing TLS or network authentication for every deployment mode; those are
   explicit proxy/auth configuration responsibilities.
@@ -105,6 +226,17 @@ override wins in either mode.
   [`webapp/src/request_support.jl`](../../webapp/src/request_support.jl),
   [`webapp/src/serialization.jl`](../../webapp/src/serialization.jl),
   [`webapp/src/routing.jl`](../../webapp/src/routing.jl)
+- RO-field request/producer and v1 handler:
+  [`webapp/src/ro_field_contract.jl`](../../webapp/src/ro_field_contract.jl),
+  [`webapp/src/ro_field_differential.jl`](../../webapp/src/ro_field_differential.jl),
+  [`webapp/src/ro_field_api.jl`](../../webapp/src/ro_field_api.jl)
+- RO-field chunking, local asynchronous execution, strict slices, and campaign
+  preparation/QC:
+  [`webapp/src/ro_field_chunks.jl`](../../webapp/src/ro_field_chunks.jl),
+  [`webapp/src/ro_field_jobs.jl`](../../webapp/src/ro_field_jobs.jl),
+  [`webapp/src/ro_field_sparse_jobs.jl`](../../webapp/src/ro_field_sparse_jobs.jl),
+  [`webapp/src/ro_field_slices.jl`](../../webapp/src/ro_field_slices.jl),
+  [`webapp/src/ro_field_campaign.jl`](../../webapp/src/ro_field_campaign.jl)
 - Synchronous admission, endpoint costs, and SISO path policy:
   [`webapp/src/sync_work_budget.jl`](../../webapp/src/sync_work_budget.jl),
   [`webapp/src/path_work_budget.jl`](../../webapp/src/path_work_budget.jl)
@@ -139,6 +271,11 @@ override wins in either mode.
   job storage, job-cache capacity, local-job concurrency/admission, local-image
   exposure, AWS, Cognito, and quotas.
 - Local files or S3 URIs for batch input/status/result artifacts.
+- Bounded Cartesian-v1 and adaptive sparse-v2 RO-field job specifications,
+  content-addressed local chunk/transition trees, and exact two-free-axis
+  Cartesian slice specifications.
+- Frozen campaign manifests and supplied shard-result sets for local merge and
+  metadata-population QC; these inputs do not confer execution authority.
 - Application identity from an explicit environment value or a `VERSION` file
   in the installed resource bundle/source tree.
 
@@ -152,6 +289,14 @@ override wins in either mode.
   application/API version discovery.
 - Process-local sessions and model caches.
 - Atomic local job records/results or S3-backed Batch artifacts.
+- For `compute_ro_field`, either the unchanged Cartesian-v1 local
+  plan/checkpoint/chunk/manifest tree or the disjoint sparse-v2
+  plan/batch/chunk/state/terminal/checkpoint/manifest tree, with a result
+  descriptor that binds and replays its complete nested content identity.
+- Exact-index/no-interpolation two-dimensional slice artifacts over verified
+  Cartesian source datasets.
+- Prepared campaign manifests, local-demo shard results, metadata-only corpus
+  locks, and independent recount reports.
 - Supported local image bytes only when bind/origin/opt-in rules permit them.
 
 ## Contract sources
@@ -177,6 +322,14 @@ override wins in either mode.
   [`result-artifact.schema.json`](../../schemas/result-artifact.schema.json),
   plus the working-tree asynchronous commit marker in
   [`job-result-manifest.schema.json`](../../schemas/job-result-manifest.schema.json)
+- Content-addressed RO-field plans/chunks/checkpoints/manifests, sparse-v2
+  batch/state/terminal transitions, local resume lineage, exact source slices,
+  and prepared campaign QC:
+  [`ro_field_chunks.jl`](../../webapp/src/ro_field_chunks.jl),
+  [`ro_field_jobs.jl`](../../webapp/src/ro_field_jobs.jl),
+  [`ro_field_sparse_jobs.jl`](../../webapp/src/ro_field_sparse_jobs.jl),
+  [`ro_field_slices.jl`](../../webapp/src/ro_field_slices.jl), and
+  [`ro_field_campaign.jl`](../../webapp/src/ro_field_campaign.jl)
 - Shared-model locking, content-hash build single-flight, and request bundle
   pinning: [`model_runtime.jl`](../../webapp/src/model_runtime.jl)
 - Independent model/session LRU timestamps:
@@ -225,6 +378,26 @@ override wins in either mode.
   boundaries.
 - [`webapp/test/numerical_validity_contract.jl`](../../webapp/test/numerical_validity_contract.jl)
   covers validity masks and partial-result propagation.
+- [`webapp/test/ro_field_chunks_contract.jl`](../../webapp/test/ro_field_chunks_contract.jl)
+  covers deterministic bounded plans, canonical gap-preserving chunks, atomic
+  content-addressed commits, verified resume, and complete manifests.
+- [`webapp/test/ro_field_job_contract.jl`](../../webapp/test/ro_field_job_contract.jl)
+  covers frozen job identity, nested artifact validation, child-only resume,
+  outer commit-before-success, restart recovery, and cancellation lineage.
+- [`webapp/test/ro_field_sparse_job_contract.jl`](../../webapp/test/ro_field_sparse_job_contract.jl)
+  covers disjoint v2 identity, a real full-source-Jacobian pullback, one-index
+  work units, explicit gaps, local asynchronous publication, cancellation with
+  orphan CAS objects, exact child resume, lightweight admission followed by
+  worker replay, terminal immutability, and tamper rejection at every nested
+  and outer result layer.
+- [`webapp/test/ro_field_slices_contract.jl`](../../webapp/test/ro_field_slices_contract.jl)
+  covers exact-index/no-interpolation 3D/4D Cartesian slicing, unequal-axis
+  index mapping, gap preservation, provenance forgery rejection, and pre-loader
+  budgets.
+- [`webapp/test/ro_field_campaign_contract.jl`](../../webapp/test/ro_field_campaign_contract.jl)
+  covers deterministic finite manifests, execution-authority rejection,
+  immutable shard populations, merge/corpus-lock/QC tamper rejection, the
+  local merge reproducer, and enumeration-only population reporting.
 - [`webapp/test/*.test.mjs`](../../webapp/test/) and the Python agent tests cover
   browser/helper request boundaries that consume this runtime.
 
@@ -338,6 +511,23 @@ stack or a real AWS worker.
 - Local input/result/manifest/terminal-status artifacts use a stricter rule
   than canonical records: directory durability must be confirmed before the
   next commit marker or success state can be published.
+- A `compute_ro_field` plan excludes job/time/location hints from scientific
+  identity. Its checkpoint is a linearized prefix of verified immutable chunks;
+  resume creates a child and cannot alter the parent or reevaluate committed
+  work. Success is publishable only after the complete dataset manifest and
+  outer job-result commit marker validate.
+- The sparse-v2 namespace is disjoint from Cartesian v1. Its linearized
+  checkpoint binds each prior state, prepared batch, ordered point chunk, and
+  next state; final reads must replay every transition and re-finalize the
+  terminal engine result. CAS files not named by that checkpoint are not
+  committed evidence.
+- A strict RO-field slice is a two-free-axis selection from source Cartesian
+  points. `value_origin=reused_exact` and `interpolation=none` are enforced, and
+  default provenance validation requires the full plan-manifest-chunk chain.
+- Campaign preparation never grants execution authority. Corpus-lock and
+  independent-QC claims stop at the supplied content identities and declared
+  metadata population; both keep `external_execution_verified=false` and the
+  QC keeps `artifact_content_recomputed=false`.
 
 ## Known gaps
 
@@ -372,6 +562,18 @@ stack or a real AWS worker.
   path-materialization counters. Local-job task count is now bounded, but a
   single admitted job can still request large work and therefore requires
   explicit partitioning, quota, and cooperative cancellation.
+- P2 — Both Cartesian-v1 and adaptive sparse-v2 `compute_ro_field` remain
+  local-only, single-process Job paths bounded to one-to-four controls and at
+  most 4,096 evaluated points. They have no shared object-store publication,
+  multi-process work stealing, Slurm/AWS executor, cluster-wide recovery, or
+  content-addressed artifact garbage-collection contract.
+- P2 — Strict slices expose exactly two free axes and require Cartesian source
+  samples. They do not create arbitrary-rank projected artifacts, interpolate
+  irregular data, or authenticate an untrusted manifest root by themselves.
+- P2 — P9 supplies deterministic campaign preparation, local-demo execution,
+  merge, and metadata-population QC only. The complete campaign has not been
+  authorized or run, and artifact hashes in a corpus lock are not a substitute
+  for reloading and recomputing their scientific contents.
 - P2 — Positional hashing above seven free species can split cache identity for
   relabeled/reordered equivalents; scalable exact canonicalization is not yet
   provided.
@@ -403,6 +605,14 @@ stack or a real AWS worker.
    failed solve may not re-enter ranking or plotting through a fallback value.
 8. Copy and test `VERSION` in every new bundle layout; bump public API, artifact,
    or application versions when semantics, not merely implementation, change.
+9. For RO-field job changes, preserve Cartesian-v1 identity and sparse-v2
+   plan/batch/chunk/state transition identity, child-only resume lineage,
+   complete replay-based result validation, and cancellation checkpoints.
+   Adding a remote executor requires a separate shared-storage, recovery, and
+   garbage-collection contract.
+10. For campaign changes, keep preparation separate from authority and state
+    whether QC revalidated metadata identities, artifact contents, or actual
+    external execution; those evidence classes are not interchangeable.
 
 See [runtime topology](../architecture/runtime.md) and
 [data provenance](../architecture/data-provenance.md).
@@ -415,6 +625,12 @@ See [runtime topology](../architecture/runtime.md) and
   admission and typed budgets; path context propagation; body limits; numerical
   validity; jobs/persistence; canonical first-party callers; bounded legacy
   request metrics; focused Julia/JavaScript/Python tests; and both CI workflows.
+- Working-tree extension inspected on 2026-07-17: content-addressed RO-field
+  plans/chunks/checkpoints/manifests, local six-state job integration and resume
+  lineage, the disjoint sparse-v2 plan/batch/chunk/state/terminal replay path,
+  exact-index/no-interpolation Cartesian source slices, campaign
+  preparation/merge/QC source, and their focused contracts. This does not
+  advance the committed revision above or claim that the complete campaign ran.
 - Historical baseline: `f9c65a5` remains evidence for the pre-P6 service shape
   and compatibility behavior. It does not describe the current shared-runtime,
   synchronous-budget, or numerical-validity contract.

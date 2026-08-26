@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "0fed74205ce56d5a99e5f2f97052037e78193110"
+project_hash = "84cb2ae5e14531044076564fd8ebad13dd01aa90"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -189,7 +189,7 @@ uuid = "e2ed5e7c-b2de-5872-ae92-c73ca462fb04"
 version = "0.2.2"
 
 [[deps.BindingAndCatalysis]]
-deps = ["Arpack", "CDDLib", "Clarabel", "DataStructures", "DiffEqCallbacks", "Distributions", "GraphMakie", "Graphs", "ImageFiltering", "IntegerSmithNormalForm", "JSON3", "JuMP", "Latexify", "LinearAlgebra", "Makie", "MathOptInterface", "NonlinearSolve", "OrdinaryDiffEq", "Parameters", "Polyhedra", "Printf", "ProgressMeter", "Random", "SparseArrays", "Statistics", "StatsBase", "Symbolics"]
+deps = ["Arpack", "CDDLib", "Clarabel", "DataStructures", "DiffEqCallbacks", "Distributions", "GraphMakie", "Graphs", "ImageFiltering", "IntegerSmithNormalForm", "JSON3", "JuMP", "Latexify", "LinearAlgebra", "Makie", "MathOptInterface", "NonlinearSolve", "OrdinaryDiffEq", "Parameters", "Polyhedra", "Printf", "ProgressMeter", "Random", "SHA", "SciMLBase", "SparseArrays", "Statistics", "StatsBase", "Symbolics"]
 path = "."
 uuid = "b532a4b1-2c45-4c12-bcaf-8695372aa40c"
 version = "1.0.0-DEV"

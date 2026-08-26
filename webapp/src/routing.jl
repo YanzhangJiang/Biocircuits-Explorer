@@ -222,6 +222,15 @@ function _api_response_with_error_mapping(handler, path::AbstractString)
                 "code" => "sync_budget_exceeded",
                 "retryable" => false,
             ); status=422)
+        elseif e isa ROFieldRequestError
+            return json_response(Dict(
+                "error" => sprint(showerror, e),
+                "code" => e.code,
+                "retryable" => false,
+                "computed" => e.computed,
+                "stored" => e.stored,
+                "scientific_infeasibility" => false,
+            ); status=422)
         elseif is_request_error(e)
             return error_response("Invalid request: $(sprint(showerror, e))"; status=400)
         else

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/ro-field-differential-request.schema.json",
+  "title": "Synchronous finite-grid RO-field differential-analysis request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ro_field", "options"],
+  "properties": {
+    "schema_version": {
+      "const": "bne-ro-field-differential-request/v1.0.0"
+    },
+    "ro_field": {
+      "allOf": [
+        { "$ref": "ro-field.schema.json" },
+        {
+          "type": "object",
+          "properties": {
+            "representation": { "const": "sampled_grid" },
+            "coverage": {
+              "type": "object",
+              "properties": {
+                "storage": {
+                  "type": "object",
+                  "properties": {
+                    "mode": { "const": "inline" },
+                    "complete": { "const": true }
+                  },
+                  "required": ["mode", "complete"]
+                }
+              },
+              "required": ["storage"]
+            }
+          },
+          "required": ["representation", "coverage"]
+        }
+      ]
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "absolute_tolerance": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1e-8
+        },
+        "relative_tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1e-6
+        },
+        "synergy_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1e-8
+        },
+        "max_faces": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 100000
+        },
+        "max_face_output_evaluations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 1000000
+        },
+        "max_cells": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 100000
+        },
+        "max_corner_visits": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 1000000
+        }
+      }
+    }
+  }
+}

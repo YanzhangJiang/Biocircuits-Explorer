@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Experimental multi-input reaction-order field</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1e2936;
+      background: #f4f7fa;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main {
+      width: min(1320px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 64px;
+    }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 0 0 8px; font-size: clamp(1.6rem, 3vw, 2.4rem); }
+    .eyebrow {
+      display: inline-flex;
+      margin-bottom: 14px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #fff0d7;
+      color: #8b4a00;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .lead { max-width: 78ch; margin: 0; color: #4b5d70; line-height: 1.55; }
+    .boundary {
+      margin: 20px 0 28px;
+      padding: 14px 16px;
+      border: 1px solid #e5b45f;
+      border-left-width: 5px;
+      border-radius: 8px;
+      background: #fffbeb;
+      color: #70420a;
+      line-height: 1.5;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(320px, .82fr) minmax(460px, 1.18fr);
+      gap: 22px;
+      align-items: start;
+    }
+    .panel {
+      border: 1px solid #d7e0e8;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 10px 24px rgb(35 50 65 / 6%);
+      overflow: hidden;
+    }
+    .panel-header { padding: 18px 20px 0; }
+    .panel-header h2 { margin: 0; font-size: 1.05rem; }
+    .panel-header p { margin: 7px 0 0; color: #617184; font-size: .9rem; line-height: 1.45; }
+    form { padding: 16px 20px 20px; }
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 570px;
+      resize: vertical;
+      padding: 13px;
+      border: 1px solid #bcc9d5;
+      border-radius: 8px;
+      background: #f8fafc;
+      color: #1d2a38;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      tab-size: 2;
+    }
+    textarea:focus { outline: 3px solid rgb(33 111 180 / 20%); border-color: #216fb4; }
+    button {
+      margin-top: 14px;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 8px;
+      background: #145f9c;
+      color: #ffffff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #0f4f83; }
+    button:focus-visible { outline: 3px solid rgb(20 95 156 / 30%); outline-offset: 2px; }
+    button:disabled { cursor: wait; opacity: .65; }
+    #ro-field-status {
+      min-height: 48px;
+      margin: 0;
+      padding: 14px 20px;
+      border-bottom: 1px solid #d7e0e8;
+      background: #f8fafc;
+      color: #526375;
+    }
+    #ro-field-status[data-state="error"] { background: #fff1f0; color: #9f241d; }
+    #ro-field-status[data-state="partial"] { background: #fff8e7; color: #7b4a09; }
+    #ro-field-status[data-state="complete"] { background: #edf9f1; color: #17683b; }
+    #ro-field-result { min-height: 660px; padding: 18px 20px 24px; }
+    #ro-field-result:empty::before {
+      content: "Submit the bounded request to render a result.";
+      display: block;
+      padding: 40px 18px;
+      color: #6b7b8d;
+      text-align: center;
+    }
+    .ro-field-result-title { margin: 0 0 12px; font-size: 1.15rem; }
+    .ro-field-metadata {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 5px 13px;
+      margin: 0 0 14px;
+      font-size: .82rem;
+    }
+    .ro-field-metadata dt { color: #667789; font-weight: 650; }
+    .ro-field-metadata dd { margin: 0; overflow-wrap: anywhere; }
+    .ro-field-warnings {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border: 2px solid #d77700;
+      border-radius: 8px;
+      background: #fff7e6;
+      color: #713f05;
+    }
+    .ro-field-warnings h3 { margin: 0 0 6px; font-size: .9rem; }
+    .ro-field-warnings ul { margin: 0; padding-left: 20px; font-size: .84rem; line-height: 1.45; }
+    .ro-field-component-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      margin: 14px 0 8px;
+      font-size: .86rem;
+      font-weight: 650;
+    }
+    .ro-field-component-controls select {
+      margin-left: 5px;
+      padding: 5px 8px;
+      border: 1px solid #b9c6d1;
+      border-radius: 6px;
+      background: #ffffff;
+      color: inherit;
+    }
+    .ro-field-svg { display: block; width: 100%; height: auto; min-height: 360px; }
+    .ro-field-svg text { fill: #263442; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
+    .ro-field-svg .ro-field-gap-label { fill: #3f4c5a; font-size: 13px; font-weight: 750; }
+    .ro-field-axis-label { font-weight: 700; }
+    .ro-field-slice-needed {
+      margin: 20px 0 0;
+      padding: 18px;
+      border: 1px dashed #8293a5;
+      border-radius: 8px;
+      background: #f8fafc;
+      line-height: 1.5;
+    }
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; }
+      textarea { min-height: 430px; }
+      #ro-field-result { min-height: 460px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Experimental · demo scale</div>
+    <h1>Multi-input reaction-order field</h1>
+    <p class="lead">
+      This page demonstrates a two-input sampled field or exact 2D cell complex using the strict
+      <code>bne-ro-field/v1.0.0</code> artifact. Invalid samples, singular strata, and uncomputed regions
+      remain visible as gaps rather than being converted to zeros.
+    </p>
+    <aside class="boundary">
+      The request and response are inline and bounded. This page does not persist results, does not run a
+      full Atlas campaign, and does not claim exhaustive coverage beyond the declared work budget.
+      Higher-dimensional fields require an explicit server-generated 2D slice; the viewer never invents a projection.
+    </aside>
+
+    <div class="layout">
+      <section class="panel" aria-labelledby="request-heading">
+        <header class="panel-header">
+          <h2 id="request-heading">Bounded request</h2>
+          <p>The default heterodimer example evaluates only a 3 × 3 Cartesian grid.</p>
+        </header>
+        <form id="ro-field-form">
+          <label for="ro-field-request">Request JSON</label>
+          <textarea id="ro-field-request" spellcheck="false" autocomplete="off"></textarea>
+          <button id="ro-field-submit" type="submit">Compute inline field</button>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="result-heading">
+        <h2 id="result-heading" style="position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%)">Result</h2>
+        <p id="ro-field-status" role="status" aria-live="polite">Ready for a bounded inline request.</p>
+        <div id="ro-field-result"></div>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="/js/ro-field-demo.js"></script>
+</body>
+</html>

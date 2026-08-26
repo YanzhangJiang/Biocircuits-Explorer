@@ -26,6 +26,8 @@ inverse-design candidates.
 - Treating summary buckets or volume proxies as materialized exact witnesses.
 - Hiding failed, partial, skipped, singular, or higher-nullity analysis states.
 - Treating a raw server filesystem path as a multi-tenant data capability.
+- Treating a prepared multi-input campaign manifest or shard layout as
+  authorization or evidence that the campaign executed.
 
 ## Owner paths
 
@@ -44,6 +46,14 @@ inverse-design candidates.
   [`request_support.jl`](../../webapp/src/request_support.jl)
 - Behavior-program identity:
   [`behavior_program_codec.jl`](../../webapp/src/behavior_program_codec.jl)
+- Multi-input field identity, signatures, bounded corpus, and campaign
+  preparation/QC:
+  [`ro_field_identity.jl`](../../webapp/src/ro_field_identity.jl),
+  [`ro_field_behavior.jl`](../../webapp/src/ro_field_behavior.jl),
+  [`ro_field_atlas.jl`](../../webapp/src/ro_field_atlas.jl),
+  [`ro_field_campaign.jl`](../../webapp/src/ro_field_campaign.jl),
+  [`merge_ro_field_campaign.jl`](../../webapp/scripts/merge_ro_field_campaign.jl),
+  [`report_ro_field_campaign_population.jl`](../../webapp/scripts/report_ro_field_campaign_population.jl)
 - Offline latent logic, analog-surface, and contextual label evaluators:
   [`evaluators.jl`](../../webapp/src/latent_atlas/evaluators.jl), with dataset
   producers under [`webapp/scripts`](../../webapp/scripts)
@@ -59,6 +69,11 @@ inverse-design candidates.
 - `AtlasQuerySpec` or structured goal fields, plus optional inverse-design and
   refinement policies.
 - Supported legacy atlas/library payloads carrying their schema markers.
+- Explicit canonical NetworkIR/field-plan identity pairs, a pinned scientific
+  policy, full code revision, environment-lock hashes, and execution scope for
+  a prepared multi-input campaign.
+- Supplied immutable campaign shard-result documents for deterministic local
+  merge and second-pass metadata-population recount.
 
 ## Outputs
 
@@ -70,6 +85,8 @@ inverse-design candidates.
   evidence/audit records.
 - Inverse-design responses with build plan/delta, library summary, query result,
   optional refinement, and selected best design.
+- Frozen multi-input campaign manifests, shard results, metadata-only corpus
+  locks, and independent identity-map QC reports.
 
 ## Synchronous work contract
 
@@ -131,6 +148,28 @@ jobs-only, and a synchronous inverse response requires
 
 ## SQLite boundary
 
+The working-tree SQLite 0.4 migration adds RO-field artifacts without changing
+legacy RPB1 rows. Every load rechecks canonical data bytes, full-document hash,
+metadata columns, and any RPB2 foreign identity. RPB2
+`exact_cell_complex_v1` accepts only complete, gap-free, non-singular,
+single-valued exact complexes and strips redundant optional H-representations
+from its mathematical identity; sampled and diagnostic exact fields keep their
+ordinary artifact/data hashes.
+
+The append-only SQLite 0.5 migration adds normalized regular-cell signature
+features. Save, load, and query rebuild the exact complex from the stored field,
+rerun the declared classifier configuration, and require the complete canonical
+signature to match; a separately self-consistent hash is not sufficient.
+
+P4 adds that regular-cell gradient signature and an explicit-corpus demo Atlas.
+The classifier excludes and counts lower-dimensional strata; any positive-area
+gap, ambiguity, set-valued cell, or invalid incidence makes classifications
+unknown. The Atlas accepts at most eight caller-declared records and performs no
+network/topology enumeration. Query misses say only
+`no_match_in_declared_demo_corpus` or `no_match_in_evaluated_subset`.
+Normalized SQLite feature rows are retrieval indexes for the versioned signature,
+not proof of prevalence, minimality, or impossibility.
+
 Direct Julia/offline SQLite APIs remain filesystem APIs. HTTP is narrower:
 
 - `sqlite_path` is disabled by default;
@@ -161,6 +200,36 @@ read-modify-write operations for the same path while allowing different shards
 to progress independently. Append/lightweight writes and different processes
 are not coordinated by that Julia lock: their safety and waiting still come
 from SQLite WAL, busy timeout, and retry behavior.
+
+## Working-tree multi-input campaign boundary
+
+P9 prepares one deterministic finite population of explicit canonical
+NetworkIR/field-plan pairs. The manifest pins scientific policy hashes, a full
+Git revision, environment locks, shard order, and a repository-relative merge
+command. Each work-unit, shard plan, and shard result is content-addressed.
+Merge requires exactly one canonical result for every declared shard and work
+unit, retains valid versus explicit-gap evidence classes, and produces a
+self-hashed corpus lock. A second algorithm recounts the supplied identities
+through an identity map instead of reusing ordered concatenation.
+
+The checked-in population reporter is enumeration-only. For supported network
+dimensions 2--4 it reports 5,240 enumerated networks, 41,666 two-dimensional
+field-plan groups, 69,402 all-rank field-plan groups, and 12,041,474 points for
+the declared dense `17 x 17` two-dimensional plan population. Those are named
+preparation populations, not evaluated fields, successful slices, or Atlas
+records. The report explicitly performs no field evaluation or Atlas write.
+
+Only `local_demo_max_8` manifests can call the included evaluator. The external
+scope is named `prepared_external_requires_separate_authorization`; it fails
+before evaluation in this module. The complete campaign has not been authorized
+or run. The corpus lock proves only that the complete declared result-metadata
+population was supplied consistently. The independent QC revalidates those
+content identities and counts, but records
+`artifact_content_recomputed=false`, `external_execution_observed=false`, and
+`external_execution_verified=false`. It therefore does not prove that an
+artifact hash names a scientifically valid field, that a cluster ran it, or
+that the resulting population supports prevalence, minimality, or impossibility
+claims.
 
 ## Refinement and numerical validity
 
@@ -218,6 +287,10 @@ and require explicit regeneration with the v0.2 producer.
   cannot form a metric from an invalid grid point. Contextual versatility uses
   only complete logic contexts, and offline label producers persist only
   complete evaluator evidence.
+- A campaign manifest is preparation, not authority. Shard, merge, corpus-lock,
+  and independent-QC hashes bind the declared supplied metadata population;
+  they neither recompute addressed field contents nor observe external
+  execution.
 
 ## Contract sources and tests
 
@@ -229,6 +302,10 @@ and require explicit regeneration with the v0.2 producer.
   [`inverse_design.jl`](../../webapp/src/inverse_design.jl)
 - SQLite schema and persistence modes:
   [`atlas_sqlite.jl`](../../webapp/src/atlas_sqlite.jl)
+- Multi-input field identity, signatures, and explicit demo Atlas:
+  [`ro_field_identity.jl`](../../webapp/src/ro_field_identity.jl),
+  [`ro_field_behavior.jl`](../../webapp/src/ro_field_behavior.jl),
+  [`ro_field_atlas.jl`](../../webapp/src/ro_field_atlas.jl)
 - Atlas, query, SQLite, enumeration, path, singularity, canonicalization, and
   inverse-design testsets in
   [`webapp/test/runtests.jl`](../../webapp/test/runtests.jl)
@@ -238,6 +315,15 @@ and require explicit regeneration with the v0.2 producer.
   [`latent_evaluator_validity_contract.jl`](../../webapp/test/latent_evaluator_validity_contract.jl)
 - HTTP path containment and default-deny contracts:
   [`input_validation_contract.jl`](../../webapp/test/input_validation_contract.jl)
+- Focused RO-field identity/storage/signature/finite-corpus contracts:
+  [`ro_field_identity_sqlite_contract.jl`](../../webapp/test/ro_field_identity_sqlite_contract.jl),
+  [`ro_field_behavior_contract.jl`](../../webapp/test/ro_field_behavior_contract.jl),
+  [`ro_field_atlas_contract.jl`](../../webapp/test/ro_field_atlas_contract.jl), and
+  [`ro_field_signature_sqlite_contract.jl`](../../webapp/test/ro_field_signature_sqlite_contract.jl)
+- Campaign manifest, authority, immutable shard, deterministic metadata merge, metadata-only
+  lock, independent recount, local reproducer, and enumeration-report
+  contracts:
+  [`ro_field_campaign_contract.jl`](../../webapp/test/ro_field_campaign_contract.jl)
 - Browser double-opt-in contract:
   [`atlas-sqlite-policy.test.mjs`](../../webapp/test/atlas-sqlite-policy.test.mjs)
 
@@ -256,6 +342,12 @@ the large research atlas or execute every workstation migration/audit script.
 - Static work estimates bound request shape; they are not wall-clock deadlines.
 - Large atlas construction and migration parity depend on workflows outside the
   default CI corpus.
+- The complete multi-input campaign has no authorization or execution evidence.
+  There is no distributed campaign executor, shared artifact-content verifier,
+  live Slurm/AWS result, or campaign-produced Atlas corpus in this working tree.
+- Campaign corpus-lock/QC artifacts stop at declared metadata identities. A
+  separate consumer must load and revalidate the addressed field artifacts
+  before making a scientific content claim.
 - The supported inverse-design profile is deliberately narrower than every
   capability present in the mathematical engine.
 
@@ -285,3 +377,8 @@ See [data provenance](../architecture/data-provenance.md),
   SQLite writer/HTTP policy, >7 identity fallback, or refinement validity rules.
 - Boundary: small contract corpora and concurrency fixtures were verified; no
   large research Atlas or universal absence claim is treated as current proof.
+- Working-tree boundary inspected on 2026-07-17: bounded RO-field identity and
+  demo-Atlas storage plus deterministic campaign preparation, local-demo shard
+  execution, merge, and metadata-population QC. This does not advance the
+  committed revision above, authorize the complete campaign, or prove any
+  external execution or field-content recomputation.
