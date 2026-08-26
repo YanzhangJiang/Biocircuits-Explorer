@@ -271,6 +271,19 @@ final class BiocircuitsBackendController: ObservableObject {
         _ = requestStop()
     }
 
+    /// Stops the backend and waits (graceful SIGTERM, then SIGKILL) for the
+    /// child process to exit. The quit-preparation path must use this instead
+    /// of the fire-and-forget `stop()` so the app cannot terminate before the
+    /// Julia process has left, orphaning it (the historical macOS orphan
+    /// process failure mode).
+    func stopAndWait() async {
+        let processToStop = requestStop()
+        guard let processToStop else {
+            return
+        }
+        _ = try? await LocalProcessShutdown.waitForExitOrKill(processToStop)
+    }
+
     @discardableResult
     private func requestStop() -> Process? {
         launchLifecycle.advance()

@@ -558,8 +558,8 @@ struct ContentView: View {
                 _ = try await webController.captureCurrentProjectForFileOperation(
                     projectIDs: projectIDs
                 )
-                backendController.stop()
-                designChatController.stop()
+                await backendController.stopAndWait()
+                await designChatController.stopAndWait()
                 return true
             } catch {
                 store.lastErrorMessage = "Quit was cancelled because the latest workspace edits could not be saved: \(error.localizedDescription)"
