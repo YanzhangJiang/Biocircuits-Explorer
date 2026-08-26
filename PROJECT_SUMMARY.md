@@ -48,10 +48,10 @@ these runtime claims inspected.
   exact loopback origin and a bearer token of at least 32 characters. The
   macOS shell creates a new 256-bit token for each helper launch and keeps it
   in memory.
-- The main web application CI is configured for Julia 1.12. The separate
-  headless HPC environment is configured for Julia 1.10 and 1.12. Local checks
-  loaded the selected locks on Julia 1.10.11 and 1.12.6; neither result proves
-  a live scheduler.
+- The main web application CI runs its full owner suite on Julia 1.10 and
+  1.12, as does the headless HPC environment. Local checks loaded the
+  selected locks on Julia 1.10.11 and 1.12.6; neither result proves a live
+  scheduler.
 - The Docker workflow is configured to build and start one application image and probe its
   runtime behavior. It does not exercise Compose, Nginx, or TLS.
 - The current CI configuration contains no-sign macOS host builds and unit

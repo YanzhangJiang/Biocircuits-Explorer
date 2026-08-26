@@ -19,8 +19,8 @@ commits may advance the branch without changing that inspected runtime. The
 earlier revision `f9c65a5` remains the historical evidence baseline for the
 knowledge catalog.
 
-- The main web application CI is configured for Julia 1.12. The checked-in
-  application container also uses Julia 1.12.
+- The main web application CI runs its full owner suite on Julia 1.10 and
+  1.12. The checked-in application container uses Julia 1.12.
 - The separate headless HPC environment is configured in CI for Julia 1.10 and
   1.12. Those jobs select the matching lock file, instantiate it, and load the
   mathematics engine; they do not submit work to a scheduler.
