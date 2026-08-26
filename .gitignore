@@ -70,6 +70,11 @@ tests/
 # the Bnc_julia math-core golden suite are real source, not ad-hoc/generated
 # output. Re-include them so new tests there are visible to git and CI rather than
 # silently ignored (CI runs both webapp/test and Bnc_julia/test).
+#
+# TRAP: this is an allow-list. A NEW test directory anywhere else (for example
+# webapp_hpc/test/ or packaging/test/) is silently ignored by `git add` until
+# it is explicitly re-included here. When adding a test tree, add its
+# re-include lines next to the three below.
 !webapp/test/
 !webapp/test/**
 !Bnc_julia/test/
