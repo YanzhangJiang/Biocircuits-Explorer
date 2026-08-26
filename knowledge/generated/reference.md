@@ -100,7 +100,7 @@ own a second copy of those values.
 | API version | `v1` | `webapp/src/api_contract.jl` |
 | Legacy API sunset | `2027-05-25` | `webapp/src/api_contract.jl` |
 | Julia compatibility (declared) | `1.10` | `webapp/Project.toml` |
-| Julia webapp configured in CI | `1.12` | `.github/workflows/ci.yml` |
+| Julia webapp configured in CI | `1.10, 1.12` | `.github/workflows/ci.yml` |
 | Julia HPC configured in CI | `1.10, 1.12` | `.github/workflows/ci.yml` |
 | Julia container base | `1.12` | `deploy/Dockerfile` |
 | Node configured in CI | `20` | `.github/workflows/ci.yml` |
