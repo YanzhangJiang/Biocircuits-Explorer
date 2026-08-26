@@ -17,6 +17,20 @@ const CLOUD_JOB_MAX_CONSECUTIVE_POLL_RETRIES = 2;
 const CLOUD_RESULT_MAX_ATTEMPTS = 2;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+// Request timeouts. Synchronous compute endpoints can legitimately run for
+// minutes behind the two-slot work gate, so give them a wide default; job
+// queue/poll operations are quick round trips and get a short one; the
+// pre-signed S3 result download may move a large artifact.
+// AbortSignal.any needs Safari 17.4+ / Chrome 116+ / Firefox 124+ / Node 20.3+.
+const SYNC_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+const JOB_REQUEST_TIMEOUT_MS = 60 * 1000;
+const RESULT_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+function withTimeout(signal, timeoutMs) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
@@ -125,12 +139,13 @@ export function enrichModelRequestPayload(data) {
   return enriched;
 }
 
-export async function apiSilent(endpoint, data) {
+export async function apiSilent(endpoint, data, { signal = null } = {}) {
   const payload = enrichModelRequestPayload(data || {});
   const resp = await fetch(canonicalApiUrl(endpoint), {
     method: 'POST',
     headers: apiHeaders(),
     body: JSON.stringify(payload),
+    signal: withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS),
   });
   const contentType = resp.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
@@ -147,7 +162,7 @@ export async function apiSilent(endpoint, data) {
   return json;
 }
 
-export async function api(endpoint, data, { statusIsCurrent = null } = {}) {
+export async function api(endpoint, data, { statusIsCurrent = null, signal = null } = {}) {
   activeApiRequests += 1;
   setStatus('working', activeApiRequests > 1 ? `Computing... (${activeApiRequests})` : 'Computing...');
   const requestStatusRevision = statusRevision;
@@ -157,6 +172,7 @@ export async function api(endpoint, data, { statusIsCurrent = null } = {}) {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify(payload),
+      signal: withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS),
     });
 
     const contentType = resp.headers.get('content-type');
@@ -187,7 +203,7 @@ export async function api(endpoint, data, { statusIsCurrent = null } = {}) {
 
 // Fixed-topology ROP shape optimization is a versioned evidence contract with
 // additional response-shape checks beyond the shared canonical v1 helper.
-export async function optimizeRopShape(request, { statusIsCurrent = null } = {}) {
+export async function optimizeRopShape(request, { statusIsCurrent = null, signal = null } = {}) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) {
     throw new Error('ROP shape optimization request must be an object.');
   }
@@ -201,6 +217,7 @@ export async function optimizeRopShape(request, { statusIsCurrent = null } = {})
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify(request),
+      signal: withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS),
     });
     const contentType = resp.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
@@ -224,7 +241,7 @@ export async function optimizeRopShape(request, { statusIsCurrent = null } = {})
   }
 }
 
-async function jobApi(path, { method = 'GET', data = null } = {}) {
+async function jobApi(path, { method = 'GET', data = null, signal = null } = {}) {
   const headers = data == null
     ? {
         'X-Biocircuits-Explorer-Debug-Client': ensureDebugClientId(),
@@ -243,6 +260,7 @@ async function jobApi(path, { method = 'GET', data = null } = {}) {
     method,
     headers,
     body: data == null ? undefined : JSON.stringify(data),
+    signal: withTimeout(signal, JOB_REQUEST_TIMEOUT_MS),
   });
   const contentType = resp.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
@@ -278,6 +296,8 @@ function retryDelayMs(attempt) {
 
 function errorIsRetryable(error) {
   if (error?.retryable != null) return error.retryable === true;
+  // A timed-out or aborted request never reached a terminal outcome.
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return true;
   if (error instanceof TypeError) return true;
   return RETRYABLE_HTTP_STATUSES.has(Number(error?.status));
 }
@@ -438,7 +458,7 @@ export async function runCloudJob(
       // pre-signed URL once; it never falls back to the broker result body.
       let resultResponse;
       try {
-        resultResponse = await fetch(resultUrl, { method: 'GET' });
+        resultResponse = await fetch(resultUrl, { method: 'GET', signal: withTimeout(null, RESULT_DOWNLOAD_TIMEOUT_MS) });
       } catch (error) {
         if (await retireIfStale()) return null;
         if (resultAttempt < CLOUD_RESULT_MAX_ATTEMPTS) {
