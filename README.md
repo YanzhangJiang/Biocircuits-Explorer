@@ -10,7 +10,7 @@ and what remains open. Two words carry a specific meaning throughout the
 repository. A **contract** states behavior that must hold. **Evidence** is the
 code, test result, or versioned artifact that supports a claim.
 
-![Biocircuits Explorer workspace](main.png)
+![Biocircuits Explorer workspace](webapp/public/media/main.png)
 
 ## What is checked now
 

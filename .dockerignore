@@ -16,6 +16,11 @@
 !webapp/src/**
 !webapp/public/
 !webapp/public/**
+# Never bake a local esbuild bundle into images: it embeds full sources via
+# sourcemap and drifts from the served ES modules. Production serves the
+# source modules directly (index-node.html -> js/main.js).
+webapp/public/js/dist
+webapp/public/js/dist/**
 !webapp/scripts/
 !webapp/scripts/**
 
