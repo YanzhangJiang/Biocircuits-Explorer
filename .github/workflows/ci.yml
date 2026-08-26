@@ -255,3 +255,8 @@ jobs:
             Pkg.instantiate()
             using BindingAndCatalysis
           '
+
+      - name: Headless golden computation smoke
+        env:
+          JULIA_NUM_THREADS: auto
+        run: julia --project=webapp_hpc --color=yes Bnc_julia/test/headless_golden_smoke.jl
