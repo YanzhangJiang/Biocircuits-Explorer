@@ -102,6 +102,46 @@ PRIVATE_WORKSTATION_PATH = re.compile(
     + r"(?!app(?:/|\s|$)|rop(?:/|\s|$)|runner(?:/|\s|$)|node(?:/|\s|$)|ubuntu(?:/|\s|$))"
 )
 
+SUPPORTED_JULIA_COMPAT = "~1.10, ~1.12"
+SUPPORTED_JULIA_LINES = ["1.10", "1.12"]
+JULIA_MATRIX_EXPRESSION = "${{ matrix.julia }}"
+STANDARD_LOCK_AND_LOAD_COMMAND = """julia --project=webapp --color=yes -e '
+  using Pkg
+  expected = if VERSION < v"1.11"
+      joinpath(dirname(Base.active_project()), "Manifest-v1.10.toml")
+  else
+      joinpath(dirname(Base.active_project()), "Manifest.toml")
+  end
+  ctx = Pkg.Types.Context()
+  selected = ctx.env.manifest_file
+  normpath(selected) == normpath(expected) ||
+      error("selected $(selected), expected $(expected)")
+  Pkg.Operations.is_manifest_current(ctx.env) === true ||
+      error("selected manifest is stale for $(Base.active_project())")
+  Pkg.develop(path="Bnc_julia")
+  Pkg.instantiate()
+'"""
+HPC_LOCK_AND_LOAD_COMMAND = """julia --project=webapp_hpc --color=yes -e '
+  using Pkg
+  expected = if VERSION < v"1.11"
+      joinpath(dirname(Base.active_project()), "Manifest-v1.10.toml")
+  else
+      joinpath(dirname(Base.active_project()), "Manifest.toml")
+  end
+  ctx = Pkg.Types.Context()
+  selected = ctx.env.manifest_file
+  normpath(selected) == normpath(expected) ||
+      error("selected $(selected), expected $(expected)")
+  Pkg.Operations.is_manifest_current(ctx.env) === true ||
+      error("selected manifest is stale for $(Base.active_project())")
+  Pkg.instantiate()
+  using BindingAndCatalysis
+'"""
+HPC_HEADLESS_SMOKE_COMMAND = (
+    "julia --project=webapp_hpc --color=yes "
+    "Bnc_julia/test/headless_golden_smoke.jl"
+)
+
 
 @dataclass
 class Audit:
@@ -737,9 +777,146 @@ def extract_ci_toolchains(document: dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def validate_julia_ci_execution_contract(document: dict[str, Any], audit: Audit) -> None:
+    """Prove that the declared Julia matrix entries drive executable CI steps.
+
+    The matrix values alone are not execution evidence: a job can retain its
+    matrix while its setup, lock-selection, or computation steps are deleted,
+    disabled, or pointed at the wrong project. Keep this deliberately exact so
+    an intentional workflow rewrite must update the executable contract and its
+    negative tests together.
+    """
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        audit.errors.append("CI workflow has no jobs mapping")
+        return
+
+    required_jobs: dict[str, dict[str, Any]] = {}
+    for job_name in ("test-julia", "test-hpc-environment"):
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            audit.errors.append(f"CI job {job_name} is missing or is not a mapping")
+            continue
+        required_jobs[job_name] = job
+        audit.require(
+            "if" not in job,
+            f"CI job {job_name} must not be conditionally disabled",
+        )
+        audit.require(
+            "continue-on-error" not in job or job["continue-on-error"] is False,
+            f"CI job {job_name} must not allow failures",
+        )
+        strategy = job.get("strategy")
+        matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+        audit.require(
+            isinstance(matrix, dict) and set(matrix) == {"julia"},
+            f"CI job {job_name} matrix must contain only the maintained Julia lines",
+        )
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            audit.errors.append(f"CI job {job_name} has no executable steps list")
+            continue
+        setup_steps = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and step.get("uses") == "julia-actions/setup-julia@v2"
+        ]
+        audit.require(
+            len(setup_steps) == 1,
+            f"CI job {job_name} must contain exactly one Julia setup step",
+        )
+        if len(setup_steps) == 1:
+            setup = setup_steps[0]
+            setup_config = setup.get("with")
+            audit.require(
+                isinstance(setup_config, dict)
+                and setup_config.get("version") == JULIA_MATRIX_EXPRESSION,
+                f"CI job {job_name} Julia setup must use {JULIA_MATRIX_EXPRESSION!r}",
+            )
+            audit.require(
+                "if" not in setup
+                and (
+                    "continue-on-error" not in setup
+                    or setup["continue-on-error"] is False
+                ),
+                f"CI job {job_name} Julia setup must fail closed",
+            )
+
+    def exact_enabled_run(
+        steps: list[Any], command: str
+    ) -> list[dict[str, Any]]:
+        return [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and step["run"].strip() == command
+            and "if" not in step
+            and (
+                "continue-on-error" not in step
+                or step["continue-on-error"] is False
+            )
+            and "working-directory" not in step
+            and "shell" not in step
+        ]
+
+    standard = required_jobs.get("test-julia")
+    standard_steps = standard.get("steps") if standard is not None else None
+    if isinstance(standard_steps, list):
+        audit.require(
+            len(exact_enabled_run(standard_steps, STANDARD_LOCK_AND_LOAD_COMMAND)) == 1,
+            "CI standard Julia job must execute the exact webapp lock-selection, "
+            "freshness, develop, and instantiate contract",
+        )
+
+    hpc = required_jobs.get("test-hpc-environment")
+    hpc_steps = hpc.get("steps") if hpc is not None else None
+    if not isinstance(hpc_steps, list):
+        return
+    audit.require(
+        len(exact_enabled_run(hpc_steps, HPC_LOCK_AND_LOAD_COMMAND)) == 1,
+        "CI HPC job must execute the exact webapp_hpc lock-selection, "
+        "freshness, instantiate, and BindingAndCatalysis load contract",
+    )
+    audit.require(
+        len(exact_enabled_run(hpc_steps, HPC_HEADLESS_SMOKE_COMMAND)) == 1,
+        "CI HPC job must execute the exact webapp_hpc headless golden smoke",
+    )
+
+
 def major_minor_line(value: str) -> tuple[int, int] | None:
     match = re.fullmatch(r"(\d+)\.(\d+)(?:\D.*)?", value)
     return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def validate_julia_support_contract(
+    webapp_compat: str,
+    hpc_compat: str,
+    ci: dict[str, list[str]],
+    audit: Audit,
+) -> None:
+    """Keep declared Julia support and both executable CI matrices identical."""
+    audit.require(
+        webapp_compat == hpc_compat,
+        "webapp and HPC Julia compatibility declarations disagree: "
+        f"{webapp_compat!r} != {hpc_compat!r}",
+    )
+    audit.require(
+        webapp_compat == SUPPORTED_JULIA_COMPAT,
+        "Julia compatibility must name only the maintained minor lines "
+        f"({SUPPORTED_JULIA_COMPAT!r}); found {webapp_compat!r}",
+    )
+    audit.require(
+        ci["julia"] == SUPPORTED_JULIA_LINES,
+        "CI webapp Julia matrix must equal the maintained minor lines: "
+        f"{SUPPORTED_JULIA_LINES}; found {ci['julia']}",
+    )
+    audit.require(
+        ci["julia_hpc"] == SUPPORTED_JULIA_LINES,
+        "CI HPC Julia matrix must equal the maintained minor lines: "
+        f"{SUPPORTED_JULIA_LINES}; found {ci['julia_hpc']}",
+    )
 
 
 def project_toml_string(text: str, key: str, *, section: str | None = None) -> str:
@@ -910,6 +1087,7 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
     except ValueError as exc:
         audit.errors.append(str(exc))
         ci = {"node": [], "python": [], "julia": [], "julia_hpc": []}
+    validate_julia_ci_execution_contract(ci_document, audit)
 
     docker = (root / "deploy/Dockerfile").read_text(encoding="utf-8")
     docker_match = re.search(r"(?m)^FROM\s+julia:([^\s]+)\s*$", docker)
@@ -1028,11 +1206,19 @@ def version_inventory(root: Path, api_facts: dict[str, Any], audit: Audit) -> li
     except ValueError as exc:
         audit.errors.append(f"cannot read Julia compatibility from webapp/Project.toml: {exc}")
         julia_compat = "unknown"
+    try:
+        hpc_julia_compat = project_toml_string(
+            project_text["webapp_hpc/Project.toml"], "julia", section="compat"
+        )
+    except ValueError as exc:
+        audit.errors.append(f"cannot read Julia compatibility from webapp_hpc/Project.toml: {exc}")
+        hpc_julia_compat = "unknown"
+    validate_julia_support_contract(julia_compat, hpc_julia_compat, ci, audit)
     return [
         {"fact": "Application version", "value": application, "evidence": ", ".join(versions)},
         {"fact": "API version", "value": str(api_facts.get("api_version", "unknown")), "evidence": "webapp/src/api_contract.jl"},
         {"fact": "Legacy API sunset", "value": str(api_facts.get("legacy_sunset", "unknown")), "evidence": "webapp/src/api_contract.jl"},
-        {"fact": "Julia compatibility (declared)", "value": julia_compat, "evidence": "webapp/Project.toml"},
+        {"fact": "Julia compatibility (declared)", "value": julia_compat, "evidence": "webapp/Project.toml, webapp_hpc/Project.toml"},
         {"fact": "Julia webapp configured in CI", "value": ", ".join(ci["julia"]), "evidence": ".github/workflows/ci.yml"},
         {"fact": "Julia HPC configured in CI", "value": ", ".join(ci["julia_hpc"]), "evidence": ".github/workflows/ci.yml"},
         {"fact": "Julia container base", "value": docker_julia, "evidence": "deploy/Dockerfile"},

@@ -17,6 +17,18 @@
 using Test
 using BindingAndCatalysis
 
+@testset "headless runtime identity" begin
+    @test BindingAndCatalysis._BNC_HEADLESS === true
+    @test basename(dirname(dirname(pathof(BindingAndCatalysis)))) == "Bnc_julia_headless"
+    loaded_package_names = Set(package_id.name for package_id in keys(Base.loaded_modules))
+    for package_name in ("Makie", "GraphMakie", "ImageFiltering")
+        @test package_name ∉ loaded_package_names
+    end
+    for binding in (:Makie, :GraphMakie, :ImageFiltering, :imfilter, :Kernel)
+        @test !isdefined(BindingAndCatalysis, binding)
+    end
+end
+
 @testset "headless golden smoke (single network)" begin
     model = Bnc(N = reshape([1 1 -1;], 1, 3),
                 L = [1 0 1; 0 1 1],

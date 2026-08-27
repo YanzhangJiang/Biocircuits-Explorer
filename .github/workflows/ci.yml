@@ -135,9 +135,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Project.toml declares compat julia = "1.10"; run the full owner
-        # suite on both supported minors so the declaration, the per-version
-        # manifests, and the verified matrix stay aligned.
+        # Both Project.toml files declare exactly the 1.10 and 1.12 minor
+        # lines; run the full owner suite on both so the declaration, the
+        # per-version manifests, and the verified matrix stay aligned.
         julia: ["1.10", "1.12"]
     steps:
       - uses: actions/checkout@v4
@@ -174,9 +174,12 @@ jobs:
             else
                 joinpath(dirname(Base.active_project()), "Manifest.toml")
             end
-            selected = Pkg.Types.Context().env.manifest_file
+            ctx = Pkg.Types.Context()
+            selected = ctx.env.manifest_file
             normpath(selected) == normpath(expected) ||
                 error("selected $(selected), expected $(expected)")
+            Pkg.Operations.is_manifest_current(ctx.env) === true ||
+                error("selected manifest is stale for $(Base.active_project())")
             Pkg.develop(path="Bnc_julia")
             Pkg.instantiate()
           '
@@ -257,9 +260,12 @@ jobs:
             else
                 joinpath(dirname(Base.active_project()), "Manifest.toml")
             end
-            selected = Pkg.Types.Context().env.manifest_file
+            ctx = Pkg.Types.Context()
+            selected = ctx.env.manifest_file
             normpath(selected) == normpath(expected) ||
                 error("selected $(selected), expected $(expected)")
+            Pkg.Operations.is_manifest_current(ctx.env) === true ||
+                error("selected manifest is stale for $(Base.active_project())")
             Pkg.instantiate()
             using BindingAndCatalysis
           '
