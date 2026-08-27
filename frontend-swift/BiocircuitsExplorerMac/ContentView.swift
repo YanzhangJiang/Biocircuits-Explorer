@@ -8,6 +8,24 @@ struct ThemeCompletionLifecycle {
     }
 }
 
+struct WebShellPreferenceReplay {
+    static func run(
+        isReady: Bool,
+        applyTheme: () -> Void,
+        applyCloudCompute: () -> Void,
+        applySurface: () -> Void,
+        applyDesignEndpoint: () -> Void
+    ) {
+        guard isReady else {
+            return
+        }
+        applyTheme()
+        applyCloudCompute()
+        applySurface()
+        applyDesignEndpoint()
+    }
+}
+
 struct ProjectFileOperationCoordinator {
     static func run<Result>(
         capture: () async throws -> WebShellProjectSnapshot?,
@@ -17,6 +35,45 @@ struct ProjectFileOperationCoordinator {
         // callback has durably written the final snapshot.
         _ = try await capture()
         return try await operation()
+    }
+}
+
+struct WorkspaceTerminationPreparation {
+    struct RecoveryError: LocalizedError {
+        let preparationError: any Error
+        let recoveryError: any Error
+
+        var errorDescription: String? {
+            "Quit preparation failed (\(preparationError.localizedDescription)), and workspace interaction could not be restored (\(recoveryError.localizedDescription))."
+        }
+    }
+
+    static func run(
+        lockWorkspace: () async throws -> Void,
+        captureAndPersist: () async throws -> Void,
+        stopProcesses: () async throws -> Void,
+        verifyFinalState: () async throws -> Void,
+        commitShutdown: () throws -> Void,
+        restoreWorkspace: () async throws -> Void
+    ) async throws {
+        do {
+            try await lockWorkspace()
+            try await captureAndPersist()
+            try await stopProcesses()
+            try await verifyFinalState()
+            try commitShutdown()
+        } catch {
+            let preparationError = error
+            do {
+                try await restoreWorkspace()
+            } catch {
+                throw RecoveryError(
+                    preparationError: preparationError,
+                    recoveryError: error
+                )
+            }
+            throw preparationError
+        }
     }
 }
 
@@ -32,6 +89,109 @@ struct ProjectRenameCommitCoordinator {
         commitNativeState(renamedProject)
         try await rebindWebIdentity(renamedProject)
         return renamedProject
+    }
+}
+
+struct ContentMountLifecycle: Equatable {
+    private(set) var generation: UInt64 = 0
+    private(set) var isMounted = false
+
+    @discardableResult
+    mutating func appear() -> UInt64 {
+        generation &+= 1
+        isMounted = true
+        return generation
+    }
+
+    @discardableResult
+    mutating func disappear() -> UInt64 {
+        generation &+= 1
+        isMounted = false
+        return generation
+    }
+
+    func admitsStart(generation: UInt64, taskIsCancelled: Bool) -> Bool {
+        !taskIsCancelled && isMounted && self.generation == generation
+    }
+
+    @discardableResult
+    func performIfStartIsStillAdmitted(
+        generation: UInt64,
+        taskIsCancelled: Bool,
+        _ action: () -> Void
+    ) -> Bool {
+        guard admitsStart(
+            generation: generation,
+            taskIsCancelled: taskIsCancelled
+        ) else {
+            return false
+        }
+        action()
+        return true
+    }
+}
+
+@MainActor
+final class ContentMountPreparationSingleFlight {
+    private struct Attempt {
+        let generation: UInt64
+        let id: UUID
+        let task: Task<Bool, Never>
+    }
+
+    private var attempt: Attempt?
+
+    func run(
+        generation: UInt64,
+        operation: @escaping @MainActor () async -> Bool
+    ) async -> Bool {
+        while let existing = attempt {
+            let result = await existing.task.value
+            if attempt?.id == existing.id {
+                attempt = nil
+            }
+            if existing.generation == generation {
+                return result
+            }
+        }
+
+        let attemptID = UUID()
+        let task = Task { @MainActor in
+            await operation()
+        }
+        attempt = Attempt(
+            generation: generation,
+            id: attemptID,
+            task: task
+        )
+        let result = await task.value
+        if attempt?.id == attemptID {
+            attempt = nil
+        }
+        return result
+    }
+}
+
+struct ContentMountCleanupRetryPolicy {
+    private(set) var claimedGeneration: UInt64?
+
+    mutating func reset() {
+        claimedGeneration = nil
+    }
+
+    mutating func claimAutomaticRetry(for generation: UInt64) -> Bool {
+        guard claimedGeneration != generation else {
+            return false
+        }
+        claimedGeneration = generation
+        return true
+    }
+
+    mutating func reopenForExplicitUserRetry(generation: UInt64) {
+        guard claimedGeneration == generation else {
+            return
+        }
+        claimedGeneration = nil
     }
 }
 
@@ -57,6 +217,15 @@ struct ContentView: View {
     @State private var pendingDeleteIDs: [String] = []
     @State private var terminationSessionToken: AppTerminationCoordinator.SessionToken
     @State private var terminationRegistrationToken: AppTerminationCoordinator.RegistrationToken?
+    @State private var disappearanceCleanupRegistrationToken: AppTerminationCoordinator.ManagedCleanupToken?
+    @State private var isTerminationPreparing = false
+    @State private var serviceLaunchIsAdmitted = false
+    @State private var serviceLaunchRetryIsAvailable = false
+    @State private var disappearanceCleanupTask: Task<Bool, Never>?
+    @State private var disappearanceCleanupTaskID: UUID?
+    @State private var disappearanceCleanupRetryPolicy = ContentMountCleanupRetryPolicy()
+    @State private var mountLifecycle = ContentMountLifecycle()
+    @State private var mountPreparationSingleFlight = ContentMountPreparationSingleFlight()
 
     private let sidebarTopInset: CGFloat = 14
     private let sidebarLeadingInset: CGFloat = 16
@@ -297,6 +466,10 @@ struct ContentView: View {
                     } label: {
                         Label("Restart Backend", systemImage: "bolt.horizontal.circle")
                     }
+                    .disabled(
+                        !serviceLaunchIsAdmitted
+                            && !serviceLaunchRetryIsAvailable
+                    )
 
                     Button {
                         webController.reloadShell()
@@ -409,6 +582,8 @@ struct ContentView: View {
             }
         }
         .navigationTitle(windowToolbarTitle)
+        .disabled(isTerminationPreparing)
+        .allowsHitTesting(!isTerminationPreparing)
         .background(ApplicationTerminationWindowBridge())
         .sheet(isPresented: $isRenaming) {
             RenameProjectSheet(
@@ -452,7 +627,7 @@ struct ContentView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .task {
+        .task(id: mountLifecycle.generation) {
             await store.waitUntilReady()
             reconcileSelectionForAvailableProjects(store.projects.map(\.id))
             if let launchError = store.lastErrorMessage {
@@ -461,19 +636,41 @@ struct ContentView: View {
             }
         }
         .task {
+            // Establish this controller generation as the active termination
+            // owner before it is allowed to launch a child process. This also
+            // closes the tail window between an older view's atomic quit
+            // commit and AppKit's final termination reply.
+            let mountGeneration = mountLifecycle.generation
+            guard await admitServicesForMountedStart(
+                mountGeneration: mountGeneration
+            ) else {
+                return
+            }
             await startBackend()
         }
-        .task {
+        .task(id: mountLifecycle.generation) {
             // The Design Agent backend (Python) starts in parallel with the Julia
             // analysis server so a slow first Julia boot never delays the agent.
             // Failure is non-fatal: the Workspace still loads, the agent shows offline.
+            let mountGeneration = mountLifecycle.generation
+            guard await admitServicesForMountedStart(
+                mountGeneration: mountGeneration
+            ) else {
+                return
+            }
             await designChatController.startIfNeeded()
         }
         .onAppear {
-            registerTerminationPreparation()
+            serviceLaunchIsAdmitted = false
+            serviceLaunchRetryIsAvailable = false
+            mountLifecycle.appear()
+            _ = registerTerminationPreparation()
         }
         .onDisappear {
-            prepareForDisappearance()
+            serviceLaunchIsAdmitted = false
+            serviceLaunchRetryIsAvailable = false
+            mountLifecycle.disappear()
+            beginDisappearanceCleanup()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             backendController.stop()
@@ -506,14 +703,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: webController.isReady) { _, isReady in
-            guard isReady else {
-                return
-            }
-
-            syncThemeModeToWeb(themeMode)
-            webController.setCloudComputeEnabled(cloudComputeEnabled)
-            webController.setSurface(activeSurface)
-            injectDesignChatEndpoint()
+            replayWebPreferencesIfReady(isReady: isReady)
         }
         .onChange(of: designChatController.isReady) { _, _ in
             injectDesignChatEndpoint()
@@ -538,9 +728,9 @@ struct ContentView: View {
         store.projects.filter { selectedProjectIDs.contains($0.id) }
     }
 
-    private func registerTerminationPreparation() {
+    private func registerTerminationPreparation() -> Bool {
         guard terminationRegistrationToken == nil else {
-            return
+            return true
         }
         // Accessing these properties from the mounted view resolves SwiftUI's
         // retained StateObject instances. Registering their init-time wrapped
@@ -550,38 +740,377 @@ struct ContentView: View {
         let designChatController = designChatController
         let webController = webController
 
-        let token = AppTerminationCoordinator.shared.registerPreparation(
+        let registeredToken = AppTerminationCoordinator.shared.registerPreparation(
             for: terminationSessionToken
-        ) {
+        ) { commitLease in
             do {
                 let projectIDs = Set(store.projects.map(\.id))
-                _ = try await webController.captureCurrentProjectForFileOperation(
-                    projectIDs: projectIDs
+                try await WorkspaceTerminationPreparation.run(
+                    lockWorkspace: {
+                        isTerminationPreparing = true
+                        try await webController.beginTerminationPreparation()
+                    },
+                    captureAndPersist: {
+                        _ = try await webController.captureCurrentProjectForTermination(
+                            projectIDs: projectIDs
+                        )
+                    },
+                    stopProcesses: {
+                        // Block every delayed start/restart before signaling
+                        // either process. Stop the optional helper first so a
+                        // failure leaves the core engine untouched for recovery.
+                        backendController.beginTerminationShutdown()
+                        designChatController.beginTerminationShutdown()
+                        _ = try await designChatController.stopAndWait()
+                        _ = try await backendController.stopAndWait()
+                    },
+                    verifyFinalState: {
+                        // JavaScript work already in flight when the UI lock was
+                        // installed may settle while the children stop. Persist
+                        // one last sequence while the page remains inert.
+                        _ = try await webController.refreshCurrentProjectForTermination(
+                            projectIDs: projectIDs
+                        )
+                    },
+                    commitShutdown: {
+                        try commitLease.commit {
+                            guard
+                                webController.terminationFenceCanCommit,
+                                backendController.terminationShutdownCanCommit,
+                                designChatController.terminationShutdownCanCommit
+                            else {
+                                throw CancellationError()
+                            }
+                            try backendController.commitTerminationShutdown()
+                            try designChatController.commitTerminationShutdown()
+                            // This app-wide latch covers controller instances
+                            // registered after the atomic commit but before
+                            // AppKit delivers its final termination reply.
+                            ApplicationShutdownGate.shared.commit()
+                        }
+                    },
+                    restoreWorkspace: {
+                        var firstRecoveryError: (any Error)?
+                        var webInteractionWasRestored = false
+                        do {
+                            _ = try await webController.refreshCurrentProjectForTermination(
+                                projectIDs: projectIDs
+                            )
+                        } catch {
+                            firstRecoveryError = error
+                        }
+                        do {
+                            try await designChatController.recoverFromCancelledTermination()
+                        } catch where firstRecoveryError == nil {
+                            firstRecoveryError = error
+                        } catch { }
+                        do {
+                            try await backendController.recoverFromCancelledTermination()
+                        } catch where firstRecoveryError == nil {
+                            firstRecoveryError = error
+                        } catch { }
+                        do {
+                            // Recovery can settle previously in-flight Web work
+                            // and rotates the Design helper token. Capture once
+                            // more before the retained lock is released.
+                            _ = try await webController.refreshCurrentProjectForTermination(
+                                projectIDs: projectIDs
+                            )
+                        } catch where firstRecoveryError == nil {
+                            firstRecoveryError = error
+                        } catch { }
+                        do {
+                            try await webController.cancelTerminationPreparation()
+                            webInteractionWasRestored = true
+                        } catch where firstRecoveryError == nil {
+                            firstRecoveryError = error
+                        } catch { }
+                        if webInteractionWasRestored {
+                            // Keep every native control blocked if WebKit could
+                            // not remove its lock. A later quit attempt can retry
+                            // the retained Web termination-preparation state.
+                            isTerminationPreparing = false
+                            replayWebPreferencesIfReady(isReady: webController.isReady)
+                        }
+                        if let firstRecoveryError {
+                            throw firstRecoveryError
+                        }
+                    }
                 )
-                await backendController.stopAndWait()
-                await designChatController.stopAndWait()
                 return true
             } catch {
-                store.lastErrorMessage = "Quit was cancelled because the latest workspace edits could not be saved: \(error.localizedDescription)"
+                store.lastErrorMessage = "Quit was cancelled because the workspace could not be saved and shut down safely: \(error.localizedDescription)"
                 return false
             }
         }
+        guard let token = registeredToken else {
+            return false
+        }
         terminationRegistrationToken = token
+        return true
     }
 
-    private func prepareForDisappearance() {
-        guard let token = terminationRegistrationToken else {
+    private func registerTerminationPreparationIfStillMounted(
+        mountGeneration: UInt64
+    ) async -> Bool {
+        guard mountLifecycle.admitsStart(
+            generation: mountGeneration,
+            taskIsCancelled: Task.isCancelled
+        ) else {
+            return false
+        }
+        // Admission and registration execute in one MainActor turn. The
+        // coordinator then holds this launch until every superseded session's
+        // managed cleanup has confirmed both direct children exited.
+        guard
+            registerTerminationPreparation(),
+            let token = terminationRegistrationToken,
+            await AppTerminationCoordinator.shared.waitUntilRegistrationMayLaunch(token)
+        else {
+            return false
+        }
+        let isStillAdmitted = mountLifecycle.admitsStart(
+            generation: mountGeneration,
+            taskIsCancelled: Task.isCancelled
+        ) && terminationRegistrationToken == token
+        if isStillAdmitted {
+            serviceLaunchIsAdmitted = true
+            serviceLaunchRetryIsAvailable = false
+        }
+        return isStillAdmitted
+    }
+
+    private func admitServicesForMountedStart(
+        mountGeneration: UInt64
+    ) async -> Bool {
+        guard await prepareServicesForMountedStart(
+            mountGeneration: mountGeneration
+        ) else {
+            exposeServiceLaunchRetryIfCurrent(
+                mountGeneration: mountGeneration
+            )
+            return false
+        }
+        guard await registerTerminationPreparationIfStillMounted(
+            mountGeneration: mountGeneration
+        ) else {
+            exposeServiceLaunchRetryIfCurrent(
+                mountGeneration: mountGeneration
+            )
+            return false
+        }
+        return true
+    }
+
+    private func exposeServiceLaunchRetryIfCurrent(
+        mountGeneration: UInt64
+    ) {
+        guard
+            mountLifecycle.admitsStart(
+                generation: mountGeneration,
+                taskIsCancelled: false
+            ),
+            terminationRegistrationToken != nil,
+            !ApplicationShutdownGate.shared.isCommitted
+        else {
             return
         }
+        serviceLaunchRetryIsAvailable = true
+    }
 
-        Task { @MainActor in
-            let succeeded = await AppTerminationCoordinator.shared
-                .prepareAndUnregister(token)
-            guard succeeded, terminationRegistrationToken == token else {
-                return
-            }
+    private func beginDisappearanceCleanup() {
+        var inFlightTerminationPreparation: Task<Bool, Never>?
+        if let token = terminationRegistrationToken {
+            inFlightTerminationPreparation =
+                AppTerminationCoordinator.shared.retirePreparation(token)
             terminationRegistrationToken = nil
         }
+
+        // Close both launch gates in the same MainActor turn, before either
+        // process wait suspends. An incomplete quit already holds the stronger
+        // termination gate; the controller accepts that as an existing cleanup
+        // barrier instead of reporting a spurious disappearance-gate error.
+        var gateError: (any Error)?
+        do {
+            try backendController.beginDisappearanceCleanup()
+        } catch {
+            gateError = error
+        }
+        do {
+            try designChatController.beginDisappearanceCleanup()
+        } catch where gateError == nil {
+            gateError = error
+        } catch { }
+
+        if let inFlightTerminationPreparation {
+            let priorCleanupTask = disappearanceCleanupTask
+            disappearanceCleanupRetryPolicy.reset()
+            startDisappearanceCleanupTask(
+                initialError: gateError,
+                waitForTerminationPreparation: inFlightTerminationPreparation,
+                waitForPriorCleanup: priorCleanupTask
+            )
+        } else if disappearanceCleanupTask == nil {
+            disappearanceCleanupRetryPolicy.reset()
+            startDisappearanceCleanupTask(initialError: gateError)
+        }
+
+        guard let disappearanceCleanupTask else {
+            return
+        }
+        registerDisappearanceCleanupPreparation(for: disappearanceCleanupTask)
+    }
+
+    private func startDisappearanceCleanupTask(
+        initialError: (any Error)? = nil,
+        waitForTerminationPreparation: Task<Bool, Never>? = nil,
+        waitForPriorCleanup: Task<Bool, Never>? = nil
+    ) {
+        let backendController = backendController
+        let designChatController = designChatController
+        disappearanceCleanupTaskID = UUID()
+        disappearanceCleanupTask = Task { @MainActor in
+            var firstError = initialError
+            if let waitForTerminationPreparation {
+                _ = await waitForTerminationPreparation.value
+            }
+            if let waitForPriorCleanup {
+                _ = await waitForPriorCleanup.value
+            }
+
+            do {
+                _ = try await designChatController.stopAndWaitForRetiredTerminationOwner()
+            } catch {
+                firstError = error
+            }
+            do {
+                _ = try await backendController.stopAndWaitForRetiredTerminationOwner()
+            } catch where firstError == nil {
+                firstError = error
+            } catch { }
+            if let firstError {
+                errorMessage = "A background service could not be stopped after the window disappeared: \(firstError.localizedDescription)"
+                return false
+            }
+            return true
+        }
+    }
+
+    private func registerDisappearanceCleanupPreparation(
+        for cleanupTask: Task<Bool, Never>
+    ) {
+        if let cleanupToken = disappearanceCleanupRegistrationToken {
+            _ = AppTerminationCoordinator.shared.unregisterManagedCleanup(cleanupToken)
+        }
+        let backendController = backendController
+        let designChatController = designChatController
+        var isInitialAttempt = true
+        disappearanceCleanupRegistrationToken =
+            AppTerminationCoordinator.shared.registerManagedCleanup {
+                if isInitialAttempt {
+                    isInitialAttempt = false
+                    return await cleanupTask.value
+                }
+
+                // A failed first TERM/KILL wait retains each Process. With no
+                // remount there is no view task to create a retry, so every
+                // later Cmd-Q attempt must re-observe/kill those same owned
+                // children instead of replaying a cached `false` forever.
+                var firstError: (any Error)?
+                do {
+                    _ = try await designChatController.stopAndWaitForRetiredTerminationOwner()
+                } catch {
+                    firstError = error
+                }
+                do {
+                    _ = try await backendController.stopAndWaitForRetiredTerminationOwner()
+                } catch where firstError == nil {
+                    firstError = error
+                } catch { }
+                return firstError == nil
+            }
+    }
+
+    private func prepareServicesForMountedStart(
+        mountGeneration: UInt64
+    ) async -> Bool {
+        await mountPreparationSingleFlight.run(generation: mountGeneration) {
+            await driveServicesForMountedStart(
+                mountGeneration: mountGeneration
+            )
+        }
+    }
+
+    private func driveServicesForMountedStart(
+        mountGeneration: UInt64
+    ) async -> Bool {
+        while
+            let disappearanceCleanupTask,
+            let disappearanceCleanupTaskID
+        {
+            let cleanupSucceeded = await disappearanceCleanupTask.value
+
+            guard mountLifecycle.admitsStart(
+                generation: mountGeneration,
+                taskIsCancelled: Task.isCancelled
+            ) else {
+                return false
+            }
+            guard self.disappearanceCleanupTaskID == disappearanceCleanupTaskID else {
+                continue
+            }
+            if cleanupSucceeded {
+                break
+            }
+
+            // A failed TERM/KILL wait retains Process ownership and the launch
+            // gates. Permit one deterministic retry for each later mount
+            // generation; the second wait can observe an eventual exit or
+            // retry the forced signal without ever reopening launches early.
+            guard disappearanceCleanupRetryPolicy.claimAutomaticRetry(
+                for: mountGeneration
+            ) else {
+                return false
+            }
+            guard
+                let cleanupToken = disappearanceCleanupRegistrationToken,
+                await AppTerminationCoordinator.shared.retryManagedCleanupForOwner(
+                    cleanupToken
+                ),
+                mountLifecycle.admitsStart(
+                    generation: mountGeneration,
+                    taskIsCancelled: Task.isCancelled
+                ),
+                self.disappearanceCleanupTaskID == disappearanceCleanupTaskID,
+                self.disappearanceCleanupRegistrationToken == cleanupToken
+            else {
+                return false
+            }
+            break
+        }
+
+        guard mountLifecycle.admitsStart(
+            generation: mountGeneration,
+            taskIsCancelled: Task.isCancelled
+        ) else {
+            return false
+        }
+
+        do {
+            try backendController.completeDisappearanceCleanupForRemount()
+            try designChatController.completeDisappearanceCleanupForRemount()
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+        if let cleanupToken = disappearanceCleanupRegistrationToken {
+            _ = AppTerminationCoordinator.shared.unregisterManagedCleanup(cleanupToken)
+            disappearanceCleanupRegistrationToken = nil
+        }
+        self.disappearanceCleanupTask = nil
+        self.disappearanceCleanupTaskID = nil
+        self.disappearanceCleanupRetryPolicy.reset()
+        return true
     }
 
     private var orderedSelectedProjectIDs: [String] {
@@ -985,21 +1514,54 @@ struct ContentView: View {
     }
 
     private func restartBackend() {
+        guard
+            serviceLaunchIsAdmitted || serviceLaunchRetryIsAvailable,
+            let registrationToken = terminationRegistrationToken
+        else {
+            return
+        }
+        let mountGeneration = mountLifecycle.generation
+        serviceLaunchRetryIsAvailable = false
+        disappearanceCleanupRetryPolicy.reopenForExplicitUserRetry(
+            generation: mountGeneration
+        )
         // Restart the Design Agent backend independently so its (fast) restart is
         // not blocked by the Julia server's slower one. The endpoint is re-injected
         // when the reloaded web shell signals ready.
         Task {
-            await designChatController.restart()
-        }
-        Task {
-            do {
-                try await backendController.restart()
-                webController.loadBackend(url: backendController.baseURL.appendingPathComponent("index-node.html"))
-                syncCurrentSelectionIntoWeb()
-            } catch is CancellationError {
+            guard
+                mountLifecycle.admitsStart(
+                    generation: mountGeneration,
+                    taskIsCancelled: Task.isCancelled
+                ),
+                terminationRegistrationToken == registrationToken,
+                await admitServicesForMountedStart(
+                    mountGeneration: mountGeneration
+                ),
+                mountLifecycle.admitsStart(
+                    generation: mountGeneration,
+                    taskIsCancelled: Task.isCancelled
+                ),
+                terminationRegistrationToken == registrationToken
+            else {
                 return
-            } catch {
-                errorMessage = error.localizedDescription
+            }
+            Task {
+                await designChatController.restart()
+            }
+            Task {
+                do {
+                    try await backendController.restart()
+                    webController.loadBackend(
+                        url: backendController.baseURL
+                            .appendingPathComponent("index-node.html")
+                    )
+                    syncCurrentSelectionIntoWeb()
+                } catch is CancellationError {
+                    return
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -1016,6 +1578,18 @@ struct ContentView: View {
         webController.setDesignChatEndpoint(
             designChatController.endpointURL.absoluteString,
             bearerToken: bearerToken
+        )
+    }
+
+    private func replayWebPreferencesIfReady(isReady: Bool) {
+        WebShellPreferenceReplay.run(
+            isReady: isReady,
+            applyTheme: { syncThemeModeToWeb(themeMode) },
+            applyCloudCompute: {
+                webController.setCloudComputeEnabled(cloudComputeEnabled)
+            },
+            applySurface: { webController.setSurface(activeSurface) },
+            applyDesignEndpoint: injectDesignChatEndpoint
         )
     }
 
