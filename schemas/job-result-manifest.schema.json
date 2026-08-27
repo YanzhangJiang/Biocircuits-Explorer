@@ -15,7 +15,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "bne-job-result-manifest/v1.0.0"
+      "const": "bne-job-result-manifest/v1.1.0"
     },
     "job_id": {
       "type": "string",

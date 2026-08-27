@@ -126,6 +126,42 @@ function _with_rofjob_store(f::Function)
     end
 end
 
+function _rofjob_assert_outer_manifest_identity_bound(record)
+    manifest_path = String(record["result_manifest_uri"])
+    original = read(manifest_path)
+    cases = (
+        "artifact_schema_version" => (manifest ->
+            (manifest["artifact_identity"]["artifact_schema_version"] =
+                "bne-result/v999.0.0")),
+        "algorithm_name" => (manifest ->
+            (manifest["artifact_identity"]["algorithm_name"] =
+                "different_algorithm")),
+        "algorithm_version" => (manifest ->
+            (manifest["artifact_identity"]["algorithm_version"] =
+                "999.0.0")),
+        "config_hash" => (manifest ->
+            (manifest["artifact_identity"]["config_hash"] = "0"^64)),
+        "artifact_metadata_hash" => (manifest ->
+            (manifest["artifact_identity"]["artifact_metadata_hash"] =
+                "0"^64)),
+        "payload_key_count" => (manifest ->
+            (manifest["result"]["payload_key_count"] += 1)),
+    )
+    for (_, mutate!) in cases
+        try
+            manifest = Backend._read_job_json(manifest_path)
+            mutate!(manifest)
+            Backend._write_job_json(manifest_path, manifest)
+            verification = Backend._verify_job_result_artifact(record)
+            @test verification.status == :invalid
+        finally
+            write(manifest_path, original)
+        end
+        @test Backend._verify_job_result_artifact(record).status == :valid
+    end
+    return nothing
+end
+
 function _rofjob_seed_record(job_id, spec, status;
                              user_sub="alice", checkpoint=nothing)
     prepared = Backend._prepare_job_spec_and_artifact_identity(
@@ -265,6 +301,98 @@ end
     end
 end
 
+@testset "chunked job storage rejects symlinked job ancestors" begin
+    (Sys.isapple() || Sys.islinux()) || return
+    _with_rofjob_store() do store
+        job_id = "e"^32
+        outside = mktempdir()
+        try
+            symlink(outside, joinpath(store, job_id))
+            probe = joinpath(outside, "probe.json")
+            write(probe, "{}")
+            @test_throws Backend.ROFieldChunkContractError begin
+                Backend._rofjob_read_document(
+                    joinpath(store, job_id, "probe.json"))
+            end
+            rm(probe)
+            calls = Int[]
+            @test_throws Backend.ROFieldChunkContractError compute_ro_field_job(
+                _rofjob_spec();
+                job_context=Dict{String,Any}(
+                    "job_id" => job_id,
+                    "user_sub" => "alice",
+                    "evaluator" => _rofjob_evaluator(calls),
+                ),
+            )
+            @test isempty(calls)
+            @test isempty(readdir(outside))
+        finally
+            rm(outside; recursive=true, force=true)
+        end
+    end
+end
+
+@testset "terminal result rejects checkpoint and manifest split brain" begin
+    _with_rofjob_store() do _
+        job_id = "7"^32
+        calls = Int[]
+        result = compute_ro_field_job(
+            _rofjob_spec();
+            job_context=Dict{String,Any}(
+                "job_id" => job_id,
+                "user_sub" => "alice",
+                "evaluator" => _rofjob_evaluator(calls),
+            ),
+        )
+        descriptor = result["ro_field_job_result"]
+        root = Backend._rofjob_data_root(job_id)
+        plan = Backend._rofjob_read_document(Backend._rofjob_plan_path(root))
+        manifest = Backend._rofjob_read_document(
+            Backend._rofjob_manifest_path(
+                root, descriptor["dataset_manifest_sha256"]))
+        chunks = Backend._rofjob_chunks_from_entries(
+            root, plan, manifest["chunks"])
+        units = ro_field_plan_work_units(plan)
+
+        alternate_samples = Any[
+            Dict{String,Any}(
+                "status" => "valid",
+                "output_values" => deepcopy(sample["output_values"]),
+                "reaction_order_matrix" =>
+                    deepcopy(sample["reaction_order_matrix"]),
+                "regime_id" => sample["regime_id"],
+            )
+            for sample in chunks[1]["samples"]
+        ]
+        alternate_samples[1]["output_values"][1] += 1.0
+        alternate_chunk = build_ro_field_chunk(
+            plan, units[1], alternate_samples)
+        @test length(Backend._rofc_bytes(alternate_chunk)) ==
+            length(Backend._rofc_bytes(chunks[1]))
+        write_ro_field_chunk!(
+            root, alternate_chunk; plan=plan, work_unit=units[1])
+
+        checkpoint_chunks = copy(chunks)
+        checkpoint_chunks[1] = alternate_chunk
+        split_checkpoint = build_ro_field_checkpoint(plan, checkpoint_chunks)
+        Backend._rofjob_write_once!(
+            Backend._rofjob_checkpoint_path(
+                root, split_checkpoint["checkpoint_sha256"]),
+            split_checkpoint,
+        )
+        split_result = deepcopy(result)
+        split_descriptor = split_result["ro_field_job_result"]
+        split_descriptor["checkpoint_sha256"] =
+            split_checkpoint["checkpoint_sha256"]
+        split_descriptor["storage"]["checkpoint_ref"] =
+            "job://$(job_id)/ro-field/checkpoints/" *
+            split_checkpoint["checkpoint_sha256"]
+
+        @test_throws ArgumentError validate_ro_field_job_result!(
+            split_result, job_id, descriptor["plan_sha256"])
+    end
+end
+
 @testset "resume creates a child and never reevaluates committed points" begin
     _with_rofjob_store() do _
         parent_id = "2"^32
@@ -326,6 +454,8 @@ end
                 "ro_field_plan_sha256" => checkpoint["plan_sha256"],
                 "resume_from" => resume,
                 "latest_checkpoint_sha256" => descriptor["checkpoint_sha256"],
+                "ro_field_dataset_manifest_sha256" =>
+                    descriptor["dataset_manifest_sha256"],
             )
             @test validate_ro_field_job_result!(
                 child, child_id, checkpoint["plan_sha256"];
@@ -340,6 +470,11 @@ end
             @test_throws ArgumentError validate_ro_field_job_result!(
                 child, child_id, checkpoint["plan_sha256"];
                 record=wrong_checkpoint)
+            wrong_manifest = deepcopy(contextual_record)
+            wrong_manifest["ro_field_dataset_manifest_sha256"] = "e"^64
+            @test_throws ArgumentError validate_ro_field_job_result!(
+                child, child_id, checkpoint["plan_sha256"];
+                record=wrong_manifest)
 
             full_checkpoint = Backend._rofjob_read_document(
                 Backend._rofjob_checkpoint_path(
@@ -401,9 +536,38 @@ end
         @test isfile(Backend._job_result_manifest_path(job_id))
         record = Backend._job_record(job_id)
         @test Backend._verify_job_result_artifact(record).status == :valid
+        missing_outer_anchor = deepcopy(record)
+        delete!(missing_outer_anchor, "ro_field_outer_result_sha256")
+        @test Backend._verify_job_result_artifact(
+            missing_outer_anchor).status == :invalid
+        missing_manifest_anchor = deepcopy(record)
+        delete!(missing_manifest_anchor, "ro_field_dataset_manifest_sha256")
+        @test Backend._verify_job_result_artifact(
+            missing_manifest_anchor).status == :invalid
         result = get_biocircuits_job_result(
             job_id; user_sub="contract-user")["result"]
         @test result["ro_field_job_result"]["point_count"] == 4
+
+        original_result_bytes = read(String(record["result_uri"]))
+        original_manifest_bytes = read(String(record["result_manifest_uri"]))
+        replacement = deepcopy(result)
+        replacement["artifact"]["created_at"] = "2099-01-01T00:00:00Z"
+        replacement_manifest = Backend._publish_job_result_with_manifest(
+            replacement,
+            job_id,
+            "compute_ro_field",
+            record["expected_artifact_config_hash"],
+            record["result_uri"],
+            record["result_manifest_uri"],
+        )
+        @test replacement_manifest["result"]["sha256"] !=
+            record["ro_field_outer_result_sha256"]
+        @test Backend._verify_job_result_artifact(record).status == :invalid
+
+        write(String(record["result_uri"]), original_result_bytes)
+        write(String(record["result_manifest_uri"]), original_manifest_bytes)
+        @test Backend._verify_job_result_artifact(record).status == :valid
+        _rofjob_assert_outer_manifest_identity_bound(record)
 
         descriptor = result["ro_field_job_result"]
         root = Backend._rofjob_data_root(job_id)

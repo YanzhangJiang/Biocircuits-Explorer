@@ -6,7 +6,7 @@
 # at most eight records, with aggregate cell/facet limits checked before any
 # cancellation callback or classifier work.
 
-const RO_FIELD_ATLAS_SCHEMA_VERSION = "bne-ro-field-atlas/v1.0.0"
+const RO_FIELD_ATLAS_SCHEMA_VERSION = "bne-ro-field-atlas/v1.1.0"
 const RO_FIELD_ATLAS_QUERY_SCHEMA_VERSION =
     "bne-ro-field-atlas-query/v1.0.0"
 const RO_FIELD_ATLAS_QUERY_RESULT_SCHEMA_VERSION =
@@ -22,6 +22,38 @@ const _RO_FIELD_ATLAS_HARD_MAX_QUERY_TRANSITIONS = 32
 const _RO_FIELD_ATLAS_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 const _RO_FIELD_ATLAS_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 const _RO_FIELD_ATLAS_SIGN_PATTERN = r"^[+0-]+(?:\|[+0-]+)*$"
+const _RO_FIELD_ATLAS_KIND = "explicit_exact_2d_demo_corpus"
+const _RO_FIELD_ATLAS_NETWORK_SPACE_CLAIM = "none"
+const _RO_FIELD_ATLAS_SOURCE_SELECTION =
+    "caller_declared_explicit_records"
+const _RO_FIELD_ATLAS_INELIGIBLE_DETAIL =
+    "Only explicitly declared exact two-input cell complexes are classified; " *
+    "this record was retained as a diagnostic and was not projected."
+
+const _RO_FIELD_ATLAS_TOP_LEVEL_KEYS = (
+    "schema_version", "atlas_kind", "network_space_claim",
+    "source_population", "config", "population", "record_order", "records",
+    "diagnostics", "atlas_sha256",
+)
+const _RO_FIELD_ATLAS_SOURCE_POPULATION_KEYS = (
+    "selection", "enumeration_performed", "topology_search_performed",
+)
+const _RO_FIELD_ATLAS_CONFIG_KEYS = (
+    "max_fields", "max_total_cells", "max_total_facets", "signature_config",
+    "preflight_total_cells", "preflight_total_facets",
+)
+const _RO_FIELD_ATLAS_POPULATION_KEYS = (
+    "submitted_count", "eligible_count", "evaluated_count", "classified_count",
+    "diagnostic_count", "omitted_count", "ineligible_count", "count_semantics",
+)
+const _RO_FIELD_ATLAS_RECORD_KEYS = (
+    "record_id", "field_sha256", "field_payload", "signature_sha256",
+    "signature",
+)
+const _RO_FIELD_ATLAS_DIAGNOSTIC_KEYS = (
+    "record_id", "representation", "stage", "code", "detail",
+    "eligibility_reasons",
+)
 
 const _RO_FIELD_ATLAS_COMPONENT_CLASSES = Set((
     "zero",
@@ -42,19 +74,136 @@ const _RO_FIELD_ATLAS_GRADIENT_FAMILIES = Set((
     "unknown",
 ))
 
-"""One explicitly submitted candidate for the bounded RO-field Atlas."""
+"""
+One explicitly submitted candidate for the bounded RO-field Atlas.
+
+Exact records retain only values derived from a validated complete field
+artifact.  `field_sha256` is the canonical RPB2 field identity, while
+`field_payload`, axes, outputs, and the classifier complex are detached from
+the caller-owned document.
+"""
+mutable struct _ROFieldAtlasInputToken end
+const _RO_FIELD_ATLAS_INPUT_TOKEN = _ROFieldAtlasInputToken()
+
 struct ROFieldAtlasInput
     record_id::String
     representation::Symbol
     field_sha256::Union{Nothing,String}
-    complex::Union{Nothing,ROCellComplex2D}
-    axis_ids::Vector{String}
-    output_ids::Vector{String}
+    _field_payload_json::Union{Nothing,String}
+    _diagnostic_complex::Union{Nothing,ROCellComplex2D}
+    _diagnostic_axis_ids::Tuple{Vararg{String}}
+    _diagnostic_output_ids::Tuple{Vararg{String}}
+
+    function ROFieldAtlasInput(
+        token::_ROFieldAtlasInputToken,
+        record_id::String,
+        representation::Symbol,
+        field_sha256::Union{Nothing,String},
+        field_payload_json::Union{Nothing,String},
+        diagnostic_complex::Union{Nothing,ROCellComplex2D},
+        diagnostic_axis_ids::Tuple{Vararg{String}},
+        diagnostic_output_ids::Tuple{Vararg{String}},
+    )
+        token === _RO_FIELD_ATLAS_INPUT_TOKEN || throw(ArgumentError(
+            "ROFieldAtlasInput values must be created by the validated keyword constructor"))
+        return new(
+            record_id,
+            representation,
+            field_sha256,
+            field_payload_json,
+            diagnostic_complex,
+            diagnostic_axis_ids,
+            diagnostic_output_ids,
+        )
+    end
+end
+
+function _rofa_input_payload(record::ROFieldAtlasInput)
+    payload_json = getfield(record, :_field_payload_json)
+    payload_json === nothing && return nothing
+    return _ro_field_materialize(JSON3.read(payload_json))
+end
+
+function Base.getproperty(record::ROFieldAtlasInput, name::Symbol)
+    if name === :field_payload
+        return _rofa_input_payload(record)
+    elseif name === :axis_ids || name === :output_ids || name === :complex
+        if getfield(record, :representation) === :exact_cell_complex
+            payload = _rofa_input_payload(record)
+            payload === nothing && return nothing
+            axis_ids = String.(_ro_field_identity_vector(
+                _ro_field_identity_get(payload, "domain"), "axis_order"))
+            output_ids = String.(_ro_field_identity_vector(
+                _ro_field_identity_get(payload, "outputs"), "output_order"))
+            name === :axis_ids && return axis_ids
+            name === :output_ids && return output_ids
+            return _rofa_complex_from_payload(payload, length(output_ids))
+        end
+        name === :axis_ids && return collect(
+            getfield(record, :_diagnostic_axis_ids))
+        name === :output_ids && return collect(
+            getfield(record, :_diagnostic_output_ids))
+        return getfield(record, :_diagnostic_complex)
+    end
+    return getfield(record, name)
+end
+
+function Base.propertynames(::ROFieldAtlasInput, private::Bool=false)
+    public = (
+        :record_id, :representation, :field_sha256, :field_payload, :complex,
+        :axis_ids, :output_ids,
+    )
+    private || return public
+    return (public..., :_field_payload_json, :_diagnostic_complex,
+        :_diagnostic_axis_ids, :_diagnostic_output_ids)
+end
+
+function _rofa_complex_from_payload(payload, output_count::Int)
+    isdefined(@__MODULE__, :_atlas_sqlite_ro_signature_complex_from_artifact) ||
+        throw(ArgumentError(
+            "the exact RO-field artifact reconstruction validator is unavailable"))
+    data = _ro_field_identity_get(payload, "data")
+    envelope = Dict{String,Any}(
+        "domain" => _ro_field_identity_get(payload, "domain"),
+        "data" => data,
+        "coverage" => Dict{String,Any}(
+            "enumeration_complete" => true,
+            "truncated" => false,
+            "omitted_count" => 0,
+        ),
+    )
+    return getfield(
+        @__MODULE__, :_atlas_sqlite_ro_signature_complex_from_artifact)(
+            envelope, output_count)
+end
+
+function _rofa_exact_source_from_artifact(field_artifact)
+    isdefined(@__MODULE__, :validate_ro_field_document!) ||
+        throw(ArgumentError(
+            "the complete RO-field artifact validator is unavailable"))
+    document = try
+        validate_ro_cell_complex_identity_eligibility!(field_artifact)
+    catch err
+        err isa InterruptException && rethrow()
+        throw(ArgumentError(
+            "field_artifact is not a complete exact RO-field artifact: " *
+            sprint(showerror, err)))
+    end
+    payload = canonical_ro_cell_complex_payload(document)
+    axis_ids = String.(_ro_field_identity_vector(
+        _ro_field_identity_get(payload, "domain"), "axis_order"))
+    output_ids = String.(_ro_field_identity_vector(
+        _ro_field_identity_get(payload, "outputs"), "output_order"))
+    field_hash = ro_cell_complex_hash(
+        _ro_field_encode_cell_complex_payload(payload))
+    complex = _rofa_complex_from_payload(payload, length(output_ids))
+    return field_hash, payload, complex, axis_ids, output_ids
 end
 
 function ROFieldAtlasInput(
     record_id;
     representation,
+    field_artifact=nothing,
     field_sha256=nothing,
     complex=nothing,
     axis_ids=String[],
@@ -73,16 +222,6 @@ function ROFieldAtlasInput(
     else
         throw(ArgumentError("representation must be a string or symbol"))
     end
-    normalized_hash = if field_sha256 === nothing
-        nothing
-    elseif field_sha256 isa AbstractString
-        String(field_sha256)
-    else
-        throw(ArgumentError("field_sha256 must be a string or nothing"))
-    end
-    complex === nothing || complex isa ROCellComplex2D ||
-        throw(ArgumentError("complex must be an ROCellComplex2D or nothing"))
-
     normalize_ids(raw, name) = begin
         raw isa AbstractVector || raw isa Tuple || throw(ArgumentError(
             "$name must be an ordered vector"))
@@ -94,13 +233,60 @@ function ROFieldAtlasInput(
         end
         result
     end
+    asserted_axis_ids = normalize_ids(axis_ids, "axis_ids")
+    asserted_output_ids = normalize_ids(output_ids, "output_ids")
+    normalized_hash = field_sha256 === nothing ? nothing : begin
+        field_sha256 isa AbstractString || throw(ArgumentError(
+            "field_sha256 must be a string or nothing"))
+        String(field_sha256)
+    end
+    complex === nothing || complex isa ROCellComplex2D ||
+        throw(ArgumentError("complex must be an ROCellComplex2D or nothing"))
+
+    if normalized_representation === :exact_cell_complex
+        field_artifact === nothing && throw(ArgumentError(
+            "exact_cell_complex Atlas inputs require a complete field_artifact"))
+        complex === nothing || throw(ArgumentError(
+            "complex is derived from field_artifact and must not be supplied"))
+        derived_hash, payload, _, derived_axes, derived_outputs =
+            _rofa_exact_source_from_artifact(field_artifact)
+        normalized_hash === nothing || normalized_hash == derived_hash ||
+            throw(ArgumentError(
+                "field_sha256 does not match the derived exact-field identity"))
+        isempty(asserted_axis_ids) || asserted_axis_ids == derived_axes ||
+            throw(ArgumentError(
+                "axis_ids do not match field_artifact.domain.axis_order"))
+        isempty(asserted_output_ids) || asserted_output_ids == derived_outputs ||
+            throw(ArgumentError(
+                "output_ids do not match field_artifact.outputs.output_order"))
+        _rofa_ids_are_valid(derived_axes; expected=2) || throw(ArgumentError(
+            "field_artifact must declare two distinct ordered safe axis IDs"))
+        1 <= length(derived_outputs) <= _RO_FIELD_ATLAS_HARD_MAX_OUTPUTS ||
+            throw(ArgumentError(
+                "field_artifact output count exceeds the demonstration Atlas bound"))
+        _rofa_ids_are_valid(derived_outputs) || throw(ArgumentError(
+            "field_artifact must declare distinct ordered safe output IDs"))
+        return ROFieldAtlasInput(
+            _RO_FIELD_ATLAS_INPUT_TOKEN,
+            normalized_record_id,
+            normalized_representation,
+            derived_hash,
+            _ro_field_canonical_json(payload),
+            nothing,
+            (),
+            (),
+        )
+    end
+
     return ROFieldAtlasInput(
+        _RO_FIELD_ATLAS_INPUT_TOKEN,
         normalized_record_id,
         normalized_representation,
         normalized_hash,
+        nothing,
         complex,
-        normalize_ids(axis_ids, "axis_ids"),
-        normalize_ids(output_ids, "output_ids"),
+        Tuple(asserted_axis_ids),
+        Tuple(asserted_output_ids),
     )
 end
 
@@ -204,9 +390,7 @@ function _rofa_input_ineligibility(record::ROFieldAtlasInput)
             record,
             "eligibility",
             code,
-            "Only explicitly declared exact two-input cell complexes are " *
-            "classified; this record was retained as a diagnostic and was " *
-            "not projected.",
+            _RO_FIELD_ATLAS_INELIGIBLE_DETAIL,
         )
     elseif record.field_sha256 === nothing ||
            !occursin(_RO_FIELD_ATLAS_SHA256_PATTERN, record.field_sha256)
@@ -275,10 +459,12 @@ function _rofa_preflight!(
 
     total_cells = BigInt(0)
     total_facets = BigInt(0)
+    exact_sources = Dict{String,Any}()
     for record in records
         record.representation === :exact_cell_complex || continue
-        record.complex === nothing && continue
-        complex = record.complex
+        source = _rofa_exact_source_from_input(record)
+        exact_sources[record.record_id] = source
+        complex = source.complex
         cells = BigInt(length(complex.cells))
         facets = BigInt(length(complex.facets))
         total_cells += cells
@@ -290,14 +476,14 @@ function _rofa_preflight!(
             config.signature_config.max_cells)
         _rofa_limit(:signature_facets, facets,
             config.signature_config.max_facets)
-        matrix_elements = cells * BigInt(length(record.output_ids)) * 2 +
-            facets * BigInt(length(record.output_ids)) * 4
+        matrix_elements = cells * BigInt(length(source.output_ids)) * 2 +
+            facets * BigInt(length(source.output_ids)) * 4
         _rofa_limit(:signature_matrix_elements, matrix_elements,
             config.signature_config.max_matrix_elements)
     end
     _rofa_limit(:total_cells, total_cells, config.max_total_cells)
     _rofa_limit(:total_facets, total_facets, config.max_total_facets)
-    return total_cells, total_facets
+    return total_cells, total_facets, exact_sources
 end
 
 function _rofa_population_dict(
@@ -318,7 +504,7 @@ function _rofa_population_dict(
         "count_semantics" => Dict{String,Any}(
             "submitted_count" => "explicit records supplied by the caller",
             "eligible_count" =>
-                "records with an exact 2D complex, field hash, axes, and outputs",
+                "records derived from a validated complete exact 2D field artifact",
             "evaluated_count" =>
                 "eligible records passed to the versioned classifier",
             "classified_count" =>
@@ -341,10 +527,10 @@ function _rofa_atlas_identity_payload(
 )
     return Dict{String,Any}(
         "schema_version" => RO_FIELD_ATLAS_SCHEMA_VERSION,
-        "atlas_kind" => "explicit_exact_2d_demo_corpus",
-        "network_space_claim" => "none",
+        "atlas_kind" => _RO_FIELD_ATLAS_KIND,
+        "network_space_claim" => _RO_FIELD_ATLAS_NETWORK_SPACE_CLAIM,
         "source_population" => Dict{String,Any}(
-            "selection" => "caller_declared_explicit_records",
+            "selection" => _RO_FIELD_ATLAS_SOURCE_SELECTION,
             "enumeration_performed" => false,
             "topology_search_performed" => false,
         ),
@@ -376,7 +562,8 @@ end
 """
     build_ro_field_atlas(records; config=ROFieldAtlasConfig(), cancel_check=()->nothing)
 
-Classify a caller-declared population of at most eight exact 2D fields.  All
+Classify a caller-declared population of at most eight complete exact 2D field
+artifacts.  All
 aggregate and per-field dimensions are preflighted before callbacks or feature
 work.  Unsupported records remain visible as diagnostics and are never coerced
 into an exact representation.
@@ -386,7 +573,7 @@ function build_ro_field_atlas(
     config::ROFieldAtlasConfig=ROFieldAtlasConfig(),
     cancel_check=() -> nothing,
 )
-    total_cells, total_facets = _rofa_preflight!(records, config)
+    total_cells, total_facets, exact_sources = _rofa_preflight!(records, config)
     ordered_inputs = sort!(collect(records); by=record -> record.record_id)
 
     classified_records = Dict{String,Any}[]
@@ -405,33 +592,25 @@ function build_ro_field_atlas(
 
         eligible_count += 1
         evaluated_count += 1
+        source = exact_sources[record.record_id]
         signature = classify_ro_cell_complex(
-            record.complex,
-            record.field_sha256;
-            axis_ids=record.axis_ids,
-            output_ids=record.output_ids,
+            source.complex,
+            source.field_sha256;
+            axis_ids=source.axis_ids,
+            output_ids=source.output_ids,
             config=config.signature_config,
             cancel_check=cancel_check,
         )
-        if signature["classifiable"] === true
-            classified_count += 1
-            push!(classified_records, Dict{String,Any}(
-                "record_id" => record.record_id,
-                "field_sha256" => record.field_sha256,
-                "signature_sha256" => signature["signature_sha256"],
-                "signature" => signature,
-            ))
-        else
-            push!(diagnostics, _rofa_diagnostic(
-                record,
-                "classification",
-                "unclassifiable_exact_field",
-                "The exact field was evaluated but its complete regular-cell " *
-                "signature is unknown; no first label or partial feature was indexed.";
-                eligibility_reasons=signature["diagnostics"][
-                    "eligibility_reasons"],
-            ))
-        end
+        signature["classifiable"] === true || throw(ArgumentError(
+            "validated exact Atlas input $(record.record_id) did not produce a complete signature"))
+        classified_count += 1
+        push!(classified_records, Dict{String,Any}(
+            "record_id" => record.record_id,
+            "field_sha256" => source.field_sha256,
+            "field_payload" => source.field_payload,
+            "signature_sha256" => signature["signature_sha256"],
+            "signature" => signature,
+        ))
     end
     cancel_check()
 
@@ -655,19 +834,136 @@ function _rofa_query_dict(query::ROFieldAtlasQuerySpec)
 end
 
 function _rofa_dict_get(raw::AbstractDict, key::AbstractString)
-    haskey(raw, key) && return raw[key]
-    haskey(raw, Symbol(key)) && return raw[Symbol(key)]
+    matching_keys = Any[
+        actual for actual in keys(raw)
+        if (actual isa AbstractString || actual isa Symbol) &&
+           String(actual) == key
+    ]
+    length(matching_keys) <= 1 || throw(ArgumentError(
+        "RO-field Atlas contains duplicate string/symbol forms of $key"))
+    length(matching_keys) == 1 && return raw[only(matching_keys)]
     throw(ArgumentError("RO-field Atlas value is missing $key"))
 end
 
+function _rofa_exact_keys(raw, expected, path::AbstractString)
+    raw isa AbstractDict || throw(ArgumentError("$path must be an object"))
+    observed = String[]
+    for key in keys(raw)
+        (key isa AbstractString || key isa Symbol) || throw(ArgumentError(
+            "$path keys must be strings or symbols"))
+        push!(observed, String(key))
+    end
+    length(observed) == length(expected) && Set(observed) == Set(expected) ||
+        throw(ArgumentError("$path has an unexpected key set"))
+    return raw
+end
+
+function _rofa_safe_record_id(raw, path::AbstractString)
+    raw isa AbstractString || throw(ArgumentError("$path must be a string"))
+    value = String(raw)
+    occursin(_RO_FIELD_ATLAS_ID_PATTERN, value) || throw(ArgumentError(
+        "$path is not a safe RO-field Atlas identifier"))
+    return value
+end
+
+function _rofa_source_from_stored_payload(raw)
+    raw isa AbstractDict || throw(ArgumentError(
+        "RO-field Atlas field_payload must be an object"))
+    raw_data = _ro_field_identity_get(raw, "data")
+    length(_ro_field_identity_vector(raw_data, "cells")) <=
+        _RO_FIELD_ATLAS_HARD_MAX_TOTAL_CELLS || throw(ArgumentError(
+        "RO-field Atlas field_payload exceeds the hard cell bound"))
+    length(_ro_field_identity_vector(raw_data, "facets")) <=
+        _RO_FIELD_ATLAS_HARD_MAX_TOTAL_FACETS || throw(ArgumentError(
+        "RO-field Atlas field_payload exceeds the hard facet bound"))
+    payload = try
+        validate_ro_field_payload!(raw)
+    catch err
+        err isa InterruptException && rethrow()
+        throw(ArgumentError(
+            "RO-field Atlas field_payload is invalid: " * sprint(showerror, err)))
+    end
+    canonical_payload = _ro_field_canonicalized_identity_payload(payload)
+    _ro_field_canonical_json(canonical_payload) ==
+        _ro_field_canonical_json(_ro_field_materialize(raw)) ||
+        throw(ArgumentError(
+            "RO-field Atlas field_payload is not in canonical identity form"))
+
+    data = _ro_field_identity_get(canonical_payload, "data")
+    isempty(_ro_field_identity_vector(data, "gaps")) || throw(ArgumentError(
+        "RO-field Atlas field_payload must be gap-free"))
+    isempty(_ro_field_identity_vector(data, "singular_strata")) ||
+        throw(ArgumentError(
+            "RO-field Atlas field_payload must not contain singular strata"))
+    isempty(_ro_field_identity_vector(data, "singular_stratum_order")) ||
+        throw(ArgumentError(
+            "RO-field Atlas field_payload has singular-stratum identities"))
+    for cell in _ro_field_identity_vector(data, "cells")
+        !_ro_field_identity_bool(cell, "set_valued") || throw(ArgumentError(
+            "RO-field Atlas field_payload contains a set-valued cell"))
+        length(_ro_field_identity_vector(cell, "affine_labels")) == 1 ||
+            throw(ArgumentError(
+                "RO-field Atlas cells require exactly one affine label"))
+    end
+
+    axis_ids = String.(_ro_field_identity_vector(
+        _ro_field_identity_get(canonical_payload, "domain"), "axis_order"))
+    output_ids = String.(_ro_field_identity_vector(
+        _ro_field_identity_get(canonical_payload, "outputs"), "output_order"))
+    field_hash = ro_cell_complex_hash(
+        _ro_field_encode_cell_complex_payload(canonical_payload))
+    complex = _rofa_complex_from_payload(
+        canonical_payload, length(output_ids))
+    return field_hash, canonical_payload, complex, axis_ids, output_ids
+end
+
+function _rofa_exact_source_from_input(record::ROFieldAtlasInput)
+    record.representation === :exact_cell_complex || throw(ArgumentError(
+        "only exact_cell_complex inputs have an exact Atlas source"))
+    payload = _rofa_input_payload(record)
+    payload === nothing && throw(ArgumentError(
+        "exact Atlas input is missing its validated immutable source payload"))
+    field_hash, canonical_payload, complex, axis_ids, output_ids =
+        _rofa_source_from_stored_payload(payload)
+    stored_hash = getfield(record, :field_sha256)
+    stored_hash == field_hash || throw(ArgumentError(
+        "exact Atlas input hash does not match its immutable source payload"))
+    return (
+        field_sha256=field_hash,
+        field_payload=canonical_payload,
+        complex=complex,
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+    )
+end
+
 function _rofa_validate_atlas!(atlas::AbstractDict)
+    _rofa_exact_keys(
+        atlas, _RO_FIELD_ATLAS_TOP_LEVEL_KEYS, "RO-field Atlas")
     _rofa_dict_get(atlas, "schema_version") == RO_FIELD_ATLAS_SCHEMA_VERSION ||
         throw(ArgumentError("unsupported RO-field Atlas schema version"))
-    _rofa_dict_get(atlas, "atlas_kind") ==
-        "explicit_exact_2d_demo_corpus" || throw(ArgumentError(
+    _rofa_dict_get(atlas, "atlas_kind") == _RO_FIELD_ATLAS_KIND ||
+        throw(ArgumentError(
         "unsupported RO-field Atlas kind"))
-    _rofa_dict_get(atlas, "network_space_claim") == "none" ||
+    _rofa_dict_get(atlas, "network_space_claim") ==
+        _RO_FIELD_ATLAS_NETWORK_SPACE_CLAIM ||
         throw(ArgumentError("RO-field Atlas network_space_claim must be none"))
+
+    source_population = _rofa_exact_keys(
+        _rofa_dict_get(atlas, "source_population"),
+        _RO_FIELD_ATLAS_SOURCE_POPULATION_KEYS,
+        "RO-field Atlas source_population",
+    )
+    _rofa_dict_get(source_population, "selection") ==
+        _RO_FIELD_ATLAS_SOURCE_SELECTION || throw(ArgumentError(
+        "RO-field Atlas source selection is not the builder-owned population"))
+    _rofa_dict_get(source_population, "enumeration_performed") === false ||
+        throw(ArgumentError(
+            "RO-field Atlas cannot claim that enumeration was performed"))
+    _rofa_dict_get(source_population, "topology_search_performed") === false ||
+        throw(ArgumentError(
+            "RO-field Atlas cannot claim that topology search was performed"))
+
     atlas_hash = _rofa_dict_get(atlas, "atlas_sha256")
     atlas_hash isa AbstractString &&
         occursin(_RO_FIELD_ATLAS_SHA256_PATTERN, atlas_hash) ||
@@ -696,6 +992,11 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
         throw(ArgumentError("RO-field Atlas record_order is too large"))
     all(record -> record isa AbstractDict, records) || throw(ArgumentError(
         "RO-field Atlas record entries must be objects"))
+    _rofa_exact_keys(
+        population, _RO_FIELD_ATLAS_POPULATION_KEYS,
+        "RO-field Atlas population")
+    _rofa_exact_keys(
+        config, _RO_FIELD_ATLAS_CONFIG_KEYS, "RO-field Atlas config")
 
     count(name) = begin
         value = _rofa_dict_get(population, name)
@@ -716,23 +1017,101 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
     ineligible = count("ineligible_count")
     submitted <= _RO_FIELD_ATLAS_HARD_MAX_FIELDS || throw(ArgumentError(
         "RO-field Atlas submitted_count exceeds the hard field limit"))
-    submitted >= eligible >= evaluated >= classified || throw(ArgumentError(
-        "RO-field Atlas population counts are inconsistent"))
-    omitted == eligible - evaluated || throw(ArgumentError(
-        "RO-field Atlas omitted_count is inconsistent"))
-    ineligible == submitted - eligible || throw(ArgumentError(
-        "RO-field Atlas ineligible_count is inconsistent"))
+
+    expected_count_semantics = _rofa_population_dict(0, 0, 0, 0, 0)[
+        "count_semantics"]
+    stored_count_semantics = _rofa_dict_get(population, "count_semantics")
+    stored_count_semantics isa AbstractDict || throw(ArgumentError(
+        "RO-field Atlas population.count_semantics must be an object"))
+    _rofa_exact_keys(
+        stored_count_semantics, Tuple(keys(expected_count_semantics)),
+        "RO-field Atlas population.count_semantics")
+    _ro_field_canonical_json(stored_count_semantics) ==
+        _ro_field_canonical_json(expected_count_semantics) ||
+        throw(ArgumentError(
+            "RO-field Atlas population count semantics are not canonical"))
+
+    record_ids = String[]
+    for (index, record) in enumerate(records)
+        _rofa_exact_keys(
+            record, _RO_FIELD_ATLAS_RECORD_KEYS,
+            "RO-field Atlas records[$index]")
+        push!(record_ids, _rofa_safe_record_id(
+            _rofa_dict_get(record, "record_id"),
+            "RO-field Atlas records[$index].record_id"))
+    end
+    order_ids = String[]
+    for (index, raw_id) in enumerate(order)
+        push!(order_ids, _rofa_safe_record_id(
+            raw_id, "RO-field Atlas record_order[$index]"))
+    end
+    order_ids == record_ids || throw(ArgumentError(
+        "RO-field Atlas record_order does not match records"))
+    allunique(order_ids) || throw(ArgumentError(
+        "RO-field Atlas record_order contains duplicates"))
+    order_ids == sort(order_ids) || throw(ArgumentError(
+        "RO-field Atlas records are not in canonical record_id order"))
+
+    all(diagnostic -> diagnostic isa AbstractDict, diagnostics) ||
+        throw(ArgumentError(
+            "RO-field Atlas diagnostic entries must be objects"))
+    diagnostic_ids = String[]
+    diagnostic_order = Tuple{String,String,String}[]
+    for (index, item) in enumerate(diagnostics)
+        _rofa_exact_keys(
+            item, _RO_FIELD_ATLAS_DIAGNOSTIC_KEYS,
+            "RO-field Atlas diagnostics[$index]")
+        record_id = _rofa_safe_record_id(
+            _rofa_dict_get(item, "record_id"),
+            "RO-field Atlas diagnostics[$index].record_id")
+        representation_raw = _rofa_dict_get(item, "representation")
+        representation_raw isa AbstractString || throw(ArgumentError(
+            "RO-field Atlas diagnostic representation must be a string"))
+        representation = String(representation_raw)
+        representation == "exact_cell_complex" && throw(ArgumentError(
+            "successful v1.1 Atlas builds cannot retain exact inputs as diagnostics"))
+        stage = _rofa_dict_get(item, "stage")
+        stage isa AbstractString && String(stage) == "eligibility" ||
+            throw(ArgumentError(
+            "RO-field Atlas diagnostics must be builder eligibility diagnostics"))
+        code = _rofa_dict_get(item, "code")
+        code isa AbstractString || throw(ArgumentError(
+            "RO-field Atlas diagnostic code must be a string"))
+        expected_code = representation == "sampled_grid" ?
+            "sampled_grid_not_classified" : "unsupported_representation"
+        String(code) == expected_code || throw(ArgumentError(
+            "RO-field Atlas diagnostic code disagrees with representation"))
+        detail = _rofa_dict_get(item, "detail")
+        detail isa AbstractString &&
+            String(detail) == _RO_FIELD_ATLAS_INELIGIBLE_DETAIL ||
+            throw(ArgumentError(
+                "RO-field Atlas diagnostic detail is not canonical"))
+        eligibility_reasons = _rofa_dict_get(item, "eligibility_reasons")
+        eligibility_reasons isa AbstractVector && isempty(eligibility_reasons) ||
+            throw(ArgumentError(
+                "eligibility diagnostics cannot claim classifier reasons"))
+        push!(diagnostic_ids, record_id)
+        push!(diagnostic_order, (record_id, "eligibility", String(code)))
+    end
+    diagnostic_order == sort(diagnostic_order) || throw(ArgumentError(
+        "RO-field Atlas diagnostics are not in canonical order"))
+    allunique(vcat(record_ids, diagnostic_ids)) || throw(ArgumentError(
+        "RO-field Atlas submitted record_id values are not unique"))
+
+    submitted == length(records) + length(diagnostics) || throw(ArgumentError(
+        "RO-field Atlas submitted_count does not match stored inputs"))
+    eligible == length(records) || throw(ArgumentError(
+        "RO-field Atlas eligible_count does not match exact records"))
+    evaluated == length(records) || throw(ArgumentError(
+        "RO-field Atlas evaluated_count does not match exact records"))
     classified == length(records) || throw(ArgumentError(
-        "RO-field Atlas classified_count does not match records"))
+        "RO-field Atlas classified_count does not match exact records"))
     diagnostic == length(diagnostics) || throw(ArgumentError(
         "RO-field Atlas diagnostic_count does not match diagnostics"))
-    diagnostic <= submitted || throw(ArgumentError(
-        "RO-field Atlas diagnostic_count exceeds submitted_count"))
-    String.(order) == [String(_rofa_dict_get(record, "record_id"))
-                       for record in records] || throw(ArgumentError(
-        "RO-field Atlas record_order does not match records"))
-    allunique(String.(order)) || throw(ArgumentError(
-        "RO-field Atlas record_order contains duplicates"))
+    omitted == 0 || throw(ArgumentError(
+        "successful RO-field Atlas builds cannot omit eligible inputs"))
+    ineligible == length(diagnostics) || throw(ArgumentError(
+        "RO-field Atlas ineligible_count does not match diagnostics"))
 
     config_integer(name, lower, upper) = begin
         value = _rofa_dict_get(config, name)
@@ -752,6 +1131,8 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
         "preflight_total_cells", 0, max_total_cells)
     preflight_facets = config_integer(
         "preflight_total_facets", 0, max_total_facets)
+    atlas_signature_config = _rofb_signature_config(
+        _rofa_dict_get(config, "signature_config"))
     submitted <= max_fields || throw(ArgumentError(
         "RO-field Atlas submitted_count exceeds config.max_fields"))
     preflight_cells <= max_total_cells || throw(ArgumentError(
@@ -759,7 +1140,17 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
     preflight_facets <= max_total_facets || throw(ArgumentError(
         "RO-field Atlas facet population exceeds its declared config"))
 
+    actual_cells = 0
+    actual_facets = 0
     for record in records
+        field_hash, _, complex, axis_ids, output_ids =
+            _rofa_source_from_stored_payload(
+                _rofa_dict_get(record, "field_payload"))
+        _rofa_dict_get(record, "field_sha256") == field_hash ||
+            throw(ArgumentError(
+                "RO-field Atlas record hash does not match field_payload"))
+        actual_cells += length(complex.cells)
+        actual_facets += length(complex.facets)
         signature = _rofa_dict_get(record, "signature")
         signature isa AbstractDict || throw(ArgumentError(
             "RO-field Atlas signatures must be objects"))
@@ -773,6 +1164,32 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
         _rofa_dict_get(record, "signature_sha256") ==
             normalized_signature["signature_sha256"] || throw(ArgumentError(
             "RO-field Atlas record and signature hashes differ"))
+
+        normalized_signature["axis_ids"] == axis_ids || throw(ArgumentError(
+            "RO-field Atlas signature axes do not match field_payload"))
+        normalized_signature["output_ids"] == output_ids || throw(ArgumentError(
+            "RO-field Atlas signature outputs do not match field_payload"))
+        _ro_field_canonical_json(normalized_signature["config"]) ==
+            _ro_field_canonical_json(atlas_signature_config) ||
+            throw(ArgumentError(
+                "RO-field Atlas signature config differs from atlas config"))
+        expected_signature = classify_ro_cell_complex(
+            complex,
+            field_hash;
+            axis_ids=axis_ids,
+            output_ids=output_ids,
+            config=ROFieldSignatureConfig(
+                zero_tolerance=atlas_signature_config["zero_tolerance"],
+                max_cells=atlas_signature_config["max_cells"],
+                max_facets=atlas_signature_config["max_facets"],
+                max_matrix_elements=atlas_signature_config[
+                    "max_matrix_elements"],
+            ),
+        )
+        _ro_field_canonical_json(expected_signature) ==
+            _ro_field_canonical_json(normalized_signature) ||
+            throw(ArgumentError(
+                "RO-field Atlas signature does not match field_payload"))
 
         axes = normalized_signature["axis_ids"]
         outputs = normalized_signature["output_ids"]
@@ -807,6 +1224,10 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
             throw(ArgumentError(
                 "RO-field Atlas signature has too many facet transitions"))
     end
+    actual_cells == preflight_cells || throw(ArgumentError(
+        "RO-field Atlas field_payload does not reconstruct its preflight cell count"))
+    actual_facets == preflight_facets || throw(ArgumentError(
+        "RO-field Atlas field_payload does not reconstruct its preflight facet count"))
     canonical_hash(_rofa_atlas_identity_payload(atlas)) == atlas_hash ||
         throw(ArgumentError("RO-field Atlas content does not match atlas_sha256"))
     return records, population, String(atlas_hash)

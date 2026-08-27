@@ -296,10 +296,14 @@ const LOCAL_JOB_RESTART_ERROR_CODE = "local_job_interrupted_by_restart"
 const LOCAL_JOB_RESTART_ERROR_MESSAGE =
     "Local job cannot resume because the backend process restarted before it completed."
 
-const JOB_RESULT_PROTOCOL_VERSION = "bne-job-result-manifest/v1.0.0"
+const JOB_RESULT_PROTOCOL_VERSION = "bne-job-result-manifest/v1.1.0"
+const JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION =
+    "bne-job-result-manifest/v1.0.0"
 const JOB_RESULT_MANIFEST_MAX_BYTES = 64 * 1024
 const JOB_RESULT_MEDIA_TYPE = "application/json"
 const JOB_RESULT_SHA256_METADATA_KEY = "bne-result-sha256"
+const JOB_RESULT_ARTIFACT_IDENTITY_SHA256_METADATA_KEY =
+    "bne-result-artifact-identity-sha256"
 
 const AWS_BATCH_SUBMISSION_PROTOCOL_VERSION =
     "bne-aws-batch-submission/v1.1.0"
@@ -857,12 +861,16 @@ end
 function _upload_job_result_file_with_ops(uri::AbstractString,
                                           source_path::AbstractString,
                                           sha256_hex::AbstractString,
+                                          artifact_identity_sha256::AbstractString,
                                           ops::_JobPersistenceOps)
     if _is_s3_uri(uri)
         run(Cmd([
             _aws_cli(), "s3", "cp", String(source_path), String(uri),
             "--content-type", JOB_RESULT_MEDIA_TYPE,
-            "--metadata", "$(JOB_RESULT_SHA256_METADATA_KEY)=$(sha256_hex)",
+            "--metadata",
+            "$(JOB_RESULT_SHA256_METADATA_KEY)=$(sha256_hex)," *
+                "$(JOB_RESULT_ARTIFACT_IDENTITY_SHA256_METADATA_KEY)=" *
+                String(artifact_identity_sha256),
         ]))
         return String(uri)
     end
@@ -877,11 +885,13 @@ end
 
 _upload_job_result_file(uri::AbstractString,
                         source_path::AbstractString,
-                        sha256_hex::AbstractString) =
+                        sha256_hex::AbstractString,
+                        artifact_identity_sha256::AbstractString) =
     _upload_job_result_file_with_ops(
         uri,
         source_path,
         sha256_hex,
+        artifact_identity_sha256,
         _DEFAULT_JOB_PERSISTENCE_OPS,
     )
 
@@ -1611,10 +1621,10 @@ function _job_status_payload(job_id::AbstractString, kind::AbstractString, execu
     return payload
 end
 
-function _job_result_identity(result,
-                              job_id::AbstractString,
-                              kind::AbstractString,
-                              expected_config_hash::AbstractString)
+function _job_result_artifact_identity(result,
+                                       job_id::AbstractString,
+                                       kind::AbstractString,
+                                       expected_config_hash::AbstractString)
     result isa AbstractDict ||
         throw(ArgumentError("Asynchronous job result must be a JSON object."))
     haskey(result, "artifact") ||
@@ -1634,11 +1644,6 @@ function _job_result_identity(result,
         "Result artifact `algorithm.config_hash` is required for an asynchronous job result."))
     String(actual_config_hash) == String(expected_config_hash) || throw(ArgumentError(
         "Result artifact config identity does not match the submitted job spec."))
-    if String(kind) == "compute_ro_field"
-        validate_ro_field_job_result!(
-            result, job_id, String(expected_config_hash))
-    end
-
     return Dict{String, Any}(
         "artifact_schema_version" => String(metadata["artifact_schema_version"]),
         "kind" => actual_kind,
@@ -1651,17 +1656,57 @@ function _job_result_identity(result,
     )
 end
 
+function _job_result_identity(result,
+                              job_id::AbstractString,
+                              kind::AbstractString,
+                              expected_config_hash::AbstractString)
+    identity = _job_result_artifact_identity(
+        result, job_id, kind, expected_config_hash)
+    if String(kind) == "compute_ro_field"
+        validate_ro_field_job_result!(
+            result, job_id, String(expected_config_hash))
+    end
+    return identity
+end
+
+function _job_result_manifest_identity_sha256(
+    artifact_identity::AbstractDict,
+    payload_key_count::Integer,
+)
+    return _canonical_hash(Dict{String,Any}(
+        "artifact_identity" => Dict{String,Any}(
+            "artifact_schema_version" =>
+                String(artifact_identity["artifact_schema_version"]),
+            "algorithm_name" => String(artifact_identity["algorithm_name"]),
+            "algorithm_version" =>
+                String(artifact_identity["algorithm_version"]),
+            "config_hash" => String(artifact_identity["config_hash"]),
+            "artifact_metadata_hash" =>
+                String(artifact_identity["artifact_metadata_hash"]),
+        ),
+        "payload_key_count" => Int(payload_key_count),
+    ))
+end
+
 function _job_result_manifest_payload(result,
                                       job_id::AbstractString,
                                       kind::AbstractString,
                                       expected_config_hash::AbstractString,
                                       result_uri::AbstractString,
                                       content_length::Integer,
-                                      sha256_hex::AbstractString)
+                                      sha256_hex::AbstractString;
+                                      protocol_version::AbstractString=
+                                          JOB_RESULT_PROTOCOL_VERSION)
+    protocol_text = String(protocol_version)
+    protocol_text in (
+        JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION,
+        JOB_RESULT_PROTOCOL_VERSION,
+    ) || throw(ArgumentError(
+        "Unsupported result manifest protocol version: $(protocol_text)."))
     identity = _job_result_identity(
         result, job_id, kind, expected_config_hash)
     return Dict{String, Any}(
-        "schema_version" => JOB_RESULT_PROTOCOL_VERSION,
+        "schema_version" => protocol_text,
         "job_id" => identity["job_id"],
         "kind" => identity["kind"],
         "created_at" => _job_result_manifest_timestamp(),
@@ -1690,6 +1735,8 @@ function _publish_job_result_with_manifest_with_ops(
     result_uri::AbstractString,
     manifest_uri::AbstractString,
     ops::_JobPersistenceOps,
+    ;
+    protocol_version::AbstractString=JOB_RESULT_PROTOCOL_VERSION,
 )
     occursin(r"^[0-9a-f]{64}$", String(expected_config_hash)) ||
         throw(ArgumentError("Expected result artifact config hash must be 64 lowercase hex characters."))
@@ -1725,12 +1772,18 @@ function _publish_job_result_with_manifest_with_ops(
             result_uri,
             content_length,
             sha256_hex,
+            protocol_version=protocol_version,
+        )
+        artifact_identity_sha256 = _job_result_manifest_identity_sha256(
+            manifest["artifact_identity"],
+            manifest["result"]["payload_key_count"],
         )
 
         _upload_job_result_file_with_ops(
             result_uri,
             temp_path,
             sha256_hex,
+            artifact_identity_sha256,
             ops,
         )
         _write_json_uri_with_ops(manifest_uri, manifest, ops)
@@ -1792,7 +1845,11 @@ function _run_biocircuits_job_payload_with_ops(
             # Compatibility for payloads created before the manifest protocol.
             _write_json_uri_with_ops(String(result_uri), result, ops)
         else
-            String(result_protocol_version) == JOB_RESULT_PROTOCOL_VERSION ||
+            protocol_text = String(result_protocol_version)
+            protocol_text in (
+                JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION,
+                JOB_RESULT_PROTOCOL_VERSION,
+            ) ||
                 throw(ArgumentError(
                     "Unsupported result protocol version: $(result_protocol_version)."))
             result_manifest_uri === nothing && throw(ArgumentError(
@@ -1807,6 +1864,7 @@ function _run_biocircuits_job_payload_with_ops(
                 String(result_uri),
                 String(result_manifest_uri),
                 ops,
+                protocol_version=protocol_text,
             )
         end
         _write_json_uri_with_ops(String(status_uri), _job_status_payload(
@@ -2007,6 +2065,8 @@ function _run_local_job!(job_id::String, kind::String, spec,
                     expected=("running",),
                     ro_field_dataset_manifest_sha256=
                         descriptor["dataset_manifest_sha256"],
+                    ro_field_outer_result_sha256=
+                        outer_manifest["result"]["sha256"],
                 )
                 linked.applied || begin
                     cancel_check()
@@ -2389,7 +2449,11 @@ function _manifest_exact_keys(value, required::Set{String}, path::AbstractString
 end
 
 
-function _validate_job_result_manifest(manifest, record::AbstractDict)
+function _validate_job_result_manifest(
+    manifest,
+    record::AbstractDict;
+    protocol_version::AbstractString=JOB_RESULT_PROTOCOL_VERSION,
+)
     _manifest_exact_keys(manifest, Set([
         "schema_version", "job_id", "kind", "created_at",
         "artifact_identity", "result",
@@ -2398,7 +2462,7 @@ function _validate_job_result_manifest(manifest, record::AbstractDict)
     schema_version = get(manifest, "schema_version", nothing)
     schema_version isa AbstractString ||
         throw(ArgumentError("Result manifest `schema_version` must be a string."))
-    String(schema_version) == JOB_RESULT_PROTOCOL_VERSION || throw(ArgumentError(
+    String(schema_version) == String(protocol_version) || throw(ArgumentError(
         "Unsupported result manifest schema version: $(schema_version)."))
 
     expected_job_id = String(get(record, "job_id", ""))
@@ -2460,6 +2524,28 @@ function _validate_job_result_manifest(manifest, record::AbstractDict)
         occursin(r"^[0-9a-f]{64}$", String(sha256_hex)) ||
         throw(ArgumentError(
             "Result manifest `result.sha256` must be 64 lowercase hex characters."))
+    if expected_kind == "compute_ro_field" &&
+       String(protocol_version) == JOB_RESULT_PROTOCOL_VERSION
+        anchored_sha256 = get(
+            record, "ro_field_outer_result_sha256", nothing)
+        anchored_sha256 isa AbstractString &&
+            occursin(r"^[0-9a-f]{64}$", String(anchored_sha256)) ||
+            throw(ArgumentError(
+                "RO-field job record is missing its committed outer result SHA-256."))
+        String(sha256_hex) == String(anchored_sha256) ||
+            throw(ArgumentError(
+                "RO-field result manifest does not match the job's committed outer result SHA-256."))
+    elseif expected_kind == "compute_ro_field" &&
+           haskey(record, "ro_field_outer_result_sha256")
+        anchored_sha256 = record["ro_field_outer_result_sha256"]
+        anchored_sha256 isa AbstractString &&
+            occursin(r"^[0-9a-f]{64}$", String(anchored_sha256)) ||
+            throw(ArgumentError(
+                "RO-field job record has an invalid committed outer result SHA-256."))
+        String(sha256_hex) == String(anchored_sha256) ||
+            throw(ArgumentError(
+                "RO-field result manifest does not match the job's committed outer result SHA-256."))
+    end
     media_type = get(result, "media_type", nothing)
     media_type isa AbstractString && String(media_type) == JOB_RESULT_MEDIA_TYPE ||
         throw(ArgumentError("Result manifest media type must be $(JOB_RESULT_MEDIA_TYPE)."))
@@ -2468,10 +2554,19 @@ function _validate_job_result_manifest(manifest, record::AbstractDict)
         throw(ArgumentError(
             "Result manifest `result.payload_key_count` must be a positive integer."))
 
+    normalized_artifact_identity = Dict{String,Any}(
+        "artifact_schema_version" => String(artifact_schema_version),
+        "algorithm_name" => String(artifact_identity["algorithm_name"]),
+        "algorithm_version" => String(artifact_identity["algorithm_version"]),
+        "config_hash" => String(config_hash),
+        "artifact_metadata_hash" => String(metadata_hash),
+    )
     return (
         result_uri=expected_result_uri,
         content_length=Int(content_length),
         sha256=String(sha256_hex),
+        artifact_identity=normalized_artifact_identity,
+        payload_key_count=Int(payload_key_count),
     )
 end
 
@@ -2529,26 +2624,35 @@ function _load_job_result_manifest(uri::AbstractString)
     return (status=:ok, manifest=manifest, error="")
 end
 
-function _verify_manifest_job_result_artifact(record::AbstractDict)
+function _verify_manifest_job_result_artifact(
+    record::AbstractDict;
+    protocol_version::AbstractString=JOB_RESULT_PROTOCOL_VERSION,
+    require_identity_commitment::Bool=true,
+    verification_mode::Symbol=:manifest,
+)
     manifest_uri_raw = get(record, "result_manifest_uri", nothing)
     manifest_uri_raw isa AbstractString || return (
         status=:invalid,
         error="Manifest-protocol job record is missing `result_manifest_uri`.",
-        verification_mode=:manifest,
+        verification_mode=verification_mode,
     )
     loaded = _load_job_result_manifest(String(manifest_uri_raw))
     loaded.status == :ok || return (
         status=loaded.status,
         error=loaded.error,
-        verification_mode=:manifest,
+        verification_mode=verification_mode,
     )
     descriptor = try
-        _validate_job_result_manifest(loaded.manifest, record)
+        _validate_job_result_manifest(
+            loaded.manifest,
+            record;
+            protocol_version=protocol_version,
+        )
     catch err
         return (
             status=:invalid,
             error=sprint(showerror, err),
-            verification_mode=:manifest,
+            verification_mode=verification_mode,
         )
     end
 
@@ -2557,12 +2661,20 @@ function _verify_manifest_job_result_artifact(record::AbstractDict)
         return (
             status=:missing,
             error="Committed result manifest points to a missing result artifact: $(descriptor.result_uri)",
-            verification_mode=:manifest,
+            verification_mode=verification_mode,
         )
     elseif head.status == :invalid
-        return (status=:invalid, error=head.detail, verification_mode=:manifest)
+        return (
+            status=:invalid,
+            error=head.detail,
+            verification_mode=verification_mode,
+        )
     elseif head.status == :retryable_error
-        return (status=:retryable_error, error=head.detail, verification_mode=:manifest)
+        return (
+            status=:retryable_error,
+            error=head.detail,
+            verification_mode=verification_mode,
+        )
     end
 
     actual_length = head.content_length
@@ -2570,28 +2682,54 @@ function _verify_manifest_job_result_artifact(record::AbstractDict)
         return (
             status=:retryable_error,
             error="Result HeadObject response has no valid ContentLength.",
-            verification_mode=:manifest,
+            verification_mode=verification_mode,
         )
     end
     Int(actual_length) == descriptor.content_length || return (
         status=:invalid,
         error="Result artifact byte length does not match its committed manifest.",
-        verification_mode=:manifest,
+        verification_mode=verification_mode,
     )
 
     actual_sha256 = if _is_s3_uri(descriptor.result_uri)
         head.content_type == JOB_RESULT_MEDIA_TYPE || return (
             status=:invalid,
             error="Result artifact content type does not match its committed manifest.",
-            verification_mode=:manifest,
+            verification_mode=verification_mode,
         )
         metadata_value = get(head.metadata, JOB_RESULT_SHA256_METADATA_KEY, nothing)
         metadata_value isa AbstractString &&
             occursin(r"^[0-9a-fA-F]{64}$", String(metadata_value)) || return (
             status=:invalid,
             error="Result artifact is missing its committed SHA-256 object metadata.",
-            verification_mode=:manifest,
+            verification_mode=verification_mode,
         )
+        if require_identity_commitment
+            identity_metadata_value = get(
+                head.metadata,
+                JOB_RESULT_ARTIFACT_IDENTITY_SHA256_METADATA_KEY,
+                nothing,
+            )
+            identity_metadata_value isa AbstractString &&
+                occursin(
+                    r"^[0-9a-fA-F]{64}$",
+                    String(identity_metadata_value),
+                ) || return (
+                status=:invalid,
+                error="Result artifact is missing its committed artifact-identity SHA-256 object metadata.",
+                verification_mode=verification_mode,
+            )
+            expected_identity_sha256 = _job_result_manifest_identity_sha256(
+                descriptor.artifact_identity,
+                descriptor.payload_key_count,
+            )
+            lowercase(String(identity_metadata_value)) ==
+                expected_identity_sha256 || return (
+                status=:invalid,
+                error="Result manifest artifact identity does not match the result object's committed identity metadata.",
+                verification_mode=verification_mode,
+            )
+        end
         lowercase(String(metadata_value))
     else
         try
@@ -2600,16 +2738,28 @@ function _verify_manifest_job_result_artifact(record::AbstractDict)
             return (
                 status=:retryable_error,
                 error="Cannot hash local result artifact: $(sprint(showerror, err))",
-                verification_mode=:manifest,
+                verification_mode=verification_mode,
             )
         end
     end
     actual_sha256 == descriptor.sha256 || return (
         status=:invalid,
         error="Result artifact SHA-256 does not match its committed manifest.",
-        verification_mode=:manifest,
+        verification_mode=verification_mode,
     )
-    return (status=:valid, error="", verification_mode=:manifest)
+    common = (
+        status=:valid,
+        error="",
+        verification_mode=verification_mode,
+        result_uri=descriptor.result_uri,
+        content_length=descriptor.content_length,
+        sha256=descriptor.sha256,
+    )
+    require_identity_commitment || return common
+    return merge(common, (
+        artifact_identity=descriptor.artifact_identity,
+        payload_key_count=descriptor.payload_key_count,
+    ))
 end
 
 function _verify_legacy_job_result_artifact(record::AbstractDict)
@@ -2702,46 +2852,145 @@ function _verify_job_result_artifact(record::AbstractDict)
         error="Job result protocol version must be a string.",
         verification_mode=:manifest,
     )
-    String(protocol) == JOB_RESULT_PROTOCOL_VERSION || return (
+    protocol_text = String(protocol)
+    is_legacy_manifest =
+        protocol_text == JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION
+    is_current_manifest = protocol_text == JOB_RESULT_PROTOCOL_VERSION
+    (is_legacy_manifest || is_current_manifest) || return (
         status=:retryable_error,
         error="Unsupported job result protocol version: $(protocol); deploy a compatible verifier.",
         verification_mode=:manifest,
     )
-    verification = _verify_manifest_job_result_artifact(record)
+    manifest_verification_mode = is_legacy_manifest ?
+        :legacy_manifest_v1_0 : :manifest
+    verification = _verify_manifest_job_result_artifact(
+        record;
+        protocol_version=protocol_text,
+        require_identity_commitment=is_current_manifest,
+        verification_mode=manifest_verification_mode,
+    )
     verification.status == :valid || return verification
-    String(get(record, "kind", "")) == "compute_ro_field" ||
+    expected_kind = String(get(record, "kind", ""))
+    is_ro_field = expected_kind == "compute_ro_field"
+    if !is_ro_field && is_legacy_manifest
+        # v1.0 committed only the result bytes/length and the manifest's
+        # record/config projection. Its uncommitted algorithm, metadata-hash,
+        # and payload-count fields are deliberately not returned as evidence.
         return verification
+    elseif !is_ro_field && _is_s3_uri(verification.result_uri)
+        # The worker derived the identity commitment from the actual outer
+        # result before upload. HeadObject binds that commitment without
+        # downloading potentially large non-RO result bytes during polling.
+        return verification
+    end
+    outer_verification_mode = if is_legacy_manifest
+        :legacy_manifest_v1_0_and_nested_ro_field
+    elseif is_ro_field
+        :manifest_and_nested_ro_field
+    else
+        :manifest_and_outer_artifact
+    end
 
-    result_uri = String(get(record, "result_uri", ""))
+    loaded_result = _read_artifact_bytes(
+        verification.result_uri; max_bytes=verification.content_length)
+    loaded_result.status == :ok || return (
+        status=loaded_result.status == :too_large ? :invalid : :retryable_error,
+        error="Cannot reload the committed job result: " *
+            loaded_result.detail,
+        verification_mode=outer_verification_mode,
+    )
+    length(loaded_result.bytes) == verification.content_length || return (
+        status=:invalid,
+        error="Reloaded job result byte length differs from its committed manifest.",
+        verification_mode=outer_verification_mode,
+    )
+    bytes2hex(SHA.sha256(loaded_result.bytes)) == verification.sha256 || return (
+        status=:invalid,
+        error="Reloaded job result SHA-256 differs from its committed manifest.",
+        verification_mode=outer_verification_mode,
+    )
+    isvalid(String, loaded_result.bytes) || return (
+        status=:invalid,
+        error="Committed job result is not valid UTF-8.",
+        verification_mode=outer_verification_mode,
+    )
     result = try
-        _read_json_uri(result_uri)
+        _materialize(JSON3.read(String(copy(loaded_result.bytes))))
     catch err
         return (
-            status=:retryable_error,
-            error="Cannot reload the committed RO-field result: " *
+            status=:invalid,
+            error="Committed job result is invalid JSON: " *
                 sprint(showerror, err),
-            verification_mode=:manifest_and_nested_ro_field,
+            verification_mode=outer_verification_mode,
         )
     end
+    expected_config_hash = try
+        _record_expected_artifact_config_hash(
+            record; allow_legacy_derivation=false)
+    catch err
+        return (
+            status=:invalid,
+            error=sprint(showerror, err),
+            verification_mode=outer_verification_mode,
+        )
+    end
+    actual_identity = try
+        _job_result_artifact_identity(
+            result,
+            String(get(record, "job_id", "")),
+            expected_kind,
+            expected_config_hash,
+        )
+    catch err
+        return (
+            status=:invalid,
+            error="Committed job result artifact identity is invalid: " *
+                sprint(showerror, err),
+            verification_mode=outer_verification_mode,
+        )
+    end
+    if is_current_manifest
+        for key in (
+            "artifact_schema_version", "algorithm_name", "algorithm_version",
+            "config_hash", "artifact_metadata_hash",
+        )
+            verification.artifact_identity[key] == actual_identity[key] || return (
+                status=:invalid,
+                error="Result manifest artifact_identity.$key does not match the committed job result.",
+                verification_mode=outer_verification_mode,
+            )
+        end
+        verification.payload_key_count == actual_identity["payload_key_count"] ||
+            return (
+                status=:invalid,
+                error="Result manifest payload_key_count does not match the committed job result.",
+                verification_mode=outer_verification_mode,
+            )
+    end
+    is_ro_field || return (
+        status=:valid,
+        error="",
+        verification_mode=:manifest_and_outer_artifact,
+    )
     try
         validate_ro_field_job_result!(
             result,
             String(get(record, "job_id", "")),
-            String(get(record, "expected_artifact_config_hash", ""));
-            record=record,
+            expected_config_hash;
+            record=is_legacy_manifest ? nothing : record,
         )
     catch err
         return (
             status=:invalid,
             error="Committed RO-field nested artifacts are invalid: " *
                 sprint(showerror, err),
-            verification_mode=:manifest_and_nested_ro_field,
+            verification_mode=outer_verification_mode,
         )
     end
     return (
         status=:valid,
         error="",
-        verification_mode=:manifest_and_nested_ro_field,
+        verification_mode=outer_verification_mode,
     )
 end
 

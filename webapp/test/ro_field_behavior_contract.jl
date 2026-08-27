@@ -1,4 +1,5 @@
 using Test
+using JSON3
 using BindingAndCatalysis
 using BiocircuitsExplorerBackend
 
@@ -88,6 +89,8 @@ const _ROFS_FIELD_HASH = repeat("a", 64)
         "excluded_lower_dimensional_strata_count"] == 1
     normalized = _ROFS_BACKEND.validate_ro_field_signature!(signature)
     @test normalized == signature
+    @test _ROFS_BACKEND.validate_ro_field_signature!(
+        JSON3.read(JSON3.write(signature))) == signature
     @test _ROFS_BACKEND.canonical_hash(
         _ROFS_BACKEND.ro_field_signature_identity_payload(signature)) ==
         signature["signature_sha256"]
@@ -164,6 +167,19 @@ end
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
         wrong_budget)
 
+    # Re-hashing the whole document must not make a contradictory gap claim
+    # authoritative.  A classifiable field has complete coverage and exactly
+    # zero serialized gap area; positive and negative gaps require their
+    # corresponding eligibility reasons.
+    for forged_gap in (100.0, -100.0)
+        forged = deepcopy(signature)
+        forged["diagnostics"]["gap_area"] = forged_gap
+        forged["signature_sha256"] = _ROFS_BACKEND.canonical_hash(
+            _ROFS_BACKEND._rofb_signature_identity_from_normalized(forged))
+        @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
+            forged)
+    end
+
     future = deepcopy(signature)
     future["schema_version"] = "bne-ro-field-signature/v2.0.0"
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(future)
@@ -172,6 +188,11 @@ end
     extension["unexpected"] = true
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
         extension)
+
+    duplicate_key = Dict{Any,Any}(pairs(signature))
+    duplicate_key[:schema_version] = signature["schema_version"]
+    @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
+        duplicate_key)
 
     malformed_hash = deepcopy(signature)
     malformed_hash["signature_sha256"] = repeat("f", 63)
@@ -282,6 +303,78 @@ end
         gap_signature["component_classifications"])
     @test "positive_area_gap" in gap_signature[
         "diagnostics"]["eligibility_reasons"]
+
+    inconsistent_complete_gap = ROCellComplex2D(
+        domain, [3], ROCell2D[], ROFacet2D[], ROSingularStratum2D[],
+        0, 0, 4.0, 0.0, 4.0, true, false, 1e-9)
+    inconsistent_signature = _ROFS_BACKEND.classify_ro_cell_complex(
+        inconsistent_complete_gap, _ROFS_FIELD_HASH;
+        axis_ids=["u", "v"], output_ids=["y"],
+    )
+    @test !inconsistent_signature["diagnostics"]["coverage_complete"]
+    @test Set(inconsistent_signature["diagnostics"]["eligibility_reasons"]) ==
+        Set(["coverage_incomplete", "positive_area_gap"])
+    @test _ROFS_BACKEND.validate_ro_field_signature!(
+        inconsistent_signature) == inconsistent_signature
+
+    base = _signature_heterodimer_complex()
+    with_gap_and_tolerance(gap_area, geometry_tolerance) = ROCellComplex2D(
+        base.domain,
+        base.output_indices,
+        base.cells,
+        base.facets,
+        base.singular_strata,
+        base.candidate_regime_count,
+        base.regular_candidate_count,
+        base.domain_area,
+        base.covered_area_sum,
+        gap_area,
+        true,
+        false,
+        geometry_tolerance,
+    )
+
+    # Geometry coverage is an exact evidence claim. Neither the caller-owned
+    # engine tolerance nor the reaction-order sign tolerance may wash a gap.
+    for forged_gap in (100.0, -100.0)
+        @test_throws ArgumentError _ROFS_BACKEND.classify_ro_cell_complex(
+            with_gap_and_tolerance(forged_gap, 100.0),
+            _ROFS_FIELD_HASH;
+            axis_ids=["u", "v"], output_ids=["y"],
+        )
+        strict_gap = _ROFS_BACKEND.classify_ro_cell_complex(
+            with_gap_and_tolerance(forged_gap, 1e-9),
+            _ROFS_FIELD_HASH;
+            axis_ids=["u", "v"], output_ids=["y"],
+            config=_ROFS_BACKEND.ROFieldSignatureConfig(
+                zero_tolerance=100.0),
+        )
+        expected_reason = forged_gap > 0 ?
+            "positive_area_gap" : "negative_gap_area"
+        @test !strict_gap["classifiable"]
+        @test !strict_gap["diagnostics"]["coverage_complete"]
+        @test strict_gap["diagnostics"]["gap_area"] == forged_gap
+        @test expected_reason in strict_gap[
+            "diagnostics"]["eligibility_reasons"]
+        @test "coverage_incomplete" in strict_gap[
+            "diagnostics"]["eligibility_reasons"]
+    end
+    for invalid_tolerance in (Inf, NaN, -1.0, 1.0e-5)
+        @test_throws ArgumentError _ROFS_BACKEND.classify_ro_cell_complex(
+            with_gap_and_tolerance(0.0, invalid_tolerance),
+            _ROFS_FIELD_HASH;
+            axis_ids=["u", "v"], output_ids=["y"],
+        )
+    end
+
+    validator_roundoff = _ROFS_BACKEND.classify_ro_cell_complex(
+        with_gap_and_tolerance(1.0e-9, 1.0e-9),
+        _ROFS_FIELD_HASH;
+        axis_ids=["u", "v"], output_ids=["y"],
+    )
+    @test validator_roundoff["classifiable"]
+    @test validator_roundoff["diagnostics"]["coverage_complete"]
+    @test validator_roundoff["diagnostics"]["gap_area"] == 0.0
 end
 
 @testset "signature budgets preflight before callbacks and supports cancellation" begin

@@ -84,8 +84,8 @@
       "mode": "inline",
       "complete": true,
       "stored_count": 4,
-      "payload_bytes": 256,
-      "content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "payload_bytes": 343,
+      "content_sha256": "539858dc702c8e8934fd711fdb9bac0547cac2c8b120edb634f7211934a8fbbc",
       "artifacts": []
     }
   },
@@ -105,7 +105,7 @@
     "source_commit": "9b05d021060fb1750a94ed90f6400405e2368e17",
     "source_dirty": true,
     "network_ir_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "domain_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "domain_sha256": "14a031140c0ea09cb39fd5873c8da0bed5bb6421834da88fb72c7c7dad10c2ef",
     "algorithm": {
       "name": "contract-fixture",
       "version": "1",
