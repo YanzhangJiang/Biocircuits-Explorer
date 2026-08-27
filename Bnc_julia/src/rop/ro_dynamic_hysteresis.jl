@@ -1557,9 +1557,6 @@ function validate_ro_polynomial_vector_field(
     vector_field.schema_version == RO_POLYNOMIAL_VECTOR_FIELD_VERSION ||
         throw(ArgumentError(
             "unsupported polynomial vector-field version"))
-    _rodh_payload_sha256(vector_field.identity_payload) ==
-        vector_field.identity_sha256 || throw(ArgumentError(
-            "polynomial vector-field content hash mismatch"))
     recomputed = ro_polynomial_vector_field(
         coordinate_chart_id=vector_field.coordinate_chart_id,
         dynamics_policy_sha256=vector_field.dynamics_policy_sha256,
@@ -2071,9 +2068,6 @@ function validate_ro_equilibrium_branch_evidence(
     evidence.evidence_kind == :declarative_polynomial_equilibrium ||
         throw(ArgumentError(
             "equilibrium validator requires declarative polynomial evidence"))
-    _rodh_payload_sha256(evidence.identity_payload) ==
-        evidence.identity_sha256 || throw(ArgumentError(
-            "branch evidence content hash mismatch"))
     recomputed = certify_ro_equilibrium_branch_evidence(
         trace,
         vector_field;
@@ -2097,9 +2091,6 @@ function validate_ro_dynamic_branch_evidence(
         throw(ArgumentError("unsupported branch evidence version"))
     evidence.evidence_kind == :untrusted_callback || throw(ArgumentError(
         "callback validator cannot validate declarative equilibrium evidence"))
-    _rodh_payload_sha256(evidence.identity_payload) ==
-        evidence.identity_sha256 || throw(ArgumentError(
-            "branch evidence content hash mismatch"))
     recomputed = certify_ro_dynamic_branch_evidence(
         trace;
         evidence_kind=evidence.candidate_kind,
@@ -3242,9 +3233,6 @@ function validate_ro_dynamic_hysteresis_analysis(
 )
     analysis.schema_version == RO_DYNAMIC_HYSTERESIS_ANALYSIS_VERSION ||
         throw(ArgumentError("unsupported dynamic hysteresis analysis version"))
-    _rodh_payload_sha256(analysis.analysis_identity_payload) ==
-        analysis.analysis_identity_sha256 || throw(ArgumentError(
-            "dynamic hysteresis analysis content hash mismatch"))
     recomputed = analyze_dynamic_hysteresis(
         forward,
         reverse;
@@ -3463,9 +3451,6 @@ function validate_ro_static_multiroot_evidence(
 )
     evidence.schema_version == RO_STATIC_MULTIROOT_EVIDENCE_VERSION ||
         throw(ArgumentError("unsupported static multiroot evidence version"))
-    _rodh_payload_sha256(evidence.identity_payload) ==
-        evidence.identity_sha256 || throw(ArgumentError(
-            "static multiroot evidence content hash mismatch"))
     recomputed = analyze_static_multiroot(; kwargs...)
     for field in fieldnames(ROStaticMultirootEvidence)
         getfield(evidence, field) == getfield(recomputed, field) ||

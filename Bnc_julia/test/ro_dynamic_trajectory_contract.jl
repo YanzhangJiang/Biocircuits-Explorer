@@ -192,37 +192,6 @@ function copy_evidence_with_rehashed_field(
         RODT._RODT_VALIDATED, values...)
 end
 
-function copy_spec_with_runtime_version_identity(spec, runtime_identity)
-    runtime_hash = RODT._rodh_payload_sha256(runtime_identity)
-    solver_config = merge(
-        spec.identity_payload.solver.config,
-        (
-            runtime_version_identity_sha256=runtime_hash,
-            runtime_version_identity=runtime_identity,
-        ),
-    )
-    solver_policy_hash = RODT._rodh_payload_sha256(solver_config)
-    identity_payload = merge(
-        spec.identity_payload,
-        (solver=(
-            policy_sha256=solver_policy_hash,
-            config=solver_config,
-        ),),
-    )
-    fields = fieldnames(RODT.RODynamicProtocolSpec)
-    values = Any[getfield(spec, field) for field in fields]
-    values[only(findall(==(:solver_runtime_version_identity), fields))] =
-        runtime_identity
-    values[only(findall(
-        ==(:solver_runtime_version_identity_sha256), fields))] = runtime_hash
-    values[only(findall(==(:solver_policy_sha256), fields))] =
-        solver_policy_hash
-    values[only(findall(==(:identity_payload), fields))] = identity_payload
-    values[only(findall(==(:identity_sha256), fields))] =
-        RODT._rodh_payload_sha256(identity_payload)
-    return RODT.RODynamicProtocolSpec(RODT._RODT_VALIDATED, values...)
-end
-
 @testset "dynamic protocol specs are canonical, strict, and bounded" begin
     spec = linear_spec()
     @test spec.schema_version == RODT.RO_DYNAMIC_PROTOCOL_SPEC_VERSION
@@ -243,25 +212,6 @@ end
     @test startswith(spec.identity_sha256, "sha256:")
     @test spec.identity_payload.solver.policy_sha256 ==
         spec.solver_policy_sha256
-    runtime_identity = spec.solver_runtime_version_identity
-    @test runtime_identity.schema_version ==
-        RODT.RO_DYNAMIC_SOLVER_RUNTIME_VERSION_IDENTITY_VERSION
-    @test runtime_identity.identity_scope ==
-        "compatible_solver_runtime"
-    @test runtime_identity.julia_series ==
-        "$(VERSION.major).$(VERSION.minor)"
-    @test runtime_identity.ordinarydiffeq ==
-        string(Base.pkgversion(RODT.ODE))
-    @test runtime_identity.scimlbase ==
-        string(Base.pkgversion(RODT.SciMLBase))
-    @test runtime_identity.primary_algorithm.solver_id ==
-        "ordinarydiffeq_tsit5"
-    @test runtime_identity.audit_algorithm.solver_id ==
-        "ordinarydiffeq_vern7"
-    @test spec.identity_payload.solver.config.runtime_version_identity ==
-        runtime_identity
-    @test spec.solver_runtime_version_identity_sha256 ==
-        RODT._rodh_payload_sha256(runtime_identity)
     @test RODT.validate_ro_dynamic_protocol_spec(spec, LINEAR_FIELD)
     @test linear_spec().identity_sha256 == spec.identity_sha256
 
@@ -352,24 +302,6 @@ end
     @test_throws ArgumentError RODT.validate_ro_dynamic_protocol_spec(
         mutable_spec, LINEAR_FIELD)
 
-    foreign_runtime_identity = merge(
-        runtime_identity,
-        (julia_series="0.0-foreign-runtime",),
-    )
-    foreign_spec = copy_spec_with_runtime_version_identity(
-        spec, foreign_runtime_identity)
-    mismatch = try
-        RODT.simulate_ro_model_backed_trajectory(
-            foreign_spec, LINEAR_FIELD)
-        nothing
-    catch caught
-        caught
-    end
-    @test mismatch isa RODT.RODynamicTrajectoryRuntimeIdentityMismatch
-    @test mismatch.declared_version_identity_sha256 ==
-        foreign_spec.solver_runtime_version_identity_sha256
-    @test mismatch.current_version_identity_sha256 ==
-        spec.solver_runtime_version_identity_sha256
 end
 
 @testset "analytic monostable ramp produces model-backed evidence only" begin

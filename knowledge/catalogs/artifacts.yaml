@@ -155,7 +155,7 @@ artifacts:
       - "Bnc_julia/test/ro_dynamic_trajectory_contract.jl"
     producer: "simulate_ro_model_backed_trajectory"
     validator: "validate_ro_model_backed_trajectory_evidence plus Bnc_julia/test/ro_dynamic_trajectory_contract.jl"
-    authority: "Authority is limited to a finite deterministic polynomial-protocol numerical trajectory bound to its vector field, explicit model-time and structured control/time rate-unit identities, protocol, solver, compatible runtime versions, and lineage identities; hashes establish provenance and content identity only, not validated error enclosures, branch-switch or dynamic-hysteresis certificates, global reachability, basin completeness, or experimental causality"
+    authority: "Authority is limited to a finite deterministic polynomial-protocol numerical trajectory bound to its vector field, explicit model-time and structured control/time rate-unit identities, protocol, solver policy, and lineage identities; hashes establish provenance and content identity only, not validated error enclosures, branch-switch or dynamic-hysteresis certificates, global reachability, basin completeness, or experimental causality"
     status: "focused-runtime-contract-tested-no-experimental-or-global-dynamics-authority"
 
   - id: "release-candidate-evidence-template"

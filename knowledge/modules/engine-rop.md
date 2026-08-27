@@ -249,7 +249,7 @@ work caps around these engine contracts.
   separately integrates a deterministic polynomial vector field over one finite
   declared scalar linear ramp. It binds initial state, fixed controls,
   state bounds, an explicit model-time unit with a structured control/time rate
-  identity, solver/runtime identities, work limits, and strict
+  identity, solver policy, work limits, and strict
   increasing-to-decreasing lineage, and requires primary Tsit5 and tighter
   Vern7 trajectories to agree on the save grid. This is finite model-backed
   numerical trajectory evidence, not a validated error enclosure, independent
