@@ -8,6 +8,8 @@ const RO_FIELD_SIGNATURE_SCOPE =
 const _RO_FIELD_SIGNATURE_MAX_CELLS = 256
 const _RO_FIELD_SIGNATURE_MAX_FACETS = 512
 const _RO_FIELD_SIGNATURE_MAX_MATRIX_ELEMENTS = 1_048_576
+const _RO_FIELD_SIGNATURE_MAX_GEOMETRY_TOLERANCE =
+    BindingAndCatalysis._RO2_MAX_GEOMETRY_TOLERANCE
 const _RO_FIELD_SIGNATURE_ID_PATTERN =
     r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 const _RO_FIELD_SIGNATURE_SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -202,12 +204,14 @@ end
 
 function _rofb_signature_get(raw::AbstractDict, key::AbstractString,
                              path::AbstractString)
-    has_string = haskey(raw, key)
-    has_symbol = haskey(raw, Symbol(key))
-    has_string && has_symbol && throw(ArgumentError(
+    matching_keys = Any[
+        actual for actual in keys(raw)
+        if (actual isa AbstractString || actual isa Symbol) &&
+           String(actual) == key
+    ]
+    length(matching_keys) <= 1 || throw(ArgumentError(
         "$path contains duplicate string/symbol forms of $key"))
-    has_string && return raw[key]
-    has_symbol && return raw[Symbol(key)]
+    length(matching_keys) == 1 && return raw[only(matching_keys)]
     throw(ArgumentError("$path is missing $key"))
 end
 
@@ -382,6 +386,20 @@ function _rofb_signature_diagnostics(raw, config, classifiable::Bool)
                 "finite gap_area cannot carry an unknown/nonfinite reason"))
         gap
     end
+    positive_gap = gap_area !== nothing && gap_area > 0
+    negative_gap = gap_area !== nothing && gap_area < 0
+    ("positive_area_gap" in reasons) == positive_gap ||
+        throw(ArgumentError(
+            "gap_area and positive_area_gap reason disagree"))
+    ("negative_gap_area" in reasons) == negative_gap ||
+        throw(ArgumentError(
+            "gap_area and negative_gap_area reason disagree"))
+    gap_is_zero = gap_area !== nothing && iszero(gap_area)
+    coverage_complete && !gap_is_zero && throw(ArgumentError(
+        "complete coverage requires exactly zero gap_area"))
+    classifiable && !(coverage_complete && gap_is_zero) &&
+        throw(ArgumentError(
+            "classifiable signatures require complete zero-gap coverage"))
 
     regular_cells = _rofb_signature_nonnegative_int(
         _rofb_signature_get(object, "regular_cell_count", "signature.diagnostics"),
@@ -811,26 +829,39 @@ function classify_ro_cell_complex(
     ordered_axis_ids = _rofb_normalize_ids(axis_ids, 2, "axis_ids")
     ordered_output_ids = _rofb_normalize_ids(
         output_ids, output_count, "output_ids")
+    isfinite(complex.geometry_tolerance) &&
+        0 <= complex.geometry_tolerance <=
+            _RO_FIELD_SIGNATURE_MAX_GEOMETRY_TOLERANCE ||
+        throw(ArgumentError(
+            "complex.geometry_tolerance is outside the certified engine bound"))
+    isdefined(@__MODULE__, :_ro_field_exact_domain_tolerances) ||
+        throw(ArgumentError(
+            "the exact-domain coverage certifier is unavailable"))
+    domain_bounds = [
+        (complex.domain.lower_log10[index], complex.domain.upper_log10[index])
+        for index in 1:2
+    ]
+    _, _, _, certified_area_tolerance = getfield(
+        @__MODULE__, :_ro_field_exact_domain_tolerances)(domain_bounds)
     cancel_check()
-
-    area_scale = max(1.0, abs(complex.domain_area))
-    area_tolerance = max(
-        complex.geometry_tolerance * area_scale,
-        config.zero_tolerance * area_scale,
-    )
     reasons = String[]
     isfinite(complex.domain_area) && complex.domain_area > 0 ||
         push!(reasons, "invalid_domain_area")
-    complex.coverage_complete || push!(reasons, "coverage_incomplete")
-    if complex.gap_area === nothing
-        push!(reasons, "gap_area_unknown")
+    gap_reason = if complex.gap_area === nothing
+        "gap_area_unknown"
     elseif !isfinite(complex.gap_area)
-        push!(reasons, "gap_area_nonfinite")
-    elseif complex.gap_area > area_tolerance
-        push!(reasons, "positive_area_gap")
-    elseif complex.gap_area < -area_tolerance
-        push!(reasons, "negative_gap_area")
+        "gap_area_nonfinite"
+    elseif complex.gap_area > certified_area_tolerance
+        "positive_area_gap"
+    elseif complex.gap_area < -certified_area_tolerance
+        "negative_gap_area"
+    else
+        nothing
     end
+    gap_reason === nothing || push!(reasons, gap_reason)
+    effective_coverage_complete = complex.coverage_complete &&
+        gap_reason === nothing
+    effective_coverage_complete || push!(reasons, "coverage_incomplete")
     complex.has_ambiguity && push!(reasons, "ambiguous_complex")
 
     labels_by_cell = Dict{Int,ROAffineLabel2D}()
@@ -884,7 +915,7 @@ function classify_ro_cell_complex(
     serialized_gap_area = if complex.gap_area === nothing
         nothing
     elseif isfinite(complex.gap_area)
-        complex.gap_area
+        gap_reason === nothing ? 0.0 : complex.gap_area
     else
         # Preserve the distinction in `gap_area_nonfinite` while keeping the
         # stored trust-boundary document valid canonical JSON.
@@ -892,7 +923,7 @@ function classify_ro_cell_complex(
     end
     diagnostics = Dict{String,Any}(
         "eligibility_reasons" => reasons,
-        "coverage_complete" => complex.coverage_complete,
+        "coverage_complete" => effective_coverage_complete,
         "gap_area" => serialized_gap_area,
         "has_ambiguity" => complex.has_ambiguity,
         "regular_cell_count" => cell_count,

@@ -307,15 +307,32 @@ function _ro_field_identity_exact_data(data)
     return canonical
 end
 
+function _ro_field_identity_canonical_domain(domain)
+    canonical = _ro_field_materialize(domain)
+    backgrounds = _ro_field_identity_vector(canonical, "fixed_background")
+    sort!(backgrounds; by=item -> String(
+        _ro_field_identity_get(item, "parameter_id")))
+    canonical["fixed_background"] = backgrounds
+    return canonical
+end
+
+function _ro_field_canonicalized_identity_payload(payload)
+    return Dict{String, Any}(
+        "schema_version" => _ro_field_identity_get(payload, "schema_version"),
+        "domain" => _ro_field_identity_canonical_domain(
+            _ro_field_identity_get(payload, "domain")),
+        "outputs" => _ro_field_materialize(
+            _ro_field_identity_get(payload, "outputs")),
+        "component_order" => _ro_field_materialize(
+            _ro_field_identity_get(payload, "component_order")),
+        "data" => _ro_field_identity_exact_data(
+            _ro_field_identity_get(payload, "data")),
+    )
+end
+
 function canonical_ro_cell_complex_payload(document)
     doc = validate_ro_cell_complex_identity_eligibility!(document)
-    return Dict{String, Any}(
-        "schema_version" => _ro_field_identity_get(doc, "schema_version"),
-        "domain" => _ro_field_identity_get(doc, "domain"),
-        "outputs" => _ro_field_identity_get(doc, "outputs"),
-        "component_order" => _ro_field_identity_get(doc, "component_order"),
-        "data" => _ro_field_identity_exact_data(_ro_field_identity_get(doc, "data")),
-    )
+    return _ro_field_canonicalized_identity_payload(doc)
 end
 
 function _ro_field_varuint_push!(buffer::Vector{UInt8}, value::Integer)
@@ -365,8 +382,7 @@ function _ro_field_read_bytes(bytes::Vector{UInt8}, position::Int, label::Abstra
     return bytes[position:stop], stop + 1
 end
 
-function encode_ro_cell_complex_blob(document)
-    payload = canonical_ro_cell_complex_payload(document)
+function _ro_field_encode_cell_complex_payload(payload)
     payload_bytes = _ro_field_utf8_bytes(_ro_field_canonical_json(payload))
     identity_bytes = _ro_field_utf8_bytes(RO_CELL_COMPLEX_IDENTITY_KIND)
 
@@ -375,6 +391,11 @@ function encode_ro_cell_complex_blob(document)
     _ro_field_push_bytes!(buffer, identity_bytes)
     _ro_field_push_bytes!(buffer, payload_bytes)
     return buffer
+end
+
+function encode_ro_cell_complex_blob(document)
+    payload = canonical_ro_cell_complex_payload(document)
+    return _ro_field_encode_cell_complex_payload(payload)
 end
 
 function decode_ro_cell_complex_blob(blob)
@@ -431,7 +452,7 @@ function decode_ro_cell_complex_blob(blob)
             :validator_unavailable,
             "RPB2 payload semantics cannot be trusted before the RO-field validator is loaded",
         )
-    try
+    validated_payload = try
         getfield(@__MODULE__, :validate_ro_field_payload!)(payload)
     catch err
         err isa ROFieldIdentityError && rethrow()
@@ -440,7 +461,14 @@ function decode_ro_cell_complex_blob(blob)
             "RPB2 payload semantic validation failed: $(sprint(showerror, err))",
         )
     end
-    return payload
+    canonical_payload = _ro_field_canonicalized_identity_payload(
+        validated_payload)
+    _ro_field_canonical_json(canonical_payload) == payload_text ||
+        _ro_field_identity_error(
+            :noncanonical_blob,
+            "RPB2 payload contains a noncanonical semantic representation",
+        )
+    return canonical_payload
 end
 
 ro_cell_complex_hash(blob::AbstractVector{UInt8}) = _ro_field_sha256(UInt8.(blob))

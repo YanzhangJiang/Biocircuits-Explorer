@@ -181,6 +181,46 @@ end
     @test Backend._ro_field_canonical_json(Backend.decode_ro_cell_complex_blob(blob)) ==
           Backend._ro_field_canonical_json(Backend.canonical_ro_cell_complex_payload(document))
 
+    # fixed_background is a semantic mapping, not an ordered input axis.  Its
+    # presentation order must not split one scientific field into two RPB2
+    # identities.
+    canonical_background = deepcopy(document)
+    append!(canonical_background["domain"]["fixed_background"], Any[
+        Dict{String,Any}(
+            "parameter_id" => "aa_extra",
+            "symbol" => "KextraA",
+            "coordinate_kind" => "binding_constant",
+            "reference" => Dict("value" => 1.0, "unit" => "uM"),
+            "log_value" => -1.0,
+        ),
+        Dict{String,Any}(
+            "parameter_id" => "zz_extra",
+            "symbol" => "KextraZ",
+            "coordinate_kind" => "binding_constant",
+            "reference" => Dict("value" => 1.0, "unit" => "uM"),
+            "log_value" => 1.0,
+        ),
+    ])
+    sort!(canonical_background["domain"]["fixed_background"];
+        by=item -> item["parameter_id"])
+    _set_payload_identity!(canonical_background)
+    reordered_background = deepcopy(canonical_background)
+    reverse!(reordered_background["domain"]["fixed_background"])
+    _set_payload_identity!(reordered_background)
+    @test Backend.encode_ro_cell_complex_blob(canonical_background) ==
+        Backend.encode_ro_cell_complex_blob(reordered_background)
+    @test getindex.(
+        Backend.canonical_ro_cell_complex_payload(reordered_background)[
+            "domain"]["fixed_background"], "parameter_id") ==
+        ["aa_extra", "kd_ab", "zz_extra"]
+    @test_throws Backend.ROFieldIdentityError Backend.decode_ro_cell_complex_blob(
+        _unchecked_rpb2_blob(
+            Backend.canonical_ro_cell_complex_payload(reordered_background) |>
+            payload -> begin
+                reverse!(payload["domain"]["fixed_background"])
+                payload
+            end))
+
     with_redundant_hrep = deepcopy(document)
     with_redundant_hrep["data"]["cells"][1]["polyhedron"] = Dict{String, Any}(
         "halfspaces" => Any[
@@ -193,6 +233,12 @@ end
     )
     _set_payload_identity!(with_redundant_hrep)
     @test Backend.encode_ro_cell_complex_blob(with_redundant_hrep) == blob
+    unchecked_redundant_hrep = deepcopy(
+        Backend.canonical_ro_cell_complex_payload(document))
+    unchecked_redundant_hrep["data"]["cells"][1]["polyhedron"] =
+        deepcopy(with_redundant_hrep["data"]["cells"][1]["polyhedron"])
+    @test_throws Backend.ROFieldIdentityError Backend.decode_ro_cell_complex_blob(
+        _unchecked_rpb2_blob(unchecked_redundant_hrep))
 
     @test_throws Backend.ROFieldIdentityError Backend.decode_ro_cell_complex_blob(vcat(blob, 0x00))
     @test_throws Backend.ROFieldIdentityError Backend.decode_ro_cell_complex_blob(
@@ -257,10 +303,7 @@ end
         path = joinpath(root, "legacy.sqlite")
         db = SQLite.DB(path)
         try
-            DBInterface.execute(db,
-                "CREATE TABLE atlas_metadata (key TEXT PRIMARY KEY, value_text TEXT NOT NULL)")
-            DBInterface.execute(db,
-                "INSERT INTO atlas_metadata (key, value_text) VALUES ('schema_version', '0.3.0')")
+            Backend._atlas_sqlite_create_0_3_0!(db)
             p3_migrations = Backend.ATLAS_SQLITE_MIGRATIONS[1:2]
             applied = Backend.apply_atlas_sqlite_migrations!(
                 db; migrations=p3_migrations)
