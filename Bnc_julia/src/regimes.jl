@@ -92,7 +92,17 @@ find_bind_regimes!(
     model::Bnc{T};
     H_mode::Symbol=_affine_mode(model),
     cancel_check=_NO_CANCEL_CHECK,
-) where T = find_all_regimes!(model; H_mode=H_mode, cancel_check=cancel_check)
+    max_asymptotic_regimes::Union{Nothing,Integer}=nothing,
+    max_enumeration_work::Union{Nothing,Integer}=nothing,
+    enumeration_work_counter::Union{Nothing,Base.RefValue{BigInt}}=nothing,
+) where T = find_all_regimes!(
+    model;
+    H_mode=H_mode,
+    cancel_check=cancel_check,
+    max_asymptotic_regimes=max_asymptotic_regimes,
+    max_enumeration_work=max_enumeration_work,
+    enumeration_work_counter=enumeration_work_counter,
+)
 """
     find_all_regimes!(bnc::Bnc) -> Vector{Vector{Int}}
 
@@ -103,14 +113,61 @@ only deferred high-nullity perms are sent to `_calc_nullity`.
 Keyword `H_mode` controls how binding-regime affine coefficients are stored:
 - `:float`    uses floating-point `H` / `C_qK`
 - `:rational` uses exact rational coefficients for `H` / `C_qK`
+
+`max_asymptotic_regimes`, when supplied, is a hard admission boundary checked
+at each asymptotic enumeration leaf and against an already-complete cache.  It
+does not by itself bound the number of non-asymptotic search leaves.
+`max_enumeration_work` separately bounds the enumerator's DFS, reachability,
+negative-cycle, and leaf checkpoints.  A caller may supply an internal
+`enumeration_work_counter` to charge those units into a larger cumulative
+operation budget.
 """
 function find_all_regimes!(
     model::Bnc{T};
     H_mode::Symbol=_affine_mode(model),
     cancel_check=_NO_CANCEL_CHECK,
+    max_asymptotic_regimes::Union{Nothing,Integer}=nothing,
+    max_enumeration_work::Union{Nothing,Integer}=nothing,
+    enumeration_work_counter::Union{Nothing,Base.RefValue{BigInt}}=nothing,
 ) where T
     # Decide what type should we used to store H.
     H_mode = _normalize_affine_mode(H_mode)
+    asymptotic_limit = if max_asymptotic_regimes === nothing
+        nothing
+    else
+        max_asymptotic_regimes isa Bool && throw(ArgumentError(
+            "max_asymptotic_regimes must be a positive integer, not Bool"))
+        max_asymptotic_regimes > 0 || throw(ArgumentError(
+            "max_asymptotic_regimes must be positive"))
+        max_asymptotic_regimes <= typemax(Int) || throw(ArgumentError(
+            "max_asymptotic_regimes must fit in Int"))
+        Int(max_asymptotic_regimes)
+    end
+    enumeration_limit = if max_enumeration_work === nothing
+        nothing
+    else
+        max_enumeration_work isa Bool && throw(ArgumentError(
+            "max_enumeration_work must be a positive integer, not Bool"))
+        max_enumeration_work > 0 || throw(ArgumentError(
+            "max_enumeration_work must be positive"))
+        max_enumeration_work <= typemax(Int) || throw(ArgumentError(
+            "max_enumeration_work must fit in Int"))
+        Int(max_enumeration_work)
+    end
+    work_counter = enumeration_work_counter === nothing ?
+        Ref(BigInt(0)) : enumeration_work_counter
+    work_counter[] >= 0 || throw(ArgumentError(
+        "enumeration_work_counter must be nonnegative"))
+    function reserve_enumeration_work!(units::BigInt)
+        units >= 0 || error("internal negative enumeration-work reservation")
+        work_counter[] += units
+        enumeration_limit === nothing ||
+            work_counter[] <= enumeration_limit || throw(
+            _RegimeEnumerationWorkLimitExceeded(
+                work_counter[], enumeration_limit))
+        cancel_check()
+        return nothing
+    end
     # Regime construction publishes several interdependent mutable caches. A
     # partial `BindRegimes` value must never become a false fast-path for a
     # concurrent caller, so the check and the complete build share one lock.
@@ -119,8 +176,22 @@ function find_all_regimes!(
     build_started = false
     try
         cancel_check()
-        is_bind_regimes_built(model) && model._regimes_build_complete &&
-            model.affine_coeff_mode == H_mode && return nothing
+        if is_bind_regimes_built(model) && model._regimes_build_complete &&
+            model.affine_coeff_mode == H_mode
+            if asymptotic_limit !== nothing
+                cached_regimes = _bind_regimes_data(model)
+                reserve_enumeration_work!(BigInt(length(cached_regimes)))
+                requested = BigInt(0)
+                for (index, regime) in enumerate(cached_regimes)
+                    (index - 1) % 256 == 0 && cancel_check()
+                    is_asymptotic(regime) && (requested += 1)
+                end
+                requested <= asymptotic_limit || throw(
+                    _AsymptoticRegimeLimitExceeded(
+                        requested, asymptotic_limit))
+            end
+            return nothing
+        end
 
         build_started = true
         _remove_regime_data!(model)
@@ -128,18 +199,63 @@ function find_all_regimes!(
 
         @info "---------------------Start finding all regimes--------------------"
 
-        (all_perms, is_asymptotic) = let
-            perms, is_asymp = _enumerate_all_regimes(
-                model._L_helper; cancel_check=cancel_check)
-            perms = [Vector{T}(v) for v in perms]
-            (perms, is_asymp)
+        (all_perms, asymptotic_flags, n_asym_rgms) = let
+            raw_perms, is_asymp = _enumerate_all_regimes(
+                model._L_helper;
+                cancel_check=cancel_check,
+                max_asymptotic_regimes=asymptotic_limit,
+                max_enumeration_work=enumeration_limit,
+                enumeration_work_counter=work_counter,
+            )
+            population = length(raw_perms)
+            permutation_length = length(model._L_helper.J)
+            # Gate the outer/result allocations, every permutation-element
+            # conversion, and the asymptotic population scan before doing any
+            # of that post-enumeration work.
+            reserve_enumeration_work!(
+                BigInt(population) * (BigInt(permutation_length) + 2))
+            perms = Vector{Vector{T}}(undef, population)
+            asymptotic_population = 0
+            for index in 1:population
+                cancel_check()
+                raw = raw_perms[index]
+                converted = Vector{T}(undef, permutation_length)
+                for coordinate in 1:permutation_length
+                    (coordinate - 1) % 256 == 0 && cancel_check()
+                    converted[coordinate] = T(raw[coordinate])
+                end
+                perms[index] = converted
+                is_asymp[index] && (asymptotic_population += 1)
+            end
+            (perms, is_asymp, asymptotic_population)
         end
         cancel_check()
 
 
         n_vertices = length(all_perms)
-        n_asym_rgms = sum(is_asymptotic)
         @info "Finished, with $(n_vertices) regimes found and $(n_asym_rgms) asymptotic regimes."
+
+        # Reserve a conservative upper bound before any graph/cache stage.
+        # The row-signature build is linear in every permutation coordinate;
+        # each row bucket can be one all-regime bucket in the worst case; and
+        # affine propagation/full-qK orientation may traverse those edges while
+        # performing dense model-sized kernels per regime.  Over-reservation is
+        # intentional: the declared limit is an admission cap, not a profiler.
+        vertex_count = BigInt(n_vertices)
+        search_dimension = BigInt(length(model._L_helper.J))
+        state_dimension = BigInt(model.n)
+        signature_work = search_dimension * vertex_count *
+            max(search_dimension, BigInt(1))
+        graph_pair_work = search_dimension * vertex_count *
+            max(vertex_count - 1, BigInt(0)) ÷ 2
+        regime_object_work = vertex_count * (search_dimension + 2)
+        affine_kernel_work = vertex_count * (
+            state_dimension^3 + state_dimension^2 +
+                state_dimension * search_dimension + search_dimension + 1)
+        propagation_work = graph_pair_work * max(state_dimension, BigInt(1))
+        reserve_enumeration_work!(
+            signature_work + graph_pair_work + regime_object_work +
+                affine_kernel_work + propagation_work)
 
         @info "2.Building x-neighbor regime graph..."
         model.vertices_graph = let
@@ -153,7 +269,7 @@ function find_all_regimes!(
         @info "3.Building regime objects..."
         model.BindRegimes = let
             regimes = _build_bind_regimes(
-                model, all_perms, is_asymptotic, fill(T(-1), n_vertices))
+                model, all_perms, asymptotic_flags, fill(T(-1), n_vertices))
             vertices_perm_dict =
                 Dict(perm => idx for (idx, perm) in enumerate(all_perms))
             Regimes(vertices_perm_dict, regimes)

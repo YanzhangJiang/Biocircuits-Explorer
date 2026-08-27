@@ -132,6 +132,50 @@ function _rossel_test_certify(candidates, policy; receipt=nothing, kwargs...)
     )
 end
 
+function _rossel_rehashed_unknown_gap_with_selection(certificate)
+    snapshot = merge(
+        _ROSSEL_TEST_MODULE._rossel_certificate_result_snapshot(certificate),
+        (status="unknown_gap", reason_codes=()),
+    )
+    identity_sha256 = _ROSSEL_TEST_MODULE._rossel_sha_payload(
+        (
+            schema_version=getfield(certificate, :schema_version),
+            selection_authority_sha256=getfield(
+                certificate, :selection_authority_sha256),
+            result_snapshot=snapshot,
+        ),
+        :selection_identity_bytes,
+        ROSingularSelectionLimits().max_identity_bytes,
+    )
+    return _ROSSEL_TEST_MODULE.ROSingularSelectionCertificate(
+        _ROSSEL_TEST_MODULE._ROSSEL_VALIDATED,
+        getfield(certificate, :schema_version),
+        identity_sha256,
+        getfield(certificate, :selection_authority_sha256),
+        getfield(certificate, :population_receipt_sha256),
+        :unknown_gap,
+        getfield(certificate, :candidate_population_complete),
+        getfield(certificate, :candidate_count),
+        getfield(certificate, :admissible_branch_ids),
+        getfield(certificate, :selected_branch_id),
+        getfield(certificate, :selected_branch_identity_sha256),
+        getfield(certificate, :selected_candidate_payload_sha256),
+        getfield(certificate, :selected_jacobian),
+        getfield(certificate, :selected_output_at_stratum),
+        getfield(certificate, :selected_stability_evidence_sha256),
+        getfield(certificate, :selected_stability_analysis_sha256),
+        getfield(certificate, :selected_reachability_evidence_sha256),
+        getfield(certificate, :selected_dynamic_trace_sha256),
+        Symbol[],
+        getfield(certificate, :evidence_scope),
+        getfield(certificate, :includes_singular_branch),
+        getfield(certificate, :regular_limit_only),
+        getfield(certificate, :universal_selection_claimed),
+        getfield(certificate, :causal_claimed),
+        getfield(certificate, :experimentally_validated),
+    )
+end
+
 @testset "singular selection requires one complete stable reachable branch" begin
     policy = _rossel_test_policy()
     stable = _rossel_test_candidate(policy, 1)
@@ -171,6 +215,22 @@ end
     @test !certificate.causal_claimed
     @test !certificate.experimentally_validated
     @test occursin(r"^[0-9a-f]{64}$", certificate.identity_sha256)
+    @test _ROSSEL_TEST_MODULE.
+        validate_ro_singular_selection_certificate(certificate)
+    @test_throws ArgumentError _rossel_rehashed_unknown_gap_with_selection(
+        certificate)
+
+    detached_jacobian = certificate.selected_jacobian
+    detached_jacobian[1, 1] += 1.0
+    @test certificate.selected_jacobian == stable.jacobian
+    @test certificate.identity_sha256 !=
+        _ROSSEL_TEST_MODULE._rossel_selection_identity(
+            policy, receipt, ROSingularSelectionLimits(), () -> nothing)
+    tampered_certificate = deepcopy(certificate)
+    getfield(tampered_certificate, :selected_jacobian)[1, 1] += 1.0
+    @test_throws ArgumentError tampered_certificate.status
+    @test_throws ArgumentError _ROSSEL_TEST_MODULE.
+        validate_ro_singular_selection_certificate(tampered_certificate)
 
     reordered = _rossel_test_certify(
         [stable, unstable], policy; receipt=receipt)
@@ -194,6 +254,142 @@ end
     other_order = _rossel_test_certify(
         other_order_candidates, other_order_policy)
     @test other_order.identity_sha256 != certificate.identity_sha256
+end
+
+@testset "pre-certificate artifacts are sealed and return detached arrays" begin
+    caller_input_order = ["u", "v"]
+    caller_input_units = ["input-u", "input-v"]
+    caller_output_order = ["y1", "y2"]
+    caller_output_units = ["output-y1", "output-y2"]
+    policy = _rossel_test_policy(
+        input_order=caller_input_order,
+        input_units=caller_input_units,
+        output_order=caller_output_order,
+        output_units=caller_output_units,
+    )
+    caller_input_order[1] = "caller-mutated-input"
+    caller_input_units[1] = "caller-mutated-input-unit"
+    caller_output_order[1] = "caller-mutated-output"
+    caller_output_units[1] = "caller-mutated-output-unit"
+    @test policy.input_order == ["u", "v"]
+    @test policy.input_units == ["input-u", "input-v"]
+    @test policy.output_order == ["y1", "y2"]
+    @test policy.output_units == ["output-y1", "output-y2"]
+    for name in (:input_order, :input_units, :output_order, :output_units)
+        detached = getproperty(policy, name)
+        @test detached !== getfield(policy, name)
+        detached[1] = "detached-$name"
+        @test getproperty(policy, name)[1] != "detached-$name"
+    end
+    tampered_policy = deepcopy(policy)
+    getfield(tampered_policy, :input_order)[1] = "raw-policy-tamper"
+    @test_throws ArgumentError tampered_policy.policy_sha256
+
+    branch_hash = ro_singular_branch_identity_sha256(
+        policy=policy,
+        branch_id="branch-1",
+        source_regime_ids=[1, 11],
+    )
+    caller_stability_gaps = Symbol[]
+    stability = ROSingularStabilityEvidence(
+        branch_identity_sha256=branch_hash,
+        policy=policy,
+        status=:locally_stable,
+        analysis_sha256=_rossel_test_hash(201),
+        gap_reasons=caller_stability_gaps,
+    )
+    caller_reachability_gaps = Symbol[]
+    reachability = ROSingularReachabilityEvidence(
+        branch_identity_sha256=branch_hash,
+        policy=policy,
+        status=:reached_under_protocol,
+        dynamic_trace_sha256=_rossel_test_hash(301),
+        gap_reasons=caller_reachability_gaps,
+    )
+    push!(caller_stability_gaps, :caller_stability_tamper)
+    push!(caller_reachability_gaps, :caller_reachability_tamper)
+    @test isempty(stability.gap_reasons)
+    @test isempty(reachability.gap_reasons)
+    @test stability.gap_reasons !== getfield(stability, :gap_reasons)
+    @test reachability.gap_reasons !== getfield(reachability, :gap_reasons)
+    detached_stability_gaps = stability.gap_reasons
+    detached_reachability_gaps = reachability.gap_reasons
+    push!(detached_stability_gaps, :detached_stability_tamper)
+    push!(detached_reachability_gaps, :detached_reachability_tamper)
+    @test isempty(stability.gap_reasons)
+    @test isempty(reachability.gap_reasons)
+    tampered_stability = deepcopy(stability)
+    push!(getfield(tampered_stability, :gap_reasons), :raw_stability_tamper)
+    @test_throws ArgumentError tampered_stability.status
+    tampered_reachability = deepcopy(reachability)
+    push!(getfield(tampered_reachability, :gap_reasons),
+        :raw_reachability_tamper)
+    @test_throws ArgumentError tampered_reachability.status
+
+    caller_regimes = [1, 11]
+    caller_jacobian = Float64[1 2; 3 4]
+    caller_output = Float64[0.1, 0.2]
+    caller_numeric_gaps = Symbol[]
+    candidate = ROSingularBranchCandidate(
+        policy=policy,
+        branch_id="branch-1",
+        source_regime_ids=caller_regimes,
+        stability_evidence=stability,
+        reachability_evidence=reachability,
+        jacobian=caller_jacobian,
+        output_at_stratum=caller_output,
+        residual_upper_bound=1.0e-10,
+        numeric_gap_reasons=caller_numeric_gaps,
+    )
+    caller_regimes[1] = 99
+    caller_jacobian[1, 1] = 99.0
+    caller_output[1] = 99.0
+    push!(caller_numeric_gaps, :caller_numeric_tamper)
+    @test candidate.source_regime_ids == [1, 11]
+    @test candidate.jacobian == Float64[1 2; 3 4]
+    @test candidate.output_at_stratum == Float64[0.1, 0.2]
+    @test isempty(candidate.numeric_gap_reasons)
+    for name in (:source_regime_ids, :jacobian, :output_at_stratum,
+            :numeric_gap_reasons)
+        @test getproperty(candidate, name) !== getfield(candidate, name)
+    end
+    detached_regimes = candidate.source_regime_ids
+    detached_matrix = candidate.jacobian
+    detached_output = candidate.output_at_stratum
+    detached_numeric_gaps = candidate.numeric_gap_reasons
+    detached_regimes[1] = 100
+    detached_matrix[1, 1] = 100.0
+    detached_output[1] = 100.0
+    push!(detached_numeric_gaps, :detached_numeric_tamper)
+    @test candidate.source_regime_ids == [1, 11]
+    @test candidate.jacobian == Float64[1 2; 3 4]
+    @test candidate.output_at_stratum == Float64[0.1, 0.2]
+    @test isempty(candidate.numeric_gap_reasons)
+    tampered_candidate = deepcopy(candidate)
+    getfield(tampered_candidate, :jacobian)[1, 1] = 101.0
+    @test_throws ArgumentError tampered_candidate.branch_id
+
+    caller_receipt_gaps = Symbol[]
+    receipt = build_ro_singular_candidate_population_receipt(
+        [candidate];
+        policy=policy,
+        expected_candidate_count=1,
+        complete=true,
+        gap_reasons=caller_receipt_gaps,
+    )
+    push!(caller_receipt_gaps, :caller_receipt_tamper)
+    @test isempty(receipt.gap_reasons)
+    @test receipt.candidate_roots !== getfield(receipt, :candidate_roots)
+    @test receipt.gap_reasons !== getfield(receipt, :gap_reasons)
+    detached_roots = receipt.candidate_roots
+    detached_receipt_gaps = receipt.gap_reasons
+    empty!(detached_roots)
+    push!(detached_receipt_gaps, :detached_receipt_tamper)
+    @test length(receipt.candidate_roots) == 1
+    @test isempty(receipt.gap_reasons)
+    tampered_receipt = deepcopy(receipt)
+    empty!(getfield(tampered_receipt, :candidate_roots))
+    @test_throws ArgumentError tampered_receipt.complete
 end
 
 @testset "set-valued, incomplete, and gap evidence never choose a branch" begin
@@ -298,18 +494,19 @@ end
     )
 
     truncated_roots = _rossel_test_receipt(candidates, policy)
-    pop!(truncated_roots.candidate_roots)
+    pop!(getfield(truncated_roots, :candidate_roots))
     @test_throws ArgumentError _rossel_test_certify(
         candidates, policy; receipt=truncated_roots)
 
     forged_complete_gap = _rossel_test_receipt(candidates, policy)
-    push!(forged_complete_gap.gap_reasons, :late_gap_injection)
+    push!(getfield(forged_complete_gap, :gap_reasons),
+        :late_gap_injection)
     @test_throws ArgumentError _rossel_test_certify(
         candidates, policy; receipt=forged_complete_gap)
 
     mutated_candidate = _rossel_test_candidate(policy, 9)
     mutation_receipt = _rossel_test_receipt([mutated_candidate], policy)
-    mutated_candidate.jacobian[1, 1] += 1.0
+    getfield(mutated_candidate, :jacobian)[1, 1] += 1.0
     @test_throws ArgumentError _rossel_test_certify(
         [mutated_candidate], policy; receipt=mutation_receipt)
 end
@@ -393,7 +590,8 @@ end
 
     stability_mutation = _rossel_test_candidate(policy, 2)
     stability_receipt = _rossel_test_receipt([stability_mutation], policy)
-    push!(stability_mutation.stability_evidence.gap_reasons,
+    push!(getfield(getfield(stability_mutation, :stability_evidence),
+            :gap_reasons),
         :post_hash_stability_gap)
     @test_throws ArgumentError _rossel_test_certify(
         [stability_mutation], policy; receipt=stability_receipt)
@@ -401,7 +599,8 @@ end
     reachability_mutation = _rossel_test_candidate(policy, 3)
     reachability_receipt = _rossel_test_receipt(
         [reachability_mutation], policy)
-    push!(reachability_mutation.reachability_evidence.gap_reasons,
+    push!(getfield(getfield(reachability_mutation, :reachability_evidence),
+            :gap_reasons),
         :post_hash_trace_gap)
     @test_throws ArgumentError _rossel_test_certify(
         [reachability_mutation], policy; receipt=reachability_receipt)
@@ -572,7 +771,7 @@ end
     mutation_candidate = _rossel_test_candidate(mutated_policy, 4)
     mutation_receipt = _rossel_test_receipt(
         [mutation_candidate], mutated_policy)
-    push!(mutated_policy.input_order, "post-hash-axis")
+    push!(getfield(mutated_policy, :input_order), "post-hash-axis")
     @test_throws DimensionMismatch certify_ro_singular_branch_selection(
         [mutation_candidate];
         policy=mutated_policy,

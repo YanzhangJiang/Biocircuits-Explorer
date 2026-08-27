@@ -8,7 +8,7 @@ import SHA
 # or experimental validation.
 
 const RO_SINGULAR_SELECTION_VERSION =
-    "bne-ro-singular-selection-certificate/v2.0.0"
+    "bne-ro-singular-selection-certificate/v2.1.0"
 const RO_SINGULAR_SELECTION_POLICY_VERSION =
     "bne-ro-singular-selection-policy/v2.0.0"
 const RO_SINGULAR_STABILITY_EVIDENCE_VERSION =
@@ -92,6 +92,17 @@ function ROSingularSelectionLimits(;
             max_identity_bytes, "max_identity_bytes", 1_000_000_000),
     )
 end
+
+const _ROSSEL_CERTIFICATE_HARD_LIMITS = ROSingularSelectionLimits(
+    max_inputs=4_096,
+    max_outputs=65_536,
+    max_candidates=1_000_000,
+    max_matrix_elements=100_000_000,
+    max_source_regime_ids=1_000_000,
+    max_gap_reasons=4_096,
+    max_candidate_payload_bytes=64 * 1024 * 1024,
+    max_identity_bytes=1_000_000_000,
+)
 
 @inline function _rossel_limit(phase::Symbol, requested::Integer, limit::Int)
     amount = BigInt(requested)
@@ -228,83 +239,106 @@ end
 
 function _rossel_policy_payload(policy::ROSingularSelectionPolicy)
     return (
-        schema_version=policy.schema_version,
-        regular_extension_sha256=policy.regular_extension_sha256,
-        stratum_sha256=policy.stratum_sha256,
-        model_sha256=policy.model_sha256,
-        protocol_sha256=policy.protocol_sha256,
-        branch_enumerator_sha256=policy.branch_enumerator_sha256,
-        enumeration_scope_sha256=policy.enumeration_scope_sha256,
-        stability_policy_sha256=policy.stability_policy_sha256,
-        reachability_policy_sha256=policy.reachability_policy_sha256,
-        inputs=(order=policy.input_order, units=policy.input_units),
-        outputs=(order=policy.output_order, units=policy.output_units),
+        schema_version=getfield(policy, :schema_version),
+        regular_extension_sha256=
+            getfield(policy, :regular_extension_sha256),
+        stratum_sha256=getfield(policy, :stratum_sha256),
+        model_sha256=getfield(policy, :model_sha256),
+        protocol_sha256=getfield(policy, :protocol_sha256),
+        branch_enumerator_sha256=
+            getfield(policy, :branch_enumerator_sha256),
+        enumeration_scope_sha256=
+            getfield(policy, :enumeration_scope_sha256),
+        stability_policy_sha256=
+            getfield(policy, :stability_policy_sha256),
+        reachability_policy_sha256=
+            getfield(policy, :reachability_policy_sha256),
+        inputs=(order=getfield(policy, :input_order),
+            units=getfield(policy, :input_units)),
+        outputs=(order=getfield(policy, :output_order),
+            units=getfield(policy, :output_units)),
         residual=(
-            norm=String(policy.residual_norm),
-            scaling=String(policy.residual_scaling),
-            unit=policy.residual_unit,
-            scale=policy.residual_scale,
-            evaluator_sha256=policy.residual_evaluator_sha256,
-            absolute_tolerance=policy.residual_absolute_tolerance,
+            norm=String(getfield(policy, :residual_norm)),
+            scaling=String(getfield(policy, :residual_scaling)),
+            unit=getfield(policy, :residual_unit),
+            scale=getfield(policy, :residual_scale),
+            evaluator_sha256=getfield(policy, :residual_evaluator_sha256),
+            absolute_tolerance=
+                getfield(policy, :residual_absolute_tolerance),
         ),
-        selection_rule=String(policy.selection_rule),
+        selection_rule=String(getfield(policy, :selection_rule)),
     )
 end
 
 function _rossel_policy_reservation(policy::ROSingularSelectionPolicy)
     strings = Any[
-        policy.input_order; policy.input_units; policy.output_order;
-        policy.output_units; policy.residual_unit
+        getfield(policy, :input_order); getfield(policy, :input_units);
+        getfield(policy, :output_order); getfield(policy, :output_units);
+        getfield(policy, :residual_unit)
     ]
     return BigInt(8_192 + _rossel_string_bytes(strings))
 end
 
 function _rossel_validate_policy!(policy::ROSingularSelectionPolicy,
                                   limits::ROSingularSelectionLimits)
-    policy.schema_version == RO_SINGULAR_SELECTION_POLICY_VERSION ||
+    getfield(policy, :schema_version) ==
+        RO_SINGULAR_SELECTION_POLICY_VERSION ||
         throw(ArgumentError("unsupported singular selection policy version"))
     for (value, name) in (
-        (policy.policy_sha256, "policy_sha256"),
-        (policy.regular_extension_sha256, "regular_extension_sha256"),
-        (policy.stratum_sha256, "stratum_sha256"),
-        (policy.model_sha256, "model_sha256"),
-        (policy.protocol_sha256, "protocol_sha256"),
-        (policy.branch_enumerator_sha256, "branch_enumerator_sha256"),
-        (policy.enumeration_scope_sha256, "enumeration_scope_sha256"),
-        (policy.stability_policy_sha256, "stability_policy_sha256"),
-        (policy.reachability_policy_sha256, "reachability_policy_sha256"),
-        (policy.residual_evaluator_sha256, "residual_evaluator_sha256"),
+        (getfield(policy, :policy_sha256), "policy_sha256"),
+        (getfield(policy, :regular_extension_sha256),
+            "regular_extension_sha256"),
+        (getfield(policy, :stratum_sha256), "stratum_sha256"),
+        (getfield(policy, :model_sha256), "model_sha256"),
+        (getfield(policy, :protocol_sha256), "protocol_sha256"),
+        (getfield(policy, :branch_enumerator_sha256),
+            "branch_enumerator_sha256"),
+        (getfield(policy, :enumeration_scope_sha256),
+            "enumeration_scope_sha256"),
+        (getfield(policy, :stability_policy_sha256),
+            "stability_policy_sha256"),
+        (getfield(policy, :reachability_policy_sha256),
+            "reachability_policy_sha256"),
+        (getfield(policy, :residual_evaluator_sha256),
+            "residual_evaluator_sha256"),
     )
         _rossel_hash(value, name)
     end
-    _rossel_ids(policy.input_order, "input_order", limits.max_inputs) ==
-        policy.input_order || throw(ArgumentError("input_order is not canonical"))
-    _rossel_ids(policy.output_order, "output_order", limits.max_outputs) ==
-        policy.output_order || throw(ArgumentError("output_order is not canonical"))
-    _rossel_units(policy.input_units, "input_units",
-        length(policy.input_order)) == policy.input_units || throw(
+    input_order = getfield(policy, :input_order)
+    input_units = getfield(policy, :input_units)
+    output_order = getfield(policy, :output_order)
+    output_units = getfield(policy, :output_units)
+    _rossel_ids(input_order, "input_order", limits.max_inputs) ==
+        input_order || throw(ArgumentError("input_order is not canonical"))
+    _rossel_ids(output_order, "output_order", limits.max_outputs) ==
+        output_order || throw(ArgumentError("output_order is not canonical"))
+    _rossel_units(input_units, "input_units", length(input_order)) ==
+        input_units || throw(
             ArgumentError("input_units are not canonical"))
-    _rossel_units(policy.output_units, "output_units",
-        length(policy.output_order)) == policy.output_units || throw(
+    _rossel_units(output_units, "output_units", length(output_order)) ==
+        output_units || throw(
             ArgumentError("output_units are not canonical"))
-    policy.residual_norm in (:linf, :l2) || throw(ArgumentError(
+    getfield(policy, :residual_norm) in (:linf, :l2) || throw(ArgumentError(
         "unsupported residual_norm"))
-    policy.residual_scaling in (:absolute, :divide_by_declared_scale) ||
+    getfield(policy, :residual_scaling) in
+        (:absolute, :divide_by_declared_scale) ||
         throw(ArgumentError("unsupported residual_scaling"))
-    _rossel_id(policy.residual_unit, "residual_unit")
-    _rossel_strict_float64(policy.residual_scale, "residual_scale";
+    _rossel_id(getfield(policy, :residual_unit), "residual_unit")
+    _rossel_strict_float64(getfield(policy, :residual_scale), "residual_scale";
         positive=true)
-    policy.residual_scaling == :absolute && policy.residual_scale != 1.0 &&
+    getfield(policy, :residual_scaling) == :absolute &&
+        getfield(policy, :residual_scale) != 1.0 &&
         throw(ArgumentError("absolute residual scaling requires residual_scale=1.0"))
-    _rossel_strict_float64(policy.residual_absolute_tolerance,
+    _rossel_strict_float64(getfield(policy, :residual_absolute_tolerance),
         "residual_absolute_tolerance"; nonnegative=true)
-    policy.selection_rule == :unique_stable_reachable_complete_candidate ||
+    getfield(policy, :selection_rule) ==
+        :unique_stable_reachable_complete_candidate ||
         throw(ArgumentError("unsupported singular selection rule"))
     _rossel_limit(:policy_identity_reservation,
         _rossel_policy_reservation(policy), limits.max_identity_bytes)
     expected = _rossel_sha_payload(_rossel_policy_payload(policy),
         :policy_identity_bytes, limits.max_identity_bytes)
-    policy.policy_sha256 == expected || throw(ArgumentError(
+    getfield(policy, :policy_sha256) == expected || throw(ArgumentError(
         "singular selection policy self-hash mismatch"))
     return policy
 end
@@ -362,20 +396,26 @@ function ROSingularSelectionPolicy(;
     policy_hash = _rossel_sha_payload(_rossel_policy_payload(prototype),
         :policy_identity_bytes, limits.max_identity_bytes)
     policy = ROSingularSelectionPolicy(_ROSSEL_VALIDATED,
-        prototype.schema_version, policy_hash,
-        prototype.regular_extension_sha256, prototype.stratum_sha256,
-        prototype.model_sha256, prototype.protocol_sha256,
-        prototype.branch_enumerator_sha256,
-        prototype.enumeration_scope_sha256,
-        prototype.stability_policy_sha256,
-        prototype.reachability_policy_sha256,
-        copy(prototype.input_order), copy(prototype.input_units),
-        copy(prototype.output_order), copy(prototype.output_units),
-        prototype.residual_norm, prototype.residual_scaling,
-        prototype.residual_unit, prototype.residual_scale,
-        prototype.residual_evaluator_sha256,
-        prototype.residual_absolute_tolerance,
-        prototype.selection_rule)
+        getfield(prototype, :schema_version), policy_hash,
+        getfield(prototype, :regular_extension_sha256),
+        getfield(prototype, :stratum_sha256),
+        getfield(prototype, :model_sha256),
+        getfield(prototype, :protocol_sha256),
+        getfield(prototype, :branch_enumerator_sha256),
+        getfield(prototype, :enumeration_scope_sha256),
+        getfield(prototype, :stability_policy_sha256),
+        getfield(prototype, :reachability_policy_sha256),
+        copy(getfield(prototype, :input_order)),
+        copy(getfield(prototype, :input_units)),
+        copy(getfield(prototype, :output_order)),
+        copy(getfield(prototype, :output_units)),
+        getfield(prototype, :residual_norm),
+        getfield(prototype, :residual_scaling),
+        getfield(prototype, :residual_unit),
+        getfield(prototype, :residual_scale),
+        getfield(prototype, :residual_evaluator_sha256),
+        getfield(prototype, :residual_absolute_tolerance),
+        getfield(prototype, :selection_rule))
     return _rossel_validate_policy!(policy, limits)
 end
 
@@ -398,16 +438,19 @@ end
 
 function _rossel_stability_payload(evidence::ROSingularStabilityEvidence)
     return (
-        schema_version=evidence.schema_version,
-        branch_identity_sha256=evidence.branch_identity_sha256,
-        model_sha256=evidence.model_sha256,
-        stratum_sha256=evidence.stratum_sha256,
-        stability_policy_sha256=evidence.stability_policy_sha256,
-        status=String(evidence.status),
-        analysis_sha256=evidence.analysis_sha256,
-        gap_reasons=String.(evidence.gap_reasons),
-        evidence_scope=String(evidence.evidence_scope),
-        universal_stability_claimed=evidence.universal_stability_claimed,
+        schema_version=getfield(evidence, :schema_version),
+        branch_identity_sha256=
+            getfield(evidence, :branch_identity_sha256),
+        model_sha256=getfield(evidence, :model_sha256),
+        stratum_sha256=getfield(evidence, :stratum_sha256),
+        stability_policy_sha256=
+            getfield(evidence, :stability_policy_sha256),
+        status=String(getfield(evidence, :status)),
+        analysis_sha256=getfield(evidence, :analysis_sha256),
+        gap_reasons=String.(getfield(evidence, :gap_reasons)),
+        evidence_scope=String(getfield(evidence, :evidence_scope)),
+        universal_stability_claimed=
+            getfield(evidence, :universal_stability_claimed),
     )
 end
 
@@ -417,39 +460,48 @@ function _rossel_validate_stability!(
     branch_identity::String,
     limits::ROSingularSelectionLimits,
 )
-    evidence.schema_version == RO_SINGULAR_STABILITY_EVIDENCE_VERSION ||
+    getfield(evidence, :schema_version) ==
+        RO_SINGULAR_STABILITY_EVIDENCE_VERSION ||
         throw(ArgumentError("unsupported stability evidence version"))
-    _rossel_hash(evidence.evidence_sha256, "stability.evidence_sha256")
-    evidence.branch_identity_sha256 == branch_identity || throw(ArgumentError(
+    _rossel_hash(getfield(evidence, :evidence_sha256),
+        "stability.evidence_sha256")
+    getfield(evidence, :branch_identity_sha256) == branch_identity ||
+        throw(ArgumentError(
         "stability evidence is bound to a different branch"))
-    evidence.model_sha256 == policy.model_sha256 &&
-        evidence.stratum_sha256 == policy.stratum_sha256 &&
-        evidence.stability_policy_sha256 == policy.stability_policy_sha256 ||
+    getfield(evidence, :model_sha256) == getfield(policy, :model_sha256) &&
+        getfield(evidence, :stratum_sha256) ==
+            getfield(policy, :stratum_sha256) &&
+        getfield(evidence, :stability_policy_sha256) ==
+            getfield(policy, :stability_policy_sha256) ||
         throw(ArgumentError("stability evidence does not match selection policy"))
-    evidence.status in (:locally_stable, :unstable, :unknown_gap) ||
+    status = getfield(evidence, :status)
+    status in (:locally_stable, :unstable, :unknown_gap) ||
         throw(ArgumentError("unsupported stability status"))
-    gaps = _rossel_gaps(evidence.gap_reasons,
+    gap_reasons = getfield(evidence, :gap_reasons)
+    gaps = _rossel_gaps(gap_reasons,
         "stability.gap_reasons", limits)
-    gaps == evidence.gap_reasons || throw(ArgumentError(
+    gaps == gap_reasons || throw(ArgumentError(
         "stability gap reasons are not canonical"))
-    if evidence.status == :unknown_gap
-        evidence.analysis_sha256 === nothing || throw(ArgumentError(
+    analysis_sha256 = getfield(evidence, :analysis_sha256)
+    if status == :unknown_gap
+        analysis_sha256 === nothing || throw(ArgumentError(
             "unknown stability evidence cannot claim a completed analysis"))
         isempty(gaps) && throw(ArgumentError(
             "unknown stability evidence requires gap reasons"))
     else
-        evidence.analysis_sha256 === nothing && throw(ArgumentError(
+        analysis_sha256 === nothing && throw(ArgumentError(
             "known stability status requires an analysis hash"))
-        _rossel_hash(evidence.analysis_sha256, "stability.analysis_sha256")
+        _rossel_hash(analysis_sha256, "stability.analysis_sha256")
         isempty(gaps) || throw(ArgumentError(
             "known stability evidence cannot carry gaps"))
     end
-    evidence.evidence_scope == _ROSSEL_STABILITY_SCOPE &&
-        !evidence.universal_stability_claimed || throw(ArgumentError(
+    getfield(evidence, :evidence_scope) == _ROSSEL_STABILITY_SCOPE &&
+        !getfield(evidence, :universal_stability_claimed) ||
+        throw(ArgumentError(
             "stability evidence exceeds the finite declared scope"))
     expected = _rossel_sha_payload(_rossel_stability_payload(evidence),
         :stability_evidence_bytes, limits.max_candidate_payload_bytes)
-    evidence.evidence_sha256 == expected || throw(ArgumentError(
+    getfield(evidence, :evidence_sha256) == expected || throw(ArgumentError(
         "stability evidence self-hash mismatch"))
     return evidence
 end
@@ -470,18 +522,22 @@ function ROSingularStabilityEvidence(;
         _rossel_hash(analysis_sha256, "stability.analysis_sha256")
     prototype = ROSingularStabilityEvidence(_ROSSEL_VALIDATED,
         RO_SINGULAR_STABILITY_EVIDENCE_VERSION, repeat("0", 64),
-        branch_hash, policy.model_sha256, policy.stratum_sha256,
-        policy.stability_policy_sha256, Symbol(status), analysis, gaps,
+        branch_hash, getfield(policy, :model_sha256),
+        getfield(policy, :stratum_sha256),
+        getfield(policy, :stability_policy_sha256), Symbol(status), analysis, gaps,
         _ROSSEL_STABILITY_SCOPE, false)
     evidence_hash = _rossel_sha_payload(_rossel_stability_payload(prototype),
         :stability_evidence_bytes, limits.max_candidate_payload_bytes)
     evidence = ROSingularStabilityEvidence(_ROSSEL_VALIDATED,
-        prototype.schema_version, evidence_hash,
-        prototype.branch_identity_sha256, prototype.model_sha256,
-        prototype.stratum_sha256, prototype.stability_policy_sha256,
-        prototype.status, prototype.analysis_sha256,
-        copy(prototype.gap_reasons), prototype.evidence_scope,
-        prototype.universal_stability_claimed)
+        getfield(prototype, :schema_version), evidence_hash,
+        getfield(prototype, :branch_identity_sha256),
+        getfield(prototype, :model_sha256),
+        getfield(prototype, :stratum_sha256),
+        getfield(prototype, :stability_policy_sha256),
+        getfield(prototype, :status), getfield(prototype, :analysis_sha256),
+        copy(getfield(prototype, :gap_reasons)),
+        getfield(prototype, :evidence_scope),
+        getfield(prototype, :universal_stability_claimed))
     return _rossel_validate_stability!(
         evidence, policy, branch_hash, limits)
 end
@@ -507,18 +563,21 @@ end
 
 function _rossel_reachability_payload(evidence::ROSingularReachabilityEvidence)
     return (
-        schema_version=evidence.schema_version,
-        branch_identity_sha256=evidence.branch_identity_sha256,
-        model_sha256=evidence.model_sha256,
-        stratum_sha256=evidence.stratum_sha256,
-        protocol_sha256=evidence.protocol_sha256,
-        reachability_policy_sha256=evidence.reachability_policy_sha256,
-        status=String(evidence.status),
-        dynamic_trace_sha256=evidence.dynamic_trace_sha256,
-        gap_reasons=String.(evidence.gap_reasons),
-        evidence_scope=String(evidence.evidence_scope),
-        global_reachability_claimed=evidence.global_reachability_claimed,
-        causal_claimed=evidence.causal_claimed,
+        schema_version=getfield(evidence, :schema_version),
+        branch_identity_sha256=
+            getfield(evidence, :branch_identity_sha256),
+        model_sha256=getfield(evidence, :model_sha256),
+        stratum_sha256=getfield(evidence, :stratum_sha256),
+        protocol_sha256=getfield(evidence, :protocol_sha256),
+        reachability_policy_sha256=
+            getfield(evidence, :reachability_policy_sha256),
+        status=String(getfield(evidence, :status)),
+        dynamic_trace_sha256=getfield(evidence, :dynamic_trace_sha256),
+        gap_reasons=String.(getfield(evidence, :gap_reasons)),
+        evidence_scope=String(getfield(evidence, :evidence_scope)),
+        global_reachability_claimed=
+            getfield(evidence, :global_reachability_claimed),
+        causal_claimed=getfield(evidence, :causal_claimed),
     )
 end
 
@@ -528,44 +587,53 @@ function _rossel_validate_reachability!(
     branch_identity::String,
     limits::ROSingularSelectionLimits,
 )
-    evidence.schema_version == RO_SINGULAR_REACHABILITY_EVIDENCE_VERSION ||
+    getfield(evidence, :schema_version) ==
+        RO_SINGULAR_REACHABILITY_EVIDENCE_VERSION ||
         throw(ArgumentError("unsupported reachability evidence version"))
-    _rossel_hash(evidence.evidence_sha256, "reachability.evidence_sha256")
-    evidence.branch_identity_sha256 == branch_identity || throw(ArgumentError(
+    _rossel_hash(getfield(evidence, :evidence_sha256),
+        "reachability.evidence_sha256")
+    getfield(evidence, :branch_identity_sha256) == branch_identity ||
+        throw(ArgumentError(
         "reachability evidence is bound to a different branch"))
-    evidence.model_sha256 == policy.model_sha256 &&
-        evidence.stratum_sha256 == policy.stratum_sha256 &&
-        evidence.protocol_sha256 == policy.protocol_sha256 &&
-        evidence.reachability_policy_sha256 ==
-            policy.reachability_policy_sha256 || throw(ArgumentError(
+    getfield(evidence, :model_sha256) == getfield(policy, :model_sha256) &&
+        getfield(evidence, :stratum_sha256) ==
+            getfield(policy, :stratum_sha256) &&
+        getfield(evidence, :protocol_sha256) ==
+            getfield(policy, :protocol_sha256) &&
+        getfield(evidence, :reachability_policy_sha256) ==
+            getfield(policy, :reachability_policy_sha256) || throw(ArgumentError(
                 "reachability evidence does not match selection policy"))
-    evidence.status in
+    status = getfield(evidence, :status)
+    status in
         (:reached_under_protocol, :not_reached, :unknown_gap) ||
         throw(ArgumentError("unsupported reachability status"))
-    gaps = _rossel_gaps(evidence.gap_reasons,
+    gap_reasons = getfield(evidence, :gap_reasons)
+    gaps = _rossel_gaps(gap_reasons,
         "reachability.gap_reasons", limits)
-    gaps == evidence.gap_reasons || throw(ArgumentError(
+    gaps == gap_reasons || throw(ArgumentError(
         "reachability gap reasons are not canonical"))
-    if evidence.status == :unknown_gap
-        evidence.dynamic_trace_sha256 === nothing || throw(ArgumentError(
+    dynamic_trace_sha256 = getfield(evidence, :dynamic_trace_sha256)
+    if status == :unknown_gap
+        dynamic_trace_sha256 === nothing || throw(ArgumentError(
             "unknown reachability evidence cannot claim a completed trace"))
         isempty(gaps) && throw(ArgumentError(
             "unknown reachability evidence requires gap reasons"))
     else
-        evidence.dynamic_trace_sha256 === nothing && throw(ArgumentError(
+        dynamic_trace_sha256 === nothing && throw(ArgumentError(
             "known reachability status requires a dynamic trace hash"))
-        _rossel_hash(evidence.dynamic_trace_sha256,
+        _rossel_hash(dynamic_trace_sha256,
             "reachability.dynamic_trace_sha256")
         isempty(gaps) || throw(ArgumentError(
             "known reachability evidence cannot carry gaps"))
     end
-    evidence.evidence_scope == _ROSSEL_REACHABILITY_SCOPE &&
-        !evidence.global_reachability_claimed && !evidence.causal_claimed ||
+    getfield(evidence, :evidence_scope) == _ROSSEL_REACHABILITY_SCOPE &&
+        !getfield(evidence, :global_reachability_claimed) &&
+        !getfield(evidence, :causal_claimed) ||
         throw(ArgumentError(
             "reachability evidence exceeds the finite declared protocol scope"))
     expected = _rossel_sha_payload(_rossel_reachability_payload(evidence),
         :reachability_evidence_bytes, limits.max_candidate_payload_bytes)
-    evidence.evidence_sha256 == expected || throw(ArgumentError(
+    getfield(evidence, :evidence_sha256) == expected || throw(ArgumentError(
         "reachability evidence self-hash mismatch"))
     return evidence
 end
@@ -587,21 +655,28 @@ function ROSingularReachabilityEvidence(;
             "reachability.dynamic_trace_sha256")
     prototype = ROSingularReachabilityEvidence(_ROSSEL_VALIDATED,
         RO_SINGULAR_REACHABILITY_EVIDENCE_VERSION, repeat("0", 64),
-        branch_hash, policy.model_sha256, policy.stratum_sha256,
-        policy.protocol_sha256, policy.reachability_policy_sha256,
+        branch_hash, getfield(policy, :model_sha256),
+        getfield(policy, :stratum_sha256),
+        getfield(policy, :protocol_sha256),
+        getfield(policy, :reachability_policy_sha256),
         Symbol(status), trace, gaps, _ROSSEL_REACHABILITY_SCOPE,
         false, false)
     evidence_hash = _rossel_sha_payload(
         _rossel_reachability_payload(prototype),
         :reachability_evidence_bytes, limits.max_candidate_payload_bytes)
     evidence = ROSingularReachabilityEvidence(_ROSSEL_VALIDATED,
-        prototype.schema_version, evidence_hash,
-        prototype.branch_identity_sha256, prototype.model_sha256,
-        prototype.stratum_sha256, prototype.protocol_sha256,
-        prototype.reachability_policy_sha256, prototype.status,
-        prototype.dynamic_trace_sha256, copy(prototype.gap_reasons),
-        prototype.evidence_scope, prototype.global_reachability_claimed,
-        prototype.causal_claimed)
+        getfield(prototype, :schema_version), evidence_hash,
+        getfield(prototype, :branch_identity_sha256),
+        getfield(prototype, :model_sha256),
+        getfield(prototype, :stratum_sha256),
+        getfield(prototype, :protocol_sha256),
+        getfield(prototype, :reachability_policy_sha256),
+        getfield(prototype, :status),
+        getfield(prototype, :dynamic_trace_sha256),
+        copy(getfield(prototype, :gap_reasons)),
+        getfield(prototype, :evidence_scope),
+        getfield(prototype, :global_reachability_claimed),
+        getfield(prototype, :causal_claimed))
     return _rossel_validate_reachability!(
         evidence, policy, branch_hash, limits)
 end
@@ -610,8 +685,8 @@ function _rossel_branch_payload(policy::ROSingularSelectionPolicy,
                                 branch_id::String, regimes::Vector{Int})
     return (
         schema_version=RO_SINGULAR_BRANCH_IDENTITY_VERSION,
-        model_sha256=policy.model_sha256,
-        stratum_sha256=policy.stratum_sha256,
+        model_sha256=getfield(policy, :model_sha256),
+        stratum_sha256=getfield(policy, :stratum_sha256),
         branch_id=branch_id,
         source_regime_ids=regimes,
     )
@@ -662,41 +737,48 @@ function _rossel_matrix_payload(matrix)
 end
 
 function _rossel_candidate_payload(candidate::ROSingularBranchCandidate)
+    stability = getfield(candidate, :stability_evidence)
+    reachability = getfield(candidate, :reachability_evidence)
     return (
-        schema_version=candidate.schema_version,
-        selection_policy_sha256=candidate.selection_policy_sha256,
-        branch_id=candidate.branch_id,
-        branch_identity_sha256=candidate.branch_identity_sha256,
-        model_sha256=candidate.model_sha256,
-        stratum_sha256=candidate.stratum_sha256,
-        source_regime_ids=candidate.source_regime_ids,
-        jacobian=_rossel_matrix_payload(candidate.jacobian),
-        output_at_stratum=candidate.output_at_stratum,
-        residual_upper_bound=candidate.residual_upper_bound,
-        numeric_gap_reasons=String.(candidate.numeric_gap_reasons),
+        schema_version=getfield(candidate, :schema_version),
+        selection_policy_sha256=
+            getfield(candidate, :selection_policy_sha256),
+        branch_id=getfield(candidate, :branch_id),
+        branch_identity_sha256=
+            getfield(candidate, :branch_identity_sha256),
+        model_sha256=getfield(candidate, :model_sha256),
+        stratum_sha256=getfield(candidate, :stratum_sha256),
+        source_regime_ids=getfield(candidate, :source_regime_ids),
+        jacobian=_rossel_matrix_payload(getfield(candidate, :jacobian)),
+        output_at_stratum=getfield(candidate, :output_at_stratum),
+        residual_upper_bound=getfield(candidate, :residual_upper_bound),
+        numeric_gap_reasons=
+            String.(getfield(candidate, :numeric_gap_reasons)),
         stability_evidence_sha256=
-            candidate.stability_evidence.evidence_sha256,
+            getfield(stability, :evidence_sha256),
         reachability_evidence_sha256=
-            candidate.reachability_evidence.evidence_sha256,
+            getfield(reachability, :evidence_sha256),
     )
 end
 
 function _rossel_candidate_reservation(candidate::ROSingularBranchCandidate)
-    matrix_elements = candidate.jacobian === nothing ? 0 :
-        length(candidate.jacobian)
-    output_elements = candidate.output_at_stratum === nothing ? 0 :
-        length(candidate.output_at_stratum)
-    return BigInt(8_192 + ncodeunits(candidate.branch_id)) +
-        BigInt(24) * BigInt(length(candidate.source_regime_ids)) +
+    jacobian = getfield(candidate, :jacobian)
+    output = getfield(candidate, :output_at_stratum)
+    matrix_elements = jacobian === nothing ? 0 : length(jacobian)
+    output_elements = output === nothing ? 0 : length(output)
+    return BigInt(8_192 + ncodeunits(getfield(candidate, :branch_id))) +
+        BigInt(24) * BigInt(length(getfield(candidate, :source_regime_ids))) +
         BigInt(40) * BigInt(matrix_elements + output_elements + 1) +
-        BigInt(300) * BigInt(length(candidate.numeric_gap_reasons))
+        BigInt(300) *
+            BigInt(length(getfield(candidate, :numeric_gap_reasons)))
 end
 
 function _rossel_numeric_matrix(raw, policy, limits)
     raw === nothing && return nothing
     raw isa AbstractMatrix || throw(ArgumentError(
         "candidate jacobian must be a matrix or nothing"))
-    size(raw) == (length(policy.output_order), length(policy.input_order)) ||
+    size(raw) == (length(getfield(policy, :output_order)),
+        length(getfield(policy, :input_order))) ||
         throw(DimensionMismatch(
             "candidate jacobian must match policy output x input order"))
     _rossel_limit(:matrix_elements, length(raw), limits.max_matrix_elements)
@@ -711,7 +793,8 @@ function _rossel_numeric_output(raw, policy)
     raw === nothing && return nothing
     (raw isa AbstractVector || raw isa Tuple) || throw(ArgumentError(
         "candidate output_at_stratum must be a vector or nothing"))
-    length(raw) == length(policy.output_order) || throw(DimensionMismatch(
+    length(raw) == length(getfield(policy, :output_order)) ||
+        throw(DimensionMismatch(
         "candidate output must match policy output order"))
     output = Float64.(raw)
     all(isfinite, output) || throw(ArgumentError(
@@ -725,38 +808,48 @@ function _rossel_validate_candidate!(
     policy::ROSingularSelectionPolicy,
     limits::ROSingularSelectionLimits,
 )
-    candidate.schema_version == RO_SINGULAR_CANDIDATE_PAYLOAD_VERSION ||
+    getfield(candidate, :schema_version) ==
+        RO_SINGULAR_CANDIDATE_PAYLOAD_VERSION ||
         throw(ArgumentError("unsupported singular candidate version"))
-    _rossel_hash(candidate.candidate_payload_sha256,
+    _rossel_hash(getfield(candidate, :candidate_payload_sha256),
         "candidate_payload_sha256")
-    candidate.selection_policy_sha256 == policy.policy_sha256 ||
+    getfield(candidate, :selection_policy_sha256) ==
+        getfield(policy, :policy_sha256) ||
         throw(ArgumentError("candidate belongs to a different selection policy"))
-    identifier = _rossel_id(candidate.branch_id, "branch_id")
-    identifier == candidate.branch_id || throw(ArgumentError(
+    branch_id = getfield(candidate, :branch_id)
+    identifier = _rossel_id(branch_id, "branch_id")
+    identifier == branch_id || throw(ArgumentError(
         "candidate branch_id is not canonical"))
-    candidate.model_sha256 == policy.model_sha256 &&
-        candidate.stratum_sha256 == policy.stratum_sha256 ||
+    getfield(candidate, :model_sha256) == getfield(policy, :model_sha256) &&
+        getfield(candidate, :stratum_sha256) ==
+            getfield(policy, :stratum_sha256) ||
         throw(ArgumentError("candidate model/stratum differs from policy"))
-    regimes = _rossel_regimes(candidate.source_regime_ids, limits)
-    regimes == candidate.source_regime_ids || throw(ArgumentError(
+    source_regime_ids = getfield(candidate, :source_regime_ids)
+    regimes = _rossel_regimes(source_regime_ids, limits)
+    regimes == source_regime_ids || throw(ArgumentError(
         "candidate source regimes are not canonical"))
     expected_branch = _rossel_sha_payload(
         _rossel_branch_payload(policy, identifier, regimes),
         :branch_identity_bytes, limits.max_candidate_payload_bytes)
-    candidate.branch_identity_sha256 == expected_branch || throw(ArgumentError(
+    getfield(candidate, :branch_identity_sha256) == expected_branch ||
+        throw(ArgumentError(
         "candidate branch identity is not derived from branch content"))
-    _rossel_validate_stability!(candidate.stability_evidence,
+    _rossel_validate_stability!(getfield(candidate, :stability_evidence),
         policy, expected_branch, limits)
-    _rossel_validate_reachability!(candidate.reachability_evidence,
+    _rossel_validate_reachability!(getfield(candidate, :reachability_evidence),
         policy, expected_branch, limits)
-    matrix = _rossel_numeric_matrix(candidate.jacobian, policy, limits)
-    output = _rossel_numeric_output(candidate.output_at_stratum, policy)
-    residual = candidate.residual_upper_bound === nothing ? nothing :
-        _rossel_strict_float64(candidate.residual_upper_bound,
+    matrix = _rossel_numeric_matrix(getfield(candidate, :jacobian),
+        policy, limits)
+    output = _rossel_numeric_output(
+        getfield(candidate, :output_at_stratum), policy)
+    residual_upper_bound = getfield(candidate, :residual_upper_bound)
+    residual = residual_upper_bound === nothing ? nothing :
+        _rossel_strict_float64(residual_upper_bound,
             "residual_upper_bound"; nonnegative=true)
-    gaps = _rossel_gaps(candidate.numeric_gap_reasons,
+    numeric_gap_reasons = getfield(candidate, :numeric_gap_reasons)
+    gaps = _rossel_gaps(numeric_gap_reasons,
         "numeric_gap_reasons", limits)
-    gaps == candidate.numeric_gap_reasons || throw(ArgumentError(
+    gaps == numeric_gap_reasons || throw(ArgumentError(
         "candidate numeric gap reasons are not canonical"))
     incomplete_numeric = matrix === nothing || output === nothing ||
         residual === nothing
@@ -767,7 +860,7 @@ function _rossel_validate_candidate!(
         limits.max_candidate_payload_bytes)
     expected_payload = _rossel_sha_payload(_rossel_candidate_payload(candidate),
         :candidate_payload_bytes, limits.max_candidate_payload_bytes)
-    candidate.candidate_payload_sha256 == expected_payload ||
+    getfield(candidate, :candidate_payload_sha256) == expected_payload ||
         throw(ArgumentError("candidate payload self-hash mismatch"))
     return candidate
 end
@@ -807,8 +900,9 @@ function ROSingularBranchCandidate(;
         "numeric gap reasons must be present exactly for incomplete numeric evidence"))
     prototype = ROSingularBranchCandidate(_ROSSEL_VALIDATED,
         RO_SINGULAR_CANDIDATE_PAYLOAD_VERSION, repeat("0", 64),
-        policy.policy_sha256, identifier, branch_hash,
-        policy.model_sha256, policy.stratum_sha256, regimes, matrix, output,
+        getfield(policy, :policy_sha256), identifier, branch_hash,
+        getfield(policy, :model_sha256), getfield(policy, :stratum_sha256),
+        regimes, matrix, output,
         residual, gaps, stability_evidence, reachability_evidence)
     _rossel_limit(:candidate_payload_reservation,
         _rossel_candidate_reservation(prototype),
@@ -816,15 +910,21 @@ function ROSingularBranchCandidate(;
     payload_hash = _rossel_sha_payload(_rossel_candidate_payload(prototype),
         :candidate_payload_bytes, limits.max_candidate_payload_bytes)
     candidate = ROSingularBranchCandidate(_ROSSEL_VALIDATED,
-        prototype.schema_version, payload_hash,
-        prototype.selection_policy_sha256, prototype.branch_id,
-        prototype.branch_identity_sha256, prototype.model_sha256,
-        prototype.stratum_sha256, copy(prototype.source_regime_ids),
-        prototype.jacobian === nothing ? nothing : copy(prototype.jacobian),
-        prototype.output_at_stratum === nothing ? nothing :
-            copy(prototype.output_at_stratum),
-        prototype.residual_upper_bound, copy(prototype.numeric_gap_reasons),
-        prototype.stability_evidence, prototype.reachability_evidence)
+        getfield(prototype, :schema_version), payload_hash,
+        getfield(prototype, :selection_policy_sha256),
+        getfield(prototype, :branch_id),
+        getfield(prototype, :branch_identity_sha256),
+        getfield(prototype, :model_sha256),
+        getfield(prototype, :stratum_sha256),
+        copy(getfield(prototype, :source_regime_ids)),
+        getfield(prototype, :jacobian) === nothing ? nothing :
+            copy(getfield(prototype, :jacobian)),
+        getfield(prototype, :output_at_stratum) === nothing ? nothing :
+            copy(getfield(prototype, :output_at_stratum)),
+        getfield(prototype, :residual_upper_bound),
+        copy(getfield(prototype, :numeric_gap_reasons)),
+        getfield(prototype, :stability_evidence),
+        getfield(prototype, :reachability_evidence))
     return _rossel_validate_candidate!(candidate, policy, limits)
 end
 
@@ -839,8 +939,8 @@ struct ROSingularCandidateRoot
 end
 
 _rossel_root_payload(root::ROSingularCandidateRoot) = (
-    branch_identity_sha256=root.branch_identity_sha256,
-    candidate_payload_sha256=root.candidate_payload_sha256,
+    branch_identity_sha256=getfield(root, :branch_identity_sha256),
+    candidate_payload_sha256=getfield(root, :candidate_payload_sha256),
 )
 
 struct ROSingularCandidatePopulationReceipt
@@ -865,20 +965,132 @@ end
 
 function _rossel_receipt_payload(receipt::ROSingularCandidatePopulationReceipt)
     return (
-        schema_version=receipt.schema_version,
-        branch_enumerator_sha256=receipt.branch_enumerator_sha256,
-        enumeration_scope_sha256=receipt.enumeration_scope_sha256,
-        model_sha256=receipt.model_sha256,
-        stratum_sha256=receipt.stratum_sha256,
-        expected_candidate_count=receipt.expected_candidate_count,
-        observed_candidate_count=receipt.observed_candidate_count,
-        complete=receipt.complete,
-        candidate_roots=_rossel_root_payload.(receipt.candidate_roots),
-        gap_reasons=String.(receipt.gap_reasons),
-        evidence_scope=String(receipt.evidence_scope),
+        schema_version=getfield(receipt, :schema_version),
+        branch_enumerator_sha256=
+            getfield(receipt, :branch_enumerator_sha256),
+        enumeration_scope_sha256=
+            getfield(receipt, :enumeration_scope_sha256),
+        model_sha256=getfield(receipt, :model_sha256),
+        stratum_sha256=getfield(receipt, :stratum_sha256),
+        expected_candidate_count=
+            getfield(receipt, :expected_candidate_count),
+        observed_candidate_count=
+            getfield(receipt, :observed_candidate_count),
+        complete=getfield(receipt, :complete),
+        candidate_roots=_rossel_root_payload.(
+            getfield(receipt, :candidate_roots)),
+        gap_reasons=String.(getfield(receipt, :gap_reasons)),
+        evidence_scope=String(getfield(receipt, :evidence_scope)),
         universal_completeness_claimed=
-            receipt.universal_completeness_claimed,
+            getfield(receipt, :universal_completeness_claimed),
     )
+end
+
+function _rossel_assert_policy_unchanged(policy::ROSingularSelectionPolicy)
+    expected = _rossel_sha_payload(_rossel_policy_payload(policy),
+        :policy_identity_bytes,
+        _ROSSEL_CERTIFICATE_HARD_LIMITS.max_identity_bytes)
+    expected == getfield(policy, :policy_sha256) || throw(ArgumentError(
+        "singular selection policy changed after construction"))
+    return nothing
+end
+
+function _rossel_assert_stability_unchanged(
+    evidence::ROSingularStabilityEvidence,
+)
+    expected = _rossel_sha_payload(_rossel_stability_payload(evidence),
+        :stability_evidence_bytes,
+        _ROSSEL_CERTIFICATE_HARD_LIMITS.max_candidate_payload_bytes)
+    expected == getfield(evidence, :evidence_sha256) ||
+        throw(ArgumentError(
+            "singular stability evidence changed after construction"))
+    return nothing
+end
+
+function _rossel_assert_reachability_unchanged(
+    evidence::ROSingularReachabilityEvidence,
+)
+    expected = _rossel_sha_payload(_rossel_reachability_payload(evidence),
+        :reachability_evidence_bytes,
+        _ROSSEL_CERTIFICATE_HARD_LIMITS.max_candidate_payload_bytes)
+    expected == getfield(evidence, :evidence_sha256) ||
+        throw(ArgumentError(
+            "singular reachability evidence changed after construction"))
+    return nothing
+end
+
+function _rossel_assert_candidate_unchanged(
+    candidate::ROSingularBranchCandidate,
+)
+    _rossel_assert_stability_unchanged(
+        getfield(candidate, :stability_evidence))
+    _rossel_assert_reachability_unchanged(
+        getfield(candidate, :reachability_evidence))
+    expected = _rossel_sha_payload(_rossel_candidate_payload(candidate),
+        :candidate_payload_bytes,
+        _ROSSEL_CERTIFICATE_HARD_LIMITS.max_candidate_payload_bytes)
+    expected == getfield(candidate, :candidate_payload_sha256) ||
+        throw(ArgumentError(
+            "singular branch candidate changed after construction"))
+    return nothing
+end
+
+function _rossel_assert_receipt_unchanged(
+    receipt::ROSingularCandidatePopulationReceipt,
+)
+    expected = _rossel_sha_payload(_rossel_receipt_payload(receipt),
+        :population_receipt_bytes,
+        _ROSSEL_CERTIFICATE_HARD_LIMITS.max_identity_bytes)
+    expected == getfield(receipt, :receipt_sha256) || throw(ArgumentError(
+        "singular candidate population receipt changed after construction"))
+    return nothing
+end
+
+function Base.getproperty(policy::ROSingularSelectionPolicy, name::Symbol)
+    _rossel_assert_policy_unchanged(policy)
+    value = getfield(policy, name)
+    if name in (:input_order, :input_units, :output_order, :output_units)
+        return copy(value)
+    end
+    return value
+end
+
+
+function Base.getproperty(evidence::ROSingularStabilityEvidence, name::Symbol)
+    _rossel_assert_stability_unchanged(evidence)
+    value = getfield(evidence, name)
+    return name == :gap_reasons ? copy(value) : value
+end
+
+function Base.getproperty(
+    evidence::ROSingularReachabilityEvidence,
+    name::Symbol,
+)
+    _rossel_assert_reachability_unchanged(evidence)
+    value = getfield(evidence, name)
+    return name == :gap_reasons ? copy(value) : value
+end
+
+function Base.getproperty(candidate::ROSingularBranchCandidate, name::Symbol)
+    _rossel_assert_candidate_unchanged(candidate)
+    value = getfield(candidate, name)
+    if name in (:source_regime_ids, :jacobian, :output_at_stratum,
+            :numeric_gap_reasons)
+        return value === nothing ? nothing : copy(value)
+    end
+    return value
+end
+
+function Base.getproperty(
+    receipt::ROSingularCandidatePopulationReceipt,
+    name::Symbol,
+)
+    _rossel_assert_receipt_unchanged(receipt)
+    value = getfield(receipt, name)
+    if name in (:candidate_roots, :gap_reasons)
+        return copy(value)
+    end
+    return value
 end
 
 function _rossel_sorted_candidates(raw_candidates, policy, limits, cancel_check)
@@ -895,11 +1107,12 @@ function _rossel_sorted_candidates(raw_candidates, policy, limits, cancel_check)
     for candidate in candidates
         cancel_check()
         _rossel_validate_candidate!(candidate, policy, limits)
-        push!(branch_ids, candidate.branch_id)
-        push!(branch_hashes, candidate.branch_identity_sha256)
-        push!(payload_hashes, candidate.candidate_payload_sha256)
-        matrix_elements += candidate.jacobian === nothing ? BigInt(0) :
-            BigInt(length(candidate.jacobian))
+        push!(branch_ids, getfield(candidate, :branch_id))
+        push!(branch_hashes, getfield(candidate, :branch_identity_sha256))
+        push!(payload_hashes, getfield(candidate, :candidate_payload_sha256))
+        jacobian = getfield(candidate, :jacobian)
+        matrix_elements += jacobian === nothing ? BigInt(0) :
+            BigInt(length(jacobian))
         _rossel_limit(:matrix_elements, matrix_elements,
             limits.max_matrix_elements)
     end
@@ -911,9 +1124,9 @@ function _rossel_sorted_candidates(raw_candidates, policy, limits, cancel_check)
         "candidate payload identities must be unique"))
     cancel_check()
     sort!(candidates; by=candidate -> (
-        candidate.branch_identity_sha256,
-        candidate.candidate_payload_sha256,
-        candidate.branch_id,
+        getfield(candidate, :branch_identity_sha256),
+        getfield(candidate, :candidate_payload_sha256),
+        getfield(candidate, :branch_id),
     ))
     cancel_check()
     return candidates
@@ -931,8 +1144,8 @@ function _rossel_receipt_roots(candidates, cancel_check)
     for candidate in candidates
         cancel_check()
         push!(roots, ROSingularCandidateRoot(
-            candidate.branch_identity_sha256,
-            candidate.candidate_payload_sha256,
+            getfield(candidate, :branch_identity_sha256),
+            getfield(candidate, :candidate_payload_sha256),
             _ROSSEL_VALIDATED,
         ))
     end
@@ -947,67 +1160,79 @@ function _rossel_validate_receipt!(
     limits::ROSingularSelectionLimits,
     cancel_check,
 )
-    receipt.schema_version == RO_SINGULAR_POPULATION_RECEIPT_VERSION ||
+    getfield(receipt, :schema_version) ==
+        RO_SINGULAR_POPULATION_RECEIPT_VERSION ||
         throw(ArgumentError("unsupported candidate population receipt version"))
-    _rossel_hash(receipt.receipt_sha256, "population_receipt_sha256")
-    receipt.branch_enumerator_sha256 == policy.branch_enumerator_sha256 &&
-        receipt.enumeration_scope_sha256 == policy.enumeration_scope_sha256 &&
-        receipt.model_sha256 == policy.model_sha256 &&
-        receipt.stratum_sha256 == policy.stratum_sha256 || throw(ArgumentError(
+    _rossel_hash(getfield(receipt, :receipt_sha256),
+        "population_receipt_sha256")
+    getfield(receipt, :branch_enumerator_sha256) ==
+        getfield(policy, :branch_enumerator_sha256) &&
+        getfield(receipt, :enumeration_scope_sha256) ==
+            getfield(policy, :enumeration_scope_sha256) &&
+        getfield(receipt, :model_sha256) == getfield(policy, :model_sha256) &&
+        getfield(receipt, :stratum_sha256) ==
+            getfield(policy, :stratum_sha256) || throw(ArgumentError(
             "candidate population receipt does not match selection policy"))
-    0 <= receipt.expected_candidate_count <= limits.max_candidates ||
+    expected_candidate_count = getfield(receipt, :expected_candidate_count)
+    observed_candidate_count = getfield(receipt, :observed_candidate_count)
+    candidate_roots = getfield(receipt, :candidate_roots)
+    gap_reasons = getfield(receipt, :gap_reasons)
+    complete = getfield(receipt, :complete)
+    0 <= expected_candidate_count <= limits.max_candidates ||
         throw(ArgumentError("receipt expected candidate count is outside limits"))
-    receipt.observed_candidate_count == length(candidates) ||
+    observed_candidate_count == length(candidates) ||
         throw(ArgumentError("receipt observed count differs from candidates"))
     _rossel_limit(:receipt_candidate_roots,
-        length(receipt.candidate_roots), limits.max_candidates)
+        length(candidate_roots), limits.max_candidates)
     _rossel_limit(:gap_reasons,
-        length(receipt.gap_reasons), limits.max_gap_reasons)
+        length(gap_reasons), limits.max_gap_reasons)
     _rossel_limit(:population_receipt_reservation,
         _rossel_receipt_reservation(
-            length(receipt.candidate_roots), length(receipt.gap_reasons)),
+            length(candidate_roots), length(gap_reasons)),
         limits.max_identity_bytes)
     cancel_check()
     roots = _rossel_receipt_roots(candidates, cancel_check)
-    length(receipt.candidate_roots) == length(roots) ||
+    length(candidate_roots) == length(roots) ||
         throw(ArgumentError("receipt candidate roots are incomplete"))
     for index in eachindex(roots)
         cancel_check()
-        supplied = receipt.candidate_roots[index]
-        _rossel_hash(supplied.branch_identity_sha256,
+        supplied = candidate_roots[index]
+        _rossel_hash(getfield(supplied, :branch_identity_sha256),
             "receipt.candidate_roots[].branch_identity_sha256")
-        _rossel_hash(supplied.candidate_payload_sha256,
+        _rossel_hash(getfield(supplied, :candidate_payload_sha256),
             "receipt.candidate_roots[].candidate_payload_sha256")
-        supplied.branch_identity_sha256 ==
-            roots[index].branch_identity_sha256 &&
-            supplied.candidate_payload_sha256 ==
-                roots[index].candidate_payload_sha256 || throw(ArgumentError(
+        getfield(supplied, :branch_identity_sha256) ==
+            getfield(roots[index], :branch_identity_sha256) &&
+            getfield(supplied, :candidate_payload_sha256) ==
+                getfield(roots[index], :candidate_payload_sha256) ||
+                throw(ArgumentError(
                     "receipt candidate roots differ from sorted candidate content"))
     end
-    gaps = _rossel_gaps(receipt.gap_reasons,
+    gaps = _rossel_gaps(gap_reasons,
         "population_receipt.gap_reasons", limits)
-    gaps == receipt.gap_reasons || throw(ArgumentError(
+    gaps == gap_reasons || throw(ArgumentError(
         "population receipt gap reasons are not canonical"))
-    if receipt.complete
-        receipt.expected_candidate_count == length(candidates) ||
+    if complete
+        expected_candidate_count == length(candidates) ||
             throw(ArgumentError(
                 "complete receipt expected count must equal candidate count"))
         isempty(gaps) || throw(ArgumentError(
             "complete candidate population receipt cannot carry gaps"))
     else
-        receipt.expected_candidate_count >= length(candidates) ||
+        expected_candidate_count >= length(candidates) ||
             throw(ArgumentError(
                 "incomplete receipt expected count cannot understate observations"))
         isempty(gaps) && throw(ArgumentError(
             "incomplete candidate population receipt requires gap reasons"))
     end
-    receipt.evidence_scope == _ROSSEL_POPULATION_SCOPE &&
-        !receipt.universal_completeness_claimed || throw(ArgumentError(
+    getfield(receipt, :evidence_scope) == _ROSSEL_POPULATION_SCOPE &&
+        !getfield(receipt, :universal_completeness_claimed) ||
+        throw(ArgumentError(
             "population receipt exceeds declared bounded enumerator scope"))
     cancel_check()
     expected_hash = _rossel_sha_payload(_rossel_receipt_payload(receipt),
         :population_receipt_bytes, limits.max_identity_bytes)
-    receipt.receipt_sha256 == expected_hash || throw(ArgumentError(
+    getfield(receipt, :receipt_sha256) == expected_hash || throw(ArgumentError(
         "candidate population receipt self-hash mismatch"))
     cancel_check()
     return receipt
@@ -1057,21 +1282,27 @@ function build_ro_singular_candidate_population_receipt(
     roots = _rossel_receipt_roots(candidates, cancel_check)
     prototype = ROSingularCandidatePopulationReceipt(_ROSSEL_VALIDATED,
         RO_SINGULAR_POPULATION_RECEIPT_VERSION, repeat("0", 64),
-        policy.branch_enumerator_sha256, policy.enumeration_scope_sha256,
-        policy.model_sha256, policy.stratum_sha256, expected,
+        getfield(policy, :branch_enumerator_sha256),
+        getfield(policy, :enumeration_scope_sha256),
+        getfield(policy, :model_sha256), getfield(policy, :stratum_sha256), expected,
         length(candidates), complete, roots, gaps,
         _ROSSEL_POPULATION_SCOPE, false)
     cancel_check()
     receipt_hash = _rossel_sha_payload(_rossel_receipt_payload(prototype),
         :population_receipt_bytes, limits.max_identity_bytes)
     receipt = ROSingularCandidatePopulationReceipt(_ROSSEL_VALIDATED,
-        prototype.schema_version, receipt_hash,
-        prototype.branch_enumerator_sha256,
-        prototype.enumeration_scope_sha256, prototype.model_sha256,
-        prototype.stratum_sha256, prototype.expected_candidate_count,
-        prototype.observed_candidate_count, prototype.complete,
-        copy(prototype.candidate_roots), copy(prototype.gap_reasons),
-        prototype.evidence_scope, prototype.universal_completeness_claimed)
+        getfield(prototype, :schema_version), receipt_hash,
+        getfield(prototype, :branch_enumerator_sha256),
+        getfield(prototype, :enumeration_scope_sha256),
+        getfield(prototype, :model_sha256),
+        getfield(prototype, :stratum_sha256),
+        getfield(prototype, :expected_candidate_count),
+        getfield(prototype, :observed_candidate_count),
+        getfield(prototype, :complete),
+        copy(getfield(prototype, :candidate_roots)),
+        copy(getfield(prototype, :gap_reasons)),
+        getfield(prototype, :evidence_scope),
+        getfield(prototype, :universal_completeness_claimed))
     cancel_check()
     return _rossel_validate_receipt!(
         receipt, policy, candidates, limits, cancel_check)
@@ -1080,6 +1311,7 @@ end
 struct ROSingularSelectionCertificate
     schema_version::String
     identity_sha256::String
+    selection_authority_sha256::String
     population_receipt_sha256::String
     status::Symbol
     candidate_population_complete::Bool
@@ -1102,21 +1334,259 @@ struct ROSingularSelectionCertificate
     causal_claimed::Bool
     experimentally_validated::Bool
     function ROSingularSelectionCertificate(::_ROSSelValidatedToken, args...)
-        return new(args...)
+        certificate = new(args...)
+        _rossel_validate_certificate_state!(
+            certificate, _ROSSEL_CERTIFICATE_HARD_LIMITS)
+        return certificate
     end
+end
+
+function _rossel_certificate_result_snapshot(certificate)
+    return (
+        population_receipt_sha256=
+            getfield(certificate, :population_receipt_sha256),
+        status=String(getfield(certificate, :status)),
+        candidate_population_complete=
+            getfield(certificate, :candidate_population_complete),
+        candidate_count=getfield(certificate, :candidate_count),
+        admissible_branch_ids=Tuple(
+            getfield(certificate, :admissible_branch_ids)),
+        selected_branch_id=getfield(certificate, :selected_branch_id),
+        selected_branch_identity_sha256=
+            getfield(certificate, :selected_branch_identity_sha256),
+        selected_candidate_payload_sha256=
+            getfield(certificate, :selected_candidate_payload_sha256),
+        selected_jacobian=_rossel_matrix_payload(
+            getfield(certificate, :selected_jacobian)),
+        selected_output_at_stratum=
+            getfield(certificate, :selected_output_at_stratum),
+        selected_stability_evidence_sha256=
+            getfield(certificate, :selected_stability_evidence_sha256),
+        selected_stability_analysis_sha256=
+            getfield(certificate, :selected_stability_analysis_sha256),
+        selected_reachability_evidence_sha256=
+            getfield(certificate, :selected_reachability_evidence_sha256),
+        selected_dynamic_trace_sha256=
+            getfield(certificate, :selected_dynamic_trace_sha256),
+        reason_codes=Tuple(String.(getfield(certificate, :reason_codes))),
+        evidence_scope=String(getfield(certificate, :evidence_scope)),
+        includes_singular_branch=
+            getfield(certificate, :includes_singular_branch),
+        regular_limit_only=getfield(certificate, :regular_limit_only),
+        universal_selection_claimed=
+            getfield(certificate, :universal_selection_claimed),
+        causal_claimed=getfield(certificate, :causal_claimed),
+        experimentally_validated=
+            getfield(certificate, :experimentally_validated),
+    )
+end
+
+function _rossel_certificate_identity_payload(
+    selection_authority_sha256,
+    certificate,
+)
+    return (
+        schema_version=getfield(certificate, :schema_version),
+        selection_authority_sha256=selection_authority_sha256,
+        result_snapshot=_rossel_certificate_result_snapshot(certificate),
+    )
+end
+
+function _rossel_certificate_content_sha256(
+    selection_authority_sha256,
+    certificate::ROSingularSelectionCertificate,
+)
+    document = JSON3.write(_rossel_certificate_identity_payload(
+        selection_authority_sha256, certificate))
+    return bytes2hex(SHA.sha256(codeunits(document)))
+end
+
+function _rossel_validate_certificate_state!(
+    certificate::ROSingularSelectionCertificate,
+    limits::ROSingularSelectionLimits,
+)
+    getfield(certificate, :schema_version) ==
+        RO_SINGULAR_SELECTION_VERSION || throw(ArgumentError(
+            "unsupported singular selection certificate version"))
+    identity = _rossel_hash(
+        getfield(certificate, :identity_sha256), "identity_sha256")
+    authority = _rossel_hash(
+        getfield(certificate, :selection_authority_sha256),
+        "selection_authority_sha256")
+    _rossel_hash(getfield(certificate, :population_receipt_sha256),
+        "population_receipt_sha256")
+
+    candidate_count = getfield(certificate, :candidate_count)
+    0 <= candidate_count <= limits.max_candidates || throw(ArgumentError(
+        "certificate candidate_count is outside the configured limit"))
+    admissible_ids = getfield(certificate, :admissible_branch_ids)
+    length(admissible_ids) <= candidate_count || throw(ArgumentError(
+        "certificate admissible branches exceed the candidate count"))
+    for branch_id in admissible_ids
+        _rossel_id(branch_id, "admissible_branch_ids[]")
+    end
+    allunique(admissible_ids) &&
+        admissible_ids == sort(copy(admissible_ids)) || throw(ArgumentError(
+            "certificate admissible branch ids are not canonical"))
+    reasons = _rossel_gaps(
+        getfield(certificate, :reason_codes),
+        "certificate.reason_codes", limits)
+    reasons == getfield(certificate, :reason_codes) || throw(ArgumentError(
+        "certificate reason codes are not canonical"))
+
+    selected_fields = (
+        getfield(certificate, :selected_branch_id),
+        getfield(certificate, :selected_branch_identity_sha256),
+        getfield(certificate, :selected_candidate_payload_sha256),
+        getfield(certificate, :selected_jacobian),
+        getfield(certificate, :selected_output_at_stratum),
+        getfield(certificate, :selected_stability_evidence_sha256),
+        getfield(certificate, :selected_stability_analysis_sha256),
+        getfield(certificate, :selected_reachability_evidence_sha256),
+        getfield(certificate, :selected_dynamic_trace_sha256),
+    )
+    selected_presence = map(value -> value !== nothing, selected_fields)
+    selected = all(selected_presence)
+    selected || all(!, selected_presence) || throw(ArgumentError(
+        "certificate selected-branch fields must be all present or all absent"))
+    if selected
+        branch_id = getfield(certificate, :selected_branch_id)
+        _rossel_id(branch_id, "selected_branch_id")
+        branch_id in admissible_ids || throw(ArgumentError(
+            "selected branch is not in the admissible branch set"))
+        for field in (
+            :selected_branch_identity_sha256,
+            :selected_candidate_payload_sha256,
+            :selected_stability_evidence_sha256,
+            :selected_stability_analysis_sha256,
+            :selected_reachability_evidence_sha256,
+            :selected_dynamic_trace_sha256,
+        )
+            _rossel_hash(getfield(certificate, field), String(field))
+        end
+        jacobian = getfield(certificate, :selected_jacobian)
+        output = getfield(certificate, :selected_output_at_stratum)
+        rows, columns = size(jacobian)
+        1 <= rows <= limits.max_outputs &&
+            1 <= columns <= limits.max_inputs || throw(ArgumentError(
+                "selected Jacobian shape is outside the configured limits"))
+        _rossel_limit(:certificate_matrix_elements,
+            BigInt(rows) * BigInt(columns), limits.max_matrix_elements)
+        rows == length(output) || throw(DimensionMismatch(
+            "selected output length must equal the Jacobian row count"))
+        all(isfinite, jacobian) && all(isfinite, output) ||
+            throw(ArgumentError(
+                "selected certificate arrays must be finite"))
+    end
+
+    getfield(certificate, :evidence_scope) ==
+        RO_SINGULAR_SELECTION_SCOPE || throw(ArgumentError(
+            "singular selection certificate evidence scope changed"))
+    !getfield(certificate, :universal_selection_claimed) &&
+        !getfield(certificate, :causal_claimed) &&
+        !getfield(certificate, :experimentally_validated) ||
+        throw(ArgumentError(
+            "singular selection certificate exceeds its evidence scope"))
+    includes = getfield(certificate, :includes_singular_branch)
+    regular_only = getfield(certificate, :regular_limit_only)
+    includes != regular_only || throw(ArgumentError(
+        "singular and regular-only result flags are inconsistent"))
+
+    status = getfield(certificate, :status)
+    complete = getfield(certificate, :candidate_population_complete)
+    if status == :unknown_incomplete_population
+        !complete && isempty(admissible_ids) && !selected &&
+            :candidate_population_incomplete in reasons &&
+            !includes && regular_only || throw(ArgumentError(
+                "incomplete-population certificate state is inconsistent"))
+    elseif status == :unknown_gap
+        complete && candidate_count >= 1 && isempty(admissible_ids) &&
+            !selected && :candidate_evidence_gap in reasons &&
+            !includes && regular_only || throw(ArgumentError(
+                "unknown-gap certificate state is inconsistent"))
+    elseif status == :selected_unique_branch_under_declared_policy
+        complete && candidate_count >= 1 && length(admissible_ids) == 1 &&
+            selected &&
+            getfield(certificate, :selected_branch_id) == only(admissible_ids) &&
+            isempty(reasons) && includes && !regular_only ||
+            throw(ArgumentError(
+                "unique-selection certificate state is inconsistent"))
+    elseif status == :no_admissible_candidate_in_declared_population
+        complete && isempty(admissible_ids) && !selected &&
+            reasons == [:no_candidate_satisfied_declared_policy] &&
+            !includes && regular_only || throw(ArgumentError(
+                "no-admissible-candidate certificate state is inconsistent"))
+    elseif status == :set_valued_multiple_admissible_branches
+        complete && candidate_count >= 2 && length(admissible_ids) >= 2 &&
+            !selected &&
+            reasons == [:multiple_candidates_satisfied_declared_policy] &&
+            includes && !regular_only || throw(ArgumentError(
+                "set-valued certificate state is inconsistent"))
+    else
+        throw(ArgumentError("unsupported singular selection status"))
+    end
+
+    expected = _rossel_sha_payload(
+        _rossel_certificate_identity_payload(authority, certificate),
+        :selection_identity_bytes, limits.max_identity_bytes)
+    identity == expected || throw(ArgumentError(
+        "singular selection certificate content or identity is invalid"))
+    return certificate
+end
+
+function _rossel_assert_certificate_unchanged(
+    certificate::ROSingularSelectionCertificate,
+)
+    _rossel_validate_certificate_state!(
+        certificate, _ROSSEL_CERTIFICATE_HARD_LIMITS)
+    return nothing
+end
+
+"""
+    validate_ro_singular_selection_certificate(certificate; limits)
+
+Validate both the content identity and the complete local status/field state
+machine of a singular-selection certificate.  This does not replay the
+population receipt or the evidence artifacts bound by their hashes.
+"""
+function validate_ro_singular_selection_certificate(
+    certificate::ROSingularSelectionCertificate;
+    limits::ROSingularSelectionLimits=ROSingularSelectionLimits(),
+)
+    _rossel_validate_certificate_state!(certificate, limits)
+    return true
+end
+
+function Base.getproperty(
+    certificate::ROSingularSelectionCertificate,
+    name::Symbol,
+)
+    _rossel_assert_certificate_unchanged(certificate)
+    value = getfield(certificate, name)
+    if name in (
+        :admissible_branch_ids,
+        :selected_jacobian,
+        :selected_output_at_stratum,
+        :reason_codes,
+    )
+        return value === nothing ? nothing : copy(value)
+    end
+    return value
 end
 
 function _rossel_selection_identity(policy, receipt, limits, cancel_check)
     reservation = BigInt(4_096) +
-        BigInt(160) * BigInt(length(receipt.candidate_roots))
+        BigInt(160) *
+            BigInt(length(getfield(receipt, :candidate_roots)))
     _rossel_limit(:selection_identity_reservation,
         reservation, limits.max_identity_bytes)
     cancel_check()
     payload = (
         schema_version=RO_SINGULAR_SELECTION_VERSION,
-        policy_sha256=policy.policy_sha256,
-        population_receipt_sha256=receipt.receipt_sha256,
-        candidate_roots=_rossel_root_payload.(receipt.candidate_roots),
+        policy_sha256=getfield(policy, :policy_sha256),
+        population_receipt_sha256=getfield(receipt, :receipt_sha256),
+        candidate_roots=_rossel_root_payload.(
+            getfield(receipt, :candidate_roots)),
     )
     result = _rossel_sha_payload(payload,
         :selection_identity_bytes, limits.max_identity_bytes)
@@ -1124,38 +1594,85 @@ function _rossel_selection_identity(policy, receipt, limits, cancel_check)
     return result
 end
 
-function _rossel_certificate(identity_hash, receipt, status, candidates,
+function _rossel_certificate(selection_authority_hash, receipt, status, candidates,
                              admissible_ids, reasons;
                              selected=nothing,
                              includes_singular_branch::Bool=false,
-                             regular_limit_only::Bool=true)
-    return ROSingularSelectionCertificate(_ROSSEL_VALIDATED,
-        RO_SINGULAR_SELECTION_VERSION, identity_hash,
-        receipt.receipt_sha256, status, receipt.complete,
-        length(candidates), copy(admissible_ids),
-        selected === nothing ? nothing : selected.branch_id,
-        selected === nothing ? nothing : selected.branch_identity_sha256,
-        selected === nothing ? nothing : selected.candidate_payload_sha256,
-        selected === nothing ? nothing : copy(selected.jacobian),
-        selected === nothing ? nothing : copy(selected.output_at_stratum),
-        selected === nothing ? nothing :
-            selected.stability_evidence.evidence_sha256,
-        selected === nothing ? nothing :
-            selected.stability_evidence.analysis_sha256,
-        selected === nothing ? nothing :
-            selected.reachability_evidence.evidence_sha256,
-        selected === nothing ? nothing :
-            selected.reachability_evidence.dynamic_trace_sha256,
-        copy(reasons), RO_SINGULAR_SELECTION_SCOPE,
-        includes_singular_branch, regular_limit_only,
-        false, false, false)
+                             regular_limit_only::Bool=true,
+                             limits::ROSingularSelectionLimits=
+                                 ROSingularSelectionLimits(),
+                             cancel_check=() -> nothing)
+    _rossel_hash(selection_authority_hash, "selection_authority_sha256")
+    fields = (
+        schema_version=RO_SINGULAR_SELECTION_VERSION,
+        selection_authority_sha256=String(selection_authority_hash),
+        population_receipt_sha256=getfield(receipt, :receipt_sha256),
+        status=Symbol(status),
+        candidate_population_complete=getfield(receipt, :complete),
+        candidate_count=length(candidates),
+        admissible_branch_ids=copy(admissible_ids),
+        selected_branch_id=
+            selected === nothing ? nothing : getfield(selected, :branch_id),
+        selected_branch_identity_sha256=selected === nothing ? nothing :
+            getfield(selected, :branch_identity_sha256),
+        selected_candidate_payload_sha256=selected === nothing ? nothing :
+            getfield(selected, :candidate_payload_sha256),
+        selected_jacobian=
+            selected === nothing ? nothing : copy(getfield(selected, :jacobian)),
+        selected_output_at_stratum=selected === nothing ? nothing :
+            copy(getfield(selected, :output_at_stratum)),
+        selected_stability_evidence_sha256=selected === nothing ? nothing :
+            getfield(getfield(selected, :stability_evidence), :evidence_sha256),
+        selected_stability_analysis_sha256=selected === nothing ? nothing :
+            getfield(getfield(selected, :stability_evidence), :analysis_sha256),
+        selected_reachability_evidence_sha256=selected === nothing ? nothing :
+            getfield(getfield(selected, :reachability_evidence), :evidence_sha256),
+        selected_dynamic_trace_sha256=selected === nothing ? nothing :
+            getfield(getfield(selected, :reachability_evidence),
+                :dynamic_trace_sha256),
+        reason_codes=copy(reasons),
+        evidence_scope=RO_SINGULAR_SELECTION_SCOPE,
+        includes_singular_branch=includes_singular_branch,
+        regular_limit_only=regular_limit_only,
+        universal_selection_claimed=false,
+        causal_claimed=false,
+        experimentally_validated=false,
+    )
+    cancel_check()
+    certificate_hash = _rossel_sha_payload(
+        _rossel_certificate_identity_payload(
+            selection_authority_hash, fields),
+        :selection_identity_bytes,
+        limits.max_identity_bytes,
+    )
+    cancel_check()
+    certificate = ROSingularSelectionCertificate(_ROSSEL_VALIDATED,
+        fields.schema_version, certificate_hash,
+        fields.selection_authority_sha256,
+        fields.population_receipt_sha256, fields.status,
+        fields.candidate_population_complete, fields.candidate_count,
+        fields.admissible_branch_ids, fields.selected_branch_id,
+        fields.selected_branch_identity_sha256,
+        fields.selected_candidate_payload_sha256,
+        fields.selected_jacobian, fields.selected_output_at_stratum,
+        fields.selected_stability_evidence_sha256,
+        fields.selected_stability_analysis_sha256,
+        fields.selected_reachability_evidence_sha256,
+        fields.selected_dynamic_trace_sha256, fields.reason_codes,
+        fields.evidence_scope, fields.includes_singular_branch,
+        fields.regular_limit_only, fields.universal_selection_claimed,
+        fields.causal_claimed, fields.experimentally_validated)
+    _rossel_validate_certificate_state!(certificate, limits)
+    return certificate
 end
 
 function _rossel_candidate_gaps(candidate, cancel_check)
+    stability = getfield(candidate, :stability_evidence)
+    reachability = getfield(candidate, :reachability_evidence)
     gaps = unique(Symbol[
-        candidate.numeric_gap_reasons;
-        candidate.stability_evidence.gap_reasons;
-        candidate.reachability_evidence.gap_reasons;
+        getfield(candidate, :numeric_gap_reasons);
+        getfield(stability, :gap_reasons);
+        getfield(reachability, :gap_reasons);
     ])
     cancel_check()
     return sort!(gaps; by=String)
@@ -1179,14 +1696,15 @@ function certify_ro_singular_branch_selection(
     identity_hash = _rossel_selection_identity(
         policy, population_receipt, limits, cancel_check)
 
-    if !population_receipt.complete
+    if !getfield(population_receipt, :complete)
         cancel_check()
         reasons = sort!(unique(Symbol[
             :candidate_population_incomplete;
-            population_receipt.gap_reasons;
+            getfield(population_receipt, :gap_reasons);
         ]); by=String)
         return _rossel_certificate(identity_hash, population_receipt,
-            :unknown_incomplete_population, candidates, String[], reasons)
+            :unknown_incomplete_population, candidates, String[], reasons;
+            limits, cancel_check)
     end
 
     cancel_check()
@@ -1204,15 +1722,17 @@ function certify_ro_singular_branch_selection(
         sort!(unique!(reasons); by=String)
         cancel_check()
         return _rossel_certificate(identity_hash, population_receipt,
-            :unknown_gap, candidates, String[], reasons)
+            :unknown_gap, candidates, String[], reasons;
+            limits, cancel_check)
     end
 
     cancel_check()
     admissible = filter(candidates) do candidate
-        candidate.residual_upper_bound <=
-            policy.residual_absolute_tolerance &&
-            candidate.stability_evidence.status == :locally_stable &&
-            candidate.reachability_evidence.status ==
+        getfield(candidate, :residual_upper_bound) <=
+            getfield(policy, :residual_absolute_tolerance) &&
+            getfield(getfield(candidate, :stability_evidence), :status) ==
+                :locally_stable &&
+            getfield(getfield(candidate, :reachability_evidence), :status) ==
                 :reached_under_protocol
     end
     cancel_check()
@@ -1227,18 +1747,19 @@ function certify_ro_singular_branch_selection(
             :selected_unique_branch_under_declared_policy,
             candidates, admissible_ids, Symbol[];
             selected=selected, includes_singular_branch=true,
-            regular_limit_only=false)
+            regular_limit_only=false, limits, cancel_check)
     elseif isempty(admissible)
         cancel_check()
         return _rossel_certificate(identity_hash, population_receipt,
             :no_admissible_candidate_in_declared_population,
             candidates, String[],
-            [:no_candidate_satisfied_declared_policy])
+            [:no_candidate_satisfied_declared_policy]; limits, cancel_check)
     end
     cancel_check()
     return _rossel_certificate(identity_hash, population_receipt,
         :set_valued_multiple_admissible_branches,
         candidates, admissible_ids,
         [:multiple_candidates_satisfied_declared_policy];
-        includes_singular_branch=true, regular_limit_only=false)
+        includes_singular_branch=true, regular_limit_only=false,
+        limits, cancel_check)
 end

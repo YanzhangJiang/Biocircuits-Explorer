@@ -674,6 +674,9 @@ end
 
 function _rofi_source_operation_count(
     census::ROCompleteSimpleFoldEventCensus,
+    central_local::RORegularSheetPatchCertificate,
+    lower_local::RORegularSheetPatchCertificate,
+    upper_local::RORegularSheetPatchCertificate,
     lower_bridge::RORegularSheetBridgeCertificate,
     upper_bridge::RORegularSheetBridgeCertificate,
     lower_regular::RORegularSheetPatchCertificate,
@@ -681,6 +684,9 @@ function _rofi_source_operation_count(
     limits::ROFoldBranchIncidenceLimits,
 )
     count = BigInt(census.analysis_interval_operation_count) +
+        central_local.exact_operation_count +
+        lower_local.exact_operation_count +
+        upper_local.exact_operation_count +
         lower_bridge.exact_operation_count +
         upper_bridge.exact_operation_count +
         lower_regular.exact_operation_count +
@@ -696,6 +702,27 @@ function _rofi_source_operation_count(
         limits.max_source_replay_interval_operations,
     ))
     return Int(count)
+end
+
+function _rofi_replay_fold_census_event(
+    system::ROPolynomialEquilibriumSystem,
+    census::ROCompleteSimpleFoldEventCensus,
+    event::ROSimpleFoldEvent,
+    cancel_check,
+)
+    # Certificate payloads contain Rational{BigInt}; detach the shallowly
+    # immutable source before replay so the rebuilt census cannot retain GMP
+    # integer aliases into the caller-owned object.
+    replay_source = deepcopy(census)
+    replayed_census = replay_ro_complete_simple_fold_event_census(
+        system, replay_source; cancel_check=cancel_check)
+    replayed_event_index = findfirst(candidate ->
+        candidate.certificate_sha256 == event.certificate_sha256,
+        replayed_census.events,
+    )
+    replayed_event_index === nothing && throw(ArgumentError(
+        "selected fold event disappeared during census replay"))
+    return replayed_census, replayed_census.events[replayed_event_index]
 end
 
 function _rofi_replay_sources(
@@ -769,6 +796,9 @@ function _rofi_replay_sources(
         "upper bridge must cover the complete upper local patch control box"))
     source_operations = _rofi_source_operation_count(
         census,
+        central_local_patch,
+        lower_local_patch,
+        upper_local_patch,
         lower_local_bridge,
         upper_local_bridge,
         lower_regular_patch,
@@ -776,34 +806,61 @@ function _rofi_replay_sources(
         limits,
     )
     cancel_check()
-    replayed_census = replay_ro_complete_simple_fold_event_census(
-        system, census; cancel_check=cancel_check)
-    replayed_event_index = findfirst(candidate ->
-        candidate.certificate_sha256 == event.certificate_sha256,
-        replayed_census.events,
-    )
-    replayed_event_index === nothing && throw(ArgumentError(
-        "selected fold event disappeared during census replay"))
-    replayed_event = replayed_census.events[replayed_event_index]
-    replay_ro_regular_sheet_bridge(
+    replayed_census, replayed_event = _rofi_replay_fold_census_event(
+        system, census, event, cancel_check)
+    central_local_replay_source = deepcopy(central_local_patch)
+    lower_local_replay_source = deepcopy(lower_local_patch)
+    upper_local_replay_source = deepcopy(upper_local_patch)
+    lower_bridge_replay_source = deepcopy(lower_local_bridge)
+    upper_bridge_replay_source = deepcopy(upper_local_bridge)
+    lower_regular_replay_source = deepcopy(lower_regular_patch)
+    upper_regular_replay_source = deepcopy(upper_regular_patch)
+    replayed_central_local_patch = replay_ro_regular_sheet_patch(
         branch_system,
-        central_local_patch,
-        lower_local_patch,
-        lower_local_bridge;
+        central_local_replay_source;
         cancel_check=cancel_check,
     )
-    replay_ro_regular_sheet_bridge(
+    replayed_lower_local_patch = replay_ro_regular_sheet_patch(
         branch_system,
-        central_local_patch,
-        upper_local_patch,
-        upper_local_bridge;
+        lower_local_replay_source;
         cancel_check=cancel_check,
     )
-    replay_ro_regular_sheet_patch(
-        system, lower_regular_patch; cancel_check=cancel_check)
-    replay_ro_regular_sheet_patch(
-        system, upper_regular_patch; cancel_check=cancel_check)
-    return branch_system, replayed_event, source_operations
+    replayed_upper_local_patch = replay_ro_regular_sheet_patch(
+        branch_system,
+        upper_local_replay_source;
+        cancel_check=cancel_check,
+    )
+    replayed_lower_local_bridge = replay_ro_regular_sheet_bridge(
+        branch_system,
+        replayed_central_local_patch,
+        replayed_lower_local_patch,
+        lower_bridge_replay_source;
+        cancel_check=cancel_check,
+    )
+    replayed_upper_local_bridge = replay_ro_regular_sheet_bridge(
+        branch_system,
+        replayed_central_local_patch,
+        replayed_upper_local_patch,
+        upper_bridge_replay_source;
+        cancel_check=cancel_check,
+    )
+    replayed_lower_regular_patch = replay_ro_regular_sheet_patch(
+        system, lower_regular_replay_source; cancel_check=cancel_check)
+    replayed_upper_regular_patch = replay_ro_regular_sheet_patch(
+        system, upper_regular_replay_source; cancel_check=cancel_check)
+    return (
+        branch_system=branch_system,
+        census=replayed_census,
+        event=replayed_event,
+        central_local_patch=replayed_central_local_patch,
+        lower_local_patch=replayed_lower_local_patch,
+        upper_local_patch=replayed_upper_local_patch,
+        lower_local_bridge=replayed_lower_local_bridge,
+        upper_local_bridge=replayed_upper_local_bridge,
+        lower_regular_patch=replayed_lower_regular_patch,
+        upper_regular_patch=replayed_upper_regular_patch,
+        source_operations=source_operations,
+    )
 end
 
 function _rofi_predictor_interval(
@@ -1191,60 +1248,59 @@ function _rofi_certify_exact(
             :regular_patches_not_distinct,
             "the two incident regular patches must be distinct",
         ))
-    branch_system, replayed_event, source_operations =
-        _rofi_replay_sources(
-            system,
-            census,
-            event,
-            central_local_patch,
-            lower_local_patch,
-            upper_local_patch,
-            lower_local_bridge,
-            upper_local_bridge,
-            lower_regular_patch,
-            upper_regular_patch,
-            chart_state_index,
-            limits,
-            cancel_check,
-        )
+    replayed = _rofi_replay_sources(
+        system,
+        census,
+        event,
+        central_local_patch,
+        lower_local_patch,
+        upper_local_patch,
+        lower_local_bridge,
+        upper_local_bridge,
+        lower_regular_patch,
+        upper_regular_patch,
+        chart_state_index,
+        limits,
+        cancel_check,
+    )
     context_limits = _rofe_regular_limits_with_operation_cap(
         system.limits, limits.max_analysis_interval_operations)
     context = _RORSContext(context_limits, cancel_check)
     try
         event_root, event_local_remainder =
             _rofi_event_on_local_branch(
-                replayed_event,
-                central_local_patch,
+                replayed.event,
+                replayed.central_local_patch,
                 chart_state_index,
                 context,
             )
         event_chart_enclosure = event_root[chart_state_index]
         lower_corridor = _rofi_fold_free_corridor(
             :lower_chart_side,
-            census,
-            replayed_event,
+            replayed.census,
+            replayed.event,
             event_chart_enclosure,
-            central_local_patch,
-            lower_local_patch.control_box[1],
+            replayed.central_local_patch,
+            replayed.lower_local_patch.control_box[1],
             chart_state_index,
             context,
         )
         upper_corridor = _rofi_fold_free_corridor(
             :upper_chart_side,
-            census,
-            replayed_event,
+            replayed.census,
+            replayed.event,
             event_chart_enclosure,
-            central_local_patch,
-            upper_local_patch.control_box[1],
+            replayed.central_local_patch,
+            replayed.upper_local_patch.control_box[1],
             chart_state_index,
             context,
         )
         lower_incidence = _rofi_half_incidence(
             :lower_chart_side,
             event_chart_enclosure,
-            lower_local_patch,
-            lower_local_bridge,
-            lower_regular_patch,
+            replayed.lower_local_patch,
+            replayed.lower_local_bridge,
+            replayed.lower_regular_patch,
             lower_corridor,
             chart_state_index,
             context,
@@ -1252,9 +1308,9 @@ function _rofi_certify_exact(
         upper_incidence = _rofi_half_incidence(
             :upper_chart_side,
             event_chart_enclosure,
-            upper_local_patch,
-            upper_local_bridge,
-            upper_regular_patch,
+            replayed.upper_local_patch,
+            replayed.upper_local_bridge,
+            replayed.upper_regular_patch,
             upper_corridor,
             chart_state_index,
             context,
@@ -1276,22 +1332,22 @@ function _rofi_certify_exact(
         certificate_sha256 = _rofi_certificate_sha256(
             system.declaration_sha256,
             limits,
-            census.certificate_sha256,
-            replayed_event.certificate_sha256,
+            replayed.census.certificate_sha256,
+            replayed.event.certificate_sha256,
             chart_state_index,
-            branch_system.declaration_sha256,
-            central_local_patch.certificate_sha256,
-            lower_local_patch.certificate_sha256,
-            upper_local_patch.certificate_sha256,
-            lower_local_bridge.certificate_sha256,
-            upper_local_bridge.certificate_sha256,
-            lower_regular_patch.certificate_sha256,
-            upper_regular_patch.certificate_sha256,
+            replayed.branch_system.declaration_sha256,
+            replayed.central_local_patch.certificate_sha256,
+            replayed.lower_local_patch.certificate_sha256,
+            replayed.upper_local_patch.certificate_sha256,
+            replayed.lower_local_bridge.certificate_sha256,
+            replayed.upper_local_bridge.certificate_sha256,
+            replayed.lower_regular_patch.certificate_sha256,
+            replayed.upper_regular_patch.certificate_sha256,
             event_root,
             event_local_remainder,
             lower_incidence,
             upper_incidence,
-            source_operations,
+            replayed.source_operations,
             analysis_operations,
         )
         return ROSimpleFoldBranchIncidenceCertificate(
@@ -1299,22 +1355,22 @@ function _rofi_certify_exact(
             RO_SIMPLE_FOLD_BRANCH_INCIDENCE_VERSION,
             system.declaration_sha256,
             limits,
-            census.certificate_sha256,
-            replayed_event.certificate_sha256,
+            replayed.census.certificate_sha256,
+            replayed.event.certificate_sha256,
             chart_state_index,
-            branch_system.declaration_sha256,
-            central_local_patch.certificate_sha256,
-            lower_local_patch.certificate_sha256,
-            upper_local_patch.certificate_sha256,
-            lower_local_bridge.certificate_sha256,
-            upper_local_bridge.certificate_sha256,
-            lower_regular_patch.certificate_sha256,
-            upper_regular_patch.certificate_sha256,
+            replayed.branch_system.declaration_sha256,
+            replayed.central_local_patch.certificate_sha256,
+            replayed.lower_local_patch.certificate_sha256,
+            replayed.upper_local_patch.certificate_sha256,
+            replayed.lower_local_bridge.certificate_sha256,
+            replayed.upper_local_bridge.certificate_sha256,
+            replayed.lower_regular_patch.certificate_sha256,
+            replayed.upper_regular_patch.certificate_sha256,
             event_root,
             event_local_remainder,
             lower_incidence,
             upper_incidence,
-            source_operations,
+            replayed.source_operations,
             analysis_operations,
             true,
             true,

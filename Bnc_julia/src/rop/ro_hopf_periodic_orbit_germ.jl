@@ -817,14 +817,17 @@ function _rohpg_preflight_inputs(
         preconditioner_entries,
         limits.max_preconditioner_entries,
     )
+    parent_replay_operations =
+        BigInt(spectral_parent.analysis_interval_operation_count) +
+        hopf_parent.analysis_interval_operation_count
     _rohpg_limit(
         :parent_replay_interval_operations,
-        hopf_parent.analysis_interval_operation_count,
+        parent_replay_operations,
         limits.max_parent_replay_interval_operations,
     )
     _rohpg_limit(
         :analysis_interval_operations,
-        hopf_parent.analysis_interval_operation_count,
+        parent_replay_operations,
         limits.max_analysis_interval_operations,
     )
     if event_count > 0
@@ -833,12 +836,12 @@ function _rohpg_preflight_inputs(
             dimension^2 + dimension + dimension * (dimension - 1) ÷ 2)
         _rohpg_limit(
             :analysis_interval_operations,
-            BigInt(hopf_parent.analysis_interval_operation_count) +
+            parent_replay_operations +
                 minimum_determinant_operations,
             limits.max_analysis_interval_operations,
         )
     end
-    return event_count
+    return event_count, Int(parent_replay_operations)
 end
 
 function _rohpg_certify_exact(
@@ -848,13 +851,27 @@ function _rohpg_certify_exact(
     limits::ROHopfPeriodicOrbitGermLimits,
     cancel_check,
 )
-    event_count = _rohpg_preflight_inputs(
+    event_count, parent_replay_operations = _rohpg_preflight_inputs(
         system, spectral_parent, hopf_parent, limits)
     validate_ro_polynomial_equilibrium_system(system)
+    # Rational{BigInt} is only shallowly immutable.  Detach the admitted
+    # parents before replay so later low-level mutation of their nested GMP
+    # integers cannot change either rebuilt parent while this lift runs.
+    spectral_replay_source = deepcopy(spectral_parent)
+    hopf_replay_source = deepcopy(hopf_parent)
+    replayed_spectral =
+        replay_ro_complete_simple_spectral_hopf_event_census(
+            system,
+            spectral_replay_source;
+            cancel_check=cancel_check,
+        )
+    replayed_spectral.certificate_sha256 ==
+        spectral_parent.certificate_sha256 || throw(ArgumentError(
+        "spectral-Hopf parent replay changed its hash"))
     replayed_hopf = replay_ro_complete_nondegenerate_hopf_census(
         system,
-        spectral_parent,
-        hopf_parent;
+        replayed_spectral,
+        hopf_replay_source;
         cancel_check=cancel_check,
     )
     replayed_hopf.certificate_sha256 == hopf_parent.certificate_sha256 ||
@@ -864,12 +881,12 @@ function _rohpg_certify_exact(
     context_limits = _rohsc_regular_limits_with_operation_cap(
         system.limits, limits.max_analysis_interval_operations)
     context = _RORSContext(context_limits, cancel_check)
-    context.operations = BigInt(hopf_parent.analysis_interval_operation_count)
+    context.operations = BigInt(parent_replay_operations)
     events = ROHopfPeriodicOrbitGermEvent[]
     sizehint!(events, event_count)
     for index in 1:event_count
         context.cancel_check()
-        spectral_event = spectral_parent.events[index]
+        spectral_event = replayed_spectral.events[index]
         hopf_event = replayed_hopf.events[index]
         hopf_event.parent_event_certificate_sha256 ==
             spectral_event.certificate_sha256 || throw(ArgumentError(
@@ -913,9 +930,9 @@ function _rohpg_certify_exact(
     event_tuple = Tuple(events)
     hash = _rohpg_census_sha256(
         system.declaration_sha256,
-        spectral_parent.dynamics_binding.declaration_sha256,
-        spectral_parent.certificate_sha256,
-        hopf_parent.certificate_sha256,
+        replayed_spectral.dynamics_binding.declaration_sha256,
+        replayed_spectral.certificate_sha256,
+        replayed_hopf.certificate_sha256,
         limits,
         event_tuple,
         operation_count,
@@ -926,9 +943,9 @@ function _rohpg_certify_exact(
         RO_HOPF_PERIODIC_ORBIT_GERM_THEOREM_VERSION,
         RO_HOPF_CROSSING_ORIENTATION_FORMULA_VERSION,
         system.declaration_sha256,
-        spectral_parent.dynamics_binding.declaration_sha256,
-        spectral_parent.certificate_sha256,
-        hopf_parent.certificate_sha256,
+        replayed_spectral.dynamics_binding.declaration_sha256,
+        replayed_spectral.certificate_sha256,
+        replayed_hopf.certificate_sha256,
         limits,
         event_tuple,
         event_count,

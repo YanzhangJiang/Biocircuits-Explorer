@@ -69,6 +69,61 @@ function _forge_rou(result; kwargs...)
     return typeof(result)(_ROU._ROU_CONSTRUCTION_TOKEN, values...)
 end
 
+function _rou_mutate_first_entry!(values)
+    index = findfirst(value -> value !== nothing, values)
+    index === nothing && error("test array has no mutable entry")
+    value = values[index]
+    if value isa Int
+        values[index] = value + 1
+    elseif value isa Float64
+        values[index] = isnan(value) ? 0.0 : value == 0.0 ? 1.0 : -value
+    else
+        error("unsupported mutable test entry type $(typeof(value))")
+    end
+    return values
+end
+
+function _assert_detached_array_property(result, name::Symbol)
+    backing = getfield(result, name)
+    backing === nothing && error("$name is unavailable in this fixture")
+    before = copy(backing)
+    exposed = getproperty(result, name)
+    @test exposed !== backing
+    @test isequal(exposed, before)
+    _rou_mutate_first_entry!(exposed)
+    @test isequal(getfield(result, name), before)
+    @test isequal(getproperty(result, name), before)
+
+    supplied = copy(before)
+    keyword = NamedTuple{(name,)}((supplied,))
+    rebuilt = _forge_rou(result; keyword...)
+    _rou_mutate_first_entry!(supplied)
+    @test isequal(getfield(rebuilt, name), before)
+    @test isequal(getproperty(rebuilt, name), before)
+    return nothing
+end
+
+function _assert_detached_calibration_property(result)
+    backing = getfield(result, :calibration_evidence)
+    backing === nothing && error("calibration evidence is unavailable")
+    before = copy(getfield(backing, :feature_coverage_counts))
+    exposed = result.calibration_evidence
+    @test exposed !== backing
+    getfield(exposed, :feature_coverage_counts)[1] += 1
+    @test getfield(backing, :feature_coverage_counts) == before
+    @test getfield(result, :calibration_evidence) === backing
+
+    supplied = deepcopy(backing)
+    rebuilt = _forge_rou(result; calibration_evidence=supplied)
+    getfield(supplied, :feature_coverage_counts)[1] += 1
+    @test getfield(
+        getfield(rebuilt, :calibration_evidence),
+        :feature_coverage_counts,
+    ) == before
+    @test rebuilt.status == result.status
+    return nothing
+end
+
 function _rou_captured_error(action)
     try
         action()
@@ -259,8 +314,18 @@ end
     @test result.identity_payload.numerical_rank_policy.method ==
         :whitened_sensitivity_svd
     @test _ROU.validate_ro_local_identifiability_analysis(result)
+    for name in (
+        :fim,
+        :fim_singular_values,
+        :whitened_sensitivity_singular_values,
+        :practical_parameter_covariance,
+        :practical_parameter_standard_errors,
+    )
+        _assert_detached_array_property(result, name)
+    end
     tampered_local = deepcopy(result)
-    tampered_local.fim[1, 1] += 1.0
+    getfield(tampered_local, :fim)[1, 1] += 1.0
+    @test_throws ArgumentError tampered_local.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_local_identifiability_analysis(tampered_local)
     end
@@ -611,7 +676,11 @@ end
         result.identity_payload,
         (observation_model=masked_model,),
     )
-    masked_result = _forge_rou(result; identity_payload=masked_payload)
+    masked_result = _forge_rou(
+        result;
+        identity_payload=masked_payload,
+        identity_sha256=_ROU._rou_sha256(masked_payload),
+    )
     masked_error = _rou_captured_error() do
         _ROU.validate_ro_local_identifiability_analysis(masked_result)
     end
@@ -704,6 +773,9 @@ end
         transpose(result.output_covariance_factor) ≈ expected atol=1e-13
     @test result.output_covariance ≈ expected atol=1e-13
     @test result.output_standard_deviations ≈ sqrt.(diag(expected)) atol=1e-13
+    @test result.output_covariance_minimum_eigenvalue ≈
+        eigmin(Symmetric(expected)) atol=1e-13
+    @test result.output_covariance_minimum_eigenvalue > 0.0
     @test result.output_psd_status in
         (:factor_propagated_psd, :factor_propagated_roundoff_grey_zone)
     @test result.identity_payload.propagation.variance_clipping_performed == false
@@ -713,11 +785,20 @@ end
     @test !result.causal_claimed
     @test !result.experimentally_validated
     @test _ROU.validate_ro_delta_method_covariance(result)
+    for name in (
+        :parameter_covariance_factor,
+        :output_covariance_factor,
+        :output_covariance,
+        :output_standard_deviations,
+    )
+        _assert_detached_array_property(result, name)
+    end
     delta_fields = Tuple(
         getfield(result, name) for name in fieldnames(typeof(result)))
     @test_throws MethodError typeof(result)(delta_fields...)
     tampered_delta = deepcopy(result)
-    tampered_delta.output_covariance[1, 1] += 1.0
+    getfield(tampered_delta, :output_covariance)[1, 1] += 1.0
+    @test_throws ArgumentError tampered_delta.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_delta_method_covariance(tampered_delta)
     end
@@ -778,7 +859,10 @@ end
         (covariance_admission_policy=masked_delta_admission,),
     )
     masked_delta_admission_result = _forge_rou(
-        result; identity_payload=masked_delta_admission_payload)
+        result;
+        identity_payload=masked_delta_admission_payload,
+        identity_sha256=_ROU._rou_sha256(masked_delta_admission_payload),
+    )
     masked_delta_admission_error = _rou_captured_error() do
         _ROU.validate_ro_delta_method_covariance(
             masked_delta_admission_result)
@@ -797,7 +881,10 @@ end
         (propagation=masked_propagation,),
     )
     masked_propagation_result = _forge_rou(
-        result; identity_payload=masked_propagation_payload)
+        result;
+        identity_payload=masked_propagation_payload,
+        identity_sha256=_ROU._rou_sha256(masked_propagation_payload),
+    )
     masked_propagation_error = _rou_captured_error() do
         _ROU.validate_ro_delta_method_covariance(masked_propagation_result)
     end
@@ -858,6 +945,12 @@ end
     @test isnan(partial.output_standard_deviations[2])
     @test partial.identity_payload.output_gap_reasons[2] ==
         :solver_nonconvergence
+    tampered_invalid_slot = deepcopy(partial)
+    getfield(tampered_invalid_slot, :output_covariance)[2, 1] = 0.0
+    @test_throws ArgumentError tampered_invalid_slot.status
+    @test_throws ArgumentError begin
+        _ROU.validate_ro_delta_method_covariance(tampered_invalid_slot)
+    end
     @test_throws ArgumentError _ROU.propagate_ro_delta_covariance(
         [1.0 2.0; NaN NaN],
         parameter_covariance;
@@ -931,11 +1024,19 @@ end
     @test !coverage.experimentally_calibrated
     @test length(coverage.identity_sha256) == 64
     @test _ROU.validate_ro_synthetic_coverage_evidence(coverage)
+    for name in (
+        :feature_coverage_counts,
+        :feature_valid_counts,
+        :feature_coverage,
+    )
+        _assert_detached_array_property(coverage, name)
+    end
     coverage_fields = Tuple(
         getfield(coverage, name) for name in fieldnames(typeof(coverage)))
     @test_throws MethodError typeof(coverage)(coverage_fields...)
     tampered_coverage = deepcopy(coverage)
-    tampered_coverage.feature_coverage_counts[1] += 1
+    getfield(tampered_coverage, :feature_coverage_counts)[1] += 1
+    @test_throws ArgumentError tampered_coverage.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_synthetic_coverage_evidence(tampered_coverage)
     end
@@ -1015,7 +1116,10 @@ end
         (feature_ids=ntuple(_ -> nothing, 3),),
     )
     oversized_features = _forge_rou(
-        coverage; identity_payload=oversized_feature_payload)
+        coverage;
+        identity_payload=oversized_feature_payload,
+        identity_sha256=_ROU._rou_sha256(oversized_feature_payload),
+    )
     coverage_feature_limit_error = try
         _ROU.validate_ro_synthetic_coverage_evidence(
             oversized_features;
@@ -1033,7 +1137,10 @@ end
         (case_ids=ntuple(_ -> nothing, 100),),
     )
     oversized_case_ids = _forge_rou(
-        coverage; identity_payload=oversized_case_id_payload)
+        coverage;
+        identity_payload=oversized_case_id_payload,
+        identity_sha256=_ROU._rou_sha256(oversized_case_id_payload),
+    )
     @test_throws DimensionMismatch begin
         _ROU.validate_ro_synthetic_coverage_evidence(oversized_case_ids)
     end
@@ -1167,15 +1274,30 @@ end
     @test result.identity_payload.replicate_gap_reasons[3] ==
         :solver_nonconvergence
     @test _ROU.validate_ro_uncertainty_population_artifact(result)
+    for name in (:replicate_coordinates, :feature_quantiles)
+        _assert_detached_array_property(result, name)
+    end
+    _assert_detached_calibration_property(result)
     tampered_coordinates = deepcopy(result)
-    tampered_coordinates.replicate_coordinates[1, 1] += 1.0
+    getfield(tampered_coordinates, :replicate_coordinates)[1, 1] += 1.0
+    @test_throws ArgumentError tampered_coordinates.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_uncertainty_population_artifact(tampered_coordinates)
     end
     tampered_quantiles = deepcopy(result)
-    tampered_quantiles.feature_quantiles[1, 1] += 1.0
+    getfield(tampered_quantiles, :feature_quantiles)[1, 1] += 1.0
+    @test_throws ArgumentError tampered_quantiles.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_uncertainty_population_artifact(tampered_quantiles)
+    end
+    tampered_calibration = deepcopy(result)
+    getfield(
+        getfield(tampered_calibration, :calibration_evidence),
+        :feature_coverage_counts,
+    )[1] += 1
+    @test_throws ArgumentError tampered_calibration.status
+    @test_throws ArgumentError begin
+        _ROU.validate_ro_uncertainty_population_artifact(tampered_calibration)
     end
     population_fields = Tuple(
         getfield(result, name) for name in fieldnames(typeof(result)))
@@ -1260,7 +1382,10 @@ end
         ),
     )
     oversized_population = _forge_rou(
-        result; identity_payload=oversized_population_payload)
+        result;
+        identity_payload=oversized_population_payload,
+        identity_sha256=_ROU._rou_sha256(oversized_population_payload),
+    )
     population_limit_error = try
         _ROU.validate_ro_uncertainty_population_artifact(
             oversized_population;
@@ -1278,7 +1403,10 @@ end
         (replicate_coordinate_ids=ntuple(_ -> nothing, 3),),
     )
     oversized_coordinates = _forge_rou(
-        result; identity_payload=oversized_coordinate_payload)
+        result;
+        identity_payload=oversized_coordinate_payload,
+        identity_sha256=_ROU._rou_sha256(oversized_coordinate_payload),
+    )
     coordinate_limit_error = try
         _ROU.validate_ro_uncertainty_population_artifact(
             oversized_coordinates;
@@ -1493,6 +1621,7 @@ end
     @test !result.global_robustness_claimed
     @test !result.experimentally_validated
     @test _ROU.validate_ro_uncertainty_population_artifact(result)
+    _assert_detached_array_property(result, :certified_bounds)
     unknown_interval_policy = merge(
         result.identity_payload.policy,
         (unexpected_interval_owner=true,),
@@ -1510,7 +1639,8 @@ end
         _ROU.validate_ro_uncertainty_population_artifact(unknown_interval)
     end
     tampered_interval = deepcopy(result)
-    tampered_interval.certified_bounds[1, 1] -= 1.0
+    getfield(tampered_interval, :certified_bounds)[1, 1] -= 1.0
+    @test_throws ArgumentError tampered_interval.status
     @test_throws ArgumentError begin
         _ROU.validate_ro_uncertainty_population_artifact(tampered_interval)
     end
@@ -1682,7 +1812,10 @@ end
         (policy=oversized_interval_policy,),
     )
     oversized_interval = _forge_rou(
-        result; identity_payload=oversized_interval_payload)
+        result;
+        identity_payload=oversized_interval_payload,
+        identity_sha256=_ROU._rou_sha256(oversized_interval_payload),
+    )
     interval_limit_error = try
         _ROU.validate_ro_uncertainty_population_artifact(
             oversized_interval;
