@@ -152,6 +152,93 @@ struct WebShellBridgeLifecycle {
     }
 }
 
+struct WebShellInteractionLockRecovery {
+    /// Marks the native lock as released only after WebKit confirms that its
+    /// interaction lock was removed. If WebKit restoration fails, callers keep
+    /// the native gate active so a higher-level cancellation path can retry.
+    static func restore(
+        unlock: () async throws -> Void,
+        markRestored: () -> Void
+    ) async throws {
+        try await unlock()
+        markRestored()
+    }
+}
+
+struct TerminationWorkspaceFence: Equatable {
+    private(set) var epoch: UInt64?
+    private(set) var sealedRevision: UInt64 = 0
+    private(set) var persistedRevision: UInt64?
+    private(set) var isSealed = false
+    private(set) var authoritativeWebDocumentWasDisposed = false
+    private(set) var rejectedPublicationCount: UInt64 = 0
+
+    mutating func establish(epoch: UInt64, revision: UInt64, isSealed: Bool) {
+        self.epoch = epoch
+        sealedRevision = revision
+        persistedRevision = nil
+        self.isSealed = isSealed
+        authoritativeWebDocumentWasDisposed = false
+        rejectedPublicationCount = 0
+    }
+
+    mutating func observeRejectedPublication(epoch: UInt64) {
+        guard self.epoch == epoch, isSealed else {
+            return
+        }
+        rejectedPublicationCount &+= 1
+    }
+
+    mutating func recordPersistedSnapshot(epoch: UInt64, revision: UInt64) {
+        guard self.epoch == epoch else {
+            isSealed = false
+            return
+        }
+        persistedRevision = max(persistedRevision ?? 0, revision)
+    }
+
+    mutating func recordAuthoritativeWebDocumentDisposed() {
+        guard epoch != nil, isSealed else {
+            return
+        }
+        authoritativeWebDocumentWasDisposed = true
+    }
+
+    var canCommit: Bool {
+        epoch != nil
+            && isSealed
+            && authoritativeWebDocumentWasDisposed
+            && (persistedRevision ?? 0) >= sealedRevision
+    }
+
+    mutating func reset() {
+        self = TerminationWorkspaceFence()
+    }
+}
+
+struct TerminationWorkspaceRetirement: Equatable {
+    private(set) var requiresReloadOnRollback = false
+    private(set) var authoritativeDocumentWasDisposed = false
+
+    mutating func begin() {
+        // Revoking the bridge/generation is itself irreversible for the old
+        // page. Every failure after this point must reload, never merely unlock.
+        requiresReloadOnRollback = true
+        authoritativeDocumentWasDisposed = false
+    }
+
+    mutating func confirmDisposal() {
+        guard requiresReloadOnRollback else {
+            return
+        }
+        authoritativeDocumentWasDisposed = true
+    }
+
+    mutating func resetAfterReloadOrNewPreparation() {
+        self = TerminationWorkspaceRetirement()
+    }
+}
+
 struct WebShellNavigationRequest: Equatable {
     let url: URL
     let trust: WebShellNavigationTrust
@@ -194,6 +281,23 @@ struct WebShellNavigationQueue {
 struct WebShellCapturedProjectSnapshot: Equatable {
     let document: WorkspaceDocument
     let sequence: UInt64
+    let fenceEpoch: UInt64?
+    let publicationRevision: UInt64?
+    let terminationSealed: Bool?
+
+    init(
+        document: WorkspaceDocument,
+        sequence: UInt64,
+        fenceEpoch: UInt64? = nil,
+        publicationRevision: UInt64? = nil,
+        terminationSealed: Bool? = nil
+    ) {
+        self.document = document
+        self.sequence = sequence
+        self.fenceEpoch = fenceEpoch
+        self.publicationRevision = publicationRevision
+        self.terminationSealed = terminationSealed
+    }
 }
 
 enum WebShellSnapshotCaptureResult: Equatable {
@@ -209,11 +313,17 @@ struct WebShellProjectSnapshot: Equatable {
 private struct WebShellSequencedProjectChange {
     let sequence: UInt64
     let document: WorkspaceDocument
+    let fenceEpoch: UInt64
+    let publicationRevision: UInt64
+    let terminationSealed: Bool
 }
 
 private struct WebShellFinalizedProjectSnapshot: Decodable {
     let sequence: UInt64
     let jsonString: String
+    let fenceEpoch: UInt64
+    let publicationRevision: UInt64
+    let terminationSealed: Bool
 }
 
 @MainActor
@@ -340,6 +450,19 @@ final class WebShellController: NSObject, ObservableObject {
     private let persistenceQueue = WebShellPersistenceQueue()
     private var pendingSnapshotCapture: WebShellSnapshotCaptureCompletion?
     private var snapshotCaptureTimeoutTask: Task<Void, Never>?
+    private var terminationPreparationIsActive = false
+    private var terminationFence = TerminationWorkspaceFence()
+    private var terminationWorkspaceRetirement = TerminationWorkspaceRetirement()
+    private var terminationFreezeNavigation: WKNavigation?
+    private var terminationFreezeContinuation: CheckedContinuation<Void, Error>?
+    private var terminationFreezeTimeoutTask: Task<Void, Never>?
+    private var terminationRecoveryReloadGeneration: String?
+    private var terminationRecoveryReloadContinuation: CheckedContinuation<Void, Error>?
+    private var terminationRecoveryReloadTimeoutTask: Task<Void, Never>?
+
+    var terminationFenceCanCommit: Bool {
+        terminationPreparationIsActive && terminationFence.canCommit
+    }
 
     private var isProjectIdentityChangeInProgress: Bool {
         identityChangeSourceProjectID != nil
@@ -374,6 +497,15 @@ final class WebShellController: NSObject, ObservableObject {
 
     func showProject(id: String, document: WorkspaceDocument) {
         let requestedProject = PendingProject(id: id, document: document)
+        if terminationPreparationIsActive {
+            // Readiness callbacks for a recovered backend re-offer the store's
+            // copy of the already-captured project. Do not turn that stale copy
+            // into a pending replacement while the final-snapshot lock is held.
+            if currentProjectID != id {
+                pendingProject = requestedProject
+            }
+            return
+        }
         if currentProjectID == id, currentProjectDocument == document, pendingProject == nil {
             return
         }
@@ -426,6 +558,9 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     func reloadShell() {
+        guard !terminationPreparationIsActive else {
+            return
+        }
         guard let currentURL else {
             return
         }
@@ -434,6 +569,9 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     func loadBackend(url: URL) {
+        guard !terminationPreparationIsActive else {
+            return
+        }
         guard
             let origin = WebShellOrigin(url: url),
             origin.scheme == "http",
@@ -540,6 +678,31 @@ final class WebShellController: NSObject, ObservableObject {
             && url.password == nil
     }
 
+    nonisolated static func pendingProjectRestoreIsAdmitted(
+        terminationPreparationIsActive: Bool,
+        recoveryGeneration: String?,
+        currentGeneration: String
+    ) -> Bool {
+        !terminationPreparationIsActive || recoveryGeneration == currentGeneration
+    }
+
+    nonisolated static func terminationWorkspaceBindingIsAdmitted(
+        currentProjectID: String?,
+        hasCurrentProjectDocument: Bool,
+        currentProjectIsApplied: Bool
+    ) -> Bool {
+        if currentProjectID != nil, hasCurrentProjectDocument {
+            return currentProjectIsApplied
+        }
+        // The Design surface remains a live JavaScript workspace after the
+        // last project is deleted. That explicit unbound state still needs an
+        // atomic seal and realm retirement, even though there is no file to
+        // persist. Reject partial/mismatched identity states.
+        return currentProjectID == nil
+            && !hasCurrentProjectDocument
+            && !currentProjectIsApplied
+    }
+
     func captureCurrentProjectForFileOperation(
         projectIDs: Set<String>
     ) async throws -> WebShellProjectSnapshot? {
@@ -547,6 +710,368 @@ final class WebShellController: NSObject, ObservableObject {
             projectIDs: projectIDs,
             retainWorkspaceLockOnSuccess: false
         )
+    }
+
+    func beginTerminationPreparation() async throws {
+        if terminationPreparationIsActive {
+            return
+        }
+        guard
+            isReady,
+            Self.terminationWorkspaceBindingIsAdmitted(
+                currentProjectID: currentProjectID,
+                hasCurrentProjectDocument: currentProjectDocument != nil,
+                currentProjectIsApplied: bridgeLifecycle.currentProjectIsApplied
+            ),
+            !isProjectIdentityChangeInProgress,
+            !isCapturingSnapshot,
+            !isLoadingProject,
+            navigationQueue.latestURL == nil,
+            pendingProject == nil
+        else {
+            throw WebShellFileOperationError.workspaceBusy
+        }
+
+        terminationPreparationIsActive = true
+        terminationFence.reset()
+        terminationWorkspaceRetirement.resetAfterReloadOrNewPreparation()
+        do {
+            try await setWorkspaceInteractionLocked(true)
+        } catch {
+            let lockError = error
+            // The JavaScript may have applied `inert` before a navigation made
+            // its completion stale. Attempt the inverse operation while this
+            // native gate still authorizes termination-only scripts. A failed
+            // inverse leaves the gate active so outer recovery can retry it.
+            do {
+                try await WebShellInteractionLockRecovery.restore(
+                    unlock: {
+                        try await self.endWorkspaceTerminationFence()
+                        try await self.setWorkspaceInteractionLocked(false)
+                    },
+                    markRestored: {
+                        self.terminationFence.reset()
+                        self.terminationPreparationIsActive = false
+                    }
+                )
+            } catch {
+                throw WebShellFileOperationError.captureFailed(
+                    "The workspace pause failed (\(lockError.localizedDescription)), "
+                        + "and its first interaction-restore attempt also failed "
+                        + "(\(error.localizedDescription))."
+                )
+            }
+            throw lockError
+        }
+    }
+
+    func captureCurrentProjectForTermination(
+        projectIDs: Set<String>
+    ) async throws -> WebShellProjectSnapshot? {
+        guard terminationPreparationIsActive else {
+            throw WebShellFileOperationError.captureFailed(
+                "The workspace must be paused before its final snapshot is captured."
+            )
+        }
+        // This first persistence point happens before either child process is
+        // stopped. Keep the locked page alive so already-running work can
+        // settle while shutdown proceeds; the later refresh establishes the
+        // irreversible cut and disposes this JavaScript document.
+        guard let currentProjectID, projectIDs.contains(currentProjectID) else {
+            return nil
+        }
+        return try await captureCurrentProjectForFileOperation(
+            projectIDs: projectIDs,
+            retainWorkspaceLockOnSuccess: true
+        )
+    }
+
+    func refreshCurrentProjectForTermination(
+        projectIDs: Set<String>
+    ) async throws -> WebShellProjectSnapshot? {
+        guard terminationPreparationIsActive else {
+            throw WebShellFileOperationError.captureFailed(
+                "The workspace final-snapshot lock is not active."
+            )
+        }
+        return try await captureStableTerminationSnapshot(projectIDs: projectIDs)
+    }
+
+    func cancelTerminationPreparation() async throws {
+        guard terminationPreparationIsActive else {
+            return
+        }
+
+        if terminationWorkspaceRetirement.requiresReloadOnRollback {
+            // The final seal deliberately destroyed the old JavaScript realm,
+            // so cancellation restores the persisted document in a fresh
+            // trusted workspace. No callback from the retired realm can race
+            // this recovery or become part of the authoritative document.
+            guard let currentURL else {
+                throw WebShellFileOperationError.captureFailed(
+                    "The workspace was sealed, but its backend URL is unavailable for recovery."
+                )
+            }
+            if let currentProjectID, let currentProjectDocument {
+                pendingProject = PendingProject(
+                    id: currentProjectID,
+                    document: currentProjectDocument
+                )
+            }
+            isCapturingSnapshot = false
+            terminationFence.reset()
+            let restarted = beginNavigationNow(WebShellNavigationRequest(
+                url: currentURL,
+                trust: .trustedWorkspace
+            ))
+            guard restarted else {
+                terminationWorkspaceRetirement.begin()
+                terminationPreparationIsActive = true
+                throw WebShellFileOperationError.captureFailed(
+                    "The sealed workspace could not be reloaded after quit was cancelled."
+                )
+            }
+            let recoveryGeneration = bridgeLifecycle.generation
+            do {
+                try await waitForTerminationRecoveryReload(
+                    generation: recoveryGeneration
+                )
+            } catch {
+                // Keep the native preparation gate closed. A later recovery
+                // attempt must issue another fresh trusted navigation rather
+                // than expose a blank or partially restored Web document.
+                terminationWorkspaceRetirement.begin()
+                terminationPreparationIsActive = true
+                throw error
+            }
+            terminationWorkspaceRetirement.resetAfterReloadOrNewPreparation()
+            terminationFence.reset()
+            terminationPreparationIsActive = false
+            return
+        }
+
+        // Admit projectChanged again before WebKit removes `inert`; otherwise
+        // the first edit after a cancelled quit could arrive while native code
+        // still believes a retained final capture is in progress.
+        isCapturingSnapshot = false
+        try await endWorkspaceTerminationFence()
+
+        if performLatestQueuedNavigation() {
+            terminationFence.reset()
+            terminationPreparationIsActive = false
+            return
+        }
+        if pendingProject != nil {
+            terminationFence.reset()
+            terminationPreparationIsActive = false
+            unlockWorkspaceAfterPendingProjectLoad = true
+            pushPendingProject()
+            return
+        }
+        try await setWorkspaceInteractionLocked(false)
+        terminationFence.reset()
+        terminationPreparationIsActive = false
+    }
+
+    private func captureStableTerminationSnapshot(
+        projectIDs: Set<String>
+    ) async throws -> WebShellProjectSnapshot? {
+        if terminationWorkspaceRetirement.authoritativeDocumentWasDisposed {
+            guard terminationFence.canCommit else {
+                throw WebShellFileOperationError.captureFailed(
+                    "The disposed workspace no longer matches its persisted termination snapshot."
+                )
+            }
+            guard
+                let currentProjectID,
+                projectIDs.contains(currentProjectID),
+                let currentProjectDocument
+            else {
+                return nil
+            }
+            return WebShellProjectSnapshot(
+                id: currentProjectID,
+                document: currentProjectDocument
+            )
+        }
+
+        isCapturingSnapshot = false
+        guard
+            let currentProjectID,
+            projectIDs.contains(currentProjectID)
+        else {
+            // The Design surface can be active before a project exists. Seal
+            // its execution epoch as well, but there is no owned file to write.
+            isCapturingSnapshot = true
+            let generation = bridgeLifecycle.generation
+            let result = await withCheckedContinuation { continuation in
+                captureCurrentWorkspaceSnapshot(
+                    for: generation,
+                    sealForTermination: true,
+                    allowUnboundTerminationSnapshot: true
+                ) { result in
+                    continuation.resume(returning: result)
+                }
+            }
+            guard case let .captured(captured) = result,
+                  let fenceEpoch = captured.fenceEpoch,
+                  let publicationRevision = captured.publicationRevision,
+                  let terminationSealed = captured.terminationSealed
+            else {
+                isCapturingSnapshot = false
+                throw WebShellFileOperationError.captureFailed(
+                    "The unbound workspace could not establish its termination fence."
+                )
+            }
+            terminationFence.establish(
+                epoch: fenceEpoch,
+                revision: publicationRevision,
+                isSealed: terminationSealed
+            )
+            terminationFence.recordPersistedSnapshot(
+                epoch: fenceEpoch,
+                revision: publicationRevision
+            )
+            try await disposeAuthoritativeWorkspaceForTermination()
+            terminationFence.recordAuthoritativeWebDocumentDisposed()
+            guard terminationFence.canCommit else {
+                throw WebShellFileOperationError.captureFailed(
+                    "The unbound workspace did not retain its atomic termination seal."
+                )
+            }
+            return nil
+        }
+        let snapshot = try await captureCurrentProjectForFileOperation(
+            projectIDs: projectIDs,
+            retainWorkspaceLockOnSuccess: true,
+            sealForTermination: true
+        )
+        try await disposeAuthoritativeWorkspaceForTermination()
+        terminationFence.recordAuthoritativeWebDocumentDisposed()
+        guard terminationFence.canCommit else {
+            throw WebShellFileOperationError.captureFailed(
+                "The workspace did not persist the snapshot from its atomic termination seal."
+            )
+        }
+        return snapshot
+    }
+
+    private func disposeAuthoritativeWorkspaceForTermination() async throws {
+        guard !terminationWorkspaceRetirement.authoritativeDocumentWasDisposed else {
+            return
+        }
+        guard terminationFreezeContinuation == nil else {
+            throw WebShellFileOperationError.workspaceBusy
+        }
+
+        // Navigation is the only host-owned, exhaustive mutation fence: it
+        // retires the entire JavaScript realm, including async owners that do
+        // not participate in state.js epochs (for example AI auto-spawn and
+        // SBML import callbacks). The persisted snapshot above becomes the
+        // sole authoritative document at this point.
+        pendingProject = Self.projectToReapply(
+            pendingProject: pendingProject,
+            currentProjectID: currentProjectID,
+            currentProjectDocument: currentProjectDocument
+        )
+        isReady = false
+        isLoadingProject = false
+        // From here onward cancellation must recover through a fresh trusted
+        // navigation even if the retirement navigation itself fails. The old
+        // generation and its native message bridge are about to be revoked.
+        terminationWorkspaceRetirement.begin()
+        bridgeLifecycle.beginNavigation()
+        navigationTrust = nil
+        removeBridgeFromWebContent()
+
+        try await withCheckedThrowingContinuation { continuation in
+            terminationFreezeContinuation = continuation
+            terminationFreezeTimeoutTask?.cancel()
+            terminationFreezeTimeoutTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: Self.snapshotCaptureTimeoutNanoseconds)
+                } catch {
+                    return
+                }
+                self?.resolveTerminationFreeze(
+                    .failure(WebShellFileOperationError.captureFailed(
+                        "The embedded workspace did not retire its JavaScript document in time."
+                    ))
+                )
+            }
+
+            let frozenHTML = """
+            <!doctype html><html><head><meta charset="utf-8"></head>
+            <body aria-busy="true"></body></html>
+            """
+            activeNavigation = nil
+            let navigation = webView.loadHTMLString(frozenHTML, baseURL: nil)
+            terminationFreezeNavigation = navigation
+            activeNavigation = navigation
+            if navigation == nil {
+                resolveTerminationFreeze(.failure(
+                    WebShellFileOperationError.captureFailed(
+                        "The embedded workspace could not begin its termination freeze."
+                    )
+                ))
+            }
+        }
+        terminationWorkspaceRetirement.confirmDisposal()
+    }
+
+    private func resolveTerminationFreeze(_ result: Result<Void, Error>) {
+        guard let continuation = terminationFreezeContinuation else {
+            return
+        }
+        terminationFreezeContinuation = nil
+        terminationFreezeTimeoutTask?.cancel()
+        terminationFreezeTimeoutTask = nil
+        terminationFreezeNavigation = nil
+        continuation.resume(with: result)
+    }
+
+    private func waitForTerminationRecoveryReload(
+        generation: String
+    ) async throws {
+        guard terminationRecoveryReloadContinuation == nil else {
+            throw WebShellFileOperationError.workspaceBusy
+        }
+
+        try await withCheckedThrowingContinuation { continuation in
+            terminationRecoveryReloadGeneration = generation
+            terminationRecoveryReloadContinuation = continuation
+            terminationRecoveryReloadTimeoutTask?.cancel()
+            terminationRecoveryReloadTimeoutTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: Self.snapshotCaptureTimeoutNanoseconds)
+                } catch {
+                    return
+                }
+                self?.resolveTerminationRecoveryReload(
+                    .failure(WebShellFileOperationError.captureFailed(
+                        "The workspace page did not finish restoring after quit was cancelled."
+                    )),
+                    generation: generation
+                )
+            }
+        }
+    }
+
+    private func resolveTerminationRecoveryReload(
+        _ result: Result<Void, Error>,
+        generation: String
+    ) {
+        guard
+            terminationRecoveryReloadGeneration == generation,
+            let continuation = terminationRecoveryReloadContinuation
+        else {
+            return
+        }
+        terminationRecoveryReloadGeneration = nil
+        terminationRecoveryReloadContinuation = nil
+        terminationRecoveryReloadTimeoutTask?.cancel()
+        terminationRecoveryReloadTimeoutTask = nil
+        continuation.resume(with: result)
     }
 
     func captureCurrentProjectForIdentityChange(
@@ -576,7 +1101,8 @@ final class WebShellController: NSObject, ObservableObject {
 
     private func captureCurrentProjectForFileOperation(
         projectIDs: Set<String>,
-        retainWorkspaceLockOnSuccess: Bool
+        retainWorkspaceLockOnSuccess: Bool,
+        sealForTermination: Bool = false
     ) async throws -> WebShellProjectSnapshot? {
         if let pendingProject, projectIDs.contains(pendingProject.id) {
             throw WebShellFileOperationError.workspaceBusy
@@ -598,7 +1124,10 @@ final class WebShellController: NSObject, ObservableObject {
         isCapturingSnapshot = true
         let generation = bridgeLifecycle.generation
         let result = await withCheckedContinuation { continuation in
-            captureCurrentWorkspaceSnapshot(for: generation) { result in
+            captureCurrentWorkspaceSnapshot(
+                for: generation,
+                sealForTermination: sealForTermination
+            ) { result in
                 continuation.resume(returning: result)
             }
         }
@@ -607,7 +1136,8 @@ final class WebShellController: NSObject, ObservableObject {
             result,
             capturedProjectID: capturedProjectID,
             generation: generation,
-            retainWorkspaceLockOnSuccess: retainWorkspaceLockOnSuccess
+            retainWorkspaceLockOnSuccess: retainWorkspaceLockOnSuccess,
+            terminationSnapshot: sealForTermination
         ) else {
             throw WebShellFileOperationError.captureFailed(
                 lastErrorMessage ?? "Failed to capture the latest workspace edits. The file operation was not performed."
@@ -899,7 +1429,12 @@ final class WebShellController: NSObject, ObservableObject {
         }
         admittedMainFrameRequest = request
         activeNavigation = nil
-        activeNavigation = webView.load(URLRequest(url: request.url))
+        guard let navigation = webView.load(URLRequest(url: request.url)) else {
+            admittedMainFrameRequest = nil
+            lastErrorMessage = "The embedded workspace navigation could not be started."
+            return false
+        }
+        activeNavigation = navigation
         return true
     }
 
@@ -908,7 +1443,8 @@ final class WebShellController: NSObject, ObservableObject {
         _ result: WebShellSnapshotCaptureResult,
         capturedProjectID: String,
         generation: String,
-        retainWorkspaceLockOnSuccess: Bool = false
+        retainWorkspaceLockOnSuccess: Bool = false,
+        terminationSnapshot: Bool = false
     ) async -> Bool {
         guard bridgeLifecycle.accepts(generation) else {
             return false
@@ -931,6 +1467,23 @@ final class WebShellController: NSObject, ObservableObject {
             return false
         }
 
+        if terminationSnapshot {
+            guard
+                let fenceEpoch = snapshot.fenceEpoch,
+                let publicationRevision = snapshot.publicationRevision,
+                let terminationSealed = snapshot.terminationSealed
+            else {
+                lastErrorMessage = "The workspace termination snapshot did not include its revision fence."
+                releaseSnapshotCapture(for: generation)
+                return false
+            }
+            terminationFence.establish(
+                epoch: fenceEpoch,
+                revision: publicationRevision,
+                isSealed: terminationSealed
+            )
+        }
+
         currentProjectDocument = snapshot.document
         do {
             try await persistProjectInOrder(
@@ -941,6 +1494,16 @@ final class WebShellController: NSObject, ObservableObject {
                 latestPersistedSnapshotSequence,
                 snapshot.sequence
             )
+            if
+                terminationSnapshot,
+                let fenceEpoch = snapshot.fenceEpoch,
+                let publicationRevision = snapshot.publicationRevision
+            {
+                terminationFence.recordPersistedSnapshot(
+                    epoch: fenceEpoch,
+                    revision: publicationRevision
+                )
+            }
         } catch {
             guard bridgeLifecycle.accepts(generation) else {
                 return false
@@ -1060,7 +1623,17 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     private func pushPendingProject() {
-        guard isReady, !isCapturingSnapshot, !isLoadingProject, let pendingProject else {
+        guard
+            Self.pendingProjectRestoreIsAdmitted(
+                terminationPreparationIsActive: terminationPreparationIsActive,
+                recoveryGeneration: terminationRecoveryReloadGeneration,
+                currentGeneration: bridgeLifecycle.generation
+            ),
+            isReady,
+            !isCapturingSnapshot,
+            !isLoadingProject,
+            let pendingProject
+        else {
             return
         }
 
@@ -1091,6 +1664,10 @@ final class WebShellController: NSObject, ObservableObject {
                         self.pushPendingProject()
                     } else {
                         self.releaseWorkspaceLockAfterPendingProjectLoadIfNeeded()
+                        self.resolveTerminationRecoveryReload(
+                            .failure(error),
+                            generation: generation
+                        )
                     }
                     return
                 }
@@ -1104,6 +1681,12 @@ final class WebShellController: NSObject, ObservableObject {
                         self.pushPendingProject()
                     } else {
                         self.releaseWorkspaceLockAfterPendingProjectLoadIfNeeded()
+                        self.resolveTerminationRecoveryReload(
+                            .failure(WebShellFileOperationError.captureFailed(
+                                "Failed to restore the selected workspace after quit was cancelled."
+                            )),
+                            generation: generation
+                        )
                     }
                     return
                 }
@@ -1121,12 +1704,20 @@ final class WebShellController: NSObject, ObservableObject {
                     self.pushPendingProject()
                 } else {
                     self.releaseWorkspaceLockAfterPendingProjectLoadIfNeeded()
+                    self.resolveTerminationRecoveryReload(
+                        .success(()),
+                        generation: generation
+                    )
                 }
             }
         } catch {
             isLoadingProject = false
             lastErrorMessage = error.localizedDescription
             releaseWorkspaceLockAfterPendingProjectLoadIfNeeded()
+            resolveTerminationRecoveryReload(
+                .failure(error),
+                generation: bridgeLifecycle.generation
+            )
         }
     }
 
@@ -1161,6 +1752,12 @@ final class WebShellController: NSObject, ObservableObject {
         case "ready":
             isReady = true
             pushPendingProject()
+            if pendingProject == nil, !isLoadingProject {
+                resolveTerminationRecoveryReload(
+                    .success(()),
+                    generation: generation
+                )
+            }
 
         case "contractError":
             if let payload = body["payload"] as? String {
@@ -1175,9 +1772,27 @@ final class WebShellController: NSObject, ObservableObject {
                 let projectID = payload["projectID"] as? String,
                 !projectID.isEmpty,
                 let sequence = Self.snapshotSequence(from: payload),
+                let fenceEpoch = Self.unsignedInteger(
+                    from: payload,
+                    key: "fenceEpoch",
+                    allowZero: true
+                ),
+                let publicationRevision = Self.unsignedInteger(
+                    from: payload,
+                    key: "publicationRevision",
+                    allowZero: true
+                ),
                 let jsonString = payload["jsonString"] as? String,
                 let document = decodeDocument(fromJSONString: jsonString)
             else {
+                return
+            }
+
+            if terminationPreparationIsActive {
+                // The atomic Web seal either captured this pre-seal message or
+                // classifies a same-fence publication as dirty. Never silently
+                // discard it merely because a retained capture is in progress.
+                terminationFence.observeRejectedPublication(epoch: fenceEpoch)
                 return
             }
 
@@ -1191,7 +1806,10 @@ final class WebShellController: NSObject, ObservableObject {
                 }
                 deferIdentityProjectChange(WebShellSequencedProjectChange(
                     sequence: sequence,
-                    document: document
+                    document: document,
+                    fenceEpoch: fenceEpoch,
+                    publicationRevision: publicationRevision,
+                    terminationSealed: payload["terminationSealed"] as? Bool == true
                 ))
                 return
             }
@@ -1211,6 +1829,26 @@ final class WebShellController: NSObject, ObservableObject {
                 document: document,
                 generation: generation
             )
+
+        case "terminationFenceDirty":
+            guard
+                terminationPreparationIsActive,
+                let payload = body["payload"] as? [String: Any],
+                let fenceEpoch = Self.unsignedInteger(
+                    from: payload,
+                    key: "fenceEpoch",
+                    allowZero: true
+                ),
+                let publicationRevision = Self.unsignedInteger(
+                    from: payload,
+                    key: "publicationRevision",
+                    allowZero: true
+                )
+            else {
+                return
+            }
+            _ = publicationRevision
+            terminationFence.observeRejectedPublication(epoch: fenceEpoch)
 
         case "requestCurrentProject":
             if
@@ -1303,12 +1941,24 @@ final class WebShellController: NSObject, ObservableObject {
 
     private func captureCurrentWorkspaceSnapshot(
         for generation: String,
+        sealForTermination: Bool = false,
+        allowUnboundTerminationSnapshot: Bool = false,
         completion: @escaping (WebShellSnapshotCaptureResult) -> Void
     ) {
+        let workspaceBindingIsAdmitted = bridgeLifecycle.currentProjectIsApplied
+            || (
+                allowUnboundTerminationSnapshot
+                    && sealForTermination
+                    && Self.terminationWorkspaceBindingIsAdmitted(
+                        currentProjectID: currentProjectID,
+                        hasCurrentProjectDocument: currentProjectDocument != nil,
+                        currentProjectIsApplied: bridgeLifecycle.currentProjectIsApplied
+                    )
+            )
         guard
             isReady,
             bridgeLifecycle.accepts(generation),
-            bridgeLifecycle.currentProjectIsApplied
+            workspaceBindingIsAdmitted
         else {
             lastErrorMessage = "The current workspace is not ready to be captured."
             completion(.failed)
@@ -1343,7 +1993,7 @@ final class WebShellController: NSObject, ObservableObject {
             )
         }
 
-        webView.evaluateJavaScript("(window.BiocircuitsExplorerNativeShell || window.ROPNativeShell)?.captureProjectSnapshot?.();") { [weak self] result, error in
+        let finishEvaluation: @MainActor @Sendable (Any?, (any Error)?) -> Void = { [weak self] result, error in
             guard let self else {
                 capture.resolve(.failed)
                 return
@@ -1382,8 +2032,37 @@ final class WebShellController: NSObject, ObservableObject {
                 capture,
                 result: .captured(WebShellCapturedProjectSnapshot(
                     document: captured.document,
-                    sequence: captured.sequence
+                    sequence: captured.sequence,
+                    fenceEpoch: captured.fenceEpoch,
+                    publicationRevision: captured.publicationRevision,
+                    terminationSealed: captured.terminationSealed
                 ))
+            )
+        }
+
+        let shell = "(window.BiocircuitsExplorerNativeShell || window.ROPNativeShell)"
+        if sealForTermination {
+            Task { @MainActor [weak webView] in
+                guard let webView else {
+                    finishEvaluation(nil, CancellationError())
+                    return
+                }
+                do {
+                    let value = try await webView.callAsyncJavaScript(
+                        "return await \(shell)?.sealAndCaptureProjectSnapshot?.();",
+                        arguments: [:],
+                        in: nil,
+                        contentWorld: .page
+                    )
+                    finishEvaluation(value, nil)
+                } catch {
+                    finishEvaluation(nil, error)
+                }
+            }
+        } else {
+            webView.evaluateJavaScript(
+                "\(shell)?.captureProjectSnapshot?.();",
+                completionHandler: finishEvaluation
             )
         }
     }
@@ -1409,9 +2088,13 @@ final class WebShellController: NSObject, ObservableObject {
     private func evaluateNativeShellScript(
         _ script: String,
         completeIfStale: Bool = false,
+        allowDuringTermination: Bool = false,
         completion: ((Any?, Error?) -> Void)? = nil
     ) {
-        guard isReady else {
+        guard
+            isReady,
+            allowDuringTermination || !terminationPreparationIsActive
+        else {
             completion?(nil, nil)
             return
         }
@@ -1434,9 +2117,16 @@ final class WebShellController: NSObject, ObservableObject {
         }
     }
 
-    private func evaluateNativeShellBoolean(_ script: String) async throws -> Bool {
+    private func evaluateNativeShellBoolean(
+        _ script: String,
+        allowDuringTermination: Bool = false
+    ) async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
-            evaluateNativeShellScript(script, completeIfStale: true) { result, error in
+            evaluateNativeShellScript(
+                script,
+                completeIfStale: true,
+                allowDuringTermination: allowDuringTermination
+            ) { result, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
@@ -1446,9 +2136,16 @@ final class WebShellController: NSObject, ObservableObject {
         }
     }
 
-    private func evaluateNativeShellString(_ script: String) async throws -> String? {
+    private func evaluateNativeShellString(
+        _ script: String,
+        allowDuringTermination: Bool = false
+    ) async throws -> String? {
         try await withCheckedThrowingContinuation { continuation in
-            evaluateNativeShellScript(script, completeIfStale: true) { result, error in
+            evaluateNativeShellScript(
+                script,
+                completeIfStale: true,
+                allowDuringTermination: allowDuringTermination
+            ) { result, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
@@ -1476,7 +2173,10 @@ final class WebShellController: NSObject, ObservableObject {
         }
         return WebShellSequencedProjectChange(
             sequence: payload.sequence,
-            document: document
+            document: document,
+            fenceEpoch: payload.fenceEpoch,
+            publicationRevision: payload.publicationRevision,
+            terminationSealed: payload.terminationSealed
         )
     }
 
@@ -1491,9 +2191,24 @@ final class WebShellController: NSObject, ObservableObject {
         )
     }
 
+    private func endWorkspaceTerminationFence() async throws {
+        let script = "(window.BiocircuitsExplorerNativeShell || window.ROPNativeShell)?.endTerminationFence?.();"
+        guard try await evaluateNativeShellBoolean(
+            script,
+            allowDuringTermination: true
+        ) else {
+            throw WebShellFileOperationError.captureFailed(
+                "The workspace termination revision fence could not be released."
+            )
+        }
+    }
+
     private func setWorkspaceInteractionLocked(_ locked: Bool) async throws {
         let script = "(window.BiocircuitsExplorerNativeShell || window.ROPNativeShell)?.setFileOperationLocked?.(\(locked ? "true" : "false"));"
-        guard try await evaluateNativeShellBoolean(script) else {
+        guard try await evaluateNativeShellBoolean(
+            script,
+            allowDuringTermination: terminationPreparationIsActive
+        ) else {
             throw WebShellFileOperationError.captureFailed(
                 locked
                     ? "The workspace could not be paused safely for the file operation."
@@ -1574,6 +2289,16 @@ extension WebShellController: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
+        if
+            webView === self.webView,
+            terminationFreezeContinuation != nil,
+            navigationAction.targetFrame?.isMainFrame == true,
+            navigationAction.request.url?.absoluteString == "about:blank"
+        {
+            decisionHandler(.allow)
+            return
+        }
+
         guard
             webView === self.webView,
             let url = navigationAction.request.url,
@@ -1703,6 +2428,12 @@ extension WebShellController: WKNavigationDelegate {
             return
         }
 
+        if let terminationFreezeNavigation, navigation === terminationFreezeNavigation {
+            admittedMainFrameRequest = nil
+            resolveTerminationFreeze(.success(()))
+            return
+        }
+
         admittedMainFrameRequest = nil
         lastErrorMessage = nil
     }
@@ -1710,6 +2441,14 @@ extension WebShellController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         guard isActiveNavigation(navigation) else {
             return
+        }
+
+        if let terminationFreezeNavigation, navigation === terminationFreezeNavigation {
+            resolveTerminationFreeze(.failure(error))
+            return
+        }
+        if let generation = terminationRecoveryReloadGeneration {
+            resolveTerminationRecoveryReload(.failure(error), generation: generation)
         }
 
         admittedMainFrameRequest = nil
@@ -1721,12 +2460,46 @@ extension WebShellController: WKNavigationDelegate {
             return
         }
 
+        if let terminationFreezeNavigation, navigation === terminationFreezeNavigation {
+            resolveTerminationFreeze(.failure(error))
+            return
+        }
+        if let generation = terminationRecoveryReloadGeneration {
+            resolveTerminationRecoveryReload(.failure(error), generation: generation)
+        }
+
         admittedMainFrameRequest = nil
         lastErrorMessage = error.localizedDescription
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard webView === self.webView else {
+            return
+        }
+
+        if let generation = terminationRecoveryReloadGeneration {
+            resolveTerminationRecoveryReload(
+                .failure(WebShellFileOperationError.captureFailed(
+                    "The workspace page stopped while quit cancellation was restoring it."
+                )),
+                generation: generation
+            )
+            return
+        }
+
+        if terminationPreparationIsActive,
+           terminationFreezeContinuation != nil
+            || terminationWorkspaceRetirement.authoritativeDocumentWasDisposed
+            || terminationWorkspaceRetirement.requiresReloadOnRollback
+        {
+            // A dead WebContent process is an even stronger disposal fence
+            // than the static replacement document. Do not resurrect it while
+            // AppKit is still awaiting the termination transaction.
+            resolveTerminationFreeze(.success(()))
+            terminationWorkspaceRetirement.begin()
+            terminationWorkspaceRetirement.confirmDisposal()
+            isReady = false
+            isLoadingProject = false
             return
         }
 
@@ -1837,17 +2610,30 @@ extension WebShellController {
     }
 
     static func snapshotSequence(from payload: [String: Any]) -> UInt64? {
-        if let sequence = payload["sequence"] as? UInt64, sequence > 0 {
-            return sequence
+        unsignedInteger(from: payload, key: "sequence", allowZero: false)
+    }
+
+    static func unsignedInteger(
+        from payload: [String: Any],
+        key: String,
+        allowZero: Bool
+    ) -> UInt64? {
+        let minimum = allowZero ? 0.0 : 1.0
+        if let value = payload[key] as? UInt64,
+           allowZero || value > 0
+        {
+            return value
         }
-        if let sequence = payload["sequence"] as? Int, sequence > 0 {
-            return UInt64(sequence)
+        if let value = payload[key] as? Int,
+           value >= Int(minimum)
+        {
+            return UInt64(value)
         }
-        if let number = payload["sequence"] as? NSNumber {
+        if let number = payload[key] as? NSNumber {
             let value = number.doubleValue
             guard
                 value.isFinite,
-                value > 0,
+                value >= minimum,
                 value.rounded(.towardZero) == value,
                 value <= 9_007_199_254_740_991
             else {
@@ -1940,6 +2726,10 @@ extension WebShellController {
         suppressSync: false,
         lastSnapshot: '',
         snapshotSequence: 0,
+        publicationRevision: 0,
+        terminationFenceEpoch: 0,
+        terminationSealed: false,
+        terminationDirty: false,
         projectID: null,
         reportedError: null,
       };
@@ -2059,12 +2849,29 @@ extension WebShellController {
         if (shellState.suppressSync) return;
         if (!jsonString) return;
         if (!force && jsonString === shellState.lastSnapshot) return;
+        if (shellState.terminationSealed) {
+          // The seal is the authoritative revision cut. Work that settles
+          // after it cannot publish a new persistent revision. Dirty is only a
+          // diagnostic: the late result is outside the atomic cut. If quit is
+          // cancelled, native recovery seals/captures the actual document again
+          // before releasing interaction.
+          shellState.terminationDirty = true;
+          postToNative('terminationFenceDirty', {
+            fenceEpoch: shellState.terminationFenceEpoch,
+            publicationRevision: shellState.publicationRevision,
+          });
+          return null;
+        }
+        shellState.publicationRevision += 1;
         shellState.lastSnapshot = jsonString;
         shellState.snapshotSequence += 1;
         const payload = {
           projectID: shellState.projectID,
           jsonString,
           sequence: shellState.snapshotSequence,
+          fenceEpoch: shellState.terminationFenceEpoch,
+          publicationRevision: shellState.publicationRevision,
+          terminationSealed: shellState.terminationSealed,
         };
         postToNative('projectChanged', payload);
         return JSON.stringify(payload);
@@ -2081,7 +2888,62 @@ extension WebShellController {
           projectID: shellState.projectID,
           jsonString,
           sequence: shellState.snapshotSequence,
+          fenceEpoch: shellState.terminationFenceEpoch,
+          publicationRevision: shellState.publicationRevision,
+          terminationSealed: shellState.terminationSealed,
         });
+      }
+
+      async function performTerminationSealAndCapture() {
+        const contract = currentContract();
+        if (typeof contract?.serializeWorkspace !== 'function') return null;
+
+        // Establish the publication cut synchronously, then advance the same
+        // runtime epoch used by every workspace async owner. Work settling
+        // while the cached module import resolves is rejected by the seal and
+        // included in the post-advance serialization; work settling afterward
+        // fails its old epoch/owner ticket before it can mutate the workspace.
+        shellState.terminationFenceEpoch += 1;
+        const fenceEpoch = shellState.terminationFenceEpoch;
+        shellState.terminationSealed = true;
+        shellState.terminationDirty = false;
+        let jsonString = contract.serializeWorkspace();
+        if (typeof jsonString !== 'string' || jsonString.length === 0) return null;
+
+        const runtimeState = await import('./js/state.js');
+        if (!shellState.terminationSealed || shellState.terminationFenceEpoch !== fenceEpoch) {
+          return null;
+        }
+        if (typeof runtimeState?.advanceWorkspaceRuntimeEpoch !== 'function') return null;
+        runtimeState.advanceWorkspaceRuntimeEpoch();
+
+        jsonString = contract.serializeWorkspace();
+        if (typeof jsonString !== 'string' || jsonString.length === 0) return null;
+        shellState.lastSnapshot = jsonString;
+        shellState.snapshotSequence += 1;
+        return JSON.stringify({
+          projectID: shellState.projectID,
+          jsonString,
+          sequence: shellState.snapshotSequence,
+          fenceEpoch: shellState.terminationFenceEpoch,
+          publicationRevision: shellState.publicationRevision,
+          terminationSealed: shellState.terminationSealed,
+        });
+      }
+
+      function describeTerminationFence() {
+        return JSON.stringify({
+          fenceEpoch: shellState.terminationFenceEpoch,
+          publicationRevision: shellState.publicationRevision,
+          sealed: shellState.terminationSealed,
+          dirty: shellState.terminationDirty,
+        });
+      }
+
+      function releaseTerminationFence() {
+        shellState.terminationSealed = false;
+        shellState.terminationDirty = false;
+        return true;
       }
 
       function applyFileOperationLock(locked) {
@@ -2135,6 +2997,21 @@ extension WebShellController {
             reportError(`Workspace snapshot serialization failed: ${error?.message ?? String(error)}`);
             return null;
           }
+        },
+        sealAndCaptureProjectSnapshot() {
+          try {
+            return performTerminationSealAndCapture();
+          } catch (error) {
+            shellState.terminationDirty = true;
+            reportError(`Workspace termination fence failed: ${error?.message ?? String(error)}`);
+            return null;
+          }
+        },
+        currentTerminationFence() {
+          return describeTerminationFence();
+        },
+        endTerminationFence() {
+          return releaseTerminationFence();
         },
         rebindProjectIDAndCapture(projectID) {
           if (typeof projectID !== 'string' || projectID.length === 0) return null;
