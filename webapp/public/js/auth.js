@@ -26,115 +26,11 @@ const LEGACY_AUTH_KEYS = [
 ];
 
 const REFRESH_LEEWAY_SECONDS = 300; // refresh 5 minutes before expiry
-const AUTH_REQUEST_TIMEOUT_MS = 60 * 1000;
 
 let cachedConfig = null;
-let configFlight = null;
-let refreshFlight = null;
+let configPromise = null;
+let refreshPromise = null;
 const subscribers = new Set();
-
-function abortError(message = 'The request was aborted.') {
-  if (typeof DOMException === 'function') return new DOMException(message, 'AbortError');
-  const error = new Error(message);
-  error.name = 'AbortError';
-  return error;
-}
-
-function timeoutError(message = 'The request timed out.') {
-  if (typeof DOMException === 'function') return new DOMException(message, 'TimeoutError');
-  const error = new Error(message);
-  error.name = 'TimeoutError';
-  return error;
-}
-
-function signalReason(signal) {
-  return signal?.reason || abortError();
-}
-
-function throwIfAborted(signal) {
-  if (signal?.aborted) throw signalReason(signal);
-}
-
-// Keep request lifetimes compatible with the WebKit shipped by the minimum
-// macOS 14 target. AbortSignal.any/timeout arrived in later Safari releases,
-// so compose a caller signal and deadline with AbortController instead. The
-// race preserves TimeoutError (rather than whatever AbortError fetch chooses
-// to synthesize) and the finally block removes timers/listeners after headers
-// and response bodies have both settled.
-export async function withRequestTimeout(signal, timeoutMs, operation) {
-  if (typeof operation !== 'function') throw new TypeError('Request operation must be a function.');
-  const timeout = Number(timeoutMs);
-  if (!Number.isFinite(timeout) || timeout <= 0) {
-    throw new RangeError('Request timeout must be a positive finite number.');
-  }
-  throwIfAborted(signal);
-
-  const controller = new AbortController();
-  let rejectLifetime;
-  const lifetime = new Promise((resolve, reject) => {
-    rejectLifetime = reject;
-  });
-  const abort = (reason) => {
-    if (controller.signal.aborted) return;
-    rejectLifetime(reason);
-    controller.abort(reason);
-  };
-  const callerAbort = () => abort(signalReason(signal));
-
-  if (signal) {
-    signal.addEventListener('abort', callerAbort, { once: true });
-  }
-  const timeoutId = setTimeout(() => abort(timeoutError()), timeout);
-
-  try {
-    if (controller.signal.aborted) throw signalReason(controller.signal);
-    const operationPromise = Promise.resolve(operation(controller.signal));
-    return await Promise.race([
-      operationPromise,
-      lifetime,
-    ]);
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener?.('abort', callerAbort);
-  }
-}
-
-export function isCancellationError(error) {
-  return error?.name === 'AbortError' || error?.name === 'TimeoutError';
-}
-
-function startSharedRequest(operation, onSettled) {
-  const owner = new AbortController();
-  const flight = {
-    owner,
-    waiters: 0,
-    settled: false,
-    promise: null,
-  };
-  flight.promise = withRequestTimeout(owner.signal, AUTH_REQUEST_TIMEOUT_MS, operation);
-  const settle = () => {
-    flight.settled = true;
-    onSettled(flight);
-  };
-  flight.promise.then(settle, settle);
-  return flight;
-}
-
-async function waitForSharedRequest(flight, { signal, timeoutMs }) {
-  throwIfAborted(signal);
-  flight.waiters += 1;
-  try {
-    return await withRequestTimeout(signal, timeoutMs, () => flight.promise);
-  } finally {
-    flight.waiters -= 1;
-    if (!flight.settled && flight.waiters === 0) {
-      // No caller owns this network operation anymore. Abort the independent
-      // shared lifetime so an abandoned single-flight cannot linger until its
-      // full deadline or poison the next owner.
-      flight.owner.abort(abortError('No request waiters remain.'));
-    }
-  }
-}
 
 function browserStorage(name) {
   try { return window?.[name] || null; }
@@ -196,27 +92,20 @@ export function onAuthStateChanged(cb) {
   return () => subscribers.delete(cb);
 }
 
-export async function fetchAuthConfig({ signal = null, timeoutMs = AUTH_REQUEST_TIMEOUT_MS } = {}) {
-  throwIfAborted(signal);
+export async function fetchAuthConfig() {
   if (cachedConfig) return cachedConfig;
-  if (configFlight?.owner.signal.aborted) configFlight = null;
-  if (!configFlight) {
-    configFlight = startSharedRequest(async requestSignal => {
-      const resp = await fetch(`${CLOUD_API}/api/v1/auth/config`, { signal: requestSignal });
-      if (!resp.ok) throw new Error(`Auth config fetch failed: ${resp.status}`);
-      const config = await resp.json();
-      // A custom fetch implementation may ignore AbortSignal.  Never let an
-      // orphaned flight publish configuration after its final waiter left.
-      throwIfAborted(requestSignal);
-      cachedConfig = config;
-      return cachedConfig;
-    }, flight => {
-      if (configFlight === flight) configFlight = null;
-    });
+  if (configPromise) return configPromise;
+  configPromise = (async () => {
+    const resp = await fetch(`${CLOUD_API}/api/v1/auth/config`);
+    if (!resp.ok) throw new Error(`Auth config fetch failed: ${resp.status}`);
+    cachedConfig = await resp.json();
+    return cachedConfig;
+  })();
+  try {
+    return await configPromise;
+  } finally {
+    configPromise = null;
   }
-  // The shared fetch has an independent lifetime. Every caller, including the
-  // first, owns only its waiter; one obsolete caller cannot abort a newer one.
-  return waitForSharedRequest(configFlight, { signal, timeoutMs });
 }
 
 export function isAuthEnabled() {
@@ -277,15 +166,13 @@ function clearOauthFlow() {
   removeSessionValue(KEY_PKCE_STATE);
 }
 
-export async function signIn({ returnTo, signal = null } = {}) {
-  const config = await fetchAuthConfig({ signal });
-  throwIfAborted(signal);
+export async function signIn({ returnTo } = {}) {
+  const config = await fetchAuthConfig();
   if (!config.enabled) throw new Error('Auth is not enabled in this deployment.');
   if (!config.cognito_domain) throw new Error('Cognito domain not configured.');
   if (!config.cognito_app_client_id) throw new Error('Cognito app client not configured.');
 
   const { verifier, challenge } = await generatePkce();
-  throwIfAborted(signal);
   const state = generateState();
   const currentPath = `${window.location.pathname || '/'}${window.location.search || ''}${window.location.hash || ''}`;
   const returnPath = sameOriginReturnPath(returnTo || currentPath);
@@ -307,12 +194,11 @@ export async function signIn({ returnTo, signal = null } = {}) {
     code_challenge: challenge,
     code_challenge_method: 'S256',
   });
-  throwIfAborted(signal);
   window.location.assign(`https://${config.cognito_domain}/oauth2/authorize?${params.toString()}`);
 }
 
-export async function handleCallback(searchParams, { signal = null } = {}) {
-  const config = await fetchAuthConfig({ signal });
+export async function handleCallback(searchParams) {
+  const config = await fetchAuthConfig();
   if (!config.enabled) throw new Error('Auth is not enabled in this deployment.');
 
   const error = searchParams.get('error');
@@ -343,19 +229,16 @@ export async function handleCallback(searchParams, { signal = null } = {}) {
     code_verifier: verifier,
   });
 
-  const tokens = await withRequestTimeout(signal, AUTH_REQUEST_TIMEOUT_MS, async requestSignal => {
-    const resp = await fetch(`https://${config.cognito_domain}/oauth2/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-      signal: requestSignal,
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`Token exchange failed (${resp.status}): ${text}`);
-    }
-    return resp.json();
+  const resp = await fetch(`https://${config.cognito_domain}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
   });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Token exchange failed (${resp.status}): ${text}`);
+  }
+  const tokens = await resp.json();
   clearTokenValues({ clearReturn: false });
   persistTokens(tokens);
   notifyChange();
@@ -420,58 +303,44 @@ export function getCurrentUser() {
   }
 }
 
-async function refreshTokens({ signal = null, timeoutMs = AUTH_REQUEST_TIMEOUT_MS } = {}) {
-  throwIfAborted(signal);
-  if (refreshFlight?.owner.signal.aborted) refreshFlight = null;
-  if (!refreshFlight) {
-    refreshFlight = startSharedRequest(async requestSignal => {
-      const config = await fetchAuthConfig({
-        signal: requestSignal,
-        timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
-      });
-      const refresh = sessionValue(KEY_REFRESH_TOKEN);
-      if (!refresh) throw new Error('No refresh token available.');
-      const body = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: config.cognito_app_client_id,
-        refresh_token: refresh,
-      });
-      const resp = await fetch(`https://${config.cognito_domain}/oauth2/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-        signal: requestSignal,
-      });
-      throwIfAborted(requestSignal);
-      if (!resp.ok) {
-        const text = await resp.text();
-        throwIfAborted(requestSignal);
-        clearTokens();
-        notifyChange();
-        throw new Error(`Token refresh failed (${resp.status}): ${text}`);
-      }
-      const tokens = await resp.json();
-      // Do not commit credentials from a fetch/body reader that ignored the
-      // owner abort after every caller abandoned this shared operation.
-      throwIfAborted(requestSignal);
-      // Cognito refresh does not return a new refresh_token; keep the existing one.
-      if (!tokens.refresh_token) tokens.refresh_token = refresh;
-      persistTokens(tokens);
-      notifyChange();
-      return tokens.id_token;
-    }, flight => {
-      if (refreshFlight === flight) refreshFlight = null;
+async function refreshTokens() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const config = await fetchAuthConfig();
+    const refresh = sessionValue(KEY_REFRESH_TOKEN);
+    if (!refresh) throw new Error('No refresh token available.');
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: config.cognito_app_client_id,
+      refresh_token: refresh,
     });
+    const resp = await fetch(`https://${config.cognito_domain}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      clearTokens();
+      notifyChange();
+      throw new Error(`Token refresh failed (${resp.status}): ${text}`);
+    }
+    const tokens = await resp.json();
+    // Cognito refresh does not return a new refresh_token; keep the existing one.
+    if (!tokens.refresh_token) tokens.refresh_token = refresh;
+    persistTokens(tokens);
+    notifyChange();
+    return tokens.id_token;
+  })();
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
   }
-  return waitForSharedRequest(refreshFlight, { signal, timeoutMs });
 }
 
-export async function getIdToken({
-  requireFresh = false,
-  signal = null,
-  timeoutMs = AUTH_REQUEST_TIMEOUT_MS,
-} = {}) {
-  const config = await fetchAuthConfig({ signal, timeoutMs });
+export async function getIdToken({ requireFresh = false } = {}) {
+  const config = await fetchAuthConfig();
   if (!config.enabled) return null;
   const token = sessionValue(KEY_ID_TOKEN);
   const expiresAt = Number(sessionValue(KEY_EXPIRES_AT) || 0);
@@ -479,15 +348,14 @@ export async function getIdToken({
     (Date.now() + REFRESH_LEEWAY_SECONDS * 1000 >= expiresAt);
   if (!needsRefresh) return token;
   try {
-    return await refreshTokens({ signal, timeoutMs });
-  } catch (error) {
-    if (isCancellationError(error)) throw error;
+    return await refreshTokens();
+  } catch {
     return null;
   }
 }
 
-export async function signOut({ signal = null } = {}) {
-  const config = await fetchAuthConfig({ signal }).catch(() => null);
+export async function signOut() {
+  const config = await fetchAuthConfig().catch(() => null);
   clearTokens();
   notifyChange();
   if (config && config.enabled && config.cognito_domain && config.cognito_app_client_id) {
@@ -501,12 +369,12 @@ export async function signOut({ signal = null } = {}) {
   }
 }
 
-export async function ensureSignedIn({ signal = null } = {}) {
-  const config = await fetchAuthConfig({ signal });
+export async function ensureSignedIn() {
+  const config = await fetchAuthConfig();
   if (!config.enabled) return null;
-  const token = await getIdToken({ signal });
+  const token = await getIdToken();
   if (token) return token;
-  await signIn({ signal });
+  await signIn();
   // signIn redirects; control will not return.
   return null;
 }

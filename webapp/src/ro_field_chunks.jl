@@ -24,10 +24,6 @@ const _ROFC_HARD_MAX_SAMPLE_SCALARS = 65_536
 const _ROFC_HARD_MAX_CHUNK_BYTES = 4 * 1024 * 1024
 const _ROFC_HARD_MAX_SPEC_NODES = 1024
 const _ROFC_HARD_MAX_STRING_BYTES = 64 * 1024
-const _ROFC_HARD_MAX_MATERIALIZED_NODES = 262_144
-const _ROFC_HARD_MAX_MATERIALIZED_DEPTH = 64
-const _ROFC_HARD_MAX_MATERIALIZED_STRING_BYTES = 8 * 1024 * 1024
-const _ROFC_MAX_DIAGNOSTIC_PATH_BYTES = 256
 const _ROFC_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 const _ROFC_SHA_PATTERN = r"^[0-9a-f]{64}$"
 const _ROFC_VOLATILE_SPEC_KEYS = Set((
@@ -133,83 +129,8 @@ function _rofc_normalized_key(raw_key, path::AbstractString)
     return key
 end
 
-function _rofc_bounded_diagnostic_base(path::AbstractString)
-    ncodeunits(path) <= 180 && return String(path)
-    return "document.<truncated-path>"
-end
-
-function _rofc_object_child_path(path::AbstractString,
-                                 key::AbstractString)
-    base = _rofc_bounded_diagnostic_base(path)
-    label = ncodeunits(key) <= 64 ? String(key) : "<oversized-key>"
-    child = base * "." * label
-    ncodeunits(child) <= _ROFC_MAX_DIAGNOSTIC_PATH_BYTES && return child
-    return "document.<truncated-path>." * label
-end
-
-_rofc_array_child_path(path::AbstractString) =
-    _rofc_bounded_diagnostic_base(path) * "[]"
-
-function _rofc_preflight_materialize!(
-    value,
-    path::AbstractString,
-    depth::Int,
-    nodes::Base.RefValue{BigInt},
-    string_bytes::Base.RefValue{BigInt};
-    max_nodes::Int,
-    max_depth::Int,
-    max_string_bytes::Int,
-    max_total_string_bytes::Int,
-)
-    depth <= max_depth || _rofc_error(
-        :document_too_deep,
-        "$(path) exceeds the materialization depth limit=$(max_depth)")
-    nodes[] += 1
-    _rofc_limit(:materialized_nodes, nodes[], max_nodes)
-    if value isa AbstractDict
-        for (raw_key, child) in pairs(value)
-            key = _rofc_normalized_key(raw_key, path)
-            key_bytes = ncodeunits(key)
-            key_bytes <= max_string_bytes || _rofc_error(
-                :string_too_large,
-                "$(path) contains an oversized object key")
-            string_bytes[] += key_bytes
-            _rofc_limit(:materialized_string_bytes, string_bytes[],
-                max_total_string_bytes)
-            _rofc_preflight_materialize!(
-                child, _rofc_object_child_path(path, key), depth + 1,
-                nodes, string_bytes;
-                max_nodes=max_nodes,
-                max_depth=max_depth,
-                max_string_bytes=max_string_bytes,
-                max_total_string_bytes=max_total_string_bytes,
-            )
-        end
-    elseif value isa AbstractVector || value isa Tuple
-        child_path = _rofc_array_child_path(path)
-        for child in value
-            _rofc_preflight_materialize!(
-                child, child_path, depth + 1,
-                nodes, string_bytes;
-                max_nodes=max_nodes,
-                max_depth=max_depth,
-                max_string_bytes=max_string_bytes,
-                max_total_string_bytes=max_total_string_bytes,
-            )
-        end
-    elseif value isa AbstractString || value isa Symbol
-        text = String(value)
-        bytes = ncodeunits(text)
-        bytes <= max_string_bytes || _rofc_error(
-            :string_too_large, "$(path) contains an oversized string")
-        string_bytes[] += bytes
-        _rofc_limit(:materialized_string_bytes, string_bytes[],
-            max_total_string_bytes)
-    end
-    return nothing
-end
-
-function _rofc_materialize_unchecked(value, path::AbstractString)
+"Recursively materialize JSON values without silently merging duplicate keys."
+function _rofc_materialize(value, path::AbstractString="document")
     if value isa AbstractDict
         out = Dict{String,Any}()
         for (raw_key, child) in pairs(value)
@@ -217,52 +138,17 @@ function _rofc_materialize_unchecked(value, path::AbstractString)
             haskey(out, key) && _rofc_error(
                 :duplicate_key,
                 "$(path) contains duplicate string/symbol forms of $(key)")
-            out[key] = _rofc_materialize_unchecked(
-                child, _rofc_object_child_path(path, key))
+            out[key] = _rofc_materialize(child, "$(path).$(key)")
         end
         return out
     elseif value isa AbstractVector || value isa Tuple
-        child_path = _rofc_array_child_path(path)
-        return Any[
-            _rofc_materialize_unchecked(child, child_path)
-            for child in value
-        ]
+        return Any[_rofc_materialize(child, "$(path)[]") for child in value]
     elseif value isa Symbol
         return _rofc_string(String(value), path; nonempty=false)
     elseif value isa AbstractString
         return _rofc_string(value, path; nonempty=false)
     end
     return value
-end
-
-"Recursively materialize a preflight-bounded JSON value without merging keys."
-function _rofc_materialize(
-    value,
-    path::AbstractString="document";
-    max_nodes::Int=_ROFC_HARD_MAX_MATERIALIZED_NODES,
-    max_depth::Int=_ROFC_HARD_MAX_MATERIALIZED_DEPTH,
-    max_string_bytes::Int=_ROFC_HARD_MAX_STRING_BYTES,
-    max_total_string_bytes::Int=_ROFC_HARD_MAX_MATERIALIZED_STRING_BYTES,
-)
-    max_nodes > 0 || _rofc_error(
-        :invalid_materialization_limit, "max_nodes must be positive")
-    max_depth >= 0 || _rofc_error(
-        :invalid_materialization_limit, "max_depth must be nonnegative")
-    max_string_bytes > 0 || _rofc_error(
-        :invalid_materialization_limit,
-        "max_string_bytes must be positive")
-    max_total_string_bytes > 0 || _rofc_error(
-        :invalid_materialization_limit,
-        "max_total_string_bytes must be positive")
-    diagnostic_path = _rofc_bounded_diagnostic_base(path)
-    _rofc_preflight_materialize!(
-        value, diagnostic_path, 0, Ref(BigInt(0)), Ref(BigInt(0));
-        max_nodes=max_nodes,
-        max_depth=max_depth,
-        max_string_bytes=max_string_bytes,
-        max_total_string_bytes=max_total_string_bytes,
-    )
-    return _rofc_materialize_unchecked(value, diagnostic_path)
 end
 
 "Private canonical JSON matching the project policy with BigInt-safe floats."
@@ -1207,349 +1093,96 @@ function ro_field_chunk_sha256(chunk; kwargs...)
     return _rofc_sha256_bytes(canonical_ro_field_chunk_bytes(chunk; kwargs...))
 end
 
-const _ROFC_DIRECTORY_OPEN_FLAGS =
-    Base.Filesystem.JL_O_RDONLY |
-    Base.Filesystem.JL_O_DIRECTORY |
-    Base.Filesystem.JL_O_NOFOLLOW |
-    Base.Filesystem.JL_O_CLOEXEC
-const _ROFC_FILE_READ_FLAGS =
-    Base.Filesystem.JL_O_RDONLY |
-    Base.Filesystem.JL_O_NOFOLLOW |
-    Base.Filesystem.JL_O_CLOEXEC
-const _ROFC_FILE_CREATE_FLAGS =
-    Base.Filesystem.JL_O_WRONLY |
-    Base.Filesystem.JL_O_CREAT |
-    Base.Filesystem.JL_O_EXCL |
-    Base.Filesystem.JL_O_NOFOLLOW |
-    Base.Filesystem.JL_O_CLOEXEC
-
-function _rofc_relative_components(root::AbstractString,
-                                   target::AbstractString)
-    relative = relpath(String(target), String(root))
-    components = relative == "." ? String[] : splitpath(relative)
-    (isabspath(relative) || any(component -> component == "..", components)) &&
-        _rofc_error(:storage_path_escape,
-            "RO-field storage path escapes its declared root")
-    return components
-end
-
-_rofc_top_level_alias_is_trusted(alias_uid, root_uid, root_mode) =
-    alias_uid == 0 && root_uid == 0 &&
-    (UInt(root_mode) & UInt(0o022)) == 0
-
-function _rofc_single_hop_alias_target(alias_path::AbstractString)
-    target = try
-        readlink(String(alias_path))
-    catch
-        _rofc_error(:invalid_storage_root,
-            "trusted top-level storage alias could not be read")
-    end
-    return normpath(isabspath(target) ? target :
-        joinpath(dirname(String(alias_path)), target))
-end
-
-function _rofc_trusted_top_level_path(path::AbstractString)
-    absolute = normpath(abspath(String(path)))
-    absolute == "/" && return absolute
-    components = splitpath(relpath(absolute, "/"))
-    isempty(components) && return "/"
-    first_path = joinpath("/", first(components))
-    first_info = _rofc_existing_lstat(first_path)
-    if first_info !== nothing && islink(first_info)
-        # Root-owned top-level aliases such as macOS /var -> /private/var are
-        # outside the caller-controlled storage subtree. Resolve only this one
-        # trusted component, then reject every symlink below it via openat.
-        filesystem_root = _rofc_existing_lstat("/")
-        filesystem_root !== nothing &&
-            _rofc_top_level_alias_is_trusted(
-                first_info.uid, filesystem_root.uid, filesystem_root.mode) ||
-            _rofc_error(:invalid_storage_root,
-                "top-level storage alias is not rooted in a trusted filesystem root")
-        # Resolve exactly one hop. Any symlink inside the target path remains
-        # visible to the fd-anchored component walk and is rejected there.
-        resolved = _rofc_single_hop_alias_target(first_path)
-        absolute = normpath(joinpath(resolved, components[2:end]...))
-    end
-    return absolute
-end
-
-function _rofc_checked_storage_path(storage_root::AbstractString,
-                                    path::AbstractString)
-    raw_root = normpath(abspath(String(storage_root)))
-    raw_target = normpath(abspath(String(path)))
-    _rofc_relative_components(raw_root, raw_target)
-    root = _rofc_trusted_top_level_path(raw_root)
-    target = _rofc_trusted_top_level_path(raw_target)
-    components = _rofc_relative_components(root, target)
-    return root, target, components
-end
-
-function _rofc_existing_lstat(path::AbstractString)
-    info = lstat(String(path))
-    # Julia 1.12 exposes `ioerrno`; Julia 1.10 represents a failed lstat with
-    # the same false `ispath` predicates but has no error field. A symlink,
-    # including a dangling one, remains visible through `islink(info)`.
-    (ispath(info) || islink(info)) && return info
+function _rofc_fsync_file!(io::IO, path::AbstractString)
+    (Sys.isapple() || Sys.islinux()) || throw(ErrorException(
+        "durable RO-field chunk storage requires macOS or Linux"))
+    flush(io)
+    result = ccall(:fsync, Cint, (Cint,), fd(io))
+    Base.systemerror("fsync RO-field chunk $(path)", result != 0)
     return nothing
 end
 
-function _rofc_fsync_fd!(descriptor::Cint, label::AbstractString)
-    result = ccall(:fsync, Cint, (Cint,), descriptor)
-    Base.systemerror("fsync RO-field storage $(label)", result != 0)
-    return nothing
-end
-
-_rofc_c_fd(descriptor) = descriptor isa Integer ?
-    Cint(descriptor) : reinterpret(Cint, descriptor)
-
-function _rofc_open_storage_root!(
-    storage_root::AbstractString;
-    create::Bool,
-)
-    root = _rofc_trusted_top_level_path(storage_root)
-    descriptor = ccall(:open, Cint, (Cstring, Cint),
-        "/", _ROFC_DIRECTORY_OPEN_FLAGS)
-    descriptor >= 0 || _rofc_error(
-        :invalid_storage_root,
-        "filesystem root could not be opened for RO-field storage")
-    cursor = "/"
+function _rofc_fsync_directory!(path::AbstractString)
+    (Sys.isapple() || Sys.islinux()) || throw(ErrorException(
+        "durable RO-field chunk storage requires macOS or Linux"))
+    directory = abspath(String(path))
+    directory_fd = ccall(:open, Cint, (Cstring, Cint), directory, 0)
+    Base.systemerror("open RO-field chunk directory $(directory)",
+        directory_fd < 0)
     try
-        for component in _rofc_relative_components("/", root)
-            cursor = joinpath(cursor, component)
-            child = _rofc_open_directory_component!(
-                descriptor, component, cursor; create=create)
-            parent = descriptor
-            descriptor = child
-            ccall(:close, Cint, (Cint,), parent)
-        end
-    catch
-        descriptor >= 0 && ccall(:close, Cint, (Cint,), descriptor)
-        rethrow()
-    end
-    return descriptor, root
-end
-
-function _rofc_open_directory_component!(
-    parent_fd::Cint,
-    component::AbstractString,
-    path::AbstractString;
-    create::Bool,
-)
-    info = _rofc_existing_lstat(path)
-    if info === nothing
-        create || _rofc_error(
-            :invalid_storage_root,
-            "RO-field storage directory is missing")
-        result = ccall(:mkdirat, Cint, (Cint, Cstring, Cuint),
-            parent_fd, String(component), 0o700)
-        if result != 0
-            # Permit a real directory concurrently created at this exact
-            # component, but never accept a symlink or other entry type.
-            info = _rofc_existing_lstat(path)
-            info === nothing && _rofc_error(
-                :invalid_storage_root,
-                "RO-field storage directory component could not be created")
-        else
-            _rofc_fsync_fd!(parent_fd, dirname(String(path)))
-            info = _rofc_existing_lstat(path)
-        end
-    end
-    islink(info) && _rofc_error(
-        :invalid_storage_root,
-        "RO-field storage path contains a symbolic-link component")
-    isdir(info) || _rofc_error(
-        :invalid_storage_root,
-        "RO-field storage path contains a non-directory component")
-    descriptor = ccall(:openat, Cint, (Cint, Cstring, Cint),
-        parent_fd, String(component), _ROFC_DIRECTORY_OPEN_FLAGS)
-    descriptor >= 0 || _rofc_error(
-        :invalid_storage_root,
-        "RO-field storage component changed or could not be opened without following links")
-    try
-        opened = stat(Base.RawFD(descriptor))
-        isdir(opened) || _rofc_error(:invalid_storage_root,
-            "RO-field storage component is not a directory")
-    catch
-        ccall(:close, Cint, (Cint,), descriptor)
-        rethrow()
-    end
-    return descriptor
-end
-
-function _rofc_with_directory_fd(
-    callback::Function,
-    path::AbstractString;
-    storage_root::AbstractString,
-    create::Bool,
-)
-    root, target, components = _rofc_checked_storage_path(storage_root, path)
-    descriptor, _ = _rofc_open_storage_root!(root; create=create)
-    cursor = root
-    try
-        for component in components
-            cursor = joinpath(cursor, component)
-            child = _rofc_open_directory_component!(
-                descriptor, component, cursor; create=create)
-            parent = descriptor
-            descriptor = child
-            ccall(:close, Cint, (Cint,), parent)
-        end
-        return callback(descriptor, target)
+        result = ccall(:fsync, Cint, (Cint,), directory_fd)
+        Base.systemerror("fsync RO-field chunk directory $(directory)",
+            result != 0)
     finally
-        descriptor >= 0 && ccall(:close, Cint, (Cint,), descriptor)
+        ccall(:close, Cint, (Cint,), directory_fd)
     end
+    return nothing
 end
 
-function _rofc_ensure_directory!(
-    path::AbstractString;
-    storage_root::AbstractString,
-)
-    directory = normpath(abspath(String(path)))
-    _rofc_with_directory_fd(
-        directory; storage_root=storage_root, create=true) do _, _
-        nothing
+function _rofc_fsync_existing_file!(path::AbstractString)
+    open(String(path), "r") do io
+        result = ccall(:fsync, Cint, (Cint,), fd(io))
+        Base.systemerror("fsync existing RO-field chunk $(path)", result != 0)
+    end
+    return nothing
+end
+
+function _rofc_ensure_directory!(path::AbstractString)
+    directory = abspath(String(path))
+    islink(directory) && _rofc_error(
+        :invalid_storage_root,
+        "chunk storage path must not be a symbolic link")
+    if isdir(directory)
+        # Re-syncing the parent also repairs the durability boundary when this
+        # directory survived a prior writer that crashed before parent fsync.
+        _rofc_fsync_directory!(dirname(directory))
+        return directory
+    end
+    ispath(directory) && _rofc_error(
+        :invalid_storage_root, "chunk storage path is not a directory")
+
+    missing = String[]
+    cursor = directory
+    while !isdir(cursor)
+        islink(cursor) && _rofc_error(
+            :invalid_storage_root,
+            "chunk storage path contains a symbolic-link leaf")
+        ispath(cursor) && _rofc_error(
+            :invalid_storage_root,
+            "chunk storage ancestor is not a directory")
+        push!(missing, cursor)
+        parent = dirname(cursor)
+        parent == cursor && _rofc_error(
+            :invalid_storage_root,
+            "chunk storage path has no existing directory ancestor")
+        cursor = parent
+    end
+    mkpath(directory)
+    for created_directory in reverse(missing)
+        isdir(created_directory) || _rofc_error(
+            :invalid_storage_root,
+            "chunk storage directory creation was incomplete")
+        _rofc_fsync_directory!(dirname(created_directory))
     end
     return directory
 end
 
-function _rofc_read_file_at(
-    directory_fd::Cint,
-    leaf::AbstractString,
-    display_path::AbstractString,
-    max_bytes::Int;
-    phase::Symbol,
-    sync_existing::Bool=false,
-)
-    info = _rofc_existing_lstat(display_path)
-    info === nothing && _rofc_error(
-        :missing_storage_artifact, "RO-field storage artifact is missing")
-    islink(info) && _rofc_error(
-        :unsafe_existing_path,
-        "RO-field storage artifact must not be a symbolic link")
-    isfile(info) || _rofc_error(
-        :invalid_storage_artifact,
-        "RO-field storage artifact is not a regular file")
-    _rofc_limit(phase, BigInt(info.size), max_bytes)
-    descriptor = ccall(:openat, Cint, (Cint, Cstring, Cint),
-        directory_fd, String(leaf), _ROFC_FILE_READ_FLAGS)
-    descriptor >= 0 || _rofc_error(
-        :unsafe_existing_path,
-        "RO-field storage artifact changed or could not be opened without following links")
-    io = nothing
-    try
-        io = Base.fdio(String(display_path), descriptor, true)
-        opened = stat(Base.RawFD(fd(io)))
-        isfile(opened) || _rofc_error(
-            :invalid_storage_artifact,
-            "RO-field storage artifact is not a regular file")
-        _rofc_limit(phase, BigInt(opened.size), max_bytes)
-        bytes = read(io, max_bytes + 1)
-        _rofc_limit(phase, BigInt(length(bytes)), max_bytes)
-        sync_existing && _rofc_fsync_fd!(
-            _rofc_c_fd(fd(io)), display_path)
-        return bytes
-    finally
-        if io === nothing
-            ccall(:close, Cint, (Cint,), descriptor)
-        else
-            isopen(io) && close(io)
-        end
+function _rofc_existing_content_matches(path::AbstractString,
+                                        expected::Vector{UInt8})
+    islink(path) && _rofc_error(:unsafe_existing_path,
+        "content-addressed destination is a symbolic link")
+    isfile(path) || _rofc_error(:chunk_hash_collision,
+        "content-addressed destination exists but is not a regular file")
+    filesize(path) == length(expected) || _rofc_error(
+        :chunk_hash_collision,
+        "existing content has the wrong byte length at the same chunk SHA-256 path")
+    observed = open(path, "r") do io
+        read(io, length(expected) + 1)
     end
-end
-
-function _rofc_read_bounded_file(
-    storage_root::AbstractString,
-    path::AbstractString,
-    max_bytes::Int;
-    phase::Symbol,
-    sync_existing::Bool=false,
-)
-    destination = normpath(abspath(String(path)))
-    directory = dirname(destination)
-    return _rofc_with_directory_fd(
-        directory; storage_root=storage_root, create=false) do descriptor, _
-        _rofc_read_file_at(
-            descriptor, basename(destination), destination, max_bytes;
-            phase=phase, sync_existing=sync_existing)
-    end
-end
-
-function _rofc_write_bytes_once!(
-    storage_root::AbstractString,
-    path::AbstractString,
-    bytes::Vector{UInt8};
-    max_existing_bytes::Int=length(bytes),
-    existing_matches::Function=observed -> observed == bytes,
-)
-    destination = normpath(abspath(String(path)))
-    directory = dirname(destination)
-    leaf = basename(destination)
-    return _rofc_with_directory_fd(
-        directory; storage_root=storage_root, create=true) do directory_fd, _
-        existing = _rofc_existing_lstat(destination)
-        if existing !== nothing
-            observed = _rofc_read_file_at(
-                directory_fd, leaf, destination, max_existing_bytes;
-                phase=:existing_artifact_bytes, sync_existing=true)
-            existing_matches(observed) || _rofc_error(
-                :chunk_hash_collision,
-                "immutable RO-field destination already has different content")
-            _rofc_fsync_fd!(directory_fd, directory)
-            return destination
-        end
-
-        temp_leaf = ""
-        temp_fd = Cint(-1)
-        for _ in 1:16
-            temp_leaf = basename(tempname(directory))
-            # `openat` is variadic when O_CREAT is present; `@ccall`'s
-            # semicolon marks the promoted mode argument explicitly. Treating
-            # it as a fixed fourth argument produces undefined permissions on
-            # Darwin.
-            temp_fd = @ccall openat(
-                directory_fd::Cint,
-                temp_leaf::Cstring,
-                _ROFC_FILE_CREATE_FLAGS::Cint;
-                Cint(0o600)::Cint,
-            )::Cint
-            temp_fd >= 0 && break
-        end
-        temp_fd >= 0 || _rofc_error(
-            :storage_write_failed,
-            "could not create an exclusive RO-field temporary file")
-        temp_io = nothing
-        try
-            temp_io = Base.fdio(
-                joinpath(directory, temp_leaf), temp_fd, true)
-            write(temp_io, bytes)
-            _rofc_fsync_fd!(
-                _rofc_c_fd(fd(temp_io)),
-                joinpath(directory, temp_leaf))
-            close(temp_io)
-            result = ccall(:linkat, Cint,
-                (Cint, Cstring, Cint, Cstring, Cint),
-                directory_fd, temp_leaf, directory_fd, leaf, 0)
-            if result != 0
-                observed = _rofc_read_file_at(
-                    directory_fd, leaf, destination, max_existing_bytes;
-                    phase=:existing_artifact_bytes, sync_existing=true)
-                existing_matches(observed) || _rofc_error(
-                    :chunk_hash_collision,
-                    "immutable RO-field destination already has different content")
-            end
-            _rofc_fsync_fd!(directory_fd, directory)
-            return destination
-        finally
-            if temp_io === nothing
-                ccall(:close, Cint, (Cint,), temp_fd)
-            else
-                isopen(temp_io) && close(temp_io)
-            end
-            ccall(:unlinkat, Cint, (Cint, Cstring, Cint),
-                directory_fd, temp_leaf, 0)
-            _rofc_fsync_fd!(directory_fd, directory)
-        end
-    end
+    observed == expected || _rofc_error(:chunk_hash_collision,
+        "existing content differs at the same chunk SHA-256 path")
+    _rofc_fsync_existing_file!(path)
+    return true
 end
 
 "Atomically commit canonical chunk bytes under `root/chunks/<sha256>.json`."
@@ -1559,16 +1192,41 @@ function write_ro_field_chunk!(
     plan=nothing,
     work_unit=nothing,
     limits::ROFieldChunkLimits=ROFieldChunkLimits(),
-    storage_root::AbstractString=root,
 )
     bytes = canonical_ro_field_chunk_bytes(chunk;
         plan=plan, work_unit=work_unit, limits=limits)
     chunk_hash = _rofc_sha256_bytes(bytes)
-    directory = _rofc_ensure_directory!(
-        joinpath(String(root), "chunks"); storage_root=storage_root)
+    directory = _rofc_ensure_directory!(joinpath(String(root), "chunks"))
     destination = joinpath(directory, chunk_hash * ".json")
-    return _rofc_write_bytes_once!(
-        storage_root, destination, bytes; max_existing_bytes=length(bytes))
+    if ispath(destination)
+        _rofc_existing_content_matches(destination, bytes)
+        _rofc_fsync_directory!(directory)
+        return destination
+    end
+
+    temp_path, temp_io = mktemp(directory; cleanup=false)
+    try
+        write(temp_io, bytes)
+        _rofc_fsync_file!(temp_io, temp_path)
+        close(temp_io)
+        result = ccall(:link, Cint, (Cstring, Cstring),
+            temp_path, destination)
+        if result != 0
+            ispath(destination) || Base.systemerror(
+                "link RO-field chunk $(temp_path) to $(destination)", true)
+            _rofc_existing_content_matches(destination, bytes)
+            _rofc_fsync_directory!(directory)
+        else
+            _rofc_fsync_directory!(directory)
+        end
+        return destination
+    finally
+        isopen(temp_io) && close(temp_io)
+        if isfile(temp_path)
+            rm(temp_path; force=true)
+            _rofc_fsync_directory!(directory)
+        end
+    end
 end
 
 function read_ro_field_chunk(
@@ -1577,12 +1235,14 @@ function read_ro_field_chunk(
     plan=nothing,
     work_unit=nothing,
     limits::ROFieldChunkLimits=ROFieldChunkLimits(),
-    storage_root::AbstractString=dirname(abspath(String(path))),
 )
-    chunk_path = normpath(abspath(String(path)))
-    raw_bytes = _rofc_read_bounded_file(
-        storage_root, chunk_path, limits.max_chunk_bytes;
-        phase=:chunk_bytes)
+    chunk_path = String(path)
+    islink(chunk_path) && _rofc_error(
+        :invalid_chunk_path, "chunk path must not be a symbolic link")
+    isfile(chunk_path) || _rofc_error(
+        :invalid_chunk_path, "chunk path is not a regular file")
+    _rofc_limit(:chunk_bytes, BigInt(filesize(chunk_path)),
+        limits.max_chunk_bytes)
     filename_match = match(r"^([0-9a-f]{64})\.json$", basename(chunk_path))
     path_hash = filename_match === nothing ? nothing : filename_match.captures[1]
     expected = if expected_sha256 === nothing
@@ -1597,6 +1257,13 @@ function read_ro_field_chunk(
             "expected_sha256 disagrees with the content-addressed filename")
         supplied
     end
+    raw_bytes = open(chunk_path, "r") do io
+        read(io, limits.max_chunk_bytes + 1)
+    end
+    # Repeat the bound after the open/read so a concurrent replacement cannot
+    # bypass the preflight `filesize` check and trigger an unbounded read.
+    _rofc_limit(:chunk_bytes, BigInt(length(raw_bytes)),
+        limits.max_chunk_bytes)
     document = try
         # `String(::Vector{UInt8})` may take ownership and empty its input.
         # Preserve the authoritative stored bytes for the exact canonical-byte

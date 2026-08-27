@@ -424,83 +424,29 @@ class DesignAgentContractTests(unittest.TestCase):
     def _simulate_2d_model():
         return {
             "session_id": "session-2d",
-            "q_sym": ["tA", "tB"],
-            "K_sym": ["Kd1"],
-            "x_sym": ["A", "B", "Y"],
-            "species": ["A", "B", "Y"],
-            "free_species": ["A", "B"],
+            "q_sym": ["tA", "tB", "tC"],
+            "K_sym": ["K1"],
+            "x_sym": ["Y", "Z"],
             "product_species": ["Y"],
             "kd": [2.0],
             "network_ir_hash": "a" * 64,
             "network_ir": {
-                "ir_schema_version": "bne-ir/v1.0.0",
-                "label": "",
-                "species": [
-                    {"name": "A", "role": "free", "initial_total": None,
-                     "unit": "concentration", "metadata": {}},
-                    {"name": "B", "role": "free", "initial_total": None,
-                     "unit": "concentration", "metadata": {}},
-                    {"name": "Y", "role": "bound", "initial_total": None,
-                     "unit": "concentration", "metadata": {}},
-                ],
-                "reactions": [{
-                    "formula": "A + B <-> Y", "kind": "binding", "kd": 2.0,
-                    "kd_distribution": None, "reversible": True, "metadata": {},
-                }],
-                "observables": [],
-                "parameter_distributions": [],
-                "compartments": [],
-                "provenance": {
-                    "created_at": "2026-07-17T00:00:00", "created_by": "",
-                    "source": "legacy_reactions_kd", "parent_ir_hash": None,
-                    "notes": "",
-                },
-                "extensions": {},
-            },
-            "artifact": {
-                "artifact_schema_version": "bne-result/v1.0.0",
-                "kind": "build_model",
-                "input_hashes": {"network_ir_hash": "a" * 64},
+                "ir_schema_version": "bne-network-ir/v1.0.0",
+                "reactions": [{"rule": "A + B <-> Y", "kd": 2.0}],
             },
         }
-
-    @classmethod
-    def _simulate_2d_canonical_identity(cls, model=None):
-        model = copy.deepcopy(model if model is not None else cls._simulate_2d_model())
-        canonical = copy.deepcopy(model["network_ir"])
-        canonical["provenance"]["created_at"] = "2026-07-17T00:00:01"
-        return {
-            "network_ir": canonical,
-            "network_ir_hash": model["network_ir_hash"],
-        }
-
-    @classmethod
-    def _patch_simulate_2d_canonical_identity(cls, model=None):
-        return mock.patch.object(
-            design_agent,
-            "_canonical_network_ir_identity",
-            return_value=cls._simulate_2d_canonical_identity(model),
-        )
 
     @staticmethod
     def _simulate_2d_scan(output_grid, validity_grid, partial):
         n_rows = len(output_grid)
         n_cols = len(output_grid[0]) if output_grid else 0
-        def axis(count):
-            if count <= 1:
-                return [-6.0] * count
-            return [-6.0 + (12.0 * index / (count - 1)) for index in range(count)]
         return {
-            "network_ir_hash": "a" * 64,
-            "param1_symbol": "tA",
-            "param2_symbol": "tB",
-            "param1_values": axis(n_rows),
-            "param2_values": axis(n_cols),
-            "output_expr": "Y",
+            "param1_values": list(range(n_rows)),
+            "param2_values": list(range(n_cols)),
             "output_grid": copy.deepcopy(output_grid),
             "validity_grid": copy.deepcopy(validity_grid),
             "partial": partial,
-            "fixed_qK": [0.0, 0.0, 0.3010299956639812],
+            "fixed_qK": [0.0, 0.0, 1.25, 0.3010299956639812],
         }
 
     def test_simulate_2d_complete_surface_preserves_gate_and_full_identity(self):
@@ -513,14 +459,11 @@ class DesignAgentContractTests(unittest.TestCase):
 
         with mock.patch.object(
                 design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan) as scan_2d, \
-             self._patch_simulate_2d_canonical_identity():
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
             result = design_agent.simulate_2d(
                 ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
                 observe_species="Y", n_grid=3,
             )
-
-        self.assertEqual(scan_2d.call_args.kwargs["network_ir_hash"], "a" * 64)
 
         self.assertIs(result["partial"], False)
         self.assertEqual(result["realized_gate"], "AND")
@@ -534,7 +477,8 @@ class DesignAgentContractTests(unittest.TestCase):
         self.assertEqual(card["network_ir_hash"], "a" * 64)
         self.assertEqual(card["network_ir"], self._simulate_2d_model()["network_ir"])
         self.assertEqual(card["fixed_context"]["by_symbol"], {
-            "Kd1": 0.3010299956639812,
+            "tC": 1.25,
+            "K1": 0.3010299956639812,
         })
         self.assertEqual(len(card["request_fingerprint"]), 64)
         self.assertEqual(
@@ -569,7 +513,7 @@ class DesignAgentContractTests(unittest.TestCase):
             )[1],
             design_agent._simulate_2d_identity(
                 model, ["A + B <-> Y"], [2.0], "tA", "tB", "Y", 3,
-                [0.0, 0.0, 2.25],
+                [0.0, 0.0, 2.25, 0.3010299956639812],
             )[1],
         ]
         self.assertEqual(len({card["request_fingerprint"], *variants}), 5)
@@ -583,8 +527,7 @@ class DesignAgentContractTests(unittest.TestCase):
 
         with mock.patch.object(
                 design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
             result = design_agent.simulate_2d(
                 ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
                 observe_species="Y", n_grid=2,
@@ -615,8 +558,7 @@ class DesignAgentContractTests(unittest.TestCase):
 
         with mock.patch.object(
                 design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
             result = design_agent.simulate_2d(
                 ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
                 observe_species="Y", n_grid=3,
@@ -637,8 +579,7 @@ class DesignAgentContractTests(unittest.TestCase):
 
         with mock.patch.object(
                 design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
+             mock.patch.object(design_agent.E, "scan_2d", return_value=scan):
             result = design_agent.simulate_2d(
                 ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
                 observe_species="Y", n_grid=2,
@@ -649,398 +590,6 @@ class DesignAgentContractTests(unittest.TestCase):
         self.assertIsNone(result["realized_gate"])
         self.assertNotIn("_card", result)
         self.assertIn("missing_or_malformed_validity_grid", result["incomplete_reasons"])
-
-    def test_simulate_2d_extra_malformed_output_row_fails_closed(self):
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        scan["output_grid"].insert(0, None)
-
-        with mock.patch.object(
-                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_malformed_validity_grid", result["incomplete_reasons"])
-
-    def test_simulate_2d_malformed_axis_population_fails_closed(self):
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        scan["param1_values"] = {0: -6.0, 1: 6.0}
-
-        with mock.patch.object(
-                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertEqual(result["surface"]["x"], [])
-        self.assertIn("missing_or_malformed_validity_grid",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_downsampled_response_cannot_become_a_verified_card(self):
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-
-        with mock.patch.object(
-                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=48,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("response_grid_does_not_match_request", result["incomplete_reasons"])
-
-    def test_simulate_2d_missing_canonical_model_identity_cannot_be_verified(self):
-        model = self._simulate_2d_model()
-        model.pop("network_ir_hash")
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_invalid_canonical_model_identity",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_build_model_ir_must_match_caller_network_semantics(self):
-        model = self._simulate_2d_model()
-        model["network_ir"]["species"][0]["name"] = "C"
-        model["network_ir"]["species"][1]["name"] = "D"
-        model["network_ir"]["reactions"][0]["formula"] = "C + D <-> Y"
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-
-        def canonical_identity(network):
-            if isinstance(network["reactions"][0], str):
-                return self._simulate_2d_canonical_identity()
-            return {
-                "network_ir": copy.deepcopy(model["network_ir"]),
-                "network_ir_hash": "b" * 64,
-            }
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             mock.patch.object(
-                 design_agent, "_canonical_network_ir_identity",
-                 side_effect=canonical_identity,
-             ):
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_invalid_canonical_model_identity",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_model_symbols_must_match_canonical_network_species(self):
-        model = self._simulate_2d_model()
-        model["q_sym"] = ["tC", "tD"]
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        scan["param1_symbol"] = "tC"
-        scan["param2_symbol"] = "tD"
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tC", input2="tD",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_invalid_canonical_model_identity",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_all_returned_symbol_populations_are_ir_bound(self):
-        base = self._simulate_2d_model()
-        variants = []
-        for field, value in (
-                ("K_sym", ["K1"]),
-                ("x_sym", ["A", "B", "Z"]),
-                ("species", ["A", "B", "Z"]),
-                ("free_species", ["A", "C"]),
-                ("product_species", ["Z"])):
-            model = copy.deepcopy(base)
-            model[field] = value
-            variants.append((field, model))
-
-        for field, model in variants:
-            with self.subTest(field=field), mock.patch.object(
-                    design_agent, "_canonical_network_ir_identity",
-                    return_value=self._simulate_2d_canonical_identity()):
-                accepted = design_agent._canonical_simulate_2d_model_identity(
-                    model, [2.0], self._simulate_2d_canonical_identity(),
-                )
-            self.assertIs(accepted, False)
-
-    def test_simulate_2d_accepts_canonical_ir_with_different_presentation_order(self):
-        model = self._simulate_2d_model()
-        model["network_ir"]["species"].reverse()
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], False)
-        self.assertIn("_card", result)
-
-    def test_simulate_2d_model_identity_accepts_cached_reaction_kd_order(self):
-        model = self._simulate_2d_model()
-        model["network_ir"]["species"].extend([
-            {"name": "C", "role": "free", "initial_total": None,
-             "unit": "concentration", "metadata": {}},
-            {"name": "Z", "role": "bound", "initial_total": None,
-             "unit": "concentration", "metadata": {}},
-        ])
-        model["network_ir"]["reactions"].insert(0, {
-            "formula": "B + C <-> Z", "kind": "binding", "kd": 3.0,
-            "kd_distribution": None, "reversible": True, "metadata": {},
-        })
-        model["kd"] = [3.0, 2.0]
-        model["K_sym"] = ["Kd1", "Kd2"]
-        model["q_sym"] = ["tA", "tB", "tC"]
-        model["x_sym"] = ["A", "B", "C", "Y", "Z"]
-        model["species"] = ["A", "B", "C", "Y", "Z"]
-        model["free_species"] = ["A", "B", "C"]
-        model["product_species"] = ["Y", "Z"]
-        canonical_request = {
-            "network_ir": copy.deepcopy(model["network_ir"]),
-            "network_ir_hash": "a" * 64,
-        }
-        canonical_request["network_ir"]["reactions"].reverse()
-
-        with mock.patch.object(
-                design_agent, "_canonical_network_ir_identity",
-                return_value={
-                    "network_ir": copy.deepcopy(model["network_ir"]),
-                    "network_ir_hash": "a" * 64,
-                }):
-            accepted = design_agent._canonical_simulate_2d_model_identity(
-                model, [2.0, 3.0], canonical_request,
-            )
-
-        self.assertIs(accepted, True)
-
-    def test_simulate_2d_model_kd_order_must_match_returned_network_ir(self):
-        model = self._simulate_2d_model()
-        model["network_ir"]["species"].extend([
-            {"name": "C", "role": "free", "initial_total": None,
-             "unit": "concentration", "metadata": {}},
-            {"name": "Z", "role": "bound", "initial_total": None,
-             "unit": "concentration", "metadata": {}},
-        ])
-        model["network_ir"]["reactions"].insert(0, {
-            "formula": "B + C <-> Z", "kind": "binding", "kd": 3.0,
-            "kd_distribution": None, "reversible": True, "metadata": {},
-        })
-        model["kd"] = [2.0, 3.0]
-        model["K_sym"] = ["Kd1", "Kd2"]
-        model["q_sym"] = ["tA", "tB", "tC"]
-        model["x_sym"] = ["A", "B", "C", "Y", "Z"]
-        model["species"] = ["A", "B", "C", "Y", "Z"]
-        model["free_species"] = ["A", "B", "C"]
-        model["product_species"] = ["Y", "Z"]
-        canonical_request = {
-            "network_ir": copy.deepcopy(model["network_ir"]),
-            "network_ir_hash": "a" * 64,
-        }
-        canonical_request["network_ir"]["reactions"].reverse()
-
-        with mock.patch.object(
-                design_agent, "_canonical_network_ir_identity",
-                return_value={
-                    "network_ir": copy.deepcopy(model["network_ir"]),
-                    "network_ir_hash": "a" * 64,
-                }):
-            accepted = design_agent._canonical_simulate_2d_model_identity(
-                model, [2.0, 3.0], canonical_request,
-            )
-
-        self.assertIs(accepted, False)
-
-    def test_simulate_2d_kd_identity_does_not_use_absolute_numeric_tolerance(self):
-        model = self._simulate_2d_model()
-        model["network_ir"]["reactions"][0]["kd"] = 1e-12
-        model["kd"] = [1e-15]
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        scan["fixed_qK"] = [0.0, 0.0, -15.0]
-        canonical_identity = {
-            "network_ir": copy.deepcopy(model["network_ir"]),
-            "network_ir_hash": "a" * 64,
-        }
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             mock.patch.object(
-                 design_agent, "_canonical_network_ir_identity",
-                 return_value=canonical_identity,
-             ):
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[1e-12], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_invalid_canonical_model_identity",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_model_hash_must_match_authoritative_caller_hash(self):
-        model = self._simulate_2d_model()
-        model["network_ir_hash"] = "b" * 64
-        model["artifact"]["input_hashes"]["network_ir_hash"] = "b" * 64
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-
-        with mock.patch.object(design_agent.E, "build_model", return_value=model), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("missing_or_invalid_canonical_model_identity",
-                      result["incomplete_reasons"])
-
-    def test_simulate_2d_request_identity_uses_canonical_ir_owner(self):
-        validated_network = copy.deepcopy(self._simulate_2d_model()["network_ir"])
-        validated_network["provenance"]["created_at"] = "2026-07-17T00:00:02"
-        canonical_response = {
-            "valid": True,
-            "ir_schema_version": "bne-ir/v1.0.0",
-            "network": validated_network,
-            "hash": "a" * 64,
-        }
-
-        with mock.patch.object(
-                design_agent.E, "_post", return_value=canonical_response) as post:
-            identity = design_agent._canonical_simulate_2d_request_identity(
-                ["A + B <-> Y"], [2.0],
-            )
-
-        post.assert_called_once_with(
-            "/api/v1/ir/network/validate",
-            {"network": {"reactions": ["A + B <-> Y"], "kd": [2.0]}},
-            30,
-        )
-        self.assertEqual(identity, {
-            "network_ir": validated_network,
-            "network_ir_hash": "a" * 64,
-        })
-
-        invalid_responses = [
-            {**canonical_response, "valid": False},
-            {**canonical_response, "ir_schema_version": "bne-ir/v2.0.0"},
-            {**canonical_response, "hash": "not-a-sha256"},
-        ]
-        for response in invalid_responses:
-            with self.subTest(response=response), mock.patch.object(
-                    design_agent.E, "_post", return_value=response):
-                self.assertIsNone(
-                    design_agent._canonical_simulate_2d_request_identity(
-                        ["A + B <-> Y"], [2.0],
-                    )
-                )
-
-    def test_simulate_2d_response_identity_range_and_fixed_context_fail_closed(self):
-        base = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        variants = []
-        wrong_axis = copy.deepcopy(base)
-        wrong_axis["param1_symbol"] = "tB"
-        variants.append(wrong_axis)
-        wrong_range = copy.deepcopy(base)
-        wrong_range["param1_values"] = [-5.0, 6.0]
-        variants.append(wrong_range)
-        wrong_output = copy.deepcopy(base)
-        wrong_output["output_expr"] = "Z"
-        variants.append(wrong_output)
-        wrong_fixed = copy.deepcopy(base)
-        wrong_fixed["fixed_qK"][2] = 1.25
-        variants.append(wrong_fixed)
-        missing_model_hash = copy.deepcopy(base)
-        missing_model_hash.pop("network_ir_hash")
-        variants.append(missing_model_hash)
-
-        for scan in variants:
-            with self.subTest(scan=scan), mock.patch.object(
-                    design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-                 mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-                 self._patch_simulate_2d_canonical_identity():
-                result = design_agent.simulate_2d(
-                    ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                    observe_species="Y", n_grid=2,
-                )
-            self.assertIs(result["partial"], True)
-            self.assertNotIn("_card", result)
-            self.assertIn("response_identity_does_not_match_request",
-                          result["incomplete_reasons"])
-
-    def test_simulate_2d_stale_scan_from_another_model_hash_fails_closed(self):
-        scan = self._simulate_2d_scan(
-            [[0.0, 0.0], [0.0, 2.0]], [[True, True], [True, True]], False,
-        )
-        scan["network_ir_hash"] = "b" * 64
-
-        with mock.patch.object(
-                design_agent.E, "build_model", return_value=self._simulate_2d_model()), \
-             mock.patch.object(design_agent.E, "scan_2d", return_value=scan), \
-             self._patch_simulate_2d_canonical_identity():
-            result = design_agent.simulate_2d(
-                ["A + B <-> Y"], kd=[2.0], input1="tA", input2="tB",
-                observe_species="Y", n_grid=2,
-            )
-
-        self.assertIs(result["partial"], True)
-        self.assertNotIn("_card", result)
-        self.assertIn("response_identity_does_not_match_request",
-                      result["incomplete_reasons"])
 
     def test_simulate_2d_request_fingerprint_prevents_cross_request_deduplication(self):
         base_card = {
@@ -1097,7 +646,7 @@ class DesignAgentContractTests(unittest.TestCase):
                 "session", param_symbol="tA", output_exprs=["AB"], timeout=12)
             design_agent.E.scan_2d(
                 "session", param1_symbol="tA", param2_symbol="tB",
-                output_expr="AB", network_ir_hash="a" * 64, timeout=13)
+                output_expr="AB", timeout=13)
             design_agent.E.phenotype_classify(
                 "session", input_symbol="tA", output_expr="AB", timeout=14)
             design_agent.E.phenotype(
@@ -1114,7 +663,6 @@ class DesignAgentContractTests(unittest.TestCase):
             "A + B <-> AB", "AB + C <-> ABC",
         ])
         self.assertEqual(calls[0][1]["kd"], [1.0, 1.0])
-        self.assertEqual(calls[2][1]["network_ir_hash"], "a" * 64)
 
     def test_engine_ready_requires_exact_ready_payload(self):
         class Response(io.BytesIO):

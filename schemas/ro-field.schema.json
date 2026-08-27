@@ -351,10 +351,6 @@
       "type": "array",
       "items": { "$ref": "#/$defs/nullableNumber" }
     },
-    "numericArray": {
-      "type": "array",
-      "items": { "type": "number" }
-    },
     "sampledGrid": {
       "type": "object",
       "additionalProperties": false,
@@ -783,16 +779,10 @@
     "pathDefinition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "parameterization", "vertex_parameter_values", "vertices"],
+      "required": ["kind", "parameterization", "vertices"],
       "properties": {
         "kind": { "enum": ["axis_sweep", "polyline", "declared_curve_samples"] },
         "parameterization": { "$ref": "#/$defs/nonEmptyString" },
-        "vertex_parameter_values": {
-          "type": "array",
-          "minItems": 2,
-          "items": { "type": "number" },
-          "description": "Strictly increasing path-parameter value for each vertex. Semantic validation treats consecutive vertices as affine segments, binds every serialized sample coordinate and tangent to this machine-readable parameterization, and rejects directional samples at an interior vertex whose left and right tangents differ."
-        },
         "vertices": {
           "type": "array",
           "minItems": 2,
@@ -810,14 +800,12 @@
       "required": [
         "path",
         "path_shape",
-        "path_tangent_shape",
         "output_shape",
         "reaction_order_shape",
         "directional_order_shape",
         "flatten_order",
         "path_parameter_values",
         "input_log_coordinates",
-        "path_tangent_values",
         "output_values",
         "reaction_order_values",
         "directional_reaction_order_values",
@@ -832,13 +820,6 @@
             { "minItems": 2, "maxItems": 2 }
           ],
           "description": "Sample count followed by input count."
-        },
-        "path_tangent_shape": {
-          "allOf": [
-            { "$ref": "#/$defs/shape" },
-            { "minItems": 2, "maxItems": 2 }
-          ],
-          "description": "Sample count followed by input count for the machine-readable dgamma/ds vectors."
         },
         "output_shape": {
           "allOf": [
@@ -868,11 +849,7 @@
           "type": "array",
           "items": { "type": "number" }
         },
-        "input_log_coordinates": { "$ref": "#/$defs/numericArray" },
-        "path_tangent_values": {
-          "$ref": "#/$defs/numericArray",
-          "description": "Row-major dgamma/ds at every differentiable path sample. Semantic validation binds these values to path.vertex_parameter_values, rejects samples on non-differentiable interior kinks, and verifies directional_reaction_order_values = reaction_order_values * dgamma/ds."
-        },
+        "input_log_coordinates": { "$ref": "#/$defs/numericOrNullArray" },
         "output_values": { "$ref": "#/$defs/numericOrNullArray" },
         "reaction_order_values": { "$ref": "#/$defs/numericOrNullArray" },
         "directional_reaction_order_values": { "$ref": "#/$defs/numericOrNullArray" },

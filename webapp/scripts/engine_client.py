@@ -81,19 +81,17 @@ def dose_response(session_id=None, *, network=None, param_symbol, output_exprs,
     if fixed_qK is not None: payload["fixed_qK"] = fixed_qK
     return _post("/api/v1/parameter_scan_1d", payload, timeout)
 
-def scan_2d(session_id=None, *, network=None, network_ir_hash=None,
-            param1_symbol, param2_symbol, output_expr,
+def scan_2d(session_id=None, *, network=None, param1_symbol, param2_symbol, output_expr,
             param1_min=-6.0, param1_max=6.0, param2_min=-6.0, param2_max=6.0, n_grid=48,
             fixed_qK=None, timeout=300):
     """Real 2-input response SURFACE: solves the equilibrium on a param1×param2 grid and evaluates
-    output_expr. Returns param1_values, param2_values, output_grid (log-space), and the resolved
-    network_ir_hash — the genuine identity-bound 2D design surface — or {engine_offline}/{error}."""
+    output_expr. Returns param1_values, param2_values, output_grid (log-space) — the genuine 2D
+    design surface — or {engine_offline}/{error}."""
     payload = {"param1_symbol": param1_symbol, "param2_symbol": param2_symbol, "output_expr": output_expr,
                "param1_min": param1_min, "param1_max": param1_max,
                "param2_min": param2_min, "param2_max": param2_max, "n_grid": n_grid}
     if session_id: payload["session_id"] = session_id
     if network is not None: payload["network"] = network
-    if network_ir_hash is not None: payload["network_ir_hash"] = network_ir_hash
     if fixed_qK is not None: payload["fixed_qK"] = fixed_qK
     return _post("/api/v1/parameter_scan_2d", payload, timeout)
 

@@ -165,16 +165,7 @@ function _rofsj_portable_engine_payload(raw, path::AbstractString)
         throw(ArgumentError(
             "$path is not a portable JSON payload: " * sprint(showerror, err)))
     end
-    ncodeunits(encoded) <= _ROFSJ_MAX_DOCUMENT_BYTES || throw(ArgumentError(
-        "$path exceeds the adaptive document byte budget"))
-    parsed = JSON3.read(encoded)
-    _rofsj_walk_json_budget(parsed)
-    return _rofc_materialize(
-        parsed, path;
-        max_nodes=_ROFSJ_MAX_JSON_NODES,
-        max_depth=_ROFSJ_MAX_JSON_DEPTH,
-        max_string_bytes=_ROFSJ_MAX_STRING_BYTES,
-        max_total_string_bytes=_ROFSJ_MAX_DOCUMENT_BYTES)
+    return _rofc_materialize(JSON3.read(encoded), path)
 end
 
 _rofsj_file_sha256(path::AbstractString) = "sha256:" *
@@ -877,18 +868,34 @@ function _rofsj_replay_summary(meter::_ROFSJReplayMeter)
     return (work_units=Int(meter.consumed), breakdown=breakdown)
 end
 
-function _rofsj_write_canonical_once!(
-    path::AbstractString,
-    document;
-    storage_root::AbstractString=local_job_store_dir(),
-)
-    destination = normpath(abspath(String(path)))
+function _rofsj_write_canonical_once!(path::AbstractString, document)
+    destination = String(path)
     bytes = _rofc_bytes(document)
     length(bytes) <= _ROFSJ_MAX_DOCUMENT_BYTES || throw(ArgumentError(
         "adaptive RO-field artifact exceeds the document byte budget"))
-    return _rofc_write_bytes_once!(
-        storage_root, destination, bytes;
-        max_existing_bytes=_ROFSJ_MAX_DOCUMENT_BYTES)
+    directory = _rofc_ensure_directory!(dirname(destination))
+    if ispath(destination)
+        _rofc_existing_content_matches(destination, bytes)
+        return destination
+    end
+    temp_path, temp_io = mktemp(directory; cleanup=false)
+    try
+        write(temp_io, bytes)
+        _rofc_fsync_file!(temp_io, temp_path)
+        close(temp_io)
+        result = ccall(:link, Cint, (Cstring, Cstring),
+            temp_path, destination)
+        if result != 0
+            ispath(destination) || Base.systemerror(
+                "link adaptive RO-field artifact", true)
+            _rofc_existing_content_matches(destination, bytes)
+        end
+        _rofc_fsync_directory!(directory)
+        return destination
+    finally
+        isopen(temp_io) && close(temp_io)
+        isfile(temp_path) && rm(temp_path; force=true)
+    end
 end
 
 function _rofsj_validate_expected_content_hash(
@@ -911,36 +918,29 @@ function _rofsj_validate_expected_content_hash(
     return raw
 end
 
-function _rofsj_read_canonical(
-    path::AbstractString;
-    replay_meter=nothing,
-    storage_root::AbstractString=local_job_store_dir(),
-)
-    artifact_path = normpath(abspath(String(path)))
-    bytes = _rofc_read_bounded_file(
-        storage_root, artifact_path, _ROFSJ_MAX_DOCUMENT_BYTES;
-        phase=:adaptive_document_bytes)
-    byte_count = length(bytes)
+function _rofsj_read_canonical(path::AbstractString;
+                               replay_meter=nothing)
+    artifact_path = String(path)
+    islink(artifact_path) && throw(ArgumentError(
+        "adaptive RO-field artifact must not be a symlink"))
+    isfile(artifact_path) || throw(ArgumentError(
+        "missing adaptive RO-field artifact: $(basename(artifact_path))"))
+    byte_count = filesize(artifact_path)
+    byte_count <= _ROFSJ_MAX_DOCUMENT_BYTES ||
+        throw(ArgumentError("adaptive RO-field artifact is oversized"))
     replay_meter === nothing || _rofsj_charge_replay!(
         replay_meter, "canonical_json_bytes", byte_count)
+    bytes = read(artifact_path)
     isvalid(String, bytes) || throw(ArgumentError(
         "adaptive RO-field artifact is not UTF-8"))
-    parsed = try
-        JSON3.read(String(copy(bytes)))
+    raw = try
+        _rofc_materialize(JSON3.read(String(copy(bytes))))
     catch err
         throw(ArgumentError(
             "adaptive RO-field artifact is invalid JSON: " *
             sprint(showerror, err)))
     end
-    # Traverse the lazy JSON3 tree before allocating ordinary Dict/Vector
-    # containers so hostile node/depth populations fail at the decode edge.
-    _rofsj_walk_json_budget(parsed)
-    raw = _rofc_materialize(
-        parsed, "adaptive RO-field artifact";
-        max_nodes=_ROFSJ_MAX_JSON_NODES,
-        max_depth=_ROFSJ_MAX_JSON_DEPTH,
-        max_string_bytes=_ROFSJ_MAX_STRING_BYTES,
-        max_total_string_bytes=_ROFSJ_MAX_DOCUMENT_BYTES)
+    _rofsj_walk_json_budget(raw)
     replay_meter === nothing || _rofsj_charge_replay!(
         replay_meter, "parsed_json_scalars",
         _rofsj_json_scalar_count(raw))
@@ -1765,9 +1765,12 @@ function _rofsj_resume_parent_admission(spec, user_sub)
         _rofsj_plan_path(root, spec["plan"]["plan_sha256"]),
         _rofsj_checkpoint_path(root, resume["checkpoint_sha256"]),
     )
-        _rofc_read_bounded_file(
-            local_job_store_dir(), path, _ROFSJ_MAX_DOCUMENT_BYTES;
-            phase=:adaptive_document_bytes)
+        islink(path) && throw(ArgumentError(
+            "adaptive resume control artifact must not be a symlink"))
+        isfile(path) || throw(ArgumentError(
+            "adaptive resume control artifact is missing"))
+        filesize(path) <= _ROFSJ_MAX_DOCUMENT_BYTES || throw(ArgumentError(
+            "adaptive resume control artifact is oversized"))
     end
     return (record=snapshot, root=root)
 end

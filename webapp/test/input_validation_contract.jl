@@ -148,36 +148,6 @@ end
     @test landscape_bool_kd.status == 400
 end
 
-@testset "2D scans echo the resolved canonical model identity" begin
-    post(path, body) = router(HTTP.Request(
-        "POST",
-        path,
-        ["Content-Type" => "application/json"],
-        JSON3.write(body),
-    ))
-    first = JSON3.read(String(post("/api/v1/build_model", Dict(
-        "reactions" => Any["A + B <-> AB"],
-        "kd" => Any[1.0],
-    )).body))
-    second = JSON3.read(String(post("/api/v1/build_model", Dict(
-        "reactions" => Any["A + B <-> AB"],
-        "kd" => Any[2.0],
-    )).body))
-    @test first["network_ir_hash"] != second["network_ir_hash"]
-
-    response = post("/api/v1/parameter_scan_2d", Dict(
-        "session_id" => first["session_id"],
-        "network_ir_hash" => second["network_ir_hash"],
-        "param1_symbol" => "tA",
-        "param2_symbol" => "tB",
-        "output_expr" => "AB",
-        "n_grid" => 20,
-    ))
-    @test response.status == 200
-    payload = JSON3.read(String(response.body))
-    @test payload["network_ir_hash"] == second["network_ir_hash"]
-end
-
 @testset "Model and placement handlers reject lossy JSON coercions" begin
     network = Dict(
         "reactions" => Any["A + B <-> AB"],

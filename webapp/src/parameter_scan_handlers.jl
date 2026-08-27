@@ -154,7 +154,6 @@ function handle_parameter_scan_2d(req)
         "validity_grid" => mat2vv(valid),
         "partial" => !all(valid),
         "fixed_qK" => collect(fixed_qK),
-        "network_ir_hash" => String(bundle["network_ir_hash"]),
     )
     return json_response(payload)
 end

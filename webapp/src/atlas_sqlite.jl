@@ -214,33 +214,6 @@ function _atlas_sqlite_query(db::SQLite.DB, sql::AbstractString, params=())
     return nothing
 end
 
-function _atlas_sqlite_foreign_keys_enabled(db::SQLite.DB)
-    query = _atlas_sqlite_query(db, "PRAGMA foreign_keys")
-    try
-        for row in query
-            return Int(row[1]) == 1
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    return false
-end
-
-"""
-Enable and verify SQLite foreign-key enforcement for a caller-owned connection.
-
-`PRAGMA foreign_keys` is connection-local and silently ignores attempts to
-change it while a transaction is active.  The explicit read-back therefore
-matters: a caller that begins a transaction on an unconfigured connection must
-fail closed instead of running Atlas writes without referential integrity.
-"""
-function _atlas_sqlite_prepare_connection!(db::SQLite.DB)
-    _atlas_sqlite_execute(db, "PRAGMA foreign_keys = ON")
-    _atlas_sqlite_foreign_keys_enabled(db) || error(
-        "Atlas SQLite requires PRAGMA foreign_keys=ON for every connection")
-    return db
-end
-
 function _atlas_sqlite_table_columns(db::SQLite.DB, table::AbstractString)
     columns = Set{String}()
     query = _atlas_sqlite_query(db, "PRAGMA table_info(" * String(table) * ")")
@@ -264,7 +237,6 @@ function _atlas_sqlite_ensure_columns!(db::SQLite.DB, table::AbstractString, col
 end
 
 function _atlas_sqlite_transaction(f::Function, db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
     if SQLite.intransaction(db)
         savepoint = "bcx_nested_" * string(rand(UInt64), base=16)
         _atlas_sqlite_execute(db, "SAVEPOINT $savepoint")
@@ -297,10 +269,12 @@ end
 
 _atlas_sqlite_transaction(db::SQLite.DB, f::Function) = _atlas_sqlite_transaction(f, db)
 
-const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
-    "atlas_metadata" =>
+function atlas_sqlite_init!(db::SQLite.DB)
+    statements = [
+        "PRAGMA journal_mode = WAL",
+        "PRAGMA synchronous = NORMAL",
         "CREATE TABLE IF NOT EXISTS atlas_metadata (key TEXT PRIMARY KEY, value_text TEXT NOT NULL)",
-    "library_state" => """
+        """
         CREATE TABLE IF NOT EXISTS library_state (
             snapshot_name TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL,
@@ -308,7 +282,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             library_json TEXT NOT NULL
         )
         """,
-    "atlas_manifests" => """
+        """
         CREATE TABLE IF NOT EXISTS atlas_manifests (
             atlas_id TEXT PRIMARY KEY,
             source_label TEXT,
@@ -318,7 +292,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             manifest_json TEXT NOT NULL
         )
         """,
-    "merge_events" => """
+        """
         CREATE TABLE IF NOT EXISTS merge_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
             merged_at TEXT,
@@ -328,7 +302,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             event_json TEXT NOT NULL
         )
         """,
-    "network_entries" => """
+        """
         CREATE TABLE IF NOT EXISTS network_entries (
             network_id TEXT PRIMARY KEY,
             canonical_code TEXT,
@@ -346,7 +320,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "input_graph_slices" => """
+        """
         CREATE TABLE IF NOT EXISTS input_graph_slices (
             graph_slice_id TEXT PRIMARY KEY,
             network_id TEXT,
@@ -358,7 +332,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "behavior_slices" => """
+        """
         CREATE TABLE IF NOT EXISTS behavior_slices (
             slice_id TEXT PRIMARY KEY,
             network_id TEXT,
@@ -379,7 +353,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "regime_records" => """
+        """
         CREATE TABLE IF NOT EXISTS regime_records (
             regime_record_id TEXT PRIMARY KEY,
             slice_id TEXT,
@@ -397,7 +371,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "transition_records" => """
+        """
         CREATE TABLE IF NOT EXISTS transition_records (
             transition_record_id TEXT PRIMARY KEY,
             slice_id TEXT,
@@ -415,7 +389,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "family_buckets" => """
+        """
         CREATE TABLE IF NOT EXISTS family_buckets (
             bucket_id TEXT PRIMARY KEY,
             slice_id TEXT,
@@ -431,7 +405,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-    "path_records" => """
+        """
         CREATE TABLE IF NOT EXISTS path_records (
             path_record_id TEXT PRIMARY KEY,
             behavior_code TEXT,
@@ -453,13 +427,13 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT
         )
         """,
-    "path_only_records" => """
+        """
         CREATE TABLE IF NOT EXISTS path_only_records (
             path_record_id TEXT PRIMARY KEY,
             behavior_code TEXT NOT NULL
         )
         """,
-    "classifier_configs" => """
+        """
         CREATE TABLE IF NOT EXISTS classifier_configs (
             cfg INTEGER PRIMARY KEY,
             hash TEXT NOT NULL UNIQUE,
@@ -477,7 +451,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             config_json TEXT NOT NULL
         )
         """,
-    "network_features" => """
+        """
         CREATE TABLE IF NOT EXISTS network_features (
             network_id TEXT PRIMARY KEY,
             d INTEGER,
@@ -498,7 +472,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             feature_json TEXT
         )
         """,
-    "behavior_programs" => """
+        """
         CREATE TABLE IF NOT EXISTS behavior_programs (
             pid INTEGER PRIMARY KEY,
             cfg INTEGER NOT NULL,
@@ -515,7 +489,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             FOREIGN KEY(cfg) REFERENCES classifier_configs(cfg)
         )
         """,
-    "program_features" => """
+        """
         CREATE TABLE IF NOT EXISTS program_features (
             pid INTEGER PRIMARY KEY,
             c_len REAL NOT NULL,
@@ -528,7 +502,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             FOREIGN KEY(pid) REFERENCES behavior_programs(pid)
         )
         """,
-    "slice_program_support" => """
+        """
         CREATE TABLE IF NOT EXISTS slice_program_support (
             sp TEXT NOT NULL,
             pid INTEGER NOT NULL,
@@ -546,7 +520,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             FOREIGN KEY(pid) REFERENCES behavior_programs(pid)
         ) WITHOUT ROWID
         """,
-    "network_program_support" => """
+        """
         CREATE TABLE IF NOT EXISTS network_program_support (
             np TEXT NOT NULL,
             pid INTEGER NOT NULL,
@@ -558,7 +532,7 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             FOREIGN KEY(pid) REFERENCES behavior_programs(pid)
         ) WITHOUT ROWID
         """,
-    "witness_paths" => """
+        """
         CREATE TABLE IF NOT EXISTS witness_paths (
             sp TEXT NOT NULL,
             pid INTEGER NOT NULL,
@@ -571,13 +545,13 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             FOREIGN KEY(pid) REFERENCES behavior_programs(pid)
         ) WITHOUT ROWID
         """,
-    "geometry_sidecar_meta" => """
+        """
         CREATE TABLE IF NOT EXISTS geometry_sidecar_meta (
             key TEXT PRIMARY KEY,
             value_text TEXT
         )
         """,
-    "duplicate_inputs" => """
+        """
         CREATE TABLE IF NOT EXISTS duplicate_inputs (
             duplicate_key TEXT PRIMARY KEY,
             source_label TEXT,
@@ -585,68 +559,64 @@ const _ATLAS_SQLITE_0_3_TABLE_SQL = Pair{String,String}[
             record_json TEXT NOT NULL
         )
         """,
-]
+        "CREATE INDEX IF NOT EXISTS idx_network_status ON network_entries (analysis_status)",
+        "CREATE INDEX IF NOT EXISTS idx_slice_network ON behavior_slices (network_id)",
+        "CREATE INDEX IF NOT EXISTS idx_slice_io ON behavior_slices (input_symbol, output_symbol)",
+        "CREATE INDEX IF NOT EXISTS idx_slice_status ON behavior_slices (analysis_status)",
+        "CREATE INDEX IF NOT EXISTS idx_regime_slice ON regime_records (slice_id)",
+        "CREATE INDEX IF NOT EXISTS idx_regime_token ON regime_records (output_order_token, role, singular)",
+        "CREATE INDEX IF NOT EXISTS idx_transition_slice ON transition_records (slice_id)",
+        "CREATE INDEX IF NOT EXISTS idx_transition_token ON transition_records (transition_token)",
+        "CREATE INDEX IF NOT EXISTS idx_bucket_slice ON family_buckets (slice_id)",
+        "CREATE INDEX IF NOT EXISTS idx_bucket_family ON family_buckets (family_kind, family_label)",
+        "CREATE INDEX IF NOT EXISTS idx_path_slice ON path_records (slice_id)",
+        "CREATE INDEX IF NOT EXISTS idx_path_labels ON path_records (motif_label, exact_label)",
+        "CREATE INDEX IF NOT EXISTS idx_path_behavior ON path_records (behavior_code)",
+        "CREATE INDEX IF NOT EXISTS idx_path_only_behavior ON path_only_records (behavior_code)",
+        "CREATE INDEX IF NOT EXISTS idx_behavior_program_hash ON behavior_programs (hash)",
+        "CREATE INDEX IF NOT EXISTS idx_slice_program_pid ON slice_program_support (pid)",
+        "CREATE INDEX IF NOT EXISTS idx_network_program_pid ON network_program_support (pid)",
+    ]
 
-const _ATLAS_SQLITE_0_3_INDEX_SQL = Pair{String,String}[
-    "idx_network_status" => "CREATE INDEX IF NOT EXISTS idx_network_status ON network_entries (analysis_status)",
-    "idx_slice_network" => "CREATE INDEX IF NOT EXISTS idx_slice_network ON behavior_slices (network_id)",
-    "idx_slice_io" => "CREATE INDEX IF NOT EXISTS idx_slice_io ON behavior_slices (input_symbol, output_symbol)",
-    "idx_slice_status" => "CREATE INDEX IF NOT EXISTS idx_slice_status ON behavior_slices (analysis_status)",
-    "idx_regime_slice" => "CREATE INDEX IF NOT EXISTS idx_regime_slice ON regime_records (slice_id)",
-    "idx_regime_token" => "CREATE INDEX IF NOT EXISTS idx_regime_token ON regime_records (output_order_token, role, singular)",
-    "idx_transition_slice" => "CREATE INDEX IF NOT EXISTS idx_transition_slice ON transition_records (slice_id)",
-    "idx_transition_token" => "CREATE INDEX IF NOT EXISTS idx_transition_token ON transition_records (transition_token)",
-    "idx_bucket_slice" => "CREATE INDEX IF NOT EXISTS idx_bucket_slice ON family_buckets (slice_id)",
-    "idx_bucket_family" => "CREATE INDEX IF NOT EXISTS idx_bucket_family ON family_buckets (family_kind, family_label)",
-    "idx_path_slice" => "CREATE INDEX IF NOT EXISTS idx_path_slice ON path_records (slice_id)",
-    "idx_path_labels" => "CREATE INDEX IF NOT EXISTS idx_path_labels ON path_records (motif_label, exact_label)",
-    "idx_path_behavior" => "CREATE INDEX IF NOT EXISTS idx_path_behavior ON path_records (behavior_code)",
-    "idx_path_only_behavior" => "CREATE INDEX IF NOT EXISTS idx_path_only_behavior ON path_only_records (behavior_code)",
-    "idx_behavior_program_hash" => "CREATE INDEX IF NOT EXISTS idx_behavior_program_hash ON behavior_programs (hash)",
-    "idx_slice_program_pid" => "CREATE INDEX IF NOT EXISTS idx_slice_program_pid ON slice_program_support (pid)",
-    "idx_network_program_pid" => "CREATE INDEX IF NOT EXISTS idx_network_program_pid ON network_program_support (pid)",
-    "idx_graph_slice_change" => "CREATE INDEX IF NOT EXISTS idx_graph_slice_change ON input_graph_slices (change_signature)",
-    "idx_slice_change" => "CREATE INDEX IF NOT EXISTS idx_slice_change ON behavior_slices (change_signature, output_symbol)",
-    "idx_regime_change" => "CREATE INDEX IF NOT EXISTS idx_regime_change ON regime_records (change_signature)",
-    "idx_transition_change" => "CREATE INDEX IF NOT EXISTS idx_transition_change ON transition_records (change_signature)",
-    "idx_path_change" => "CREATE INDEX IF NOT EXISTS idx_path_change ON path_records (change_signature, output_symbol)",
-]
-
-function _atlas_sqlite_create_0_3_0!(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
-    _atlas_sqlite_preflight_schema_versions!(db)
-    _atlas_sqlite_schema_object_exists(db, "table", "atlas_metadata") &&
-        error("Atlas SQLite 0.3 baseline already exists")
-    _atlas_sqlite_execute(db, "PRAGMA journal_mode = WAL")
-    _atlas_sqlite_execute(db, "PRAGMA synchronous = NORMAL")
-    _atlas_sqlite_transaction(db) do
-        for (_, statement) in _ATLAS_SQLITE_0_3_TABLE_SQL
-            _atlas_sqlite_execute(db, statement)
-        end
-        for (_, statement) in _ATLAS_SQLITE_0_3_INDEX_SQL
-            _atlas_sqlite_execute(db, statement)
-        end
-        _atlas_sqlite_execute(db,
-            "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?)",
-            ("schema_version", "0.3.0"),
-        )
-        _atlas_sqlite_execute(db,
-            "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?)",
-            ("updated_at", _now_iso_timestamp()),
-        )
-        _validate_atlas_sqlite_0_3_0!(db)
+    for statement in statements
+        _atlas_sqlite_execute(db, statement)
     end
-    return db
-end
 
-function atlas_sqlite_init!(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
-    _atlas_sqlite_preflight_schema_versions!(db)
-    if !_atlas_sqlite_schema_object_exists(db, "table", "atlas_metadata")
-        _atlas_sqlite_create_0_3_0!(db)
-    else
-        _validate_atlas_sqlite_0_3_0!(db)
-    end
+    _atlas_sqlite_ensure_columns!(db, "input_graph_slices", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "behavior_slices", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "regime_records", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "transition_records", [
+        "change_signature" => "TEXT",
+    ])
+    _atlas_sqlite_ensure_columns!(db, "path_records", [
+        "change_signature" => "TEXT",
+        "behavior_code" => "TEXT",
+    ])
+
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_graph_slice_change ON input_graph_slices (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_slice_change ON behavior_slices (change_signature, output_symbol)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_regime_change ON regime_records (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_transition_change ON transition_records (change_signature)")
+    _atlas_sqlite_execute(db, "CREATE INDEX IF NOT EXISTS idx_path_change ON path_records (change_signature, output_symbol)")
+
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO NOTHING",
+        # This function is the historical 0.3 baseline.  The 0.4 migration
+        # advances metadata inside its own transaction only after every new
+        # table and index succeeds.
+        ("schema_version", "0.3.0"),
+    )
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
+        ("updated_at", _now_iso_timestamp()),
+    )
     apply_atlas_sqlite_migrations!(db)
     return db
 end
@@ -666,244 +636,11 @@ struct AtlasSqliteMigration
     version::String
     description::String
     apply::Function   # (db::SQLite.DB) -> Any
-    validate::Function # (db::SQLite.DB) -> Any
 end
 
-function _atlas_sqlite_schema_object_sql(
-    db::SQLite.DB,
-    kind::AbstractString,
-    name::AbstractString,
-)
-    query = _atlas_sqlite_query(
-        db,
-        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1",
-        (String(kind), String(name)),
-    )
-    try
-        for row in query
-            value = row[:sql]
-            return _atlas_sqlite_is_nullish(value) ? "" : String(value)
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    return nothing
-end
-
-_atlas_sqlite_schema_object_exists(db::SQLite.DB, kind::AbstractString, name::AbstractString) =
-    _atlas_sqlite_schema_object_sql(db, kind, name) !== nothing
-
-function _atlas_sqlite_table_shape(db::SQLite.DB, table::AbstractString)
-    occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", table) ||
-        error("unsafe SQLite schema identifier: $(table)")
-    query = _atlas_sqlite_query(db, "PRAGMA table_info($(String(table)))")
-    shape = NamedTuple[]
-    try
-        for row in query
-            push!(shape, (
-                name=String(row[:name]),
-                type=uppercase(String(row[:type])),
-                notnull=Int(row[:notnull]),
-                pk=Int(row[:pk]),
-            ))
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    return shape
-end
-
-function _atlas_sqlite_require_table_shape!(
-    db::SQLite.DB,
-    table::AbstractString,
-    expected,
-)
-    actual = _atlas_sqlite_table_shape(db, table)
-    actual == expected || error(
-        "Atlas SQLite table $(table) has an incompatible schema; " *
-        "expected $(expected), found $(actual)")
-    return nothing
-end
-
-function _atlas_sqlite_normalized_schema_sql(sql::AbstractString)
-    normalized_io = IOBuffer()
-    outside_quote_io = IOBuffer()
-    function flush_outside_quote!()
-        outside = String(take!(outside_quote_io))
-        outside = replace(
-            outside,
-            "createtableifnotexists" => "createtable",
-            "createindexifnotexists" => "createindex",
-        )
-        print(normalized_io, outside)
-        return nothing
-    end
-    characters = collect(String(sql))
-    closing_quote = nothing
-    index = 1
-    while index <= length(characters)
-        character = characters[index]
-        if closing_quote === nothing
-            if character == '\'' || character == '"' || character == '`'
-                flush_outside_quote!()
-                closing_quote = character
-                print(normalized_io, character)
-            elseif character == '['
-                flush_outside_quote!()
-                closing_quote = ']'
-                print(normalized_io, character)
-            elseif !isspace(character)
-                print(outside_quote_io, lowercase(character))
-            end
-        else
-            print(normalized_io, character)
-            if character == closing_quote
-                if index < length(characters) &&
-                   characters[index + 1] == closing_quote
-                    index += 1
-                    print(normalized_io, characters[index])
-                else
-                    closing_quote = nothing
-                end
-            end
-        end
-        index += 1
-    end
-    closing_quote === nothing || error(
-        "Atlas SQLite schema SQL contains an unterminated quoted token")
-    flush_outside_quote!()
-    normalized = String(take!(normalized_io))
-    return rstrip(normalized, ';')
-end
-
-function _atlas_sqlite_require_exact_schema_sql!(
-    db::SQLite.DB,
-    kind::AbstractString,
-    name::AbstractString,
-    expected_sql::AbstractString,
-)
-    actual_sql = _atlas_sqlite_schema_object_sql(db, kind, name)
-    actual_sql === nothing && error(
-        "Atlas SQLite $(kind) $(name) is missing")
-    actual = _atlas_sqlite_normalized_schema_sql(actual_sql)
-    expected = _atlas_sqlite_normalized_schema_sql(expected_sql)
-    actual == expected || error(
-        "Atlas SQLite $(kind) $(name) has an incompatible exact schema")
-    return nothing
-end
-
-function _validate_atlas_sqlite_0_3_0!(db::SQLite.DB)
-    for (table, expected_sql) in _ATLAS_SQLITE_0_3_TABLE_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "table", table, expected_sql)
-    end
-    for (index, expected_sql) in _ATLAS_SQLITE_0_3_INDEX_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "index", index, expected_sql)
-    end
-    return db
-end
-
-function _atlas_sqlite_require_table_sql_fragments!(
-    db::SQLite.DB,
-    table::AbstractString,
-    fragments,
-)
-    sql = _atlas_sqlite_schema_object_sql(db, "table", table)
-    sql === nothing && error("Atlas SQLite table $(table) is missing")
-    normalized = _atlas_sqlite_normalized_schema_sql(sql)
-    for fragment in fragments
-        needle = _atlas_sqlite_normalized_schema_sql(fragment)
-        occursin(needle, normalized) || error(
-            "Atlas SQLite table $(table) is missing required constraint $(fragment)")
-    end
-    return nothing
-end
-
-function _atlas_sqlite_foreign_key_shape(db::SQLite.DB, table::AbstractString)
-    occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", table) ||
-        error("unsafe SQLite schema identifier: $(table)")
-    query = _atlas_sqlite_query(db, "PRAGMA foreign_key_list($(String(table)))")
-    shape = NamedTuple[]
-    try
-        for row in query
-            push!(shape, (
-                from=String(row[:from]),
-                to=String(row[:to]),
-                table=String(row[:table]),
-                on_update=uppercase(String(row[:on_update])),
-                on_delete=uppercase(String(row[:on_delete])),
-            ))
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    sort!(shape; by=x -> (x.from, x.to, x.table, x.on_update, x.on_delete))
-    return shape
-end
-
-function _atlas_sqlite_require_foreign_keys!(db::SQLite.DB, table::AbstractString, expected)
-    actual = _atlas_sqlite_foreign_key_shape(db, table)
-    sorted_expected = sort!(collect(expected); by=x ->
-        (x.from, x.to, x.table, x.on_update, x.on_delete))
-    actual == sorted_expected || error(
-        "Atlas SQLite table $(table) has incompatible foreign keys; " *
-        "expected $(sorted_expected), found $(actual)")
-    return nothing
-end
-
-function _atlas_sqlite_require_index!(
-    db::SQLite.DB,
-    index::AbstractString,
-    table::AbstractString,
-    columns,
-)
-    sql = _atlas_sqlite_schema_object_sql(db, "index", index)
-    sql === nothing && error("Atlas SQLite index $(index) is missing")
-    query = _atlas_sqlite_query(db, "PRAGMA index_info($(String(index)))")
-    actual_columns = String[]
-    try
-        for row in query
-            push!(actual_columns, String(row[:name]))
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    expected_columns = collect(String.(columns))
-    actual_columns == expected_columns || error(
-        "Atlas SQLite index $(index) has incompatible columns; " *
-        "expected $(expected_columns), found $(actual_columns)")
-    table_query = _atlas_sqlite_query(
-        db,
-        "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?",
-        (String(index),),
-    )
-    actual_table = try
-        only(String(row[:tbl_name]) for row in table_query)
-    finally
-        DBInterface.close!(table_query)
-    end
-    actual_table == String(table) || error(
-        "Atlas SQLite index $(index) belongs to $(actual_table), not $(table)")
-    list_query = _atlas_sqlite_query(db, "PRAGMA index_list($(String(table)))")
-    found_nonunique = false
-    try
-        for row in list_query
-            String(row[:name]) == String(index) || continue
-            Int(row[:unique]) == 0 || error(
-                "Atlas SQLite index $(index) must be non-unique")
-            found_nonunique = true
-        end
-    finally
-        DBInterface.close!(list_query)
-    end
-    found_nonunique || error(
-        "Atlas SQLite index $(index) is not registered on $(table)")
-    return nothing
-end
-
-const _ATLAS_SQLITE_0_4_TABLE_SQL = Pair{String,String}[
-    "ro_cell_complex_identities" => """
+function _apply_atlas_sqlite_0_4_0!(db::SQLite.DB)
+    _atlas_sqlite_execute(db,
+        """
         CREATE TABLE IF NOT EXISTS ro_cell_complex_identities (
             cell_complex_hash TEXT PRIMARY KEY,
             codec_magic TEXT NOT NULL CHECK(codec_magic = 'RPB2'),
@@ -916,8 +653,9 @@ const _ATLAS_SQLITE_0_4_TABLE_SQL = Pair{String,String}[
             facet_count INTEGER NOT NULL,
             singular_stratum_count INTEGER NOT NULL
         )
-        """,
-    "ro_field_artifacts" => """
+        """)
+    _atlas_sqlite_execute(db,
+        """
         CREATE TABLE IF NOT EXISTS ro_field_artifacts (
             artifact_sha256 TEXT PRIMARY KEY,
             field_id TEXT NOT NULL,
@@ -939,26 +677,30 @@ const _ATLAS_SQLITE_0_4_TABLE_SQL = Pair{String,String}[
             created_at TEXT NOT NULL,
             field_json TEXT NOT NULL
         )
-        """,
-]
-
-const _ATLAS_SQLITE_0_4_INDEX_SQL = Pair{String,String}[
-    "idx_ro_fields_network_representation" =>
+        """)
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_fields_network_representation " *
-        "ON ro_field_artifacts (network_ir_sha256, representation)",
-    "idx_ro_fields_domain_sha256" =>
+        "ON ro_field_artifacts (network_ir_sha256, representation)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_fields_domain_sha256 " *
-        "ON ro_field_artifacts (domain_sha256)",
-    "idx_ro_fields_field_id" =>
+        "ON ro_field_artifacts (domain_sha256)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_fields_field_id " *
-        "ON ro_field_artifacts (field_id)",
-    "idx_ro_fields_cell_complex_hash" =>
+        "ON ro_field_artifacts (field_id)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_fields_cell_complex_hash " *
-        "ON ro_field_artifacts (cell_complex_hash)",
-]
+        "ON ro_field_artifacts (cell_complex_hash)")
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
+        ("schema_version", "0.4.0"),
+    )
+    return db
+end
 
-const _ATLAS_SQLITE_0_5_TABLE_SQL = Pair{String,String}[
-    "ro_field_signatures" => """
+function _apply_atlas_sqlite_0_5_0!(db::SQLite.DB)
+    _atlas_sqlite_execute(db,
+        """
         CREATE TABLE IF NOT EXISTS ro_field_signatures (
             signature_sha256 TEXT PRIMARY KEY,
             artifact_sha256 TEXT NOT NULL
@@ -985,8 +727,9 @@ const _ATLAS_SQLITE_0_5_TABLE_SQL = Pair{String,String}[
             signature_json TEXT NOT NULL,
             UNIQUE(artifact_sha256, classifier_version, config_sha256)
         )
-        """,
-    "ro_field_component_features" => """
+        """)
+    _atlas_sqlite_execute(db,
+        """
         CREATE TABLE IF NOT EXISTS ro_field_component_features (
             signature_sha256 TEXT NOT NULL
                 REFERENCES ro_field_signatures(signature_sha256) ON DELETE CASCADE,
@@ -1001,8 +744,9 @@ const _ATLAS_SQLITE_0_5_TABLE_SQL = Pair{String,String}[
             )),
             PRIMARY KEY (signature_sha256, output_position, axis_position)
         ) WITHOUT ROWID
-        """,
-    "ro_field_output_gradient_features" => """
+        """)
+    _atlas_sqlite_execute(db,
+        """
         CREATE TABLE IF NOT EXISTS ro_field_output_gradient_features (
             signature_sha256 TEXT NOT NULL
                 REFERENCES ro_field_signatures(signature_sha256) ON DELETE CASCADE,
@@ -1014,467 +758,51 @@ const _ATLAS_SQLITE_0_5_TABLE_SQL = Pair{String,String}[
             )),
             PRIMARY KEY (signature_sha256, output_position)
         ) WITHOUT ROWID
-        """,
-]
-
-const _ATLAS_SQLITE_0_5_INDEX_SQL = Pair{String,String}[
-    "idx_ro_field_signatures_artifact" =>
+        """)
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_field_signatures_artifact " *
-        "ON ro_field_signatures (artifact_sha256)",
-    "idx_ro_field_signatures_classifiable" =>
+        "ON ro_field_signatures (artifact_sha256)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_field_signatures_classifiable " *
-        "ON ro_field_signatures (classifiable, signature_sha256)",
-    "idx_ro_field_components_classification" =>
+        "ON ro_field_signatures (classifiable, signature_sha256)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_field_components_classification " *
         "ON ro_field_component_features " *
-        "(classification, output_id, axis_id, signature_sha256)",
-    "idx_ro_field_gradients_family" =>
+        "(classification, output_id, axis_id, signature_sha256)")
+    _atlas_sqlite_execute(db,
         "CREATE INDEX IF NOT EXISTS idx_ro_field_gradients_family " *
         "ON ro_field_output_gradient_features " *
-        "(gradient_family, output_id, signature_sha256)",
-]
-
-const _ATLAS_SQLITE_0_4_IDENTITY_SHAPE = [
-    (name="cell_complex_hash", type="TEXT", notnull=0, pk=1),
-    (name="codec_magic", type="TEXT", notnull=1, pk=0),
-    (name="codec_version", type="INTEGER", notnull=1, pk=0),
-    (name="identity_kind", type="TEXT", notnull=1, pk=0),
-    (name="blob", type="BLOB", notnull=1, pk=0),
-    (name="axis_count", type="INTEGER", notnull=1, pk=0),
-    (name="output_count", type="INTEGER", notnull=1, pk=0),
-    (name="cell_count", type="INTEGER", notnull=1, pk=0),
-    (name="facet_count", type="INTEGER", notnull=1, pk=0),
-    (name="singular_stratum_count", type="INTEGER", notnull=1, pk=0),
-]
-
-const _ATLAS_SQLITE_0_4_ARTIFACT_SHAPE = [
-    (name="artifact_sha256", type="TEXT", notnull=0, pk=1),
-    (name="field_id", type="TEXT", notnull=1, pk=0),
-    (name="schema_version", type="TEXT", notnull=1, pk=0),
-    (name="representation", type="TEXT", notnull=1, pk=0),
-    (name="network_ir_sha256", type="TEXT", notnull=1, pk=0),
-    (name="domain_sha256", type="TEXT", notnull=1, pk=0),
-    (name="data_sha256", type="TEXT", notnull=1, pk=0),
-    (name="cell_complex_hash", type="TEXT", notnull=0, pk=0),
-    (name="partial", type="INTEGER", notnull=1, pk=0),
-    (name="storage_mode", type="TEXT", notnull=1, pk=0),
-    (name="axis_count", type="INTEGER", notnull=1, pk=0),
-    (name="output_count", type="INTEGER", notnull=1, pk=0),
-    (name="eligible_count", type="INTEGER", notnull=1, pk=0),
-    (name="evaluated_count", type="INTEGER", notnull=1, pk=0),
-    (name="valid_count", type="INTEGER", notnull=1, pk=0),
-    (name="invalid_count", type="INTEGER", notnull=1, pk=0),
-    (name="omitted_count", type="INTEGER", notnull=1, pk=0),
-    (name="created_at", type="TEXT", notnull=1, pk=0),
-    (name="field_json", type="TEXT", notnull=1, pk=0),
-]
-
-function _validate_atlas_sqlite_0_4_0!(db::SQLite.DB)
-    _atlas_sqlite_require_table_shape!(
-        db, "ro_cell_complex_identities", _ATLAS_SQLITE_0_4_IDENTITY_SHAPE)
-    _atlas_sqlite_require_table_shape!(
-        db, "ro_field_artifacts", _ATLAS_SQLITE_0_4_ARTIFACT_SHAPE)
-    _atlas_sqlite_require_table_sql_fragments!(db, "ro_cell_complex_identities", (
-        "CHECK(codec_magic = 'RPB2')",
-        "CHECK(identity_kind = 'exact_cell_complex_v1')",
-    ))
-    _atlas_sqlite_require_table_sql_fragments!(db, "ro_field_artifacts", (
-        "CHECK(partial IN (0, 1))",
-        "CHECK(storage_mode = 'inline')",
-    ))
-    _atlas_sqlite_require_foreign_keys!(db, "ro_cell_complex_identities", NamedTuple[])
-    _atlas_sqlite_require_foreign_keys!(db, "ro_field_artifacts", [(
-        from="cell_complex_hash",
-        to="cell_complex_hash",
-        table="ro_cell_complex_identities",
-        on_update="NO ACTION",
-        on_delete="NO ACTION",
-    )])
-    for (index, columns) in (
-        "idx_ro_fields_network_representation" => ("network_ir_sha256", "representation"),
-        "idx_ro_fields_domain_sha256" => ("domain_sha256",),
-        "idx_ro_fields_field_id" => ("field_id",),
-        "idx_ro_fields_cell_complex_hash" => ("cell_complex_hash",),
+        "(gradient_family, output_id, signature_sha256)")
+    _atlas_sqlite_execute(db,
+        "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
+        "ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
+        ("schema_version", "0.5.0"),
     )
-        _atlas_sqlite_require_index!(db, index, "ro_field_artifacts", columns)
-    end
-    for (table, expected_sql) in _ATLAS_SQLITE_0_4_TABLE_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "table", table, expected_sql)
-    end
-    for (index, expected_sql) in _ATLAS_SQLITE_0_4_INDEX_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "index", index, expected_sql)
-    end
     return db
 end
 
-function _apply_atlas_sqlite_0_4_0!(db::SQLite.DB)
-    for (_, statement) in _ATLAS_SQLITE_0_4_TABLE_SQL
-        _atlas_sqlite_execute(db, statement)
-    end
-    for (_, statement) in _ATLAS_SQLITE_0_4_INDEX_SQL
-        _atlas_sqlite_execute(db, statement)
-    end
-    return db
-end
-
-function _apply_atlas_sqlite_0_5_0!(db::SQLite.DB)
-    for (_, statement) in _ATLAS_SQLITE_0_5_TABLE_SQL
-        _atlas_sqlite_execute(db, statement)
-    end
-    for (_, statement) in _ATLAS_SQLITE_0_5_INDEX_SQL
-        _atlas_sqlite_execute(db, statement)
-    end
-    return db
-end
-
-const _ATLAS_SQLITE_0_5_SIGNATURE_SHAPE = [
-    (name="signature_sha256", type="TEXT", notnull=0, pk=1),
-    (name="artifact_sha256", type="TEXT", notnull=1, pk=0),
-    (name="schema_version", type="TEXT", notnull=1, pk=0),
-    (name="classifier_version", type="TEXT", notnull=1, pk=0),
-    (name="scope", type="TEXT", notnull=1, pk=0),
-    (name="config_sha256", type="TEXT", notnull=1, pk=0),
-    (name="signature_json_sha256", type="TEXT", notnull=1, pk=0),
-    (name="classifiable", type="INTEGER", notnull=1, pk=0),
-    (name="zero_tolerance", type="REAL", notnull=1, pk=0),
-    (name="max_cells", type="INTEGER", notnull=1, pk=0),
-    (name="max_facets", type="INTEGER", notnull=1, pk=0),
-    (name="max_matrix_elements", type="INTEGER", notnull=1, pk=0),
-    (name="axis_count", type="INTEGER", notnull=1, pk=0),
-    (name="output_count", type="INTEGER", notnull=1, pk=0),
-    (name="internal_facet_count", type="INTEGER", notnull=1, pk=0),
-    (name="mixed_sign_facet_count", type="INTEGER", notnull=1, pk=0),
-    (name="coupled_jump_count", type="INTEGER", notnull=1, pk=0),
-    (name="excluded_stratum_count", type="INTEGER", notnull=1, pk=0),
-    (name="signature_json", type="TEXT", notnull=1, pk=0),
-]
-
-const _ATLAS_SQLITE_0_5_COMPONENT_SHAPE = [
-    (name="signature_sha256", type="TEXT", notnull=1, pk=1),
-    (name="output_position", type="INTEGER", notnull=1, pk=2),
-    (name="axis_position", type="INTEGER", notnull=1, pk=3),
-    (name="output_id", type="TEXT", notnull=1, pk=0),
-    (name="axis_id", type="TEXT", notnull=1, pk=0),
-    (name="classification", type="TEXT", notnull=1, pk=0),
-]
-
-const _ATLAS_SQLITE_0_5_GRADIENT_SHAPE = [
-    (name="signature_sha256", type="TEXT", notnull=1, pk=1),
-    (name="output_position", type="INTEGER", notnull=1, pk=2),
-    (name="output_id", type="TEXT", notnull=1, pk=0),
-    (name="gradient_family", type="TEXT", notnull=1, pk=0),
-]
-
-function _validate_atlas_sqlite_0_5_0!(db::SQLite.DB)
-    _atlas_sqlite_require_table_shape!(
-        db, "ro_field_signatures", _ATLAS_SQLITE_0_5_SIGNATURE_SHAPE)
-    _atlas_sqlite_require_table_shape!(
-        db, "ro_field_component_features", _ATLAS_SQLITE_0_5_COMPONENT_SHAPE)
-    _atlas_sqlite_require_table_shape!(
-        db, "ro_field_output_gradient_features", _ATLAS_SQLITE_0_5_GRADIENT_SHAPE)
-    _atlas_sqlite_require_table_sql_fragments!(db, "ro_field_signatures", (
-        "CHECK(schema_version = 'bne-ro-field-signature/v1.0.0')",
-        "CHECK(classifier_version = 'regular-cell-gradient/v1.0.0')",
-        "CHECK(scope = 'regular_cell_interiors_excluding_declared_lower_dimensional_strata')",
-        "CHECK(classifiable IN (0, 1))",
-        "UNIQUE(artifact_sha256, classifier_version, config_sha256)",
-    ))
-    _atlas_sqlite_require_table_sql_fragments!(db, "ro_field_component_features", (
-        "CHECK(output_position >= 1)",
-        "CHECK(axis_position >= 1)",
-        "'sign_changing', 'unknown'",
-    ))
-    _atlas_sqlite_require_table_sql_fragments!(db, "ro_field_output_gradient_features", (
-        "CHECK(output_position >= 1)",
-        "'sign_changing', 'other_mixed', 'unknown'",
-    ))
-    _atlas_sqlite_require_foreign_keys!(db, "ro_field_signatures", [(
-        from="artifact_sha256",
-        to="artifact_sha256",
-        table="ro_field_artifacts",
-        on_update="NO ACTION",
-        on_delete="CASCADE",
-    )])
-    signature_fk = [(
-        from="signature_sha256",
-        to="signature_sha256",
-        table="ro_field_signatures",
-        on_update="NO ACTION",
-        on_delete="CASCADE",
-    )]
-    _atlas_sqlite_require_foreign_keys!(
-        db, "ro_field_component_features", signature_fk)
-    _atlas_sqlite_require_foreign_keys!(
-        db, "ro_field_output_gradient_features", signature_fk)
-    for (index, table, columns) in (
-        ("idx_ro_field_signatures_artifact", "ro_field_signatures", ("artifact_sha256",)),
-        ("idx_ro_field_signatures_classifiable", "ro_field_signatures", ("classifiable", "signature_sha256")),
-        ("idx_ro_field_components_classification", "ro_field_component_features", ("classification", "output_id", "axis_id", "signature_sha256")),
-        ("idx_ro_field_gradients_family", "ro_field_output_gradient_features", ("gradient_family", "output_id", "signature_sha256")),
-    )
-        _atlas_sqlite_require_index!(db, index, table, columns)
-    end
-    for (table, expected_sql) in _ATLAS_SQLITE_0_5_TABLE_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "table", table, expected_sql)
-    end
-    for (index, expected_sql) in _ATLAS_SQLITE_0_5_INDEX_SQL
-        _atlas_sqlite_require_exact_schema_sql!(
-            db, "index", index, expected_sql)
-    end
-    return db
-end
-
-const ATLAS_SQLITE_MIGRATIONS = (
+const ATLAS_SQLITE_MIGRATIONS = AtlasSqliteMigration[
     AtlasSqliteMigration("0.3.0",
         "Initial schema captured by atlas_sqlite_init!",
-        _ -> nothing,
-        _validate_atlas_sqlite_0_3_0!),
+        _ -> nothing),
     AtlasSqliteMigration("0.4.0",
         "Add inline multi-input RO-field artifacts and RPB2 exact-cell-complex identities",
-        _apply_atlas_sqlite_0_4_0!,
-        _validate_atlas_sqlite_0_4_0!),
+        _apply_atlas_sqlite_0_4_0!),
     AtlasSqliteMigration("0.5.0",
         "Add normalized, artifact-bound multi-input RO-field behavior signatures",
-        _apply_atlas_sqlite_0_5_0!,
-        _validate_atlas_sqlite_0_5_0!),
-)
-
-const _ATLAS_SQLITE_METADATA_SHAPE = [
-    (name="key", type="TEXT", notnull=0, pk=1),
-    (name="value_text", type="TEXT", notnull=1, pk=0),
+        _apply_atlas_sqlite_0_5_0!),
 ]
-
-const _ATLAS_SQLITE_MIGRATION_LEDGER_SHAPE = [
-    (name="id", type="INTEGER", notnull=0, pk=1),
-    (name="version", type="TEXT", notnull=1, pk=0),
-    (name="applied_at", type="TEXT", notnull=1, pk=0),
-    (name="description", type="TEXT", notnull=0, pk=0),
-]
-
-const _ATLAS_SQLITE_MIGRATION_LEDGER_SQL = """
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        version TEXT NOT NULL UNIQUE,
-        applied_at TEXT NOT NULL,
-        description TEXT
-    )
-    """
-
-const _ATLAS_SQLITE_OWNED_TABLES = Set(vcat(
-    first.(_ATLAS_SQLITE_0_3_TABLE_SQL),
-    first.(_ATLAS_SQLITE_0_4_TABLE_SQL),
-    first.(_ATLAS_SQLITE_0_5_TABLE_SQL),
-    [
-        "schema_migrations",
-    ],
-))
-
-const _ATLAS_SQLITE_OWNED_INDEXES = Set(vcat(
-    first.(_ATLAS_SQLITE_0_3_INDEX_SQL),
-    first.(_ATLAS_SQLITE_0_4_INDEX_SQL),
-    first.(_ATLAS_SQLITE_0_5_INDEX_SQL),
-))
-
-function _atlas_sqlite_version_tuple(version::AbstractString)
-    match_result = match(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$", String(version))
-    match_result === nothing && error(
-        "Atlas SQLite schema version $(version) is not a canonical MAJOR.MINOR.PATCH version")
-    return Tuple(parse(Int, part) for part in match_result.captures)
-end
-
-function _atlas_sqlite_supported_versions()
-    versions = String[m.version for m in ATLAS_SQLITE_MIGRATIONS]
-    tuples = _atlas_sqlite_version_tuple.(versions)
-    issorted(tuples) && length(unique(tuples)) == length(tuples) || error(
-        "Atlas SQLite migration versions must be unique and strictly increasing")
-    return versions
-end
-
-function _atlas_sqlite_metadata_schema_version(db::SQLite.DB)
-    query = _atlas_sqlite_query(
-        db,
-        "SELECT value_text FROM atlas_metadata WHERE key='schema_version'",
-    )
-    versions = String[]
-    try
-        for row in query
-            push!(versions, String(row[:value_text]))
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    length(versions) == 1 || error(
-        "Atlas SQLite metadata must contain exactly one schema_version row")
-    return only(versions)
-end
-
-function _atlas_sqlite_ledger_version_list(db::SQLite.DB)
-    query = _atlas_sqlite_query(
-        db, "SELECT version FROM schema_migrations ORDER BY id ASC")
-    versions = String[]
-    try
-        for row in query
-            push!(versions, String(row[:version]))
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    length(unique(versions)) == length(versions) || error(
-        "Atlas SQLite migration ledger contains duplicate versions")
-    return versions
-end
-
-function _atlas_sqlite_has_owned_object_without_metadata(db::SQLite.DB)
-    query = _atlas_sqlite_query(
-        db,
-        "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index')",
-    )
-    try
-        for row in query
-            kind = String(row[:type])
-            name = String(row[:name])
-            kind == "table" && name in _ATLAS_SQLITE_OWNED_TABLES && return true
-            kind == "index" && name in _ATLAS_SQLITE_OWNED_INDEXES && return true
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    return false
-end
-
-function _atlas_sqlite_require_no_future_owned_objects!(
-    db::SQLite.DB,
-    metadata_version::AbstractString,
-)
-    current = _atlas_sqlite_version_tuple(metadata_version)
-    future_tables = Set{String}()
-    future_indexes = Set{String}()
-    for (version, tables, indexes) in (
-        ("0.4.0", _ATLAS_SQLITE_0_4_TABLE_SQL, _ATLAS_SQLITE_0_4_INDEX_SQL),
-        ("0.5.0", _ATLAS_SQLITE_0_5_TABLE_SQL, _ATLAS_SQLITE_0_5_INDEX_SQL),
-    )
-        _atlas_sqlite_version_tuple(version) > current || continue
-        union!(future_tables, first.(tables))
-        union!(future_indexes, first.(indexes))
-    end
-    isempty(future_tables) && isempty(future_indexes) && return nothing
-
-    query = _atlas_sqlite_query(
-        db,
-        "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index')",
-    )
-    try
-        for row in query
-            kind = String(row[:type])
-            name = String(row[:name])
-            if (kind == "table" && name in future_tables) ||
-               (kind == "index" && name in future_indexes)
-                error(
-                    "Atlas SQLite contains future owned $(kind) $(name) " *
-                    "while metadata advertises $(metadata_version)")
-            end
-        end
-    finally
-        DBInterface.close!(query)
-    end
-    return nothing
-end
-
-"""
-Reject unknown, future, or internally inconsistent schema states without DDL.
-
-The sole accepted pre-ledger state is the historical 0.3 metadata baseline.
-Once a ledger exists, its versions must be a contiguous prefix of the shipped
-migration chain and its last entry must agree with `atlas_metadata`.
-"""
-function _atlas_sqlite_preflight_schema_versions!(db::SQLite.DB)
-    metadata_exists = _atlas_sqlite_schema_object_exists(
-        db, "table", "atlas_metadata")
-    if !metadata_exists
-        _atlas_sqlite_has_owned_object_without_metadata(db) && error(
-            "Atlas SQLite contains owned tables or indexes without atlas_metadata; refusing to initialize over an unknown schema")
-        return nothing
-    end
-
-    _atlas_sqlite_require_table_shape!(
-        db, "atlas_metadata", _ATLAS_SQLITE_METADATA_SHAPE)
-    metadata_version = _atlas_sqlite_metadata_schema_version(db)
-    supported = _atlas_sqlite_supported_versions()
-    metadata_version in supported || error(
-        "Atlas SQLite schema version $(metadata_version) is unsupported; refusing to migrate or downgrade it")
-    _validate_atlas_sqlite_0_3_0!(db)
-    _atlas_sqlite_require_no_future_owned_objects!(db, metadata_version)
-
-    ledger_exists = _atlas_sqlite_schema_object_exists(
-        db, "table", "schema_migrations")
-    if !ledger_exists
-        metadata_version == first(supported) || error(
-            "Atlas SQLite metadata advertises $(metadata_version) without a migration ledger")
-        return nothing
-    end
-
-    _atlas_sqlite_require_table_shape!(
-        db, "schema_migrations", _ATLAS_SQLITE_MIGRATION_LEDGER_SHAPE)
-    _atlas_sqlite_require_exact_schema_sql!(
-        db, "table", "schema_migrations",
-        _ATLAS_SQLITE_MIGRATION_LEDGER_SQL)
-    ledger = _atlas_sqlite_ledger_version_list(db)
-    isempty(ledger) && begin
-        metadata_version == first(supported) || error(
-            "Atlas SQLite has an empty migration ledger but metadata advertises $(metadata_version)")
-        return nothing
-    end
-    all(version -> version in supported, ledger) || error(
-        "Atlas SQLite migration ledger contains an unsupported or future version")
-    expected_ledger = supported[1:length(ledger)]
-    ledger == expected_ledger || error(
-        "Atlas SQLite migration ledger is not an ordered contiguous prefix; " *
-        "expected $(expected_ledger), found $(ledger)")
-    expected_metadata = last(ledger)
-    metadata_version == expected_metadata || error(
-        "Atlas SQLite metadata version $(metadata_version) disagrees with migration ledger version $(expected_metadata)")
-    _atlas_sqlite_validate_applied_migration_postconditions!(db, ledger)
-    return nothing
-end
-
-function _atlas_sqlite_validate_migration_plan!(migrations)
-    migration_count = length(migrations)
-    migration_count <= length(ATLAS_SQLITE_MIGRATIONS) || error(
-        "Atlas SQLite migration plan is longer than the shipped migration chain")
-    for index in 1:migration_count
-        candidate = migrations[index]
-        candidate isa AtlasSqliteMigration || error(
-            "Atlas SQLite migration plan must contain only AtlasSqliteMigration entries")
-        canonical = ATLAS_SQLITE_MIGRATIONS[index]
-        candidate.version == canonical.version &&
-            candidate.description == canonical.description &&
-            candidate.apply === canonical.apply &&
-            candidate.validate === canonical.validate || error(
-            "Atlas SQLite migration $(index) must be the exact shipped migration entry")
-    end
-    # Discard the caller-owned container after validation.  Later mutation or
-    # an AbstractVector with unstable indexing can never choose executable
-    # migration functions after this point.
-    return ATLAS_SQLITE_MIGRATIONS[1:migration_count]
-end
-
-function _atlas_sqlite_validate_applied_migration_postconditions!(
-    db::SQLite.DB,
-    applied_versions,
-)
-    applied = Set(String.(collect(applied_versions)))
-    for migration in ATLAS_SQLITE_MIGRATIONS
-        migration.version in applied || continue
-        migration.validate(db)
-    end
-    return nothing
-end
 
 function _ensure_schema_migrations_table!(db::SQLite.DB)
-    _atlas_sqlite_execute(db, _ATLAS_SQLITE_MIGRATION_LEDGER_SQL)
+    _atlas_sqlite_execute(db,
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL,
+            description TEXT
+        )
+        """)
     return db
 end
 
@@ -1498,12 +826,7 @@ function _record_migration!(db::SQLite.DB, m::AtlasSqliteMigration)
 end
 
 function apply_atlas_sqlite_migrations!(db::SQLite.DB;
-                                        migrations = ATLAS_SQLITE_MIGRATIONS)
-    _atlas_sqlite_prepare_connection!(db)
-    validated_migrations = _atlas_sqlite_validate_migration_plan!(migrations)
-    _atlas_sqlite_preflight_schema_versions!(db)
-    _atlas_sqlite_schema_object_exists(db, "table", "atlas_metadata") ||
-        error("Atlas SQLite migrations require the initialized 0.3 metadata baseline")
+                                        migrations::AbstractVector{AtlasSqliteMigration} = ATLAS_SQLITE_MIGRATIONS)
     _ensure_schema_migrations_table!(db)
     applied = _applied_migration_versions(db)
 
@@ -1519,32 +842,21 @@ function apply_atlas_sqlite_migrations!(db::SQLite.DB;
     finally
         DBInterface.close!(baseline_query)
     end
-    if isempty(applied) && baseline_present && !isempty(validated_migrations)
-        _atlas_sqlite_transaction(db) do
-            first(validated_migrations).validate(db)
-            _record_migration!(db, first(validated_migrations))
-        end
-        push!(applied, first(validated_migrations).version)
+    if isempty(applied) && baseline_present && !isempty(migrations)
+        _record_migration!(db, first(migrations))
+        push!(applied, first(migrations).version)
     end
 
     applied_now = String[]
-    for m in validated_migrations
+    for m in migrations
         m.version in applied && continue
         _atlas_sqlite_transaction(db) do
-            _atlas_sqlite_validate_applied_migration_postconditions!(db, applied)
             m.apply(db)
-            m.validate(db)
-            _atlas_sqlite_execute(db,
-                "INSERT INTO atlas_metadata (key, value_text) VALUES (?, ?) " *
-                "ON CONFLICT(key) DO UPDATE SET value_text=excluded.value_text",
-                ("schema_version", m.version),
-            )
             _record_migration!(db, m)
         end
         push!(applied, m.version)
         push!(applied_now, m.version)
     end
-    _atlas_sqlite_preflight_schema_versions!(db)
     return applied_now
 end
 
@@ -1553,114 +865,12 @@ function atlas_sqlite_connect(db_path::AbstractString=atlas_sqlite_default_path(
     mkpath(dirname(path))
     db = SQLite.DB(path)
     _atlas_sqlite_execute(db, "PRAGMA busy_timeout = $(ATLAS_SQLITE_BUSY_TIMEOUT_MS)")
-    _atlas_sqlite_prepare_connection!(db)
     init && atlas_sqlite_init!(db)
     return db
 end
 
-function _atlas_sqlite_readonly_path(db_path::AbstractString)
-    path = normpath(abspath(expanduser(db_path)))
-    isfile(path) || throw(ArgumentError(
-        "Atlas SQLite read-only query path must reference an existing database file"))
-    if Sys.iswindows() && startswith(path, "\\\\")
-        throw(ArgumentError(
-            "Atlas SQLite read-only queries do not accept UNC or device paths"))
-    end
-    return path
-end
-
-function _atlas_sqlite_readonly_uri(path::AbstractString)
-    uri_path = Sys.iswindows() ? replace(path, '\\' => '/') : String(path)
-    Sys.iswindows() && !startswith(uri_path, "/") &&
-        (uri_path = "/" * uri_path)
-    encoded = replace(
-        uri_path,
-        "%" => "%25",
-        "?" => "%3F",
-        "#" => "%23",
-    )
-    Sys.iswindows() || (encoded = replace(encoded, "\\" => "%5C"))
-    return "file:$(encoded)?mode=ro&cache=private"
-end
-
-function _atlas_sqlite_require_exact_readonly_target!(
-    db::SQLite.DB,
-    expected_path::AbstractString,
-)
-    handle = getfield(db, :handle)
-    SQLite.C.sqlite3_db_readonly(handle, "main") == 1 || throw(ArgumentError(
-        "Atlas SQLite query connection did not open the database read-only"))
-    filename_ptr = SQLite.C.sqlite3_db_filename(handle, "main")
-    filename_ptr == C_NULL && throw(ArgumentError(
-        "Atlas SQLite query connection did not expose its database filename"))
-    opened_path = unsafe_string(filename_ptr)
-    realpath(opened_path) == realpath(expected_path) || throw(ArgumentError(
-        "Atlas SQLite query connection opened a different database file"))
-    return db
-end
-
-function _atlas_sqlite_require_current_readonly_schema!(db::SQLite.DB)
-    try
-        _atlas_sqlite_preflight_schema_versions!(db)
-    catch err
-        err isa InterruptException && rethrow()
-        err isa ArgumentError && rethrow()
-        if err isa ErrorException || err isa SQLite.SQLiteException
-            throw(ArgumentError(
-                "Atlas SQLite read-only query rejected the database schema: " *
-                sprint(showerror, err)))
-        end
-        rethrow()
-    end
-    _atlas_sqlite_schema_object_exists(db, "table", "atlas_metadata") ||
-        throw(ArgumentError(
-            "Atlas SQLite read-only query requires an initialized current schema"))
-    stored_version = _atlas_sqlite_metadata_schema_version(db)
-    stored_version == ATLAS_SQLITE_SCHEMA_VERSION || throw(ArgumentError(
-        "Atlas SQLite schema $(stored_version) requires migration to " *
-        "$(ATLAS_SQLITE_SCHEMA_VERSION); read-only queries never migrate databases"))
-    return db
-end
-
-function _atlas_sqlite_connect_readonly(db_path::AbstractString)
-    path = _atlas_sqlite_readonly_path(db_path)
-    db = try
-        SQLite.DB(_atlas_sqlite_readonly_uri(path))
-    catch err
-        err isa InterruptException && rethrow()
-        err isa SQLite.SQLiteException || rethrow()
-        throw(ArgumentError(
-            "Atlas SQLite read-only query could not open the database: " *
-            sprint(showerror, err)))
-    end
-    try
-        _atlas_sqlite_require_exact_readonly_target!(db, path)
-        _atlas_sqlite_execute(
-            db, "PRAGMA busy_timeout = $(ATLAS_SQLITE_BUSY_TIMEOUT_MS)")
-        _atlas_sqlite_prepare_connection!(db)
-        _atlas_sqlite_execute(db, "PRAGMA query_only = ON")
-        _atlas_sqlite_execute(db, "BEGIN")
-        _atlas_sqlite_require_current_readonly_schema!(db)
-        return db
-    catch err
-        SQLite.intransaction(db) && try
-            _atlas_sqlite_execute(db, "ROLLBACK")
-        catch
-        end
-        SQLite.close(db)
-        err isa InterruptException && rethrow()
-        err isa ArgumentError && rethrow()
-        if err isa ErrorException || err isa SQLite.SQLiteException
-            throw(ArgumentError(
-                "Atlas SQLite read-only query rejected the database: " *
-                sprint(showerror, err)))
-        end
-        rethrow()
-    end
-end
-
 function _atlas_sqlite_with_db(f::Function, db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     return f(db)
 end
 
@@ -1670,22 +880,6 @@ function _atlas_sqlite_with_db(f::Function, db_path::AbstractString)
         return f(db)
     finally
         SQLite.close(db)
-    end
-end
-
-function _atlas_sqlite_with_readonly_db(f::Function, db_path::AbstractString)
-    path = _atlas_sqlite_readonly_path(db_path)
-    return _with_atlas_sqlite_write_lock(path) do
-        db = _atlas_sqlite_connect_readonly(path)
-        try
-            return f(db)
-        finally
-            SQLite.intransaction(db) && try
-                _atlas_sqlite_execute(db, "ROLLBACK")
-            catch
-            end
-            SQLite.close(db)
-        end
     end
 end
 
@@ -1708,7 +902,6 @@ function _atlas_sqlite_has_appended_corpus(db::SQLite.DB)
 end
 
 function atlas_sqlite_has_library(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
     return _atlas_sqlite_has_snapshot(db) || _atlas_sqlite_has_appended_corpus(db)
 end
 
@@ -1844,7 +1037,6 @@ function _atlas_sqlite_load_library_from_tables(db::SQLite.DB)
 end
 
 function atlas_sqlite_load_library(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
     query = _atlas_sqlite_query(db, "SELECT library_json FROM library_state WHERE snapshot_name = 'default' LIMIT 1")
     try
         for row in query
@@ -1860,7 +1052,6 @@ end
 atlas_sqlite_load_library(db_path::AbstractString) = _atlas_sqlite_with_db(atlas_sqlite_load_library, db_path)
 
 function atlas_sqlite_summary(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
     query = _atlas_sqlite_query(db, "SELECT summary_json FROM library_state WHERE snapshot_name = 'default' LIMIT 1")
     try
         for row in query
@@ -2967,7 +2158,6 @@ function _atlas_sqlite_query_slice_refs(db::SQLite.DB, query::AtlasQuerySpec)
 end
 
 function atlas_sqlite_load_query_corpus(db::SQLite.DB, raw_query_or_spec)
-    _atlas_sqlite_prepare_connection!(db)
     query = raw_query_or_spec isa AtlasQuerySpec ? raw_query_or_spec : atlas_query_spec_from_raw(raw_query_or_spec)
     refs = _atlas_sqlite_query_slice_refs(db, query)
     slice_ids = collect(_raw_get(refs, :slice_ids, String[]))
@@ -2997,11 +2187,9 @@ function atlas_sqlite_load_query_corpus(db::SQLite.DB, raw_query_or_spec)
 end
 
 atlas_sqlite_load_query_corpus(db_path::AbstractString, raw_query_or_spec) =
-    _atlas_sqlite_with_readonly_db(
-        db -> atlas_sqlite_load_query_corpus(db, raw_query_or_spec), db_path)
+    _atlas_sqlite_with_db(db -> atlas_sqlite_load_query_corpus(db, raw_query_or_spec), db_path)
 
 function atlas_sqlite_existing_ok_slice_ids(db::SQLite.DB)
-    _atlas_sqlite_prepare_connection!(db)
     ids = Set{String}()
     sql = """
     SELECT s.slice_id
@@ -3052,7 +2240,6 @@ function _atlas_sqlite_clear_snapshot_tables!(db::SQLite.DB)
 end
 
 function atlas_sqlite_save_library!(db::SQLite.DB, library; already_in_transaction::Bool=false)
-    _atlas_sqlite_prepare_connection!(db)
     stored_library = _refresh_atlas_library!(_materialize(library))
     is_atlas_library(stored_library) || error("atlas_sqlite_save_library! expects an atlas library object.")
     summary = _atlas_library_summary(stored_library)
@@ -3324,10 +2511,10 @@ end
 atlas_sqlite_save_library!(db_path::AbstractString, library) = _atlas_sqlite_with_db(db -> atlas_sqlite_save_library!(db, library), db_path)
 
 function atlas_sqlite_record_skip_only_event!(db::SQLite.DB; source_label=nothing, source_metadata=nothing, skipped_existing_network_count::Int=0, skipped_existing_slice_count::Int=0, persist_mode=nothing)
-    _atlas_sqlite_prepare_connection!(db)
     persist_mode_symbol = _atlas_sqlite_persist_mode(db; override=persist_mode)
     if persist_mode_symbol !== :full
         return _atlas_sqlite_transaction(db) do
+            atlas_sqlite_init!(db)
             timestamp = _now_iso_timestamp()
             _atlas_sqlite_set_metadata!(db, "created_at", something(_atlas_sqlite_metadata_text(db, "created_at"), timestamp))
             _atlas_sqlite_set_metadata!(db, "updated_at", timestamp)
@@ -3373,7 +2560,6 @@ function atlas_sqlite_record_skip_only_event!(db_path::AbstractString; kwargs...
 end
 
 function atlas_sqlite_merge_atlas!(db::SQLite.DB, atlas; source_label=nothing, source_metadata=nothing, library_label=nothing, allow_duplicate_atlas::Bool=false, persist_mode=nothing)
-    _atlas_sqlite_prepare_connection!(db)
     persist_mode_symbol = _atlas_sqlite_persist_mode(db; override=persist_mode)
     if persist_mode_symbol !== :full
         return atlas_sqlite_append_atlas!(db, atlas;
@@ -3442,7 +2628,7 @@ function _build_atlas_manifest_fast(atlas; source_label=nothing, source_metadata
 end
 
 function atlas_sqlite_append_atlas!(db::SQLite.DB, atlas; source_label=nothing, source_metadata=nothing, library_label=nothing, return_summary::Bool=true, persist_mode=nothing)
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     atlas_summary = _atlas_summary(atlas)
     persist_mode_symbol = _atlas_sqlite_persist_mode(db; override=persist_mode)
 
@@ -3928,7 +3114,7 @@ A complete, gap-free, single-valued exact complex is additionally interned as
 an RPB2 `exact_cell_complex_v1` identity before the artifact row is written.
 """
 function atlas_sqlite_save_ro_field_artifact!(db::SQLite.DB, document)
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     doc = _validate_ro_field_storage_document!(document)
     counts = _atlas_sqlite_ro_field_counts(doc)
     representation = String(_ro_field_identity_get(doc, "representation"))
@@ -4074,7 +3260,7 @@ end
 
 "Load one inline artifact and re-verify its data, full-document, RPB2, and FK identities."
 function atlas_sqlite_load_ro_field_artifact(db::SQLite.DB, artifact_sha256::AbstractString)
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     row = _atlas_sqlite_single_ro_field_row(db, artifact_sha256)
     row === nothing && return nothing
     field_json = _atlas_sqlite_ro_field_row_string(row, "field_json")
@@ -4154,7 +3340,7 @@ function atlas_sqlite_query_ro_field_artifacts(
     include_documents::Bool=false,
 )
     1 <= limit <= 1000 || throw(ArgumentError("RO-field query limit must be between 1 and 1000"))
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     clauses = String[]
     params = Any[]
     for (column, value) in (
@@ -4603,35 +3789,6 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
     domain_area = (upper[1] - lower[1]) * (upper[2] - lower[2])
 
     data = _ro_field_identity_get(artifact, "data")
-    source_regime_keys = String[]
-    for raw_cell in _ro_field_identity_vector(data, "cells")
-        append!(source_regime_keys, String.(_ro_field_identity_vector(
-            raw_cell, "source_regime_ids")))
-        for raw_label in _ro_field_identity_vector(
-            raw_cell, "affine_labels")
-            append!(source_regime_keys, String.(_ro_field_identity_vector(
-                raw_label, "source_regime_ids")))
-        end
-    end
-    for raw_stratum in _ro_field_identity_vector(data, "singular_strata")
-        append!(source_regime_keys, String.(_ro_field_identity_vector(
-            raw_stratum, "source_regime_ids")))
-    end
-    source_regime_order = sort!(unique(source_regime_keys))
-    source_regime_id = Dict(
-        identifier => index
-        for (index, identifier) in enumerate(source_regime_order)
-    )
-    mapped_source_ids(raw, path::AbstractString) = sort!(Int[
-            get(source_regime_id, String(identifier)) do
-                _atlas_sqlite_ro_signature_error(
-                    :invalid_artifact_geometry,
-                    "$(path) references an unknown source regime",
-                )
-            end
-            for identifier in _ro_field_identity_vector(
-                raw, "source_regime_ids")
-        ])
     cell_order, raw_cells = _atlas_sqlite_ro_signature_ordered_records(
         data, "cell_order", "cells", "cell_id")
     cell_id_map = Dict(
@@ -4708,11 +3865,7 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 for value in offsets_raw
             ]
             push!(labels, ROAffineLabel2D(
-                mapped_source_ids(
-                    raw_label, "data.cells[$(cell_index)].affine_labels[$(label_index)]"),
-                matrix,
-                offsets,
-            ))
+                [label_index], matrix, offsets))
         end
         set_valued = _ro_field_identity_bool(raw_cell, "set_valued")
         push!(cells, ROCell2D(
@@ -4722,7 +3875,7 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 _ro_field_identity_get(raw_cell, "area"),
                 "data.cells[$(cell_index)].area",
             ),
-            mapped_source_ids(raw_cell, "data.cells[$(cell_index)]"),
+            [cell_index],
             labels,
             set_valued,
         ))
@@ -4762,8 +3915,7 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 "singular_strata.dimension",
             ),
             vertices,
-            mapped_source_ids(
-                raw_stratum, "data.singular_strata[$(stratum_index)]"),
+            [stratum_index],
             nullities,
             reasons,
         ))
@@ -4899,13 +4051,6 @@ function _atlas_sqlite_verify_ro_signature_artifact!(
             :foreign_artifact,
             "behavior signatures may reference exact_cell_complex artifacts only",
         )
-    derived_artifact_sha256 = _ro_field_sha256(_ro_field_utf8_bytes(
-        _ro_field_canonical_json(artifact)))
-    derived_artifact_sha256 == metadata.artifact_sha256 ||
-        _atlas_sqlite_ro_signature_error(
-            :foreign_artifact,
-            "signature field_sha256 does not match the canonical exact artifact",
-        )
     domain = _ro_field_identity_get(artifact, "domain")
     artifact_axis_ids = String.(
         _ro_field_identity_vector(domain, "axis_order"))
@@ -4971,9 +4116,7 @@ function _atlas_sqlite_verify_ro_signature_artifact!(
         max_facets=config_raw["max_facets"],
         max_matrix_elements=config_raw["max_matrix_elements"],
     )
-    expected = getfield(
-        @__MODULE__, :_rofb_classify_ro_cell_complex_impl)(
-        getfield(@__MODULE__, :_ROFB_VALIDATED_ARTIFACT_TOKEN),
+    expected = getfield(@__MODULE__, :classify_ro_cell_complex)(
         complex,
         metadata.artifact_sha256;
         axis_ids=metadata.axis_ids,
@@ -5169,7 +4312,7 @@ document to the artifact's exact axis/output order and stores normalized query
 features in the same write-locked transaction.
 """
 function atlas_sqlite_save_ro_field_signature!(db::SQLite.DB, signature)
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     document = _atlas_sqlite_validate_ro_signature!(signature)
     metadata = _atlas_sqlite_ro_signature_metadata(document)
     _atlas_sqlite_verify_ro_signature_artifact!(db, document, metadata)
@@ -5302,7 +4445,7 @@ function atlas_sqlite_load_ro_field_signature(
 )
     requested_hash = _atlas_sqlite_ro_signature_hash(
         signature_sha256, "signature_sha256")
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     row = _atlas_sqlite_single_ro_signature_row(db, requested_hash)
     row === nothing && return nothing
     stored_json = _atlas_sqlite_ro_field_row_string(row, "signature_json")
@@ -5411,7 +4554,7 @@ function atlas_sqlite_query_ro_field_signatures(
             throw(ArgumentError("$(name) is not a safe identifier"))
     end
 
-    _atlas_sqlite_prepare_connection!(db)
+    atlas_sqlite_init!(db)
     clauses = String[]
     params = Any[]
     if artifact_filter !== nothing

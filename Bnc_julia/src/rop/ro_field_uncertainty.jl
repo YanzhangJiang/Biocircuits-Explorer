@@ -694,12 +694,7 @@ struct ROLocalIdentifiabilityAnalysis
         ::_ROUConstructionToken,
         args...,
     )
-        owned = Any[args...]
-        for index in (8, 9, 10, 27, 28)
-            owned[index] = owned[index] === nothing ? nothing :
-                copy(owned[index])
-        end
-        return new(owned...)
+        return new(args...)
     end
 end
 
@@ -729,11 +724,7 @@ struct RODeltaMethodCovariance
     experimentally_validated::Bool
 
     function RODeltaMethodCovariance(::_ROUConstructionToken, args...)
-        owned = Any[args...]
-        for index in (8, 9, 10, 11)
-            owned[index] = copy(owned[index])
-        end
-        return new(owned...)
+        return new(args...)
     end
 end
 
@@ -761,11 +752,7 @@ struct ROSyntheticCoverageEvidence
     experimentally_calibrated::Bool
 
     function ROSyntheticCoverageEvidence(::_ROUConstructionToken, args...)
-        owned = Any[args...]
-        for index in (12, 13, 14)
-            owned[index] = copy(owned[index])
-        end
-        return new(owned...)
+        return new(args...)
     end
 end
 
@@ -1237,13 +1224,7 @@ struct ROUncertaintyPopulationArtifact
         ::_ROUConstructionToken,
         args...,
     )
-        owned = Any[args...]
-        for index in (15, 20, 22)
-            owned[index] = owned[index] === nothing ? nothing :
-                copy(owned[index])
-        end
-        owned[25] = owned[25] === nothing ? nothing : deepcopy(owned[25])
-        return new(owned...)
+        return new(args...)
     end
 end
 
@@ -2337,7 +2318,7 @@ function propagate_ro_delta_covariance(
         )
         output_backward_floor = 32 * eps(Float64) *
             max(1, length(valid_indices)) * output_scale
-        output_minimum = minimum(output_spectrum)
+        output_minimum = minimum(output_spectrum; init=0.0)
         output_minimum < -output_backward_floor && throw(ArgumentError(
             "factor-propagated output covariance violates its PSD backward bound"))
         output_psd_status = output_minimum < 0 ?
@@ -3538,224 +3519,6 @@ function summarize_ro_uncertainty_population(
     )
 end
 
-@noinline function _rou_backing_changed(label::AbstractString)
-    throw(ArgumentError("$label backing storage changed after admission"))
-end
-
-function _rou_sealed_payload(result, label::AbstractString)
-    payload = getfield(result, :identity_payload)
-    payload isa NamedTuple || _rou_backing_changed(label)
-    getfield(result, :identity_sha256) == _rou_sha256(payload) ||
-        _rou_backing_changed(label)
-    hasproperty(payload, :result_snapshot) || _rou_backing_changed(label)
-    return payload
-end
-
-function _rou_assert_unchanged(result::ROLocalIdentifiabilityAnalysis)
-    payload = _rou_sealed_payload(result, "ROLocalIdentifiabilityAnalysis")
-    snapshot = _rou_local_result_snapshot(
-        status=getfield(result, :status),
-        fim=getfield(result, :fim),
-        fim_singular_values=getfield(result, :fim_singular_values),
-        whitened_singular_values=
-            getfield(result, :whitened_sensitivity_singular_values),
-        rank_lower_bound=getfield(result, :rank_lower_bound),
-        rank_upper_bound=getfield(result, :rank_upper_bound),
-        numerical_rank=getfield(result, :numerical_rank),
-        rank_status=getfield(result, :rank_status),
-        condition_number=getfield(result, :condition_number),
-        condition_status=getfield(result, :condition_status),
-        structural_status=
-            getfield(result, :structural_local_identifiability),
-        practical_status=getfield(result, :practical_precision_status),
-        practical_covariance=
-            getfield(result, :practical_parameter_covariance),
-        practical_standard_errors=
-            getfield(result, :practical_parameter_standard_errors),
-    )
-    isequal(getfield(payload, :result_snapshot), snapshot) ||
-        _rou_backing_changed("ROLocalIdentifiabilityAnalysis")
-    return nothing
-end
-
-function _rou_delta_seal_validity(payload)
-    hasproperty(payload, :output_validity) ||
-        _rou_backing_changed("RODeltaMethodCovariance")
-    values = getfield(payload, :output_validity)
-    values isa Tuple || _rou_backing_changed("RODeltaMethodCovariance")
-    validity = falses(length(values))
-    for index in eachindex(values)
-        values[index] isa Bool ||
-            _rou_backing_changed("RODeltaMethodCovariance")
-        validity[index] = values[index]
-    end
-    return validity
-end
-
-function _rou_assert_unchanged(result::RODeltaMethodCovariance)
-    label = "RODeltaMethodCovariance"
-    payload = _rou_sealed_payload(result, label)
-    validity = _rou_delta_seal_validity(payload)
-    output_factor = getfield(result, :output_covariance_factor)
-    output_covariance = getfield(result, :output_covariance)
-    output_standard_deviations =
-        getfield(result, :output_standard_deviations)
-    output_count = length(validity)
-    size(output_factor, 1) == output_count || _rou_backing_changed(label)
-    size(output_covariance) == (output_count, output_count) ||
-        _rou_backing_changed(label)
-    length(output_standard_deviations) == output_count ||
-        _rou_backing_changed(label)
-    for index in eachindex(validity)
-        validity[index] && continue
-        all(isnan, @view output_factor[index, :]) ||
-            _rou_backing_changed(label)
-        isnan(output_standard_deviations[index]) ||
-            _rou_backing_changed(label)
-        all(isnan, @view output_covariance[index, :]) ||
-            _rou_backing_changed(label)
-        all(isnan, @view output_covariance[:, index]) ||
-            _rou_backing_changed(label)
-    end
-    snapshot = _rou_delta_result_snapshot(
-        status=getfield(result, :status),
-        validity=validity,
-        parameter_factor=getfield(result, :parameter_covariance_factor),
-        output_factor=output_factor,
-        output_covariance=output_covariance,
-        output_standard_deviations=output_standard_deviations,
-        output_psd_status=getfield(result, :output_psd_status),
-        output_minimum=
-            getfield(result, :output_covariance_minimum_eigenvalue),
-        output_backward_floor=
-            getfield(result, :output_covariance_backward_error_floor),
-    )
-    isequal(getfield(payload, :result_snapshot), snapshot) ||
-        _rou_backing_changed(label)
-    return nothing
-end
-
-function _rou_assert_unchanged(result::ROSyntheticCoverageEvidence)
-    label = "ROSyntheticCoverageEvidence"
-    payload = _rou_sealed_payload(result, label)
-    snapshot = _rou_coverage_result_snapshot(
-        valid_case_count=getfield(result, :valid_case_count),
-        invalid_case_count=getfield(result, :invalid_case_count),
-        invalid_case_ids=getfield(result, :invalid_case_ids),
-        invalid_gap_reasons=getfield(result, :invalid_gap_reasons),
-        feature_coverage_counts=
-            getfield(result, :feature_coverage_counts),
-        feature_valid_counts=getfield(result, :feature_valid_counts),
-        feature_coverage=getfield(result, :feature_coverage),
-        joint_coverage_count=getfield(result, :joint_coverage_count),
-        joint_valid_count=getfield(result, :joint_valid_count),
-        joint_coverage=getfield(result, :joint_coverage),
-        status=getfield(result, :status),
-        calibration_status=getfield(result, :calibration_status),
-    )
-    isequal(getfield(payload, :result_snapshot), snapshot) ||
-        _rou_backing_changed(label)
-    return nothing
-end
-
-function _rou_assert_unchanged(result::ROUncertaintyPopulationArtifact)
-    label = "ROUncertaintyPopulationArtifact"
-    payload = _rou_sealed_payload(result, label)
-    hasproperty(payload, :replicate_coordinates) ||
-        _rou_backing_changed(label)
-    hasproperty(payload, :certified_bounds) || _rou_backing_changed(label)
-    hasproperty(payload, :calibration_evidence_sha256) ||
-        _rou_backing_changed(label)
-    replicate_coordinates = getfield(result, :replicate_coordinates)
-    isequal(
-        getfield(payload, :replicate_coordinates),
-        _rou_matrix_payload(replicate_coordinates),
-    ) || _rou_backing_changed(label)
-    certified_bounds = getfield(result, :certified_bounds)
-    sealed_bounds = certified_bounds === nothing ? nothing :
-        _rou_matrix_payload(certified_bounds)
-    isequal(getfield(payload, :certified_bounds), sealed_bounds) ||
-        _rou_backing_changed(label)
-    calibration = getfield(result, :calibration_evidence)
-    calibration_sha256 = getfield(payload, :calibration_evidence_sha256)
-    if calibration === nothing
-        calibration_sha256 === nothing || _rou_backing_changed(label)
-    else
-        _rou_assert_unchanged(calibration)
-        getfield(calibration, :identity_sha256) == calibration_sha256 ||
-            _rou_backing_changed(label)
-    end
-    snapshot = _rou_population_result_snapshot(
-        status=getfield(result, :status),
-        uncertainty_class=getfield(result, :uncertainty_class),
-        policy_kind=getfield(result, :policy_kind),
-        expected_population_count=
-            getfield(result, :expected_population_count),
-        valid_replicate_count=getfield(result, :valid_replicate_count),
-        invalid_replicate_count=getfield(result, :invalid_replicate_count),
-        gap_probability=getfield(result, :gap_probability),
-        feature_quantiles=getfield(result, :feature_quantiles),
-        bounds_status=getfield(result, :bounds_status),
-        calibration_status=getfield(result, :calibration_status),
-    )
-    isequal(getfield(payload, :result_snapshot), snapshot) ||
-        _rou_backing_changed(label)
-    return nothing
-end
-
-function Base.getproperty(result::ROLocalIdentifiabilityAnalysis, name::Symbol)
-    _rou_assert_unchanged(result)
-    value = getfield(result, name)
-    if name in (
-        :fim,
-        :fim_singular_values,
-        :whitened_sensitivity_singular_values,
-        :practical_parameter_covariance,
-        :practical_parameter_standard_errors,
-    )
-        return value === nothing ? nothing : copy(value)
-    end
-    return value
-end
-
-function Base.getproperty(result::RODeltaMethodCovariance, name::Symbol)
-    _rou_assert_unchanged(result)
-    value = getfield(result, name)
-    if name in (
-        :parameter_covariance_factor,
-        :output_covariance_factor,
-        :output_covariance,
-        :output_standard_deviations,
-    )
-        return copy(value)
-    end
-    return value
-end
-
-function Base.getproperty(result::ROSyntheticCoverageEvidence, name::Symbol)
-    _rou_assert_unchanged(result)
-    value = getfield(result, name)
-    if name in (
-        :feature_coverage_counts,
-        :feature_valid_counts,
-        :feature_coverage,
-    )
-        return copy(value)
-    end
-    return value
-end
-
-function Base.getproperty(result::ROUncertaintyPopulationArtifact, name::Symbol)
-    _rou_assert_unchanged(result)
-    value = getfield(result, name)
-    if name in (:replicate_coordinates, :feature_quantiles, :certified_bounds)
-        return value === nothing ? nothing : copy(value)
-    elseif name === :calibration_evidence
-        return value === nothing ? nothing : deepcopy(value)
-    end
-    return value
-end
-
 @inline function _rou_validate(condition::Bool, message::AbstractString)
     condition || throw(ArgumentError(String(message)))
     return nothing
@@ -4728,7 +4491,7 @@ function validate_ro_delta_method_covariance(
         )
         output_backward_floor = 32 * eps(Float64) *
             max(1, length(valid_indices)) * output_scale
-        output_minimum = minimum(spectrum)
+        output_minimum = minimum(spectrum; init=0.0)
         output_minimum < -output_backward_floor && throw(ArgumentError(
             "recomputed delta covariance violates its PSD backward bound"))
         output_psd_status = output_minimum < 0 ?

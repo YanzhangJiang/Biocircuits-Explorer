@@ -645,31 +645,17 @@ function _ross_point_request(plan::ROSparseSamplingPlan,
     )
 end
 
-function _ross_lagrange_basis(
-    nodes,
-    coordinate::Float64,
-    cancel_check=() -> nothing,
-)
-    cancel_check()
+function _ross_lagrange_basis(nodes, coordinate::Float64)
     count = length(nodes)
     count == 1 && return [1.0]
-    exact = nothing
-    for index in eachindex(nodes)
-        (index == 1 || index % 256 == 0) && cancel_check()
-        if nodes[index].coordinate == coordinate
-            exact = index
-            break
-        end
-    end
+    exact = findfirst(node -> node.coordinate == coordinate, nodes)
     if exact !== nothing
         basis = zeros(count)
         basis[exact] = 1.0
-        cancel_check()
         return basis
     end
     terms = Vector{Float64}(undef, count)
     for index in 1:count
-        (index == 1 || index % 256 == 0) && cancel_check()
         endpoint_factor = index == 1 || index == count ? 0.5 : 1.0
         barycentric_weight = isodd(index - 1) ? -endpoint_factor : endpoint_factor
         terms[index] = barycentric_weight /
@@ -681,7 +667,6 @@ function _ross_lagrange_basis(
     basis = terms ./ denominator
     all(isfinite, basis) || throw(OverflowError(
         "Clenshaw-Curtis interpolation weights became non-finite"))
-    cancel_check()
     return basis
 end
 
@@ -691,25 +676,16 @@ function _ross_tensor_interpolate(
     evaluations::Dict{String,ROSparseEvaluation},
     output_count::Int,
     spec_sha256::AbstractString,
-    cancel_check=() -> nothing,
 )
-    cancel_check()
     axes = [_ross_full_nodes(level) for level in levels]
-    bases = [_ross_lagrange_basis(
-        axes[axis], target[axis], cancel_check)
+    bases = [_ross_lagrange_basis(axes[axis], target[axis])
         for axis in eachindex(axes)]
-    node_positions = [Dict(node.node_id => position
-        for (position, node) in enumerate(axis)) for axis in axes]
     weighted = zeros(output_count)
     complete = Ref(true)
-    product_position = Ref(0)
     _ross_each_product(axes) do nodes
-        product_position[] += 1
-        (product_position[] == 1 || product_position[] % 256 == 0) &&
-            cancel_check()
         coefficient = 1.0
         for axis in eachindex(nodes)
-            node_index = node_positions[axis][nodes[axis].node_id]
+            node_index = findfirst(==(nodes[axis]), axes[axis])
             coefficient *= bases[axis][node_index]
         end
         coefficient == 0.0 && return
@@ -728,7 +704,6 @@ function _ross_tensor_interpolate(
     complete[] || return nothing
     all(isfinite, weighted) || throw(OverflowError(
         "hierarchical sparse interpolation produced non-finite values"))
-    cancel_check()
     return weighted
 end
 
@@ -738,26 +713,22 @@ function _ross_mixed_surplus(
     evaluations::Dict{String,ROSparseEvaluation},
     output_count::Int,
     spec_sha256::AbstractString,
-    cancel_check=() -> nothing,
 )
-    cancel_check()
     dimension = length(multi_index)
     surplus = zeros(output_count)
     for mask in 0:((1 << dimension) - 1)
-        cancel_check()
         levels = ntuple(axis ->
             multi_index[axis] - ((mask >> (axis - 1)) & 1), dimension)
         any(level -> level < 1, levels) && continue
         term = _ross_tensor_interpolate(
             levels, request.normalized_coordinates,
-            evaluations, output_count, spec_sha256, cancel_check)
+            evaluations, output_count, spec_sha256)
         term === nothing && return nothing
         sign = isodd(count_ones(mask)) ? -1.0 : 1.0
         surplus .+= sign .* term
     end
     all(isfinite, surplus) || throw(OverflowError(
         "mixed hierarchical surplus became non-finite"))
-    cancel_check()
     return surplus
 end
 
@@ -1026,7 +997,7 @@ function adaptive_sparse_ro_field(
             cancel_check()
             surplus = _ross_mixed_surplus(
                 index, request, evaluations, output_count,
-                sampling_spec_sha256, cancel_check)
+                sampling_spec_sha256)
             surplus === nothing && error(
                 "valid downward-closed candidate unexpectedly lacks a surplus")
             push!(candidate_surpluses, surplus)
@@ -1443,106 +1414,6 @@ _ross_v2_copy_unresolved(region::ROSparseUnresolvedRegion) =
     ROSparseUnresolvedRegion(
         copy(region.multi_index), copy(region.point_ids), copy(region.reasons))
 
-function _ross_v2_assert_plan_sealed(plan::ROSparseROChannelPlanV2)
-    body = _ross_v2_plan_body(plan)
-    getfield(plan, :sampling_spec_sha256) ==
-        _ross_sha256(body.sampling_spec) || throw(ArgumentError(
-            "v2 RO-channel sampling plan changed after construction"))
-    getfield(plan, :plan_sha256) == _ross_sha256(body) ||
-        throw(ArgumentError(
-            "v2 RO-channel plan changed after construction"))
-    return nothing
-end
-
-function _ross_v2_assert_state_sealed(state::ROSparseAdaptiveStateV2)
-    getfield(state, :state_sha256) ==
-        _ross_sha256(_ross_v2_state_body(state)) || throw(ArgumentError(
-            "v2 sparse state changed after construction"))
-    return nothing
-end
-
-function _ross_v2_assert_batch_sealed(batch::ROSparseIndexBatchV2)
-    getfield(batch, :batch_sha256) ==
-        _ross_sha256(_ross_v2_batch_body(batch)) || throw(ArgumentError(
-            "v2 sparse batch changed after construction"))
-    return nothing
-end
-
-function _ross_v2_assert_result_sealed(result::ROSparseSamplingResultV2)
-    getfield(result, :result_sha256) ==
-        _ross_sha256(_ross_v2_result_body(result)) || throw(ArgumentError(
-            "v2 sparse result changed after construction"))
-    return nothing
-end
-
-function Base.getproperty(plan::ROSparseROChannelPlanV2, name::Symbol)
-    _ross_v2_assert_plan_sealed(plan)
-    value = getfield(plan, name)
-    if name in (
-        :control_ids,
-        :source_coordinate_ids,
-        :chart_jacobian,
-        :domain_lower,
-        :domain_upper,
-        :output_ids,
-        :fixed_background,
-    )
-        return copy(value)
-    end
-    return value
-end
-
-function Base.getproperty(state::ROSparseAdaptiveStateV2, name::Symbol)
-    _ross_v2_assert_state_sealed(state)
-    value = getfield(state, name)
-    if name in (
-        :accepted_multi_indices,
-        :refinement_order,
-        :pending_candidates,
-    )
-        return _ross_v2_copy_indices(value, () -> nothing)
-    elseif name == :index_records
-        return _ross_v2_copy_records(value, () -> nothing)
-    elseif name == :samples
-        return _ross_v2_copy_samples(value, () -> nothing)
-    elseif name == :unresolved_regions
-        return _ross_v2_copy_unresolved_regions(value, () -> nothing)
-    end
-    return value
-end
-
-function Base.getproperty(batch::ROSparseIndexBatchV2, name::Symbol)
-    _ross_v2_assert_batch_sealed(batch)
-    value = getfield(batch, name)
-    if name == :multi_index
-        return copy(value)
-    elseif name in (:refinements_to_commit, :pending_candidates_after)
-        return _ross_v2_copy_indices(value, () -> nothing)
-    elseif name == :requests
-        return _ross_v2_copy_requests(value, () -> nothing)
-    end
-    return value
-end
-
-function Base.getproperty(result::ROSparseSamplingResultV2, name::Symbol)
-    _ross_v2_assert_result_sealed(result)
-    value = getfield(result, name)
-    if name in (
-        :accepted_multi_indices,
-        :active_frontier,
-        :refinement_order,
-    )
-        return _ross_v2_copy_indices(value, () -> nothing)
-    elseif name == :index_records
-        return _ross_v2_copy_records(value, () -> nothing)
-    elseif name == :samples
-        return _ross_v2_copy_samples(value, () -> nothing)
-    elseif name == :unresolved_regions
-        return _ross_v2_copy_unresolved_regions(value, () -> nothing)
-    end
-    return value
-end
-
 _ross_v2_limit_payload(limits::ROSparseSamplingLimits) = (
     max_level=limits.max_level,
     max_points=limits.max_points,
@@ -1612,23 +1483,20 @@ end
 
 function _ross_v2_plan_body(plan::ROSparseROChannelPlanV2)
     spec = _ross_v2_sampling_spec_body(
-        getfield(plan, :chart_id), getfield(plan, :control_ids),
-        getfield(plan, :source_coordinate_ids),
-        getfield(plan, :chart_jacobian), getfield(plan, :domain_lower),
-        getfield(plan, :domain_upper), getfield(plan, :output_ids),
-        getfield(plan, :fixed_background),
-        getfield(plan, :surplus_tolerance),
-        getfield(plan, :initial_total_degree))
+        plan.chart_id, plan.control_ids, plan.source_coordinate_ids,
+        plan.chart_jacobian, plan.domain_lower, plan.domain_upper,
+        plan.output_ids, plan.fixed_background, plan.surplus_tolerance,
+        plan.initial_total_degree)
     return (
-        schema_version=getfield(plan, :schema_version),
+        schema_version=plan.schema_version,
         sampling_spec=spec,
-        execution_budget=_ross_v2_limit_payload(getfield(plan, :limits)),
+        execution_budget=_ross_v2_limit_payload(plan.limits),
         portable_token_policy=(
             max_token_bytes=_ROSS_V2_MAX_PORTABLE_TOKEN_BYTES,
             enforcement=
                 "all_v2_token_construction_publication_and_restore",
         ),
-        sampling_spec_sha256=getfield(plan, :sampling_spec_sha256),
+        sampling_spec_sha256=plan.sampling_spec_sha256,
     )
 end
 
@@ -1683,29 +1551,21 @@ function ROSparseROChannelPlanV2(;
         checked.initial_total_degree, checked_limits, spec_hash, "")
     plan_hash = _ross_sha256(_ross_v2_plan_body(provisional))
     plan = ROSparseROChannelPlanV2(
-        _ROSS_V2_TOKEN, getfield(provisional, :schema_version),
-        getfield(provisional, :chart_id),
-        getfield(provisional, :control_ids),
-        getfield(provisional, :source_coordinate_ids),
-        getfield(provisional, :chart_jacobian),
-        getfield(provisional, :domain_lower),
-        getfield(provisional, :domain_upper),
-        getfield(provisional, :output_ids),
-        getfield(provisional, :fixed_background),
-        getfield(provisional, :surplus_tolerance),
-        getfield(provisional, :initial_total_degree),
-        getfield(provisional, :limits),
-        getfield(provisional, :sampling_spec_sha256), plan_hash)
+        _ROSS_V2_TOKEN, provisional.schema_version,
+        provisional.chart_id, provisional.control_ids,
+        provisional.source_coordinate_ids, provisional.chart_jacobian,
+        provisional.domain_lower, provisional.domain_upper,
+        provisional.output_ids, provisional.fixed_background,
+        provisional.surplus_tolerance, provisional.initial_total_degree,
+        provisional.limits, provisional.sampling_spec_sha256, plan_hash)
     _ross_v2_assert_portable_token_size(
-        merge(_ross_v2_plan_body(plan),
-            (plan_sha256=getfield(plan, :plan_sha256),)),
+        merge(_ross_v2_plan_body(plan), (plan_sha256=plan.plan_sha256,)),
         "plan")
     return plan
 end
 
 ro_sparse_ro_channel_order_v2(plan::ROSparseROChannelPlanV2) =
-    collect(_ross_v2_component_payload(
-        getfield(plan, :output_ids), getfield(plan, :control_ids)))
+    collect(_ross_v2_component_payload(plan.output_ids, plan.control_ids))
 
 ro_sparse_portable_token_byte_limit_v2(::ROSparseROChannelPlanV2) =
     _ROSS_V2_MAX_PORTABLE_TOKEN_BYTES
@@ -1716,49 +1576,47 @@ function ro_sparse_ro_channel_plan_v2_payload(
 )
     validate_ro_sparse_ro_channel_plan_v2(plan)
     payload = merge(
-        _ross_v2_plan_body(plan),
-        (plan_sha256=getfield(plan, :plan_sha256),))
+        _ross_v2_plan_body(plan), (plan_sha256=plan.plan_sha256,))
     _ross_v2_assert_portable_token_size(payload, "plan", cancel_check)
     return payload
 end
 
 function _ross_v2_legacy_plan(plan::ROSparseROChannelPlanV2)
     channel_ids = ["ro_component[$output_position,$input_position]"
-        for output_position in eachindex(getfield(plan, :output_ids))
-        for input_position in eachindex(getfield(plan, :control_ids))]
+        for output_position in eachindex(plan.output_ids)
+        for input_position in eachindex(plan.control_ids)]
     return ROSparseSamplingPlan(
-        chart_id=getfield(plan, :chart_id),
-        control_ids=getfield(plan, :control_ids),
-        source_coordinate_ids=getfield(plan, :source_coordinate_ids),
-        chart_jacobian=getfield(plan, :chart_jacobian),
-        domain_lower=getfield(plan, :domain_lower),
-        domain_upper=getfield(plan, :domain_upper),
+        chart_id=plan.chart_id,
+        control_ids=plan.control_ids,
+        source_coordinate_ids=plan.source_coordinate_ids,
+        chart_jacobian=plan.chart_jacobian,
+        domain_lower=plan.domain_lower,
+        domain_upper=plan.domain_upper,
         output_ids=channel_ids,
-        fixed_background=getfield(plan, :fixed_background),
-        surplus_tolerance=getfield(plan, :surplus_tolerance),
-        initial_total_degree=getfield(plan, :initial_total_degree))
+        fixed_background=plan.fixed_background,
+        surplus_tolerance=plan.surplus_tolerance,
+        initial_total_degree=plan.initial_total_degree)
 end
 
 function validate_ro_sparse_ro_channel_plan_v2(
     plan::ROSparseROChannelPlanV2)
-    getfield(plan, :schema_version) == RO_SPARSE_RO_CHANNEL_PLAN_VERSION ||
+    plan.schema_version == RO_SPARSE_RO_CHANNEL_PLAN_VERSION ||
         throw(ArgumentError("unsupported v2 RO-channel plan version"))
     normalized = ROSparseROChannelPlanV2(
-        chart_id=getfield(plan, :chart_id),
-        control_ids=getfield(plan, :control_ids),
-        source_coordinate_ids=getfield(plan, :source_coordinate_ids),
-        chart_jacobian=getfield(plan, :chart_jacobian),
-        domain_lower=getfield(plan, :domain_lower),
-        domain_upper=getfield(plan, :domain_upper),
-        output_ids=getfield(plan, :output_ids),
-        fixed_background=getfield(plan, :fixed_background),
-        surplus_tolerance=getfield(plan, :surplus_tolerance),
-        initial_total_degree=getfield(plan, :initial_total_degree),
-        limits=getfield(plan, :limits))
-    getfield(plan, :sampling_spec_sha256) ==
-        getfield(normalized, :sampling_spec_sha256) ||
+        chart_id=plan.chart_id,
+        control_ids=plan.control_ids,
+        source_coordinate_ids=plan.source_coordinate_ids,
+        chart_jacobian=plan.chart_jacobian,
+        domain_lower=plan.domain_lower,
+        domain_upper=plan.domain_upper,
+        output_ids=plan.output_ids,
+        fixed_background=plan.fixed_background,
+        surplus_tolerance=plan.surplus_tolerance,
+        initial_total_degree=plan.initial_total_degree,
+        limits=plan.limits)
+    plan.sampling_spec_sha256 == normalized.sampling_spec_sha256 ||
         throw(ArgumentError("v2 RO-channel sampling-spec hash mismatch"))
-    getfield(plan, :plan_sha256) == getfield(normalized, :plan_sha256) ||
+    plan.plan_sha256 == normalized.plan_sha256 ||
         throw(ArgumentError("v2 RO-channel plan hash mismatch"))
     JSON3.write(_ross_v2_plan_body(plan)) ==
         JSON3.write(_ross_v2_plan_body(normalized)) || throw(ArgumentError(
@@ -1803,389 +1661,29 @@ _ross_v2_unresolved_payload(region::ROSparseUnresolvedRegion) = (
 
 function _ross_v2_state_body(state::ROSparseAdaptiveStateV2)
     return (
-        schema_version=getfield(state, :schema_version),
-        plan_sha256=getfield(state, :plan_sha256),
-        sampling_spec_sha256=getfield(state, :sampling_spec_sha256),
-        initial_cursor=getfield(state, :initial_cursor),
+        schema_version=state.schema_version,
+        plan_sha256=state.plan_sha256,
+        sampling_spec_sha256=state.sampling_spec_sha256,
+        initial_cursor=state.initial_cursor,
         accepted_multi_indices=
-            Tuple(Tuple(index) for index in
-                getfield(state, :accepted_multi_indices)),
+            Tuple(Tuple(index) for index in state.accepted_multi_indices),
         refinement_order=
-            Tuple(Tuple(index) for index in
-                getfield(state, :refinement_order)),
+            Tuple(Tuple(index) for index in state.refinement_order),
         pending_candidates=
-            Tuple(Tuple(index) for index in
-                getfield(state, :pending_candidates)),
-        index_records=Tuple(_ross_v2_record_payload(record) for record in
-            getfield(state, :index_records)),
-        samples=Tuple(_ross_v2_sample_payload(sample) for sample in
-            getfield(state, :samples)),
+            Tuple(Tuple(index) for index in state.pending_candidates),
+        index_records=Tuple(_ross_v2_record_payload(record)
+            for record in state.index_records),
+        samples=Tuple(_ross_v2_sample_payload(sample)
+            for sample in state.samples),
         unresolved_regions=Tuple(_ross_v2_unresolved_payload(region)
-            for region in getfield(state, :unresolved_regions)),
+            for region in state.unresolved_regions),
         counters=(
             interpolation_work_consumed=
-                getfield(state, :interpolation_work_consumed),
-            payload_scalar_count=getfield(state, :payload_scalar_count),
-            backend_work_unit_count=
-                getfield(state, :backend_work_unit_count),
+                state.interpolation_work_consumed,
+            payload_scalar_count=state.payload_scalar_count,
+            backend_work_unit_count=state.backend_work_unit_count,
         ),
     )
-end
-
-function _ross_v2_validate_request_for_publication(
-    request::ROSparsePointRequest,
-    expected_dimension::Union{Nothing,Int}=nothing,
-)
-    dimension = length(request.multi_index)
-    1 <= dimension <= _ROSS_HARD_MAX_DIMENSIONS || throw(ArgumentError(
-        "v2 sparse request dimension is outside the hard bound"))
-    expected_dimension === nothing || dimension == expected_dimension ||
-        throw(ArgumentError("v2 sparse request dimension is inconsistent"))
-    length(request.node_ids) == dimension &&
-        length(request.normalized_coordinates) == dimension &&
-        length(request.control_coordinates) == dimension ||
-        throw(ArgumentError("v2 sparse request coordinates are inconsistent"))
-    1 <= length(request.source_coordinates) <= _ROSS_HARD_MAX_DIMENSIONS ||
-        throw(ArgumentError(
-            "v2 sparse request source dimension is outside the hard bound"))
-    isempty(request.point_id) && throw(ArgumentError(
-        "v2 sparse request point identity must not be empty"))
-    all(level -> 1 <= level <= _ROSS_HARD_MAX_LEVEL,
-        request.multi_index) || throw(ArgumentError(
-            "v2 sparse request multi-index is outside the hard level bound"))
-    all(!isempty, request.node_ids) || throw(ArgumentError(
-        "v2 sparse request node identities must not be empty"))
-    all(isfinite, request.normalized_coordinates) &&
-        all(isfinite, request.control_coordinates) &&
-        all(isfinite, request.source_coordinates) || throw(ArgumentError(
-            "v2 sparse request coordinates must be finite"))
-    return dimension
-end
-
-function _ross_v2_validate_sample_for_publication(
-    sample::ROSparseSample,
-    expected_dimension::Union{Nothing,Int}=nothing,
-)
-    dimension = _ross_v2_validate_request_for_publication(
-        sample.request, expected_dimension)
-    evaluation = sample.evaluation
-    if evaluation.valid
-        evaluation.values === nothing && throw(ArgumentError(
-            "valid v2 sparse samples require values"))
-        evaluation.invalid_reason === nothing || throw(ArgumentError(
-            "valid v2 sparse samples cannot carry an invalid reason"))
-        1 <= length(evaluation.values) <=
-            _ROSS_HARD_MAX_OUTPUTS * _ROSS_HARD_MAX_DIMENSIONS ||
-            throw(ArgumentError(
-                "v2 sparse sample output count is outside the hard bound"))
-        all(isfinite, evaluation.values) || throw(ArgumentError(
-            "valid v2 sparse sample values must be finite"))
-        if sample.surplus !== nothing
-            length(sample.surplus) == length(evaluation.values) ||
-                throw(ArgumentError(
-                    "v2 sparse sample surplus dimension is inconsistent"))
-            all(isfinite, sample.surplus) || throw(ArgumentError(
-                "v2 sparse sample surplus must be finite"))
-        end
-    else
-        evaluation.values === nothing || throw(ArgumentError(
-            "invalid v2 sparse samples cannot carry values"))
-        evaluation.invalid_reason in (nothing, :none, :valid) &&
-            throw(ArgumentError(
-                "invalid v2 sparse samples require a meaningful reason"))
-        sample.surplus === nothing || throw(ArgumentError(
-            "invalid v2 sparse samples cannot carry a surplus"))
-    end
-    return dimension
-end
-
-function _ross_v2_validate_multi_index_for_publication(
-    index,
-    expected_dimension,
-    name::AbstractString,
-)
-    dimension = length(index)
-    1 <= dimension <= _ROSS_HARD_MAX_DIMENSIONS || throw(ArgumentError(
-        "$name dimension is outside the hard bound"))
-    expected_dimension === nothing || dimension == expected_dimension ||
-        throw(ArgumentError("$name dimension is inconsistent"))
-    all(level -> 1 <= level <= _ROSS_HARD_MAX_LEVEL, index) ||
-        throw(ArgumentError("$name is outside the hard level bound"))
-    return Tuple(index), dimension
-end
-
-function _ross_v2_validate_index_collection_for_publication(
-    indices,
-    expected_dimension,
-    name::AbstractString,
-    cancel_check=() -> nothing,
-)
-    length(indices) <= _ROSS_HARD_MAX_MULTI_INDICES || throw(ArgumentError(
-        "$name exceeds the hard multi-index bound"))
-    dimension = expected_dimension
-    values = Tuple[]
-    sizehint!(values, length(indices))
-    for (position, index) in enumerate(indices)
-        _ross_v2_cancel_checkpoint(cancel_check, position)
-        value, current_dimension =
-            _ross_v2_validate_multi_index_for_publication(
-                index, dimension, name)
-        dimension === nothing && (dimension = current_dimension)
-        push!(values, value)
-    end
-    allunique(values) || throw(ArgumentError("$name contains duplicates"))
-    return values, dimension
-end
-
-function _ross_v2_validate_committed_content_for_publication(
-    accepted_multi_indices,
-    refinement_order,
-    index_records,
-    samples,
-    unresolved_regions,
-    interpolation_work_consumed::Int,
-    payload_scalar_count::Int,
-    backend_work_unit_count::Int,
-    owner::AbstractString,
-    cancel_check=() -> nothing,
-)
-    length(samples) <= _ROSS_HARD_MAX_POINTS || throw(ArgumentError(
-        "$owner exceeds the hard point bound"))
-    length(index_records) <= _ROSS_HARD_MAX_MULTI_INDICES &&
-        length(unresolved_regions) <= _ROSS_HARD_MAX_MULTI_INDICES ||
-        throw(ArgumentError(
-            "$owner exceeds the hard multi-index bound"))
-    interpolation_work_consumed >= 0 && payload_scalar_count >= 0 &&
-        backend_work_unit_count >= 0 || throw(ArgumentError(
-            "$owner work counters must be nonnegative"))
-
-    accepted, dimension =
-        _ross_v2_validate_index_collection_for_publication(
-            accepted_multi_indices, nothing,
-            "$owner accepted multi-index", cancel_check)
-    isempty(accepted) || smolyak_is_downward_closed(accepted) ||
-        throw(ArgumentError("$owner accepted set is not downward closed"))
-    accepted_prefix = Set{Tuple}()
-    for (position, index) in enumerate(accepted)
-        _ross_v2_cancel_checkpoint(cancel_check, position)
-        _ross_is_admissible(index, accepted_prefix) || throw(ArgumentError(
-            "$owner accepted order violates downward precedence"))
-        push!(accepted_prefix, index)
-    end
-    length(index_records) == length(accepted) || throw(ArgumentError(
-        "$owner record count does not match accepted indices"))
-    Tuple.(getfield.(index_records, :multi_index)) == accepted ||
-        throw(ArgumentError("$owner record order is not canonical"))
-    backend_work_unit_count == length(index_records) ||
-        throw(ArgumentError(
-            "$owner backend work count does not match records"))
-
-    refined, refined_dimension =
-        _ross_v2_validate_index_collection_for_publication(
-            refinement_order, dimension,
-            "$owner refinement order", cancel_check)
-    dimension === nothing && (dimension = refined_dimension)
-
-    output_count = nothing
-    source_dimension = nothing
-    sample_point_ids = String[]
-    sizehint!(sample_point_ids, length(samples))
-    valid_count = 0
-    for (position, sample) in enumerate(samples)
-        _ross_v2_cancel_checkpoint(cancel_check, position)
-        sample_dimension = _ross_v2_validate_sample_for_publication(
-            sample, dimension)
-        dimension === nothing && (dimension = sample_dimension)
-        current_source_dimension = length(sample.request.source_coordinates)
-        source_dimension === nothing &&
-            (source_dimension = current_source_dimension)
-        current_source_dimension == source_dimension || throw(ArgumentError(
-            "$owner sample source dimensions are inconsistent"))
-        push!(sample_point_ids, sample.request.point_id)
-        if sample.evaluation.valid
-            valid_count += 1
-            current_output_count = length(sample.evaluation.values)
-            output_count === nothing && (output_count = current_output_count)
-            current_output_count == output_count || throw(ArgumentError(
-                "$owner sample output dimensions are inconsistent"))
-        end
-    end
-    allunique(sample_point_ids) || throw(ArgumentError(
-        "$owner repeats a sample point identity"))
-
-    if isempty(samples)
-        payload_scalar_count == 0 || throw(ArgumentError(
-            "$owner payload counter is nonzero without samples"))
-        interpolation_work_consumed == 0 || throw(ArgumentError(
-            "$owner work counter is nonzero without samples"))
-    else
-        quotient, remainder = divrem(
-            BigInt(payload_scalar_count), BigInt(length(samples)))
-        remainder == 0 &&
-            1 <= quotient <=
-                _ROSS_HARD_MAX_OUTPUTS * _ROSS_HARD_MAX_DIMENSIONS ||
-            throw(ArgumentError(
-                "$owner payload counter cannot identify an output count"))
-        inferred_output_count = Int(quotient)
-        output_count === nothing && (output_count = inferred_output_count)
-        output_count == inferred_output_count || throw(ArgumentError(
-            "$owner payload and sample output counts disagree"))
-    end
-
-    expected_work = BigInt(0)
-    expected_payload = BigInt(0)
-    expected_samples = BigInt(0)
-    unresolved_indices = Tuple[]
-    sample_cursor = 1
-    unresolved_cursor = 1
-    records_by_index = Dict{Tuple,ROSparseIndexRecord}()
-    for (record_position, record) in enumerate(index_records)
-        _ross_v2_cancel_checkpoint(cancel_check, record_position)
-        index = accepted[record_position]
-        records_by_index[index] = record
-        point_count, payload, work = _ross_candidate_cost(
-            index, output_count)
-        expected_work += work
-        expected_payload += payload
-        expected_samples += point_count
-        BigInt(length(record.point_ids)) == point_count ||
-            throw(ArgumentError(
-                "$owner record point count is inconsistent"))
-        all(!isempty, record.point_ids) && allunique(record.point_ids) ||
-            throw(ArgumentError(
-                "$owner record point identities are invalid"))
-        stop = sample_cursor + Int(point_count) - 1
-        stop <= length(samples) || throw(ArgumentError(
-            "$owner is missing record samples"))
-        group = @view samples[sample_cursor:stop]
-        Tuple(record.point_ids) == Tuple(
-            sample.request.point_id for sample in group) ||
-            throw(ArgumentError(
-                "$owner record sample order is inconsistent"))
-        _ross_v2_all_cancel(
-            sample -> Tuple(sample.request.multi_index) == index,
-            group, cancel_check) || throw(ArgumentError(
-                "$owner record mixes multi-indices"))
-        if record.status == :resolved
-            record.indicator !== nothing && isfinite(record.indicator) &&
-                record.indicator >= 0.0 || throw(ArgumentError(
-                    "resolved $owner records require an indicator"))
-            _ross_v2_all_cancel(sample -> sample.evaluation.valid &&
-                    sample.surplus !== nothing &&
-                    length(sample.evaluation.values) == output_count &&
-                    length(sample.surplus) == output_count,
-                group, cancel_check) || throw(ArgumentError(
-                    "resolved $owner samples are incomplete"))
-            expected_indicator = maximum((maximum(abs, sample.surplus)
-                for sample in group); init=0.0)
-            record.indicator == expected_indicator || throw(ArgumentError(
-                "resolved $owner record indicator is inconsistent"))
-        elseif record.status == :unresolved_gap
-            record.indicator === nothing || throw(ArgumentError(
-                "unresolved $owner records cannot have an indicator"))
-            invalid_samples = [sample for sample in group
-                if !sample.evaluation.valid]
-            isempty(invalid_samples) && throw(ArgumentError(
-                "unresolved $owner records need an invalid sample"))
-            _ross_v2_all_cancel(sample -> sample.surplus === nothing,
-                group, cancel_check) || throw(ArgumentError(
-                    "unresolved $owner samples cannot carry surplus"))
-            unresolved_cursor <= length(unresolved_regions) ||
-                throw(ArgumentError(
-                    "$owner is missing an unresolved region"))
-            region = unresolved_regions[unresolved_cursor]
-            Tuple(region.multi_index) == index &&
-                Tuple(region.point_ids) == Tuple(record.point_ids) ||
-                throw(ArgumentError(
-                    "$owner unresolved region does not match its record"))
-            reasons = sort!(unique(Symbol[
-                sample.evaluation.invalid_reason
-                for sample in invalid_samples]); by=string)
-            region.reasons == reasons || throw(ArgumentError(
-                "$owner unresolved reasons are not canonical"))
-            push!(unresolved_indices, index)
-            unresolved_cursor += 1
-        else
-            throw(ArgumentError("invalid $owner record status"))
-        end
-        sample_cursor = stop + 1
-    end
-    expected_samples == BigInt(length(samples)) || throw(ArgumentError(
-        "$owner has unowned samples"))
-    expected_work == BigInt(interpolation_work_consumed) ||
-        throw(ArgumentError("$owner interpolation-work counter mismatch"))
-    expected_payload == BigInt(payload_scalar_count) ||
-        throw(ArgumentError("$owner payload-scalar counter mismatch"))
-    unresolved_cursor == length(unresolved_regions) + 1 ||
-        throw(ArgumentError("$owner has an unowned unresolved region"))
-    Tuple.(getfield.(unresolved_regions, :multi_index)) ==
-        unresolved_indices || throw(ArgumentError(
-            "$owner unresolved-region order is inconsistent"))
-    all(index -> index in Set(accepted), refined) || throw(ArgumentError(
-        "$owner refinement order contains an unaccepted index"))
-    all(index -> records_by_index[index].status == :resolved, refined) ||
-        throw(ArgumentError(
-            "$owner refinement order contains an unresolved index"))
-    return (
-        accepted=accepted,
-        refined=refined,
-        dimension=dimension,
-        output_count=output_count,
-        source_dimension=source_dimension,
-        records_by_index=records_by_index,
-        unresolved_indices=unresolved_indices,
-        valid_count=valid_count,
-    )
-end
-
-function _ross_v2_validate_state_for_publication(
-    state::ROSparseAdaptiveStateV2,
-    cancel_check=() -> nothing,
-)
-    cancel_check()
-    getfield(state, :schema_version) == RO_SPARSE_RO_STATE_VERSION ||
-        throw(ArgumentError(
-        "unsupported v2 sparse state version"))
-    _ross_v2_hash(getfield(state, :plan_sha256), "plan_sha256")
-    _ross_v2_hash(getfield(state, :sampling_spec_sha256),
-        "sampling_spec_sha256")
-    _ross_v2_hash(getfield(state, :state_sha256), "state_sha256")
-    getfield(state, :initial_cursor) >= 1 || throw(ArgumentError(
-        "v2 sparse state initial cursor must be positive"))
-    facts = _ross_v2_validate_committed_content_for_publication(
-        getfield(state, :accepted_multi_indices),
-        getfield(state, :refinement_order),
-        getfield(state, :index_records), getfield(state, :samples),
-        getfield(state, :unresolved_regions),
-        getfield(state, :interpolation_work_consumed),
-        getfield(state, :payload_scalar_count),
-        getfield(state, :backend_work_unit_count),
-        "v2 sparse state", cancel_check)
-    pending, pending_dimension =
-        _ross_v2_validate_index_collection_for_publication(
-            getfield(state, :pending_candidates), facts.dimension,
-            "v2 sparse state pending candidate", cancel_check)
-    dimension = facts.dimension === nothing ? pending_dimension :
-        facts.dimension
-    isempty(facts.accepted) && !isempty(pending) && throw(ArgumentError(
-        "an empty v2 sparse state cannot carry pending candidates"))
-    length(pending) <= something(dimension, 0) || throw(ArgumentError(
-        "v2 sparse state exceeds the pending-candidate bound"))
-    pending == sort(copy(pending)) || throw(ArgumentError(
-        "v2 sparse state pending candidates are not canonical"))
-    accepted = Set(facts.accepted)
-    blocked = Set(facts.unresolved_indices)
-    _ross_v2_all_cancel(index -> !(index in accepted) &&
-            _ross_is_admissible(index, accepted) &&
-            !_ross_in_blocked_cone(index, blocked),
-        pending, cancel_check) || throw(ArgumentError(
-            "v2 sparse state pending queue is semantically inconsistent"))
-    cancel_check()
-    getfield(state, :state_sha256) ==
-        _ross_sha256(_ross_v2_state_body(state)) ||
-        throw(ArgumentError("v2 sparse state hash mismatch before publication"))
-    cancel_check()
-    return merge(facts, (pending=pending, dimension=dimension))
 end
 
 function _ross_v2_new_state(
@@ -2204,8 +1702,7 @@ function _ross_v2_new_state(
 )
     provisional = ROSparseAdaptiveStateV2(
         _ROSS_V2_TOKEN, RO_SPARSE_RO_STATE_VERSION,
-        getfield(plan, :plan_sha256),
-        getfield(plan, :sampling_spec_sha256), initial_cursor,
+        plan.plan_sha256, plan.sampling_spec_sha256, initial_cursor,
         accepted_multi_indices, refinement_order, pending_candidates,
         index_records, samples, unresolved_regions,
         interpolation_work_consumed, payload_scalar_count,
@@ -2214,23 +1711,19 @@ function _ross_v2_new_state(
     state_hash = _ross_sha256(_ross_v2_state_body(provisional))
     cancel_check()
     state = ROSparseAdaptiveStateV2(
-        _ROSS_V2_TOKEN, getfield(provisional, :schema_version),
-        getfield(provisional, :plan_sha256),
-        getfield(provisional, :sampling_spec_sha256),
-        getfield(provisional, :initial_cursor),
-        getfield(provisional, :accepted_multi_indices),
-        getfield(provisional, :refinement_order),
-        getfield(provisional, :pending_candidates),
-        getfield(provisional, :index_records),
-        getfield(provisional, :samples),
-        getfield(provisional, :unresolved_regions),
-        getfield(provisional, :interpolation_work_consumed),
-        getfield(provisional, :payload_scalar_count),
-        getfield(provisional, :backend_work_unit_count), state_hash;
+        _ROSS_V2_TOKEN, provisional.schema_version,
+        provisional.plan_sha256, provisional.sampling_spec_sha256,
+        provisional.initial_cursor, provisional.accepted_multi_indices,
+        provisional.refinement_order, provisional.pending_candidates,
+        provisional.index_records, provisional.samples,
+        provisional.unresolved_regions,
+        provisional.interpolation_work_consumed,
+        provisional.payload_scalar_count,
+        provisional.backend_work_unit_count, state_hash;
         cancel_check=cancel_check)
     _ross_v2_assert_portable_token_size(
         merge(_ross_v2_state_body(state),
-            (state_sha256=getfield(state, :state_sha256),)),
+            (state_sha256=state.state_sha256,)),
         "state", cancel_check)
     return state
 end
@@ -2250,125 +1743,32 @@ function ro_sparse_state_v2_payload(
     state::ROSparseAdaptiveStateV2;
     cancel_check=() -> nothing,
 )
-    _ross_v2_validate_state_for_publication(state, cancel_check)
     payload = merge(
-        _ross_v2_state_body(state),
-        (state_sha256=getfield(state, :state_sha256),))
+        _ross_v2_state_body(state), (state_sha256=state.state_sha256,))
     _ross_v2_assert_portable_token_size(payload, "state", cancel_check)
     return payload
 end
 
 function _ross_v2_batch_body(batch::ROSparseIndexBatchV2)
     return (
-        schema_version=getfield(batch, :schema_version),
-        plan_sha256=getfield(batch, :plan_sha256),
-        prior_state_sha256=getfield(batch, :prior_state_sha256),
-        batch_ordinal=getfield(batch, :batch_ordinal),
-        multi_index=Tuple(getfield(batch, :multi_index)),
-        refinements_to_commit=Tuple(Tuple(index) for index in
-            getfield(batch, :refinements_to_commit)),
-        initial_cursor_after=getfield(batch, :initial_cursor_after),
+        schema_version=batch.schema_version,
+        plan_sha256=batch.plan_sha256,
+        prior_state_sha256=batch.prior_state_sha256,
+        batch_ordinal=batch.batch_ordinal,
+        multi_index=Tuple(batch.multi_index),
+        refinements_to_commit=
+            Tuple(Tuple(index) for index in batch.refinements_to_commit),
+        initial_cursor_after=batch.initial_cursor_after,
         pending_candidates_after=Tuple(
-            Tuple(index) for index in
-                getfield(batch, :pending_candidates_after)),
+            Tuple(index) for index in batch.pending_candidates_after),
         requests=Tuple(_ross_v2_request_payload(request)
-            for request in getfield(batch, :requests)),
+            for request in batch.requests),
         cost=(
-            point_count=getfield(batch, :point_count),
-            payload_scalar_count=getfield(batch, :payload_scalar_count),
-            interpolation_work=getfield(batch, :interpolation_work),
+            point_count=batch.point_count,
+            payload_scalar_count=batch.payload_scalar_count,
+            interpolation_work=batch.interpolation_work,
             backend_work_units=1,
         ),
-    )
-end
-
-function _ross_v2_validate_batch_for_publication(
-    batch::ROSparseIndexBatchV2,
-    cancel_check=() -> nothing,
-)
-    cancel_check()
-    getfield(batch, :schema_version) == RO_SPARSE_RO_BATCH_VERSION ||
-        throw(ArgumentError(
-        "unsupported v2 sparse batch version"))
-    _ross_v2_hash(getfield(batch, :plan_sha256), "plan_sha256")
-    _ross_v2_hash(getfield(batch, :prior_state_sha256), "prior_state_sha256")
-    _ross_v2_hash(getfield(batch, :batch_sha256), "batch_sha256")
-    index, dimension = _ross_v2_validate_multi_index_for_publication(
-        getfield(batch, :multi_index), nothing,
-        "v2 sparse batch multi-index")
-    getfield(batch, :batch_ordinal) >= 1 || throw(ArgumentError(
-        "v2 sparse batch ordinal must be positive"))
-    getfield(batch, :initial_cursor_after) >= 1 || throw(ArgumentError(
-        "v2 sparse batch initial cursor must be positive"))
-    refinements, _ = _ross_v2_validate_index_collection_for_publication(
-        getfield(batch, :refinements_to_commit), dimension,
-        "v2 sparse batch refinement", cancel_check)
-    pending, _ = _ross_v2_validate_index_collection_for_publication(
-        getfield(batch, :pending_candidates_after), dimension,
-        "v2 sparse batch pending candidate", cancel_check)
-    length(pending) <= dimension || throw(ArgumentError(
-        "v2 sparse batch exceeds the pending-candidate bound"))
-    pending == sort(copy(pending)) || throw(ArgumentError(
-        "v2 sparse batch pending candidates are not canonical"))
-    index in pending && throw(ArgumentError(
-        "v2 sparse batch cannot leave its own index pending"))
-    index in refinements && throw(ArgumentError(
-        "v2 sparse batch cannot refine its uncommitted index"))
-    requests = getfield(batch, :requests)
-    getfield(batch, :point_count) == length(requests) || throw(ArgumentError(
-        "v2 sparse batch point count does not match requests"))
-    1 <= getfield(batch, :point_count) <= _ROSS_HARD_MAX_POINTS &&
-        1 <= getfield(batch, :payload_scalar_count) <=
-            _ROSS_HARD_MAX_PAYLOAD_SCALARS &&
-        1 <= getfield(batch, :interpolation_work) <= _ROSS_HARD_MAX_WORK ||
-        throw(ArgumentError("v2 sparse batch cost exceeds a hard bound"))
-    point_ids = String[]
-    sizehint!(point_ids, length(requests))
-    source_dimension = nothing
-    for (position, request) in enumerate(requests)
-        _ross_v2_cancel_checkpoint(cancel_check, position)
-        _ross_v2_validate_request_for_publication(request, dimension)
-        Tuple(request.multi_index) == index || throw(ArgumentError(
-            "v2 sparse batch request belongs to another multi-index"))
-        current_source_dimension = length(request.source_coordinates)
-        source_dimension === nothing &&
-            (source_dimension = current_source_dimension)
-        current_source_dimension == source_dimension || throw(ArgumentError(
-            "v2 sparse batch source dimensions are inconsistent"))
-        push!(point_ids, request.point_id)
-    end
-    allunique(point_ids) || throw(ArgumentError(
-        "v2 sparse batch repeats a point identity"))
-    expected_points = prod((_ross_increment_count(level)
-        for level in index); init=BigInt(1))
-    expected_points == BigInt(getfield(batch, :point_count)) ||
-        throw(ArgumentError(
-        "v2 sparse batch point count is inconsistent with its index"))
-    output_count, remainder = divrem(
-        BigInt(getfield(batch, :payload_scalar_count)), expected_points)
-    remainder == 0 &&
-        1 <= output_count <=
-            _ROSS_HARD_MAX_OUTPUTS * _ROSS_HARD_MAX_DIMENSIONS ||
-        throw(ArgumentError(
-            "v2 sparse batch payload cannot identify an output count"))
-    points, payload, work = _ross_candidate_cost(index, Int(output_count))
-    points == BigInt(getfield(batch, :point_count)) &&
-        payload == BigInt(getfield(batch, :payload_scalar_count)) &&
-        work == BigInt(getfield(batch, :interpolation_work)) ||
-        throw(ArgumentError(
-            "v2 sparse batch cost counters are inconsistent"))
-    cancel_check()
-    getfield(batch, :batch_sha256) ==
-        _ross_sha256(_ross_v2_batch_body(batch)) ||
-        throw(ArgumentError("v2 sparse batch hash mismatch before publication"))
-    cancel_check()
-    return (
-        index=index,
-        refinements=refinements,
-        pending=pending,
-        dimension=dimension,
-        source_dimension=source_dimension,
-        output_count=Int(output_count),
     )
 end
 
@@ -2388,16 +1788,14 @@ function _ross_v2_make_batch(
     _ross_each_product(axes) do nodes
         cancel_check()
         push!(requests, _ross_point_request(
-            legacy_plan, getfield(plan, :sampling_spec_sha256), index, nodes))
+            legacy_plan, plan.sampling_spec_sha256, index, nodes))
     end
     cancel_check()
     point_count, payload, work = _ross_candidate_cost(
-        index, length(getfield(plan, :output_ids)) *
-            length(getfield(plan, :control_ids)))
+        index, length(plan.output_ids) * length(plan.control_ids))
     provisional = ROSparseIndexBatchV2(
-        _ROSS_V2_TOKEN, RO_SPARSE_RO_BATCH_VERSION,
-        getfield(plan, :plan_sha256), getfield(state, :state_sha256),
-        getfield(state, :backend_work_unit_count) + 1,
+        _ROSS_V2_TOKEN, RO_SPARSE_RO_BATCH_VERSION, plan.plan_sha256,
+        state.state_sha256, state.backend_work_unit_count + 1,
         collect(index), [collect(item) for item in refinements],
         cursor_after, [collect(item) for item in pending_after], requests,
         Int(point_count), Int(payload), Int(work), "";
@@ -2406,22 +1804,18 @@ function _ross_v2_make_batch(
     batch_hash = _ross_sha256(_ross_v2_batch_body(provisional))
     cancel_check()
     batch = ROSparseIndexBatchV2(
-        _ROSS_V2_TOKEN, getfield(provisional, :schema_version),
-        getfield(provisional, :plan_sha256),
-        getfield(provisional, :prior_state_sha256),
-        getfield(provisional, :batch_ordinal),
-        getfield(provisional, :multi_index),
-        getfield(provisional, :refinements_to_commit),
-        getfield(provisional, :initial_cursor_after),
-        getfield(provisional, :pending_candidates_after),
-        getfield(provisional, :requests),
-        getfield(provisional, :point_count),
-        getfield(provisional, :payload_scalar_count),
-        getfield(provisional, :interpolation_work), batch_hash;
+        _ROSS_V2_TOKEN, provisional.schema_version,
+        provisional.plan_sha256, provisional.prior_state_sha256,
+        provisional.batch_ordinal, provisional.multi_index,
+        provisional.refinements_to_commit,
+        provisional.initial_cursor_after,
+        provisional.pending_candidates_after, provisional.requests,
+        provisional.point_count, provisional.payload_scalar_count,
+        provisional.interpolation_work, batch_hash;
         cancel_check=cancel_check)
     _ross_v2_assert_portable_token_size(
         merge(_ross_v2_batch_body(batch),
-            (batch_sha256=getfield(batch, :batch_sha256),)),
+            (batch_sha256=batch.batch_sha256,)),
         "batch", cancel_check)
     return batch
 end
@@ -2430,10 +1824,8 @@ function ro_sparse_index_batch_v2_payload(
     batch::ROSparseIndexBatchV2;
     cancel_check=() -> nothing,
 )
-    _ross_v2_validate_batch_for_publication(batch, cancel_check)
     payload = merge(
-        _ross_v2_batch_body(batch),
-        (batch_sha256=getfield(batch, :batch_sha256),))
+        _ross_v2_batch_body(batch), (batch_sha256=batch.batch_sha256,))
     _ross_v2_assert_portable_token_size(payload, "batch", cancel_check)
     return payload
 end
@@ -2444,33 +1836,25 @@ function _ross_v2_scheduler(
     cancel_check=() -> nothing,
 )
     cancel_check()
-    control_ids = getfield(plan, :control_ids)
-    output_ids = getfield(plan, :output_ids)
-    limits = getfield(plan, :limits)
-    state_samples = getfield(state, :samples)
-    state_unresolved = getfield(state, :unresolved_regions)
-    dimension = length(control_ids)
+    dimension = length(plan.control_ids)
     accepted = Set{Tuple}(Tuple(index)
-        for index in getfield(state, :accepted_multi_indices))
+        for index in state.accepted_multi_indices)
     blocked = Set{Tuple}(Tuple(region.multi_index)
-        for region in state_unresolved)
-    refinements = Tuple[Tuple(index) for index in
-        getfield(state, :refinement_order)]
+        for region in state.unresolved_regions)
+    refinements = Tuple[Tuple(index) for index in state.refinement_order]
     refined = Set(refinements)
     refinements_to_commit = Tuple[]
-    pending = Tuple[Tuple(index) for index in
-        getfield(state, :pending_candidates)]
-    cursor = getfield(state, :initial_cursor)
-    initial = _ross_initial_indices(
-        dimension, getfield(plan, :initial_total_degree))
-    output_count = length(output_ids) * length(control_ids)
+    pending = Tuple[Tuple(index) for index in state.pending_candidates]
+    cursor = state.initial_cursor
+    initial = _ross_initial_indices(dimension, plan.initial_total_degree)
+    output_count = length(plan.output_ids) * length(plan.control_ids)
 
     function candidate_or_terminal(index::Tuple, pending_after)
         cancel_check()
         reason = _ross_budget_reason(
-            index, length(state_samples), length(accepted),
-            getfield(state, :interpolation_work_consumed),
-            getfield(state, :payload_scalar_count), output_count, limits)
+            index, length(state.samples), length(accepted),
+            state.interpolation_work_consumed,
+            state.payload_scalar_count, output_count, plan.limits)
         if reason !== nothing
             return (batch=nothing, status=:partial_budget, reason=reason,
                 refinements=copy(refinements), cursor=cursor,
@@ -2501,7 +1885,7 @@ function _ross_v2_scheduler(
     end
 
     records_by_index = Dict(Tuple(record.multi_index) => record
-        for record in getfield(state, :index_records))
+        for record in state.index_records)
     while true
         cancel_check()
         active = sort!([index for index in accepted
@@ -2510,9 +1894,9 @@ function _ross_v2_scheduler(
                 records_by_index[index].indicator !== nothing])
         if isempty(active)
             return (batch=nothing,
-                status=isempty(state_unresolved) ?
+                status=isempty(state.unresolved_regions) ?
                     :complete_finite_policy : :unknown_gap,
-                reason=isempty(state_unresolved) ?
+                reason=isempty(state.unresolved_regions) ?
                     :frontier_exhausted :
                     :frontier_exhausted_with_unresolved,
                 refinements=copy(refinements), cursor=cursor,
@@ -2521,12 +1905,11 @@ function _ross_v2_scheduler(
         sort!(active; by=index -> (
             -records_by_index[index].indicator, sum(index), index))
         selected = first(active)
-        if records_by_index[selected].indicator <=
-                getfield(plan, :surplus_tolerance)
+        if records_by_index[selected].indicator <= plan.surplus_tolerance
             return (batch=nothing,
-                status=isempty(state_unresolved) ?
+                status=isempty(state.unresolved_regions) ?
                     :complete_finite_policy : :unknown_gap,
-                reason=isempty(state_unresolved) ?
+                reason=isempty(state.unresolved_regions) ?
                     :surplus_tolerance_met :
                     :surplus_tolerance_met_with_unresolved,
                 refinements=copy(refinements), cursor=cursor,
@@ -2539,7 +1922,7 @@ function _ross_v2_scheduler(
         level_blocked = true
         for axis in 1:dimension
             cancel_check()
-            selected[axis] >= limits.max_level && continue
+            selected[axis] >= plan.limits.max_level && continue
             level_blocked = false
             candidate = ntuple(position -> position == axis ?
                 selected[position] + 1 : selected[position], dimension)
@@ -2569,67 +1952,143 @@ function _ross_v2_validate_state_shallow(
     cancel_check=() -> nothing,
 )
     cancel_check()
-    # First prove every fact owned by the portable token itself.  The checks
-    # below add only facts that require the bound plan.
-    facts = _ross_v2_validate_state_for_publication(state, cancel_check)
-    getfield(state, :plan_sha256) == getfield(plan, :plan_sha256) ||
-        throw(ArgumentError(
+    state.schema_version == RO_SPARSE_RO_STATE_VERSION ||
+        throw(ArgumentError("unsupported v2 sparse state version"))
+    state.plan_sha256 == plan.plan_sha256 || throw(ArgumentError(
         "v2 sparse state belongs to a different plan"))
-    getfield(state, :sampling_spec_sha256) ==
-        getfield(plan, :sampling_spec_sha256) ||
+    state.sampling_spec_sha256 == plan.sampling_spec_sha256 ||
         throw(ArgumentError("v2 sparse state sampling identity mismatch"))
-    control_ids = getfield(plan, :control_ids)
-    limits = getfield(plan, :limits)
-    dimension = length(control_ids)
-    facts.dimension === nothing || facts.dimension == dimension ||
-        throw(ArgumentError(
-            "v2 sparse state dimension does not match its plan"))
-    expected_output_count =
-        length(getfield(plan, :output_ids)) * length(control_ids)
-    facts.output_count === nothing ||
-        facts.output_count == expected_output_count || throw(ArgumentError(
-            "v2 sparse state output count does not match its plan"))
-    facts.source_dimension === nothing ||
-        facts.source_dimension ==
-            length(getfield(plan, :source_coordinate_ids)) ||
-        throw(ArgumentError(
-            "v2 sparse state source dimension does not match its plan"))
+    dimension = length(plan.control_ids)
     initial_count = length(_ross_initial_indices(
-        dimension, getfield(plan, :initial_total_degree)))
-    getfield(state, :initial_cursor) <= initial_count + 1 ||
-        throw(ArgumentError(
+        dimension, plan.initial_total_degree))
+    1 <= state.initial_cursor <= initial_count + 1 || throw(ArgumentError(
         "v2 sparse state initial cursor is out of range"))
-    length(getfield(state, :accepted_multi_indices)) <=
-        limits.max_multi_indices ||
+    length(state.accepted_multi_indices) <= plan.limits.max_multi_indices ||
         throw(ArgumentError(
             "v2 sparse state exceeds the multi-index budget"))
-    length(getfield(state, :samples)) <= limits.max_points ||
-        throw(ArgumentError(
+    length(state.samples) <= plan.limits.max_points || throw(ArgumentError(
         "v2 sparse state exceeds the point budget"))
-    length(getfield(state, :index_records)) <= limits.max_multi_indices ||
+    length(state.index_records) <= plan.limits.max_multi_indices ||
         throw(ArgumentError(
             "v2 sparse state exceeds the record budget"))
-    length(getfield(state, :refinement_order)) <= limits.max_multi_indices ||
+    length(state.refinement_order) <= plan.limits.max_multi_indices ||
         throw(ArgumentError(
             "v2 sparse state exceeds the refinement budget"))
-    length(getfield(state, :unresolved_regions)) <=
-        limits.max_multi_indices ||
+    length(state.unresolved_regions) <= plan.limits.max_multi_indices ||
         throw(ArgumentError(
             "v2 sparse state exceeds the unresolved-region budget"))
-    length(getfield(state, :pending_candidates)) <= dimension ||
-        throw(ArgumentError(
+    length(state.pending_candidates) <= dimension || throw(ArgumentError(
         "v2 sparse state exceeds the pending-candidate bound"))
-    _ross_v2_all_cancel(index ->
-            all(level -> level <= limits.max_level, index),
-        Iterators.flatten((facts.accepted, facts.refined, facts.pending)),
-        cancel_check) || throw(ArgumentError(
-            "v2 sparse state exceeds the plan level budget"))
-    getfield(state, :interpolation_work_consumed) <= limits.max_work ||
-        throw(ArgumentError(
+    accepted = Tuple[]
+    sizehint!(accepted, length(state.accepted_multi_indices))
+    for (position, index) in enumerate(state.accepted_multi_indices)
+        _ross_v2_cancel_checkpoint(cancel_check, position)
+        push!(accepted, Tuple(index))
+    end
+    _ross_v2_all_cancel(index -> length(index) == dimension &&
+            all(level -> 1 <= level <= plan.limits.max_level, index),
+        accepted, cancel_check) ||
+        throw(ArgumentError("v2 sparse state has an invalid multi-index"))
+    allunique(accepted) || throw(ArgumentError(
+        "v2 sparse state repeats an accepted multi-index"))
+    isempty(accepted) || smolyak_is_downward_closed(accepted) ||
+        throw(ArgumentError("v2 sparse state is not downward closed"))
+    length(state.index_records) == length(accepted) || throw(ArgumentError(
+        "v2 sparse state record count does not match accepted indices"))
+    Tuple.(getfield.(state.index_records, :multi_index)) == accepted ||
+        throw(ArgumentError("v2 sparse state record order is not canonical"))
+    state.backend_work_unit_count == length(accepted) || throw(ArgumentError(
+        "backend work-unit count must equal committed index batches"))
+    output_count = length(plan.output_ids) * length(plan.control_ids)
+    expected_work = BigInt(0)
+    expected_payload = BigInt(0)
+    expected_samples = BigInt(0)
+    unresolved_indices = Tuple[]
+    sample_cursor = 1
+    for (record_position, record) in enumerate(state.index_records)
+        _ross_v2_cancel_checkpoint(cancel_check, record_position)
+        index = Tuple(record.multi_index)
+        points, payload, work = _ross_candidate_cost(index, output_count)
+        expected_work += work
+        expected_payload += payload
+        expected_samples += points
+        expected_work <= plan.limits.max_work || throw(ArgumentError(
             "v2 sparse state exceeds the interpolation-work budget"))
-    getfield(state, :payload_scalar_count) <= limits.max_payload_scalars ||
-        throw(ArgumentError(
-            "v2 sparse state exceeds the payload-scalar budget"))
+        expected_payload <= plan.limits.max_payload_scalars ||
+            throw(ArgumentError(
+                "v2 sparse state exceeds the payload-scalar budget"))
+        expected_samples <= plan.limits.max_points || throw(ArgumentError(
+            "v2 sparse state exceeds the point budget"))
+        BigInt(length(record.point_ids)) == points || throw(ArgumentError(
+            "v2 sparse record point count is inconsistent"))
+        stop = sample_cursor + Int(points) - 1
+        stop <= length(state.samples) || throw(ArgumentError(
+            "v2 sparse state is missing record samples"))
+        group = @view state.samples[sample_cursor:stop]
+        Tuple(record.point_ids) == Tuple(
+            sample.request.point_id for sample in group) ||
+            throw(ArgumentError(
+                "v2 sparse record sample order is inconsistent"))
+        _ross_v2_all_cancel(
+            sample -> Tuple(sample.request.multi_index) == index,
+            group, cancel_check) ||
+            throw(ArgumentError("v2 sparse record mixes multi-indices"))
+        if record.status == :resolved
+            record.indicator !== nothing && isfinite(record.indicator) &&
+                record.indicator >= 0.0 || throw(ArgumentError(
+                    "resolved v2 sparse records require an indicator"))
+            _ross_v2_all_cancel(sample -> sample.evaluation.valid &&
+                    sample.surplus !== nothing &&
+                    length(sample.evaluation.values) == output_count &&
+                    length(sample.surplus) == output_count,
+                group, cancel_check) ||
+                throw(ArgumentError(
+                    "resolved v2 sparse samples are incomplete"))
+        elseif record.status == :unresolved_gap
+            record.indicator === nothing || throw(ArgumentError(
+                "unresolved v2 sparse records cannot have an indicator"))
+            !_ross_v2_all_cancel(
+                sample -> sample.evaluation.valid, group, cancel_check) ||
+                throw(ArgumentError(
+                    "unresolved v2 sparse records need an invalid sample"))
+            _ross_v2_all_cancel(
+                sample -> sample.surplus === nothing,
+                group, cancel_check) ||
+                throw(ArgumentError(
+                    "unresolved v2 sparse samples cannot carry surplus"))
+            push!(unresolved_indices, index)
+        else
+            throw(ArgumentError("invalid v2 sparse record status"))
+        end
+        sample_cursor = stop + 1
+    end
+    expected_samples == BigInt(length(state.samples)) || throw(ArgumentError(
+        "v2 sparse state has unowned samples"))
+    expected_work == BigInt(state.interpolation_work_consumed) ||
+        throw(ArgumentError("v2 interpolation-work counter mismatch"))
+    expected_payload == BigInt(state.payload_scalar_count) ||
+        throw(ArgumentError("v2 payload-scalar counter mismatch"))
+    Tuple.(getfield.(state.unresolved_regions, :multi_index)) ==
+        unresolved_indices || throw(ArgumentError(
+            "v2 unresolved-region order is inconsistent"))
+    refined = Tuple[Tuple(index) for index in state.refinement_order]
+    length(refined) <= plan.limits.max_multi_indices &&
+        allunique(refined) &&
+        _ross_v2_all_cancel(index -> index in accepted, refined, cancel_check) ||
+        throw(ArgumentError("v2 refinement order is inconsistent"))
+    records_by_index = Dict(Tuple(record.multi_index) => record
+        for record in state.index_records)
+    all(index -> records_by_index[index].indicator !== nothing, refined) ||
+        throw(ArgumentError("an unresolved index cannot be refined"))
+    pending = Tuple[Tuple(index) for index in state.pending_candidates]
+    length(pending) <= dimension && allunique(pending) &&
+        _ross_v2_all_cancel(index -> length(index) == dimension &&
+            all(level -> 1 <= level <= plan.limits.max_level, index) &&
+            !(index in accepted), pending, cancel_check) || throw(ArgumentError(
+        "v2 pending candidate queue is inconsistent"))
+    cancel_check()
+    state.state_sha256 == _ross_sha256(_ross_v2_state_body(state)) ||
+        throw(ArgumentError("v2 sparse state hash mismatch"))
     cancel_check()
     return true
 end
@@ -2699,11 +2158,10 @@ function _ross_v2_normalize_evaluations(
     cancel_check=() -> nothing,
 )
     cancel_check()
-    requests = getfield(batch, :requests)
     (raw_evaluations isa AbstractVector || raw_evaluations isa Tuple) ||
         throw(ArgumentError(
             "ordered evaluations must be an ordered collection"))
-    length(raw_evaluations) == length(requests) ||
+    length(raw_evaluations) == length(batch.requests) ||
         throw(ArgumentError(
             "ordered evaluations must exactly cover the batch"))
     expected_keys = Set(["point_id", "status", "values", "invalid_reason"])
@@ -2753,7 +2211,7 @@ function _ross_v2_normalize_evaluations(
     end
     allunique(point_ids) || throw(ArgumentError(
         "ordered evaluations contain duplicate point_ids"))
-    expected = [request.point_id for request in requests]
+    expected = [request.point_id for request in batch.requests]
     Set(point_ids) == Set(expected) || throw(ArgumentError(
         "ordered evaluations contain foreign or missing point_ids"))
     point_ids == expected || throw(ArgumentError(
@@ -2770,45 +2228,41 @@ function _ross_v2_commit_unchecked(
     cancel_check=() -> nothing,
 )
     cancel_check()
-    requests = getfield(batch, :requests)
-    state_samples = getfield(state, :samples)
-    index = Tuple(getfield(batch, :multi_index))
-    output_count = length(getfield(plan, :output_ids)) *
-        length(getfield(plan, :control_ids))
+    index = Tuple(batch.multi_index)
+    output_count = length(plan.output_ids) * length(plan.control_ids)
     all_evaluations = Dict{String,ROSparseEvaluation}()
-    for sample in state_samples
+    for sample in state.samples
         cancel_check()
         all_evaluations[sample.request.point_id] =
             _ross_v2_copy_evaluation(sample.evaluation)
     end
-    for (request, evaluation) in zip(requests, evaluations)
+    for (request, evaluation) in zip(batch.requests, evaluations)
         cancel_check()
         haskey(all_evaluations, request.point_id) && error(
             "v2 sparse point identity was committed twice")
         all_evaluations[request.point_id] =
             _ross_v2_copy_evaluation(evaluation)
     end
-    accepted = [copy(item) for item in
-        getfield(state, :accepted_multi_indices)]
+    accepted = [copy(item) for item in state.accepted_multi_indices]
     push!(accepted, collect(index))
-    refinements = [copy(item) for item in getfield(state, :refinement_order)]
-    for item in getfield(batch, :refinements_to_commit)
+    refinements = [copy(item) for item in state.refinement_order]
+    for item in batch.refinements_to_commit
         item in refinements || push!(refinements, copy(item))
     end
     records = [_ross_v2_copy_record(record)
-        for record in getfield(state, :index_records)]
-    samples = [_ross_v2_copy_sample(sample) for sample in state_samples]
+        for record in state.index_records]
+    samples = [_ross_v2_copy_sample(sample) for sample in state.samples]
     unresolved = [_ross_v2_copy_unresolved(region)
-        for region in getfield(state, :unresolved_regions)]
-    point_ids = [request.point_id for request in requests]
+        for region in state.unresolved_regions]
+    point_ids = [request.point_id for request in batch.requests]
     invalid_positions = findall(evaluation -> !evaluation.valid, evaluations)
     if isempty(invalid_positions)
         surpluses = Vector{Vector{Float64}}()
-        for request in requests
+        for request in batch.requests
             cancel_check()
             surplus = _ross_mixed_surplus(
                 index, request, all_evaluations, output_count,
-                getfield(plan, :sampling_spec_sha256), cancel_check)
+                plan.sampling_spec_sha256)
             surplus === nothing && error(
                 "valid downward-closed v2 candidate lacks a surplus")
             push!(surpluses, surplus)
@@ -2816,25 +2270,24 @@ function _ross_v2_commit_unchecked(
         cancel_check()
         indicator = maximum((maximum(abs, surplus)
             for surplus in surpluses); init=0.0)
-        for position in eachindex(requests)
+        for position in eachindex(batch.requests)
             cancel_check()
             push!(samples, ROSparseSample(
-                _ross_v2_copy_request(requests[position]),
+                _ross_v2_copy_request(batch.requests[position]),
                 _ross_v2_copy_evaluation(evaluations[position]),
                 copy(surpluses[position])))
         end
         push!(records, ROSparseIndexRecord(
             collect(index), point_ids, :resolved, indicator))
-        if sum(index) - length(index) <
-                getfield(plan, :initial_total_degree) &&
+        if sum(index) - length(index) < plan.initial_total_degree &&
                 !(collect(index) in refinements)
             push!(refinements, collect(index))
         end
     else
-        for position in eachindex(requests)
+        for position in eachindex(batch.requests)
             cancel_check()
             push!(samples, ROSparseSample(
-                _ross_v2_copy_request(requests[position]),
+                _ross_v2_copy_request(batch.requests[position]),
                 _ross_v2_copy_evaluation(evaluations[position]), nothing))
         end
         reasons = sort!(unique(Symbol[
@@ -2848,21 +2301,18 @@ function _ross_v2_commit_unchecked(
     cancel_check()
     next_state = _ross_v2_new_state(
         plan,
-        initial_cursor=getfield(batch, :initial_cursor_after),
+        initial_cursor=batch.initial_cursor_after,
         accepted_multi_indices=accepted,
         refinement_order=refinements,
-        pending_candidates=getfield(batch, :pending_candidates_after),
+        pending_candidates=batch.pending_candidates_after,
         index_records=records,
         samples=samples,
         unresolved_regions=unresolved,
         interpolation_work_consumed=
-            getfield(state, :interpolation_work_consumed) +
-                getfield(batch, :interpolation_work),
+            state.interpolation_work_consumed + batch.interpolation_work,
         payload_scalar_count=
-            getfield(state, :payload_scalar_count) +
-                getfield(batch, :payload_scalar_count),
-        backend_work_unit_count=
-            getfield(state, :backend_work_unit_count) + 1,
+            state.payload_scalar_count + batch.payload_scalar_count,
+        backend_work_unit_count=state.backend_work_unit_count + 1,
         cancel_check=cancel_check)
     cancel_check()
     return next_state
@@ -2875,35 +2325,30 @@ function _ross_v2_replay_state(
 )
     replay = _ross_v2_new_state(plan; cancel_check=cancel_check)
     sample_cursor = 1
-    expected_records = getfield(expected, :index_records)
-    expected_samples = getfield(expected, :samples)
-    for expected_record in expected_records
+    for expected_record in expected.index_records
         cancel_check()
         schedule = _ross_v2_scheduler(plan, replay, cancel_check)
         schedule.batch === nothing && throw(ArgumentError(
             "v2 sparse state contains a commit after a terminal policy state"))
         batch = schedule.batch
-        batch_requests = getfield(batch, :requests)
-        Tuple(getfield(batch, :multi_index)) ==
-            Tuple(expected_record.multi_index) ||
+        Tuple(batch.multi_index) == Tuple(expected_record.multi_index) ||
             throw(ArgumentError(
                 "v2 sparse state commit order cannot be replayed"))
-        count = length(batch_requests)
+        count = length(batch.requests)
         stop = sample_cursor + count - 1
-        stop <= length(expected_samples) || throw(ArgumentError(
+        stop <= length(expected.samples) || throw(ArgumentError(
             "v2 sparse replay is missing samples"))
-        group = @view expected_samples[sample_cursor:stop]
+        group = @view expected.samples[sample_cursor:stop]
         receipts = NamedTuple[]
         sizehint!(receipts, count)
-        for position in eachindex(batch_requests)
+        for position in eachindex(batch.requests)
             _ross_v2_cancel_checkpoint(cancel_check, position)
             push!(receipts, _ross_v2_eval_receipt(
-                batch_requests[position], group[position].evaluation))
+                batch.requests[position], group[position].evaluation))
         end
         evaluations = _ross_v2_normalize_evaluations(
             batch, receipts,
-            length(getfield(plan, :output_ids)) *
-                length(getfield(plan, :control_ids)), cancel_check)
+            length(plan.output_ids) * length(plan.control_ids), cancel_check)
         replay = _ross_v2_commit_unchecked(
             plan, replay, batch, evaluations, cancel_check)
         sample_cursor = stop + 1
@@ -2911,8 +2356,7 @@ function _ross_v2_replay_state(
     JSON3.write(_ross_v2_state_body(replay)) ==
         JSON3.write(_ross_v2_state_body(expected)) || throw(ArgumentError(
             "v2 sparse state is self-consistent but not a canonical replay"))
-    getfield(replay, :state_sha256) == getfield(expected, :state_sha256) ||
-        throw(ArgumentError(
+    replay.state_sha256 == expected.state_sha256 || throw(ArgumentError(
         "v2 sparse state replay hash mismatch"))
     return true
 end
@@ -2957,52 +2401,40 @@ function _ross_v2_validate_index_batch_after_state(
     ; cancel_check=() -> nothing,
 )
     cancel_check()
-    # Portable-token validation owns all batch-internal semantics.  This layer
-    # adds only plan/state binding, configured budgets, and next-step identity.
-    facts = _ross_v2_validate_batch_for_publication(batch, cancel_check)
-    getfield(batch, :plan_sha256) == getfield(plan, :plan_sha256) ||
-        throw(ArgumentError(
+    batch.schema_version == RO_SPARSE_RO_BATCH_VERSION ||
+        throw(ArgumentError("unsupported v2 sparse batch version"))
+    batch.plan_sha256 == plan.plan_sha256 || throw(ArgumentError(
         "v2 sparse batch belongs to a different plan"))
-    getfield(batch, :prior_state_sha256) == getfield(state, :state_sha256) ||
-        throw(ArgumentError(
+    batch.prior_state_sha256 == state.state_sha256 || throw(ArgumentError(
         "v2 sparse batch belongs to a different prior state"))
-    control_ids = getfield(plan, :control_ids)
-    source_ids = getfield(plan, :source_coordinate_ids)
-    limits = getfield(plan, :limits)
-    batch_requests = getfield(batch, :requests)
-    dimension = length(control_ids)
-    facts.dimension == dimension || throw(ArgumentError(
-        "v2 sparse batch dimension does not match its plan"))
-    facts.source_dimension == length(source_ids) ||
-        throw(ArgumentError(
-            "v2 sparse batch source dimension does not match its plan"))
-    facts.output_count ==
-        length(getfield(plan, :output_ids)) * length(control_ids) ||
-        throw(ArgumentError(
-            "v2 sparse batch output count does not match its plan"))
-    _ross_v2_all_cancel(index ->
-            all(level -> level <= limits.max_level, index),
-        Iterators.flatten(((facts.index,), facts.refinements, facts.pending)),
-        cancel_check) || throw(ArgumentError(
-            "v2 sparse batch exceeds the plan level budget"))
-    length(getfield(batch, :refinements_to_commit)) <=
-        limits.max_multi_indices ||
+    dimension = length(plan.control_ids)
+    length(batch.multi_index) == dimension &&
+        all(level -> 1 <= level <= plan.limits.max_level,
+            batch.multi_index) || throw(ArgumentError(
+                "v2 sparse batch has an invalid multi-index"))
+    length(batch.refinements_to_commit) <= plan.limits.max_multi_indices ||
         throw(ArgumentError("v2 sparse batch has too many refinements"))
-    length(getfield(batch, :pending_candidates_after)) <= dimension ||
+    length(batch.pending_candidates_after) <= dimension ||
         throw(ArgumentError(
             "v2 sparse batch has too many pending candidates"))
-    length(batch_requests) <= limits.max_points || throw(ArgumentError(
+    length(batch.requests) <= plan.limits.max_points || throw(ArgumentError(
         "v2 sparse batch exceeds the point budget"))
-    0 <= getfield(batch, :point_count) <= limits.max_points &&
-        0 <= getfield(batch, :payload_scalar_count) <=
-            limits.max_payload_scalars &&
-        0 <= getfield(batch, :interpolation_work) <= limits.max_work ||
+    0 <= batch.point_count <= plan.limits.max_points &&
+        0 <= batch.payload_scalar_count <=
+            plan.limits.max_payload_scalars &&
+        0 <= batch.interpolation_work <= plan.limits.max_work ||
         throw(ArgumentError("v2 sparse batch cost exceeds its plan budget"))
     _ross_v2_all_cancel(request ->
+            length(request.multi_index) == dimension &&
+            length(request.node_ids) == dimension &&
+            length(request.normalized_coordinates) == dimension &&
+            length(request.control_coordinates) == dimension &&
             length(request.source_coordinates) ==
-                length(source_ids),
-        batch_requests, cancel_check) || throw(ArgumentError(
+                length(plan.source_coordinate_ids),
+        batch.requests, cancel_check) || throw(ArgumentError(
             "v2 sparse batch request dimensions are inconsistent"))
+    batch.batch_sha256 == _ross_sha256(_ross_v2_batch_body(batch)) ||
+        throw(ArgumentError("v2 sparse batch hash mismatch"))
     schedule = _ross_v2_scheduler(plan, state, cancel_check)
     schedule.batch === nothing && throw(ArgumentError(
         "v2 sparse batch was supplied for a terminal state"))
@@ -3046,8 +2478,7 @@ function commit_ro_sparse_index_batch_v2(
         plan, state, batch; cancel_check=cancel_check)
     evaluations = _ross_v2_normalize_evaluations(
         batch, raw_evaluations,
-        length(getfield(plan, :output_ids)) *
-            length(getfield(plan, :control_ids)), cancel_check)
+        length(plan.output_ids) * length(plan.control_ids), cancel_check)
     cancel_check()
     next_state = _ross_v2_commit_unchecked(
         plan, state, batch, evaluations, cancel_check)
@@ -3058,37 +2489,36 @@ end
 
 function _ross_v2_result_body(result::ROSparseSamplingResultV2)
     return (
-        schema_version=getfield(result, :schema_version),
-        plan_sha256=getfield(result, :plan_sha256),
-        sampling_spec_sha256=getfield(result, :sampling_spec_sha256),
-        terminal_state_sha256=getfield(result, :terminal_state_sha256),
-        status=String(getfield(result, :status)),
-        stopping_reason=String(getfield(result, :stopping_reason)),
-        evidence_scope=String(getfield(result, :evidence_scope)),
+        schema_version=result.schema_version,
+        plan_sha256=result.plan_sha256,
+        sampling_spec_sha256=result.sampling_spec_sha256,
+        terminal_state_sha256=result.terminal_state_sha256,
+        status=String(result.status),
+        stopping_reason=String(result.stopping_reason),
+        evidence_scope=String(result.evidence_scope),
         continuum_error_bound=nothing,
-        accepted_multi_indices=Tuple(Tuple(index) for index in
-            getfield(result, :accepted_multi_indices)),
-        active_frontier=Tuple(Tuple(index) for index in
-            getfield(result, :active_frontier)),
-        refinement_order=Tuple(Tuple(index) for index in
-            getfield(result, :refinement_order)),
-        index_records=Tuple(_ross_v2_record_payload(record) for record in
-            getfield(result, :index_records)),
-        samples=Tuple(_ross_v2_sample_payload(sample) for sample in
-            getfield(result, :samples)),
+        accepted_multi_indices=Tuple(
+            Tuple(index) for index in result.accepted_multi_indices),
+        active_frontier=Tuple(
+            Tuple(index) for index in result.active_frontier),
+        refinement_order=Tuple(
+            Tuple(index) for index in result.refinement_order),
+        index_records=Tuple(_ross_v2_record_payload(record)
+            for record in result.index_records),
+        samples=Tuple(_ross_v2_sample_payload(sample)
+            for sample in result.samples),
         unresolved_regions=Tuple(_ross_v2_unresolved_payload(region)
-            for region in getfield(result, :unresolved_regions)),
+            for region in result.unresolved_regions),
         counters=(
-            evaluated_point_count=getfield(result, :evaluated_point_count),
-            valid_point_count=getfield(result, :valid_point_count),
-            invalid_point_count=getfield(result, :invalid_point_count),
+            evaluated_point_count=result.evaluated_point_count,
+            valid_point_count=result.valid_point_count,
+            invalid_point_count=result.invalid_point_count,
             interpolation_work_consumed=
-                getfield(result, :interpolation_work_consumed),
-            payload_scalar_count=getfield(result, :payload_scalar_count),
-            backend_work_unit_count=
-                getfield(result, :backend_work_unit_count),
+                result.interpolation_work_consumed,
+            payload_scalar_count=result.payload_scalar_count,
+            backend_work_unit_count=result.backend_work_unit_count,
         ),
-        max_active_indicator=getfield(result, :max_active_indicator),
+        max_active_indicator=result.max_active_indicator,
     )
 end
 
@@ -3096,10 +2526,8 @@ function ro_sparse_result_v2_payload(
     result::ROSparseSamplingResultV2;
     cancel_check=() -> nothing,
 )
-    validate_ro_sparse_result_v2(result; cancel_check=cancel_check)
     payload = merge(
-        _ross_v2_result_body(result),
-        (result_sha256=getfield(result, :result_sha256),))
+        _ross_v2_result_body(result), (result_sha256=result.result_sha256,))
     _ross_v2_assert_portable_token_size(payload, "result", cancel_check)
     return payload
 end
@@ -3112,61 +2540,47 @@ function _ross_v2_new_result(
 )
     cancel_check()
     refined = Set(schedule.refinements)
-    state_accepted = getfield(state, :accepted_multi_indices)
-    state_records = getfield(state, :index_records)
-    state_samples = getfield(state, :samples)
-    state_unresolved = getfield(state, :unresolved_regions)
-    accepted = Set(Tuple(index) for index in state_accepted)
+    accepted = Set(Tuple(index) for index in state.accepted_multi_indices)
     records_by_index = Dict(Tuple(record.multi_index) => record
-        for record in state_records)
+        for record in state.index_records)
     active = sort!([index for index in accepted
         if !(index in refined) && records_by_index[index].indicator !== nothing])
     indicators = [records_by_index[index].indicator for index in active]
-    valid_count = count(sample -> sample.evaluation.valid, state_samples)
+    valid_count = count(sample -> sample.evaluation.valid, state.samples)
     provisional = ROSparseSamplingResultV2(
-        _ROSS_V2_TOKEN, RO_SPARSE_RO_RESULT_VERSION,
-        getfield(plan, :plan_sha256),
-        getfield(plan, :sampling_spec_sha256),
-        getfield(state, :state_sha256),
+        _ROSS_V2_TOKEN, RO_SPARSE_RO_RESULT_VERSION, plan.plan_sha256,
+        plan.sampling_spec_sha256, state.state_sha256,
         schedule.status, schedule.reason, RO_SPARSE_EVIDENCE_SCOPE,
-        state_accepted, [collect(index) for index in active],
+        state.accepted_multi_indices, [collect(index) for index in active],
         [collect(index) for index in schedule.refinements],
-        state_records, state_samples, state_unresolved,
-        length(state_samples), valid_count,
-        length(state_samples) - valid_count,
-        getfield(state, :interpolation_work_consumed),
-        getfield(state, :payload_scalar_count),
-        getfield(state, :backend_work_unit_count),
+        state.index_records, state.samples, state.unresolved_regions,
+        length(state.samples), valid_count,
+        length(state.samples) - valid_count,
+        state.interpolation_work_consumed, state.payload_scalar_count,
+        state.backend_work_unit_count,
         isempty(indicators) ? nothing : maximum(indicators), "";
         cancel_check=cancel_check)
     cancel_check()
     result_hash = _ross_sha256(_ross_v2_result_body(provisional))
     cancel_check()
     result = ROSparseSamplingResultV2(
-        _ROSS_V2_TOKEN, getfield(provisional, :schema_version),
-        getfield(provisional, :plan_sha256),
-        getfield(provisional, :sampling_spec_sha256),
-        getfield(provisional, :terminal_state_sha256),
-        getfield(provisional, :status),
-        getfield(provisional, :stopping_reason),
-        getfield(provisional, :evidence_scope),
-        getfield(provisional, :accepted_multi_indices),
-        getfield(provisional, :active_frontier),
-        getfield(provisional, :refinement_order),
-        getfield(provisional, :index_records),
-        getfield(provisional, :samples),
-        getfield(provisional, :unresolved_regions),
-        getfield(provisional, :evaluated_point_count),
-        getfield(provisional, :valid_point_count),
-        getfield(provisional, :invalid_point_count),
-        getfield(provisional, :interpolation_work_consumed),
-        getfield(provisional, :payload_scalar_count),
-        getfield(provisional, :backend_work_unit_count),
-        getfield(provisional, :max_active_indicator), result_hash;
+        _ROSS_V2_TOKEN, provisional.schema_version,
+        provisional.plan_sha256, provisional.sampling_spec_sha256,
+        provisional.terminal_state_sha256, provisional.status,
+        provisional.stopping_reason, provisional.evidence_scope,
+        provisional.accepted_multi_indices, provisional.active_frontier,
+        provisional.refinement_order, provisional.index_records,
+        provisional.samples, provisional.unresolved_regions,
+        provisional.evaluated_point_count, provisional.valid_point_count,
+        provisional.invalid_point_count,
+        provisional.interpolation_work_consumed,
+        provisional.payload_scalar_count,
+        provisional.backend_work_unit_count,
+        provisional.max_active_indicator, result_hash;
         cancel_check=cancel_check)
     _ross_v2_assert_portable_token_size(
         merge(_ross_v2_result_body(result),
-            (result_sha256=getfield(result, :result_sha256),)),
+            (result_sha256=result.result_sha256,)),
         "result", cancel_check)
     return result
 end
@@ -3174,100 +2588,57 @@ end
 """
     validate_ro_sparse_result_v2(result; cancel_check)
 
-Validate the result token's local schema, semantic status/counter consistency,
-sample payloads, and self hash. This one-argument form does not prove that the
-token is the canonical finalization of a terminal adaptive state. Use the
-three-argument form with the bound plan and terminal state for authoritative
-validation.
+Validate only the result token's local schema, self hash, and counters.  This
+one-argument form does not prove that the token is the canonical finalization
+of a terminal adaptive state.  Use the three-argument form with the bound plan
+and terminal state for authoritative validation.
 """
 function validate_ro_sparse_result_v2(
     result::ROSparseSamplingResultV2;
     cancel_check=() -> nothing,
 )
     cancel_check()
-    getfield(result, :schema_version) == RO_SPARSE_RO_RESULT_VERSION ||
+    result.schema_version == RO_SPARSE_RO_RESULT_VERSION ||
         throw(ArgumentError("unsupported v2 sparse result version"))
-    _ross_v2_hash(getfield(result, :plan_sha256), "plan_sha256")
-    _ross_v2_hash(getfield(result, :sampling_spec_sha256),
-        "sampling_spec_sha256")
-    _ross_v2_hash(getfield(result, :terminal_state_sha256),
-        "terminal_state_sha256")
-    _ross_v2_hash(getfield(result, :result_sha256), "result_sha256")
-    getfield(result, :evidence_scope) == RO_SPARSE_EVIDENCE_SCOPE ||
+    result.evidence_scope == RO_SPARSE_EVIDENCE_SCOPE ||
         throw(ArgumentError("v2 sparse result evidence scope changed"))
-    status = getfield(result, :status)
-    stopping_reason = getfield(result, :stopping_reason)
-    unresolved_regions = getfield(result, :unresolved_regions)
-    samples = getfield(result, :samples)
-    complete_reasons = (:frontier_exhausted, :surplus_tolerance_met)
-    unknown_reasons = (
-        :frontier_exhausted_with_unresolved,
-        :surplus_tolerance_met_with_unresolved,
-    )
-    budget_reasons = (
-        :level_budget_exhausted,
-        :multi_index_budget_exhausted,
-        :point_budget_exhausted,
-        :payload_budget_exhausted,
-        :work_budget_exhausted,
-    )
-    if status == :complete_finite_policy
-        stopping_reason in complete_reasons &&
-            isempty(unresolved_regions) || throw(ArgumentError(
-                "complete v2 sparse result has inconsistent stopping semantics"))
-    elseif status == :unknown_gap
-        stopping_reason in unknown_reasons &&
-            !isempty(unresolved_regions) || throw(ArgumentError(
-                "unknown v2 sparse result requires unresolved evidence"))
-    elseif status == :partial_budget
-        stopping_reason in budget_reasons || throw(ArgumentError(
-            "partial v2 sparse result requires a budget stopping reason"))
-    else
-        throw(ArgumentError("unsupported v2 sparse result status"))
-    end
-    facts = _ross_v2_validate_committed_content_for_publication(
-        getfield(result, :accepted_multi_indices),
-        getfield(result, :refinement_order),
-        getfield(result, :index_records), samples, unresolved_regions,
-        getfield(result, :interpolation_work_consumed),
-        getfield(result, :payload_scalar_count),
-        getfield(result, :backend_work_unit_count),
-        "v2 sparse result", cancel_check)
-    getfield(result, :evaluated_point_count) == length(samples) ||
+    length(result.samples) <= _ROSS_HARD_MAX_POINTS || throw(ArgumentError(
+        "v2 sparse result exceeds the hard point bound"))
+    length(result.index_records) <= _ROSS_HARD_MAX_MULTI_INDICES &&
+        length(result.accepted_multi_indices) <=
+            _ROSS_HARD_MAX_MULTI_INDICES &&
+        length(result.active_frontier) <= _ROSS_HARD_MAX_MULTI_INDICES &&
+        length(result.refinement_order) <= _ROSS_HARD_MAX_MULTI_INDICES &&
+        length(result.unresolved_regions) <=
+            _ROSS_HARD_MAX_MULTI_INDICES || throw(ArgumentError(
+                "v2 sparse result exceeds the hard multi-index bound"))
+    result.evaluated_point_count == length(result.samples) ||
         throw(ArgumentError("v2 sparse result point count mismatch"))
-    getfield(result, :evaluated_point_count) >= 0 &&
-        getfield(result, :valid_point_count) >= 0 &&
-        getfield(result, :invalid_point_count) >= 0 || throw(ArgumentError(
+    result.evaluated_point_count >= 0 && result.valid_point_count >= 0 &&
+        result.invalid_point_count >= 0 || throw(ArgumentError(
             "v2 sparse result counts must be nonnegative"))
-    BigInt(getfield(result, :valid_point_count)) +
-        BigInt(getfield(result, :invalid_point_count)) ==
-        BigInt(getfield(result, :evaluated_point_count)) ||
-        throw(ArgumentError(
+    BigInt(result.valid_point_count) + BigInt(result.invalid_point_count) ==
+        BigInt(result.evaluated_point_count) || throw(ArgumentError(
             "v2 sparse result validity counts do not add up"))
-    facts.valid_count == getfield(result, :valid_point_count) ||
-        throw(ArgumentError(
+    valid_count = 0
+    for (position, sample) in enumerate(result.samples)
+        _ross_v2_cancel_checkpoint(cancel_check, position)
+        sample.evaluation.valid && (valid_count += 1)
+    end
+    valid_count == result.valid_point_count || throw(ArgumentError(
         "v2 sparse result valid-point count does not match samples"))
-    active, active_dimension =
-        _ross_v2_validate_index_collection_for_publication(
-            getfield(result, :active_frontier), facts.dimension,
-            "v2 sparse result active frontier", cancel_check)
-    facts.dimension === nothing && active_dimension !== nothing &&
-        throw(ArgumentError(
-            "an empty v2 sparse result cannot have an active frontier"))
-    refined = Set(facts.refined)
-    expected_active = sort!([index for index in facts.accepted
-        if !(index in refined) &&
-            facts.records_by_index[index].status == :resolved])
-    active == expected_active || throw(ArgumentError(
-        "v2 sparse result active frontier is inconsistent"))
-    expected_indicator = isempty(expected_active) ? nothing : maximum(
-        facts.records_by_index[index].indicator for index in expected_active)
-    getfield(result, :max_active_indicator) == expected_indicator ||
-        throw(ArgumentError(
-        "v2 sparse result active indicator is inconsistent"))
+    result.backend_work_unit_count == length(result.index_records) ||
+        throw(ArgumentError("v2 result backend work-unit count mismatch"))
+    result.interpolation_work_consumed >= 0 &&
+        result.payload_scalar_count >= 0 &&
+        result.backend_work_unit_count >= 0 || throw(ArgumentError(
+            "v2 sparse result work counters must be nonnegative"))
+    result.max_active_indicator === nothing ||
+        isfinite(result.max_active_indicator) &&
+            result.max_active_indicator >= 0.0 || throw(ArgumentError(
+                "v2 sparse result active indicator must be finite and nonnegative"))
     cancel_check()
-    getfield(result, :result_sha256) ==
-        _ross_sha256(_ross_v2_result_body(result)) ||
+    result.result_sha256 == _ross_sha256(_ross_v2_result_body(result)) ||
         throw(ArgumentError("v2 sparse result hash mismatch"))
     cancel_check()
     return true
@@ -3341,7 +2712,7 @@ function adaptive_sparse_ro_field_v2(
         batch === nothing && return finalize_ro_sparse_state_v2(
             plan, state; cancel_check=cancel_check)
         receipts = Any[]
-        for request in getfield(batch, :requests)
+        for request in batch.requests
             cancel_check()
             evaluation = evaluator(_ross_v2_copy_request(request))
             cancel_check()
@@ -3774,16 +3145,13 @@ function restore_ro_sparse_ro_channel_plan_v2(
         "sampling_spec_sha256")
     supplied_plan_hash = _ross_v2_hash(
         _ross_v2_get(payload, :plan_sha256), "plan_sha256")
-    supplied_spec_hash == getfield(plan, :sampling_spec_sha256) ||
-        throw(ArgumentError(
+    supplied_spec_hash == plan.sampling_spec_sha256 || throw(ArgumentError(
         "restored v2 sampling-spec hash mismatch"))
-    supplied_plan_hash == getfield(plan, :plan_sha256) ||
-        throw(ArgumentError(
+    supplied_plan_hash == plan.plan_sha256 || throw(ArgumentError(
         "restored v2 plan hash mismatch"))
     _ross_v2_validate_source_encoding(
         raw,
-        merge(_ross_v2_plan_body(plan),
-            (plan_sha256=getfield(plan, :plan_sha256),)),
+        merge(_ross_v2_plan_body(plan), (plan_sha256=plan.plan_sha256,)),
         "v2 RO-channel plan", cancel_check)
     cancel_check()
     return plan
@@ -3900,12 +3268,6 @@ function restore_ro_sparse_state_v2(
 )
     cancel_check()
     validate_ro_sparse_ro_channel_plan_v2(plan)
-    plan_hash = getfield(plan, :plan_sha256)
-    sampling_spec_hash = getfield(plan, :sampling_spec_sha256)
-    control_ids = getfield(plan, :control_ids)
-    source_ids = getfield(plan, :source_coordinate_ids)
-    output_ids = getfield(plan, :output_ids)
-    limits = getfield(plan, :limits)
     cancel_check()
     payload = _ross_v2_decode(
         raw, "v2 sparse state"; cancel_check=cancel_check)
@@ -3918,15 +3280,15 @@ function restore_ro_sparse_state_v2(
         "state schema_version") == RO_SPARSE_RO_STATE_VERSION ||
         throw(ArgumentError("unsupported v2 sparse state version"))
     _ross_v2_hash(_ross_v2_get(payload, :plan_sha256),
-        "state plan_sha256") == plan_hash || throw(ArgumentError(
+        "state plan_sha256") == plan.plan_sha256 || throw(ArgumentError(
             "restored state belongs to a different plan"))
     _ross_v2_hash(_ross_v2_get(payload, :sampling_spec_sha256),
-        "state sampling_spec_sha256") == sampling_spec_hash ||
+        "state sampling_spec_sha256") == plan.sampling_spec_sha256 ||
         throw(ArgumentError(
             "restored state sampling identity differs from the plan"))
-    dimension = length(control_ids)
-    source_count = length(source_ids)
-    output_count = length(output_ids) * dimension
+    dimension = length(plan.control_ids)
+    source_count = length(plan.source_coordinate_ids)
+    output_count = length(plan.output_ids) * dimension
     function parse_indices(raw_indices, name, max_length)
         raw_items = _ross_v2_collection(raw_indices, name;
             max_length=max_length, cancel_check=cancel_check)
@@ -3936,7 +3298,7 @@ function restore_ro_sparse_state_v2(
             _ross_v2_cancel_checkpoint(cancel_check, position)
             index = _ross_v2_int_vector(item, name;
                 exact_length=dimension, cancel_check=cancel_check)
-            all(level -> 1 <= level <= limits.max_level, index) ||
+            all(level -> 1 <= level <= plan.limits.max_level, index) ||
                 throw(ArgumentError(
                     "$name levels must lie within the declared budget"))
             push!(indices, index)
@@ -3946,28 +3308,28 @@ function restore_ro_sparse_state_v2(
     end
     accepted = parse_indices(
         _ross_v2_get(payload, :accepted_multi_indices),
-        "accepted multi-index", limits.max_multi_indices)
+        "accepted multi-index", plan.limits.max_multi_indices)
     refinements = parse_indices(
         _ross_v2_get(payload, :refinement_order),
-        "refinement multi-index", limits.max_multi_indices)
+        "refinement multi-index", plan.limits.max_multi_indices)
     pending = parse_indices(
         _ross_v2_get(payload, :pending_candidates),
         "pending multi-index", dimension)
     raw_records = _ross_v2_collection(
         _ross_v2_get(payload, :index_records), "index_records";
-        max_length=limits.max_multi_indices,
+        max_length=plan.limits.max_multi_indices,
         cancel_check=cancel_check)
     records = ROSparseIndexRecord[]
     sizehint!(records, length(raw_records))
     for (position, item) in enumerate(raw_records)
         _ross_v2_cancel_checkpoint(cancel_check, position)
         push!(records, _ross_v2_parse_record(item;
-            dimension=dimension, max_points=limits.max_points,
+            dimension=dimension, max_points=plan.limits.max_points,
             cancel_check=cancel_check))
     end
     raw_samples = _ross_v2_collection(
         _ross_v2_get(payload, :samples), "samples";
-        max_length=limits.max_points, cancel_check=cancel_check)
+        max_length=plan.limits.max_points, cancel_check=cancel_check)
     samples = ROSparseSample[]
     sizehint!(samples, length(raw_samples))
     for (position, item) in enumerate(raw_samples)
@@ -3978,14 +3340,14 @@ function restore_ro_sparse_state_v2(
     end
     raw_unresolved = _ross_v2_collection(
         _ross_v2_get(payload, :unresolved_regions), "unresolved_regions";
-        max_length=limits.max_multi_indices,
+        max_length=plan.limits.max_multi_indices,
         cancel_check=cancel_check)
     unresolved = ROSparseUnresolvedRegion[]
     sizehint!(unresolved, length(raw_unresolved))
     for (position, item) in enumerate(raw_unresolved)
         _ross_v2_cancel_checkpoint(cancel_check, position)
         push!(unresolved, _ross_v2_parse_unresolved(item;
-            dimension=dimension, max_points=limits.max_points,
+            dimension=dimension, max_points=plan.limits.max_points,
             cancel_check=cancel_check))
     end
     counters = _ross_v2_get(payload, :counters)
@@ -4014,13 +3376,13 @@ function restore_ro_sparse_state_v2(
         cancel_check=cancel_check)
     supplied_hash = _ross_v2_hash(
         _ross_v2_get(payload, :state_sha256), "state_sha256")
-    supplied_hash == getfield(state, :state_sha256) || throw(ArgumentError(
+    supplied_hash == state.state_sha256 || throw(ArgumentError(
         "restored v2 sparse state hash mismatch"))
     validate_ro_sparse_state_v2(plan, state; cancel_check=cancel_check)
     _ross_v2_validate_source_encoding(
         raw,
         merge(_ross_v2_state_body(state),
-            (state_sha256=getfield(state, :state_sha256),)),
+            (state_sha256=state.state_sha256,)),
         "v2 sparse state", cancel_check)
     cancel_check()
     return state
@@ -4039,9 +3401,6 @@ function restore_ro_sparse_index_batch_v2(
     else
         _ross_v2_validate_state_shallow(plan, state, cancel_check)
     end
-    control_ids = getfield(plan, :control_ids)
-    source_ids = getfield(plan, :source_coordinate_ids)
-    limits = getfield(plan, :limits)
     payload = _ross_v2_decode(
         raw, "v2 sparse index batch"; cancel_check=cancel_check)
     _ross_v2_require_keys(payload, (
@@ -4052,8 +3411,8 @@ function restore_ro_sparse_index_batch_v2(
     _ross_v2_string(_ross_v2_get(payload, :schema_version),
         "batch schema_version") == RO_SPARSE_RO_BATCH_VERSION ||
         throw(ArgumentError("unsupported v2 sparse batch version"))
-    dimension = length(control_ids)
-    source_count = length(source_ids)
+    dimension = length(plan.control_ids)
+    source_count = length(plan.source_coordinate_ids)
     function parse_indices(raw_indices, name, max_length)
         raw_items = _ross_v2_collection(raw_indices, name;
             max_length=max_length, cancel_check=cancel_check)
@@ -4063,7 +3422,7 @@ function restore_ro_sparse_index_batch_v2(
             _ross_v2_cancel_checkpoint(cancel_check, position)
             index = _ross_v2_int_vector(item, name;
                 exact_length=dimension, cancel_check=cancel_check)
-            all(level -> 1 <= level <= limits.max_level, index) ||
+            all(level -> 1 <= level <= plan.limits.max_level, index) ||
                 throw(ArgumentError(
                     "$name levels must lie within the declared budget"))
             push!(indices, index)
@@ -4076,13 +3435,13 @@ function restore_ro_sparse_index_batch_v2(
         "batch multi_index", 1))
     refinements = parse_indices(
         _ross_v2_get(payload, :refinements_to_commit),
-        "batch refinement", limits.max_multi_indices)
+        "batch refinement", plan.limits.max_multi_indices)
     pending = parse_indices(
         _ross_v2_get(payload, :pending_candidates_after),
         "pending candidate", dimension)
     raw_requests = _ross_v2_collection(
         _ross_v2_get(payload, :requests), "batch requests";
-        max_length=limits.max_points, cancel_check=cancel_check)
+        max_length=plan.limits.max_points, cancel_check=cancel_check)
     requests = ROSparsePointRequest[]
     sizehint!(requests, length(raw_requests))
     for (position, item) in enumerate(raw_requests)
@@ -4104,12 +3463,12 @@ function restore_ro_sparse_index_batch_v2(
         _ross_v2_get(cost, :payload_scalar_count), "payload_scalar_count")
     interpolation_work = _ross_v2_int(
         _ross_v2_get(cost, :interpolation_work), "interpolation_work")
-    0 <= point_count <= limits.max_points || throw(ArgumentError(
+    0 <= point_count <= plan.limits.max_points || throw(ArgumentError(
         "batch point_count exceeds the declared budget"))
-    0 <= payload_count <= limits.max_payload_scalars ||
+    0 <= payload_count <= plan.limits.max_payload_scalars ||
         throw(ArgumentError(
             "batch payload_scalar_count exceeds the declared budget"))
-    0 <= interpolation_work <= limits.max_work ||
+    0 <= interpolation_work <= plan.limits.max_work ||
         throw(ArgumentError(
             "batch interpolation_work exceeds the declared budget"))
     batch = ROSparseIndexBatchV2(
@@ -4135,7 +3494,7 @@ function restore_ro_sparse_index_batch_v2(
     _ross_v2_validate_source_encoding(
         raw,
         merge(_ross_v2_batch_body(batch),
-            (batch_sha256=getfield(batch, :batch_sha256),)),
+            (batch_sha256=batch.batch_sha256,)),
         "v2 sparse index batch", cancel_check)
     cancel_check()
     return batch
@@ -4156,10 +3515,6 @@ function restore_ro_sparse_result_v2(
         _ross_v2_validate_state_shallow(
             plan, terminal_state, cancel_check)
     end
-    control_ids = getfield(plan, :control_ids)
-    source_ids = getfield(plan, :source_coordinate_ids)
-    output_ids = getfield(plan, :output_ids)
-    limits = getfield(plan, :limits)
     payload = _ross_v2_decode(
         raw, "v2 sparse result"; cancel_check=cancel_check)
     _ross_v2_require_keys(payload, (
@@ -4174,9 +3529,9 @@ function restore_ro_sparse_result_v2(
         throw(ArgumentError("unsupported v2 sparse result version"))
     _ross_v2_get(payload, :continuum_error_bound) === nothing ||
         throw(ArgumentError("v2 sparse results cannot claim a continuum bound"))
-    dimension = length(control_ids)
-    source_count = length(source_ids)
-    output_count = length(output_ids) * dimension
+    dimension = length(plan.control_ids)
+    source_count = length(plan.source_coordinate_ids)
+    output_count = length(plan.output_ids) * dimension
     function parse_indices(raw_indices, name, max_length)
         raw_items = _ross_v2_collection(raw_indices, name;
             max_length=max_length, cancel_check=cancel_check)
@@ -4186,7 +3541,7 @@ function restore_ro_sparse_result_v2(
             _ross_v2_cancel_checkpoint(cancel_check, position)
             index = _ross_v2_int_vector(item, name;
                 exact_length=dimension, cancel_check=cancel_check)
-            all(level -> 1 <= level <= limits.max_level, index) ||
+            all(level -> 1 <= level <= plan.limits.max_level, index) ||
                 throw(ArgumentError(
                     "$name levels must lie within the declared budget"))
             push!(indices, index)
@@ -4196,28 +3551,28 @@ function restore_ro_sparse_result_v2(
     end
     accepted = parse_indices(
         _ross_v2_get(payload, :accepted_multi_indices),
-        "result accepted multi-index", limits.max_multi_indices)
+        "result accepted multi-index", plan.limits.max_multi_indices)
     active = parse_indices(
         _ross_v2_get(payload, :active_frontier),
-        "result active-frontier multi-index", limits.max_multi_indices)
+        "result active-frontier multi-index", plan.limits.max_multi_indices)
     refinements = parse_indices(
         _ross_v2_get(payload, :refinement_order),
-        "result refinement multi-index", limits.max_multi_indices)
+        "result refinement multi-index", plan.limits.max_multi_indices)
     raw_records = _ross_v2_collection(
         _ross_v2_get(payload, :index_records), "result index_records";
-        max_length=limits.max_multi_indices,
+        max_length=plan.limits.max_multi_indices,
         cancel_check=cancel_check)
     records = ROSparseIndexRecord[]
     sizehint!(records, length(raw_records))
     for (position, item) in enumerate(raw_records)
         _ross_v2_cancel_checkpoint(cancel_check, position)
         push!(records, _ross_v2_parse_record(item;
-            dimension=dimension, max_points=limits.max_points,
+            dimension=dimension, max_points=plan.limits.max_points,
             cancel_check=cancel_check))
     end
     raw_samples = _ross_v2_collection(
         _ross_v2_get(payload, :samples), "result samples";
-        max_length=limits.max_points, cancel_check=cancel_check)
+        max_length=plan.limits.max_points, cancel_check=cancel_check)
     samples = ROSparseSample[]
     sizehint!(samples, length(raw_samples))
     for (position, item) in enumerate(raw_samples)
@@ -4229,14 +3584,14 @@ function restore_ro_sparse_result_v2(
     raw_unresolved = _ross_v2_collection(
         _ross_v2_get(payload, :unresolved_regions),
         "result unresolved_regions";
-        max_length=limits.max_multi_indices,
+        max_length=plan.limits.max_multi_indices,
         cancel_check=cancel_check)
     unresolved = ROSparseUnresolvedRegion[]
     sizehint!(unresolved, length(raw_unresolved))
     for (position, item) in enumerate(raw_unresolved)
         _ross_v2_cancel_checkpoint(cancel_check, position)
         push!(unresolved, _ross_v2_parse_unresolved(item;
-            dimension=dimension, max_points=limits.max_points,
+            dimension=dimension, max_points=plan.limits.max_points,
             cancel_check=cancel_check))
     end
     counters = _ross_v2_get(payload, :counters)
@@ -4260,7 +3615,7 @@ function restore_ro_sparse_result_v2(
     backend_count = _ross_v2_int(
         _ross_v2_get(counters, :backend_work_unit_count),
         "backend_work_unit_count")
-    0 <= evaluated_count <= limits.max_points || throw(ArgumentError(
+    0 <= evaluated_count <= plan.limits.max_points || throw(ArgumentError(
         "result evaluated_point_count exceeds the declared budget"))
     0 <= valid_count <= evaluated_count || throw(ArgumentError(
         "result valid_point_count is out of range"))
@@ -4268,13 +3623,13 @@ function restore_ro_sparse_result_v2(
         "result invalid_point_count is out of range"))
     BigInt(valid_count) + BigInt(invalid_count) == evaluated_count ||
         throw(ArgumentError("result validity counts do not add up"))
-    0 <= interpolation_work <= limits.max_work ||
+    0 <= interpolation_work <= plan.limits.max_work ||
         throw(ArgumentError(
             "result interpolation work exceeds the declared budget"))
-    0 <= payload_count <= limits.max_payload_scalars ||
+    0 <= payload_count <= plan.limits.max_payload_scalars ||
         throw(ArgumentError(
             "result payload scalar count exceeds the declared budget"))
-    0 <= backend_count <= limits.max_multi_indices ||
+    0 <= backend_count <= plan.limits.max_multi_indices ||
         throw(ArgumentError(
             "result backend work count exceeds the declared budget"))
     max_indicator_raw = _ross_v2_get(payload, :max_active_indicator)
@@ -4314,7 +3669,7 @@ function restore_ro_sparse_result_v2(
     _ross_v2_validate_source_encoding(
         raw,
         merge(_ross_v2_result_body(restored),
-            (result_sha256=getfield(restored, :result_sha256),)),
+            (result_sha256=restored.result_sha256,)),
         "v2 sparse result", cancel_check)
     cancel_check()
     return restored

@@ -1,5 +1,4 @@
 using Test
-using JSON3
 using BindingAndCatalysis
 using BiocircuitsExplorerBackend
 
@@ -12,6 +11,9 @@ if !isdefined(_ROFA_BACKEND, :ROFieldAtlasInput)
     Base.include(_ROFA_BACKEND,
         joinpath(@__DIR__, "..", "src", "ro_field_atlas.jl"))
 end
+
+const _ROFA_HETERODIMER_HASH = repeat("a", 64)
+const _ROFA_OPPOSED_HASH = repeat("b", 64)
 
 struct ROFieldAtlasCancelProbe <: Exception end
 
@@ -61,78 +63,26 @@ function _rofa_test_opposed_gradient_variant(base)
     )
 end
 
-function _rofa_test_artifact(; opposed::Bool=false)
-    path = joinpath(@__DIR__, "..", "..", "tests", "fixtures",
-        "ro_field", "exact-cell-complex.json")
-    artifact = _ROFA_BACKEND._materialize(JSON3.read(read(path, String)))
-    artifact["partial"] = false
-    artifact["domain"]["axis_order"] = Any["tA", "tB"]
-    artifact["domain"]["axes"][1]["axis_id"] = "tA"
-    artifact["domain"]["axes"][2]["axis_id"] = "tB"
-    artifact["outputs"]["output_order"] = Any["AB"]
-    artifact["outputs"]["items"][1]["output_id"] = "AB"
-    artifact["component_order"] = Any[
-        Dict("output_id" => "AB", "input_axis_id" => "tA"),
-        Dict("output_id" => "AB", "input_axis_id" => "tB"),
-    ]
-    data = artifact["data"]
-    data["singular_stratum_order"] = Any[]
-    data["singular_strata"] = Any[]
-    for facet in data["facets"]
-        if facet["kind"] == "singular_boundary"
-            facet["kind"] = "regime_transition"
-            facet["singular_stratum_ids"] = Any[]
-        end
-    end
-    if opposed
-        for cell in data["cells"], label in cell["affine_labels"]
-            label["reaction_order_matrix"] = Any[Any[1.0, -1.0]]
-            label["output_offset"] = Any[0.0]
-        end
-    end
-
-    cell_count = length(data["cells"])
-    coverage = artifact["coverage"]
-    coverage["eligible_count"] = cell_count
-    coverage["evaluated_count"] = cell_count
-    coverage["valid_count"] = cell_count
-    coverage["invalid_count"] = 0
-    coverage["omitted_count"] = 0
-    coverage["enumeration_complete"] = true
-    coverage["truncated"] = false
-    coverage["truncation"] = nothing
-    coverage["storage"]["complete"] = true
-    coverage["storage"]["stored_count"] = cell_count
-    data_bytes = _ROFA_BACKEND.canonical_ro_field_data_bytes(artifact)
-    coverage["storage"]["payload_bytes"] = length(data_bytes)
-    coverage["storage"]["content_sha256"] =
-        _ROFA_BACKEND._ro_field_sha256(data_bytes)
-    artifact["provenance"]["domain_sha256"] =
-        _ROFA_BACKEND.canonical_hash(artifact["domain"])
-    artifact["evidence"]["status"] = "complete"
-    artifact["evidence"]["completeness_claim"] =
-        "complete_over_declared_population"
-    return _ROFA_BACKEND.validate_ro_field_document!(artifact)
-end
-
 function _rofa_test_inputs()
-    heterodimer_artifact = _rofa_test_artifact()
-    opposed_artifact = _rofa_test_artifact(opposed=true)
+    base = _rofa_test_heterodimer_complex()
+    opposed = _rofa_test_opposed_gradient_variant(base)
     heterodimer = _ROFA_BACKEND.ROFieldAtlasInput(
         "heterodimer";
         representation=:exact_cell_complex,
-        field_artifact=heterodimer_artifact,
+        field_sha256=_ROFA_HETERODIMER_HASH,
+        complex=base,
         axis_ids=["tA", "tB"],
         output_ids=["AB"],
     )
     opposed_input = _ROFA_BACKEND.ROFieldAtlasInput(
         "opposed_fixture";
         representation="exact_cell_complex",
-        field_artifact=opposed_artifact,
+        field_sha256=_ROFA_OPPOSED_HASH,
+        complex=opposed,
         axis_ids=[:tA, :tB],
         output_ids=[:AB],
     )
-    return heterodimer.complex, heterodimer, opposed_input
+    return base, heterodimer, opposed_input
 end
 
 function _rofa_test_demo_config(base)
@@ -143,19 +93,13 @@ function _rofa_test_demo_config(base)
     )
 end
 
-function _rofa_rehash_atlas!(atlas)
-    atlas["atlas_sha256"] = _ROFA_BACKEND.canonical_hash(
-        _ROFA_BACKEND._rofa_atlas_identity_payload(atlas))
-    return atlas
-end
-
 @testset "bounded explicit RO-field demo Atlas" begin
     base, heterodimer, opposed = _rofa_test_inputs()
     config = _rofa_test_demo_config(base)
     atlas = _ROFA_BACKEND.build_ro_field_atlas(
         [opposed, heterodimer]; config=config)
 
-    @test atlas["schema_version"] == "bne-ro-field-atlas/v1.1.0"
+    @test atlas["schema_version"] == "bne-ro-field-atlas/v1.0.0"
     @test atlas["atlas_kind"] == "explicit_exact_2d_demo_corpus"
     @test atlas["network_space_claim"] == "none"
     @test atlas["source_population"]["selection"] ==
@@ -179,14 +123,8 @@ end
     reversed = _ROFA_BACKEND.build_ro_field_atlas(
         [heterodimer, opposed]; config=config)
     @test reversed["atlas_sha256"] == atlas["atlas_sha256"]
-    @test atlas["atlas_sha256"] ==
-        "bf128136f9b6b0475e043f689cb23fc4ed84c1e406de5f430e4056f2edcd69ac"
     @test getindex.(atlas["records"], "signature_sha256") ==
         getindex.(reversed["records"], "signature_sha256")
-    @test getindex.(atlas["records"], "signature_sha256") == [
-        "098941f9f088cc3ca874aaacc09766080b11ded6547f7e3387eb7dac668fb19e",
-        "0567422fab589ad9d205fea81076ba6acf2ea204dc78c82e8a52de05e0c5603f",
-    ]
     @test all(occursin(r"^[0-9a-f]{64}$", record["signature_sha256"])
               for record in atlas["records"])
 end
@@ -288,14 +226,6 @@ end
     result_b = _ROFA_BACKEND.query_ro_field_atlas(atlas, query_b)
     @test result_a["query_sha256"] == result_b["query_sha256"]
     @test result_a["result_sha256"] == result_b["result_sha256"]
-    wire_atlas = JSON3.read(JSON3.write(atlas))
-    @test _ROFA_BACKEND.query_ro_field_atlas(
-        wire_atlas, query_a)["result_sha256"] == result_a["result_sha256"]
-
-    duplicate_key = Dict{Any,Any}(pairs(atlas))
-    duplicate_key[:schema_version] = atlas["schema_version"]
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        duplicate_key, query_a)
 
     tampered = deepcopy(atlas)
     tampered["records"][1]["signature"]["features"][
@@ -304,169 +234,9 @@ end
     tampered["atlas_sha256"] = _ROFA_BACKEND.canonical_hash(
         _ROFA_BACKEND._rofa_atlas_identity_payload(tampered))
     @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(tampered)
-
-    forged_hash = deepcopy(atlas)
-    forged_hash["records"][1]["field_sha256"] = "f"^64
-    forged_hash["records"][1]["signature"]["field_sha256"] = "f"^64
-    forged_hash["records"][1]["signature"]["signature_sha256"] =
-        _ROFA_BACKEND.canonical_hash(
-            _ROFA_BACKEND.ro_field_signature_identity_payload(
-                forged_hash["records"][1]["signature"]))
-    forged_hash["records"][1]["signature_sha256"] =
-        forged_hash["records"][1]["signature"]["signature_sha256"]
-    forged_hash["atlas_sha256"] = _ROFA_BACKEND.canonical_hash(
-        _ROFA_BACKEND._rofa_atlas_identity_payload(forged_hash))
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(forged_hash)
-
-    reordered_records = deepcopy(atlas)
-    reverse!(reordered_records["records"])
-    reverse!(reordered_records["record_order"])
-    reordered_records["atlas_sha256"] = _ROFA_BACKEND.canonical_hash(
-        _ROFA_BACKEND._rofa_atlas_identity_payload(reordered_records))
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        reordered_records)
-
-    background_a = _rofa_test_artifact()
-    push!(background_a["domain"]["fixed_background"], Dict{String,Any}(
-        "parameter_id" => "aa_extra",
-        "symbol" => "Kextra",
-        "coordinate_kind" => "binding_constant",
-        "reference" => Dict("value" => 1.0, "unit" => "uM"),
-        "log_value" => 0.5,
-    ))
-    background_a["provenance"]["domain_sha256"] =
-        _ROFA_BACKEND.canonical_hash(background_a["domain"])
-    background_b = deepcopy(background_a)
-    reverse!(background_b["domain"]["fixed_background"])
-    background_b["provenance"]["domain_sha256"] =
-        _ROFA_BACKEND.canonical_hash(background_b["domain"])
-    input_a = _ROFA_BACKEND.ROFieldAtlasInput(
-        "background_order";
-        representation=:exact_cell_complex,
-        field_artifact=background_a,
-    )
-    input_b = _ROFA_BACKEND.ROFieldAtlasInput(
-        "background_order";
-        representation=:exact_cell_complex,
-        field_artifact=background_b,
-    )
-    @test input_a.field_sha256 == input_b.field_sha256
-    @test _ROFA_BACKEND.build_ro_field_atlas([input_a])["atlas_sha256"] ==
-        _ROFA_BACKEND.build_ro_field_atlas([input_b])["atlas_sha256"]
-
-    numeric_sources = _rofa_test_artifact()
-    source_sets = (
-        Any["regime-2", "regime-10"],
-        Any["regime-20"],
-        Any["regime-30"],
-    )
-    for (cell, sources) in zip(
-        numeric_sources["data"]["cells"], source_sets)
-        cell["source_regime_ids"] = copy(sources)
-        only(cell["affine_labels"])["source_regime_ids"] = copy(sources)
-    end
-    numeric_sources["data"]["source_candidate_regime_count"] = 4
-    numeric_sources["data"]["regular_candidate_regime_count"] = 4
-    numeric_bytes = _ROFA_BACKEND.canonical_ro_field_data_bytes(
-        numeric_sources)
-    numeric_sources["coverage"]["storage"]["payload_bytes"] =
-        length(numeric_bytes)
-    numeric_sources["coverage"]["storage"]["content_sha256"] =
-        _ROFA_BACKEND._ro_field_sha256(numeric_bytes)
-    numeric_input = _ROFA_BACKEND.ROFieldAtlasInput(
-        "numeric_source_order";
-        representation=:exact_cell_complex,
-        field_artifact=numeric_sources,
-    )
-    @test _ROFA_BACKEND.build_ro_field_atlas([numeric_input])[
-        "population"]["classified_count"] == 1
 end
 
-@testset "v1.1 Atlas trust boundary reconstructs builder-only state" begin
-    base, heterodimer, _ = _rofa_test_inputs()
-
-    # The struct's positional constructor must not bypass artifact derivation.
-    @test_throws MethodError _ROFA_BACKEND.ROFieldAtlasInput(
-        "positional_bypass",
-        :exact_cell_complex,
-        "f"^64,
-        nothing,
-        base,
-        ["tA", "tB"],
-        ["AB"],
-    )
-
-    atlas = _ROFA_BACKEND.build_ro_field_atlas([heterodimer])
-
-    # Public source views are detached reconstructions. Mutating any view after
-    # construction cannot change the immutable source used by preflight/build.
-    heterodimer.field_payload["data"]["cells"] = Any[]
-    empty!(heterodimer.complex.cells)
-    heterodimer.axis_ids[1] = "mutated_axis"
-    heterodimer.output_ids[1] = "mutated_output"
-    @test _ROFA_BACKEND.build_ro_field_atlas([heterodimer])[
-        "atlas_sha256"] == atlas["atlas_sha256"]
-
-    mismatched_config = deepcopy(atlas)
-    wide_config = _ROFA_BACKEND.ROFieldSignatureConfig(zero_tolerance=100.0)
-    wide_signature = _ROFA_BACKEND._rofa_classify_stored_exact_payload(
-        heterodimer.field_payload, wide_config).signature
-    mismatched_config["records"][1]["signature"] = wide_signature
-    mismatched_config["records"][1]["signature_sha256"] =
-        wide_signature["signature_sha256"]
-    _rofa_rehash_atlas!(mismatched_config)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        mismatched_config)
-
-    unsafe_record = deepcopy(atlas)
-    unsafe_record["records"][1]["record_id"] = "<invalid>"
-    unsafe_record["record_order"][1] = "<invalid>"
-    _rofa_rehash_atlas!(unsafe_record)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(unsafe_record)
-
-    false_enumeration = deepcopy(atlas)
-    false_enumeration["source_population"]["enumeration_performed"] = true
-    _rofa_rehash_atlas!(false_enumeration)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        false_enumeration)
-
-    impossible_population = deepcopy(atlas)
-    impossible_population["population"]["submitted_count"] = 2
-    impossible_population["population"]["eligible_count"] = 2
-    impossible_population["population"]["evaluated_count"] = 2
-    _rofa_rehash_atlas!(impossible_population)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        impossible_population)
-
-    inflated_preflight = deepcopy(atlas)
-    inflated_preflight["config"]["preflight_total_cells"] += 1
-    _rofa_rehash_atlas!(inflated_preflight)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        inflated_preflight)
-
-    for (container, key) in ((deepcopy(atlas), "unexpected_top_level"),)
-        container[key] = true
-        # Extra top-level data is deliberately not part of the identity helper;
-        # exact-key validation must still reject it.
-        @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(container)
-    end
-
-    extended_source = deepcopy(atlas)
-    extended_source["source_population"]["unexpected"] = true
-    _rofa_rehash_atlas!(extended_source)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        extended_source)
-
-    sampled = _ROFA_BACKEND.ROFieldAtlasInput(
-        "sampled"; representation=:sampled_grid)
-    diagnostic_atlas = _ROFA_BACKEND.build_ro_field_atlas([sampled])
-    diagnostic_atlas["diagnostics"][1]["record_id"] = "<invalid>"
-    _rofa_rehash_atlas!(diagnostic_atlas)
-    @test_throws ArgumentError _ROFA_BACKEND.query_ro_field_atlas(
-        diagnostic_atlas)
-end
-
-@testset "unsupported records are diagnostics and exact sources fail closed" begin
+@testset "sampled, unsupported, invalid, and ambiguous records are diagnostics" begin
     base, heterodimer, _ = _rofa_test_inputs()
     sampled = _ROFA_BACKEND.ROFieldAtlasInput(
         "sampled";
@@ -494,78 +264,51 @@ end
     sampled_miss = _ROFA_BACKEND.query_ro_field_atlas(sampled_atlas)
     @test sampled_miss["status"] == "no_match_in_evaluated_subset"
 
-    artifact = _rofa_test_artifact()
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "forged_hash";
+    invalid_hash = _ROFA_BACKEND.ROFieldAtlasInput(
+        "invalid_hash";
         representation=:exact_cell_complex,
-        field_artifact=artifact,
-        field_sha256="f"^64,
+        field_sha256="NOT-A-HASH",
+        complex=base,
+        axis_ids=["tA", "tB"],
+        output_ids=["AB"],
     )
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "mismatched_complex";
-        representation=:exact_cell_complex,
-        field_artifact=artifact,
-        complex=_rofa_test_opposed_gradient_variant(base),
-    )
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "reversed_axes";
-        representation=:exact_cell_complex,
-        field_artifact=artifact,
-        axis_ids=["tB", "tA"],
-    )
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "unsafe_axes";
-        representation=:exact_cell_complex,
-        field_artifact=artifact,
-        axis_ids=["tA", "<unsafe>"],
-    )
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "mismatched_outputs";
-        representation=:exact_cell_complex,
-        field_artifact=artifact,
-        output_ids=["different_output"],
-    )
+    invalid_atlas = _ROFA_BACKEND.build_ro_field_atlas([invalid_hash])
+    @test only(invalid_atlas["diagnostics"])["code"] ==
+        "invalid_field_sha256"
+    @test invalid_atlas["population"]["evaluated_count"] == 0
 
-    validator_roundoff = deepcopy(artifact)
-    validator_roundoff["data"]["cells"][1]["area"] -= 1.0e-9
-    roundoff_bytes = _ROFA_BACKEND.canonical_ro_field_data_bytes(
-        validator_roundoff)
-    validator_roundoff["coverage"]["storage"]["payload_bytes"] =
-        length(roundoff_bytes)
-    validator_roundoff["coverage"]["storage"]["content_sha256"] =
-        _ROFA_BACKEND._ro_field_sha256(roundoff_bytes)
-    validated_roundoff = _ROFA_BACKEND.validate_ro_field_document!(
-        validator_roundoff)
-    roundoff_input = _ROFA_BACKEND.ROFieldAtlasInput(
-        "validator_roundoff";
+    gap = ROCellComplex2D(
+        base.domain,
+        [3],
+        ROCell2D[],
+        ROFacet2D[],
+        ROSingularStratum2D[],
+        0,
+        0,
+        base.domain_area,
+        0.0,
+        base.domain_area,
+        false,
+        false,
+        1e-9,
+    )
+    gap_input = _ROFA_BACKEND.ROFieldAtlasInput(
+        "gap";
         representation=:exact_cell_complex,
-        field_artifact=validated_roundoff,
+        field_sha256=repeat("d", 64),
+        complex=gap,
+        axis_ids=["tA", "tB"],
+        output_ids=["AB"],
     )
-    roundoff_atlas = _ROFA_BACKEND.build_ro_field_atlas([roundoff_input])
-    @test roundoff_atlas["population"]["classified_count"] == 1
-    @test _ROFA_BACKEND.query_ro_field_atlas(roundoff_atlas)["status"] ==
-        "matches_found_in_evaluated_subset"
-
-    incomplete = deepcopy(artifact)
-    incomplete["partial"] = true
-    incomplete["coverage"]["eligible_count"] += 1
-    incomplete["coverage"]["omitted_count"] = 1
-    incomplete["coverage"]["enumeration_complete"] = false
-    incomplete["coverage"]["truncated"] = true
-    incomplete["coverage"]["truncation"] = Dict{String,Any}(
-        "reason" => "work_budget",
-        "detail" => "One exact cell-complex item exceeded the fixture budget.",
-    )
-    incomplete["evidence"]["status"] = "partial"
-    incomplete["evidence"]["completeness_claim"] =
-        "best_over_evaluated_prefix"
-    @test _ROFA_BACKEND.validate_ro_field_document!(deepcopy(incomplete))[
-        "partial"] === true
-    @test_throws ArgumentError _ROFA_BACKEND.ROFieldAtlasInput(
-        "incomplete";
-        representation=:exact_cell_complex,
-        field_artifact=incomplete,
-    )
+    gap_atlas = _ROFA_BACKEND.build_ro_field_atlas([gap_input])
+    @test gap_atlas["population"]["eligible_count"] == 1
+    @test gap_atlas["population"]["evaluated_count"] == 1
+    @test gap_atlas["population"]["classified_count"] == 0
+    @test gap_atlas["population"]["diagnostic_count"] == 1
+    @test only(gap_atlas["diagnostics"])["code"] ==
+        "unclassifiable_exact_field"
+    @test "positive_area_gap" in only(gap_atlas["diagnostics"])[
+        "eligibility_reasons"]
 
     mixed_population = _ROFA_BACKEND.build_ro_field_atlas(
         [heterodimer, sampled];
@@ -661,7 +404,8 @@ end
     duplicate = _ROFA_BACKEND.ROFieldAtlasInput(
         "heterodimer";
         representation=:exact_cell_complex,
-        field_artifact=_rofa_test_artifact(),
+        field_sha256=repeat("e", 64),
+        complex=base,
         axis_ids=["tA", "tB"],
         output_ids=["AB"],
     )

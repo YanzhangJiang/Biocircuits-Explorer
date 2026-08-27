@@ -186,106 +186,32 @@ end
 # Feasible-regime enumeration
 # ============================================================
 
-struct _AsymptoticRegimeLimitExceeded <: Exception
-    requested::BigInt
-    limit::Int
-end
-
-struct _RegimeEnumerationWorkLimitExceeded <: Exception
-    requested::BigInt
-    limit::Int
-end
-
-
-function Base.showerror(io::IO, err::_RegimeEnumerationWorkLimitExceeded)
-    print(io, "regime enumeration requires ", err.requested,
-        " work units, exceeding limit=", err.limit)
-end
-
-function Base.showerror(io::IO, err::_AsymptoticRegimeLimitExceeded)
-    print(io, "asymptotic-regime enumeration requires ", err.requested,
-        ", exceeding limit=", err.limit)
-end
-
-function _regime_enumeration_base_work(helper::MatrixHelper)
-    dimension = BigInt(length(helper.J))
-    state_count = BigInt(helper.n)
-    # O(1) lower-bound admission: conservative sort/order storage, adjacency
-    # families, and chosen/result/stack/stamp storage.  This is deliberately
-    # computable without scanning a single helper row.
-    return dimension^2 + 3 * dimension + 6 * state_count + 4
-end
-
-function _regime_enumeration_row_work(row_choices)
-    row_count = BigInt(length(row_choices))
-    weighted_edge_count = row_count * max(row_count - 1, BigInt(0))
-    # One row-scan unit, its nested choice slots, and both storage/population
-    # work for every oriented weighted edge.
-    return 1 + row_count + 2 * weighted_edge_count
-end
-
-function _regime_enumeration_static_work(helper::MatrixHelper)
-    requested = _regime_enumeration_base_work(helper)
-    for row_choices in helper.J
-        requested += _regime_enumeration_row_work(row_choices)
-    end
-    return requested
-end
-
 function _enumerate_all_regimes(
     helper::MatrixHelper,
     eps::Float64 = 1e-9,
     ;
     cancel_check=_NO_CANCEL_CHECK,
-    max_asymptotic_regimes::Union{Nothing,Int}=nothing,
-    max_enumeration_work::Union{Nothing,Int}=nothing,
-    enumeration_work_counter::Union{Nothing,Base.RefValue{BigInt}}=nothing,
 )
+    cancel_check()
     checkpoint_count = Ref(0)
-    work_counter = enumeration_work_counter === nothing ?
-        Ref(BigInt(0)) : enumeration_work_counter
-    work_counter[] >= 0 || throw(ArgumentError(
-        "enumeration_work_counter must be nonnegative"))
-    function cooperative_checkpoint!()
+    function cancellation_checkpoint!()
         checkpoint_count[] += 1
         (checkpoint_count[] & 0xff) == 0 && cancel_check()
-        return nothing
-    end
-    function charge_enumeration_work!(units::BigInt=BigInt(1);
-                                      force_cancel::Bool=false)
-        units >= 0 || error("internal negative enumeration-work charge")
-        work_counter[] += units
-        max_enumeration_work === nothing ||
-            work_counter[] <= max_enumeration_work || throw(
-            _RegimeEnumerationWorkLimitExceeded(
-                work_counter[], max_enumeration_work))
-        force_cancel ? cancel_check() : cooperative_checkpoint!()
         return nothing
     end
 
     d = length(helper.J)
     n = helper.n
-    # First gate an O(1) lower bound, then scan and charge each helper row.
-    # A tiny limit therefore rejects before even the linear preflight scan;
-    # an admitted long scan remains cooperatively cancellable every 256 rows.
-    charge_enumeration_work!(
-        _regime_enumeration_base_work(helper); force_cancel=true)
-    for row_choices in helper.J
-        charge_enumeration_work!(
-            _regime_enumeration_row_work(row_choices))
-    end
     order = sortperm(helper.J; by = length, rev = true)
 
     weighted_edges = Vector{Vector{Vector{Tuple{Int,Float64}}}}(undef, d)
     @inbounds for i in 1:d
-        cooperative_checkpoint!()
+        cancellation_checkpoint!()
         by_choice = Vector{Vector{Tuple{Int,Float64}}}(undef, length(helper.J[i]))
         for t in eachindex(helper.J[i])
-            cooperative_checkpoint!()
             refs = helper.choice_map[i][t]
             edges = Vector{Tuple{Int,Float64}}(undef, length(refs))
             for s in eachindex(refs)
-                cooperative_checkpoint!()
                 ref = refs[s]
                 h = helper.hyperplanes[ref.hid]
                 competitor = ref.sign == 1 ? h.v : h.u
@@ -303,7 +229,6 @@ function _enumerate_all_regimes(
     chosen = Vector{Int}(undef, d)
     regimes = Vector{Int}[]
     asymptotic = Bool[]
-    asymptotic_count = Ref(0)
     
 
     stack = Vector{Int}(undef, n)
@@ -318,13 +243,12 @@ function _enumerate_all_regimes(
         visited_stamp[start] = curstamp
 
         while top > 0
-            charge_enumeration_work!()
+            cancellation_checkpoint!()
             u = stack[top]
             top -= 1
             u == target && return true
 
             @inbounds for w in dag_adj[u]
-                charge_enumeration_work!()
                 if visited_stamp[w] != curstamp
                     visited_stamp[w] = curstamp
                     top += 1
@@ -336,12 +260,6 @@ function _enumerate_all_regimes(
     end
 
     function has_neg_cycle(seeds::Vector{Int})::Bool
-        # Gate all per-call SPFA storage and initialization before allocating
-        # its dense state vectors or reserving the queue.
-        charge_enumeration_work!(
-            3 * BigInt(n) + BigInt(max(length(seeds), 8));
-            force_cancel=true,
-        )
         dist = fill(Inf, n)
         inq = falses(n)
         cnt = zeros(Int, n)
@@ -349,7 +267,6 @@ function _enumerate_all_regimes(
         sizehint!(q, max(length(seeds), 8))
 
         @inbounds for u in seeds
-            charge_enumeration_work!()
             if !inq[u]
                 dist[u] = 0.0
                 push!(q, u)
@@ -361,14 +278,13 @@ function _enumerate_all_regimes(
 
         head = 1
         while head <= length(q)
-            charge_enumeration_work!()
+            cancellation_checkpoint!()
             u = q[head]
             head += 1
             inq[u] = false
             du = dist[u]
 
             @inbounds for (v, w) in adj[u]
-                charge_enumeration_work!()
                 nd = du + w
                 if nd + 1e-15 < dist[v]
                     dist[v] = nd
@@ -389,17 +305,6 @@ function _enumerate_all_regimes(
 
     function dfs(r::Int, still_acyclic::Bool)
         if r > d
-            if still_acyclic
-                requested = BigInt(asymptotic_count[]) + 1
-                max_asymptotic_regimes === nothing ||
-                    requested <= max_asymptotic_regimes ||
-                    throw(_AsymptoticRegimeLimitExceeded(
-                        requested, max_asymptotic_regimes))
-                asymptotic_count[] += 1
-            end
-            # Gate the full permutation copy and both result-vector pushes
-            # before any leaf allocation or population.
-            charge_enumeration_work!(BigInt(d) + 2; force_cancel=true)
             push!(regimes, copy(chosen))
             push!(asymptotic, still_acyclic)
             return
@@ -409,14 +314,13 @@ function _enumerate_all_regimes(
         row_choices = helper.J[i]
 
         @inbounds for v in row_choices
-            charge_enumeration_work!()
+            cancellation_checkpoint!()
             t = helper.choice_slot[i][v]
 
             local_acyclic = still_acyclic
             if still_acyclic
                 for k in row_choices
                     k == v && continue
-                    charge_enumeration_work!()
                     if dag_reachable(v, k)
                         local_acyclic = false
                         break
@@ -425,13 +329,10 @@ function _enumerate_all_regimes(
             end
 
             oldlen_w = length(adj[v])
-            charge_enumeration_work!(
-                BigInt(length(weighted_edges[i][t])); force_cancel=true)
             append!(adj[v], weighted_edges[i][t])
 
             for k in row_choices
                 k == v && continue
-                charge_enumeration_work!()
                 push!(dag_adj[k], v)
             end
 
@@ -444,7 +345,6 @@ function _enumerate_all_regimes(
 
             for k in reverse(row_choices)
                 k == v && continue
-                charge_enumeration_work!()
                 pop!(dag_adj[k])
             end
         end

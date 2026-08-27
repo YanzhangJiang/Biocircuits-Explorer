@@ -148,42 +148,6 @@ function _with_rofsj_store(f::Function)
     end
 end
 
-function _rofsj_assert_outer_manifest_identity_bound(record)
-    manifest_path = String(record["result_manifest_uri"])
-    original = read(manifest_path)
-    cases = (
-        "artifact_schema_version" => (manifest ->
-            (manifest["artifact_identity"]["artifact_schema_version"] =
-                "bne-result/v999.0.0")),
-        "algorithm_name" => (manifest ->
-            (manifest["artifact_identity"]["algorithm_name"] =
-                "different_algorithm")),
-        "algorithm_version" => (manifest ->
-            (manifest["artifact_identity"]["algorithm_version"] =
-                "999.0.0")),
-        "config_hash" => (manifest ->
-            (manifest["artifact_identity"]["config_hash"] = "0"^64)),
-        "artifact_metadata_hash" => (manifest ->
-            (manifest["artifact_identity"]["artifact_metadata_hash"] =
-                "0"^64)),
-        "payload_key_count" => (manifest ->
-            (manifest["result"]["payload_key_count"] += 1)),
-    )
-    for (_, mutate!) in cases
-        try
-            manifest = Backend._read_job_json(manifest_path)
-            mutate!(manifest)
-            Backend._write_job_json(manifest_path, manifest)
-            verification = Backend._verify_job_result_artifact(record)
-            @test verification.status == :invalid
-        finally
-            write(manifest_path, original)
-        end
-        @test Backend._verify_job_result_artifact(record).status == :valid
-    end
-    return nothing
-end
-
 function _rofsj_parent_record(job_id, spec, checkpoint;
                               status="cancelled", user_sub="alice")
     normalized = normalize_ro_field_job_spec(spec)
@@ -466,37 +430,6 @@ end
             valid_sample["source_reaction_order_matrix"][1][1:2]
         @test valid_sample["ordered_ro_components"] ==
             valid_sample["reaction_order_matrix"][1]
-    end
-end
-
-@testset "adaptive job storage rejects symlinked job ancestors" begin
-    (Sys.isapple() || Sys.islinux()) || return
-    _with_rofsj_store() do store
-        job_id = "e"^32
-        outside = mktempdir()
-        try
-            symlink(outside, joinpath(store, job_id))
-            probe = joinpath(outside, "probe.json")
-            write(probe, "{}")
-            @test_throws Backend.ROFieldChunkContractError begin
-                Backend._rofsj_read_canonical(
-                    joinpath(store, job_id, "probe.json"))
-            end
-            rm(probe)
-            calls = Dict{String,Any}[]
-            @test_throws Backend.ROFieldChunkContractError compute_ro_field_job(
-                _rofsj_spec(max_multi_indices=1);
-                job_context=Dict{String,Any}(
-                    "job_id" => job_id,
-                    "user_sub" => "alice",
-                    "sparse_batch_evaluator" => _rofsj_evaluator(calls),
-                ),
-            )
-            @test isempty(calls)
-            @test isempty(readdir(outside))
-        finally
-            rm(outside; recursive=true, force=true)
-        end
     end
 end
 
@@ -1063,7 +996,6 @@ end
         @test fetched["ro_field_job_result"]["point_count"] == 0
         record = Backend._job_record(job_id)
         @test Backend._verify_job_result_artifact(record).status == :valid
-        _rofsj_assert_outer_manifest_identity_bound(record)
         before = read(Backend._job_record_path(job_id))
         transition = Backend._job_transition!(
             job_id, "succeeded";

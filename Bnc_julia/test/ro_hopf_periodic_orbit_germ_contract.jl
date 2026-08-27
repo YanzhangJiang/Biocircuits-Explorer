@@ -385,15 +385,6 @@ function raw_germ_census_with_field(census, field::Symbol, value)
     )
 end
 
-function overwrite_exact_bigint!(target::Rational{BigInt}, value)
-    exact_value = Rational{BigInt}(value)
-    Base.GMP.MPZ.set!(
-        numerator(target), deepcopy(numerator(exact_value)))
-    Base.GMP.MPZ.set!(
-        denominator(target), deepcopy(denominator(exact_value)))
-    return target
-end
-
 function assert_no_explicit_or_global_claim(event)
     @test !event.explicit_periodic_orbit_enclosure_certified
     @test !event.validated_periodic_orbit_branch_certified
@@ -541,39 +532,6 @@ end
             census.events)
         @test validate_ro_complete_hopf_periodic_orbit_germ_census(
             system, spectral_parent, hopf_parent, census)
-    end
-
-    @testset "crossing analysis consumes only replayed spectral events" begin
-        system, spectral_parent, _, hopf_parent =
-            single_hopf_certificate(radial=-1.0)
-        baseline = certify_ro_complete_hopf_periodic_orbit_germ_census(
-            system, spectral_parent, hopf_parent)
-        baseline_event = only(baseline.events)
-        determinant = only(spectral_parent.events).
-            state_jacobian_determinant_enclosure
-        original_lower = deepcopy(determinant.lower)
-        original_upper = deepcopy(determinant.upper)
-
-        # Rational{BigInt} is shallowly immutable: mutating its nested GMP
-        # integers bypasses the outer spectral-event constructor and its
-        # stored hash.  Parent replay must reconstruct this derived interval,
-        # and the germ lift must not read the corrupted original afterwards.
-        overwrite_exact_bigint!(determinant.lower, -original_upper)
-        overwrite_exact_bigint!(determinant.upper, -original_lower)
-        @test determinant.upper < 0
-        @test validate_ro_complete_simple_spectral_hopf_event_census(
-            system, spectral_parent)
-
-        rebuilt = certify_ro_complete_hopf_periodic_orbit_germ_census(
-            system, spectral_parent, hopf_parent)
-        @test only(rebuilt.events).real_part_crossing_speed_sign ==
-            baseline_event.real_part_crossing_speed_sign == 1
-        @test only(rebuilt.events).original_control_side ==
-            baseline_event.original_control_side ==
-            :control_above_hopf_event
-        @test rebuilt.certificate_sha256 == baseline.certificate_sha256
-        @test validate_ro_complete_hopf_periodic_orbit_germ_census(
-            system, spectral_parent, hopf_parent, baseline)
     end
 
     @testset "an extra unstable transverse mode never becomes a full-state claim" begin
@@ -769,11 +727,8 @@ end
             single_hopf_certificate(radial=-1.0)
         baseline = certify_ro_complete_hopf_periodic_orbit_germ_census(
             system, spectral_parent, hopf_parent)
-        parent_replay_operations =
-            spectral_parent.analysis_interval_operation_count +
-            hopf_parent.analysis_interval_operation_count
         @test baseline.analysis_interval_operation_count >
-            parent_replay_operations
+            hopf_parent.analysis_interval_operation_count
 
         static_limits = (
             ROHopfPeriodicOrbitGermLimits(max_events=0),
@@ -781,7 +736,7 @@ end
             ROHopfPeriodicOrbitGermLimits(max_preconditioner_entries=15),
             ROHopfPeriodicOrbitGermLimits(
                 max_parent_replay_interval_operations=
-                    parent_replay_operations - 1),
+                    hopf_parent.analysis_interval_operation_count - 1),
         )
         for limits in static_limits
             cancel_checks = Ref(0)
@@ -804,7 +759,7 @@ end
                 hopf_parent;
                 limits=ROHopfPeriodicOrbitGermLimits(
                     max_parent_replay_interval_operations=
-                        parent_replay_operations,
+                        hopf_parent.analysis_interval_operation_count,
                     max_analysis_interval_operations=
                         baseline.analysis_interval_operation_count - 1,
                 ),

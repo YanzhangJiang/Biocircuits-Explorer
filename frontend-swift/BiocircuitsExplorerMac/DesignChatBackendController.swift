@@ -51,8 +51,6 @@ final class DesignChatBackendController: ObservableObject {
 
     private let environment: [String: String]
     private let fileManager: FileManager
-    private let applicationShutdownGate: ApplicationShutdownGate
-    private let startupPause: (@MainActor () async -> Void)?
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
@@ -61,24 +59,6 @@ final class DesignChatBackendController: ObservableObject {
     private var logBuffer = ""
     private var launchLifecycle = BackendLaunchLifecycle()
     private var instanceNonce: String?
-    private var shutdownRecoveryShouldRestart = false
-    private var shutdownRecoveryCanReuseRunningProcess = false
-
-    var shutdownIsLatched: Bool {
-        launchLifecycle.shutdownIsLatched
-    }
-
-    var shutdownIsInProgress: Bool {
-        launchLifecycle.shutdownIsInProgress
-    }
-
-    var disappearanceCleanupIsInProgress: Bool {
-        launchLifecycle.disappearanceCleanupIsInProgress
-    }
-
-    var terminationShutdownCanCommit: Bool {
-        shutdownIsInProgress && process?.isRunning != true
-    }
 
     nonisolated static let serviceIdentity = "biocircuits-design-chat"
 
@@ -90,9 +70,7 @@ final class DesignChatBackendController: ObservableObject {
         port: Int? = nil,
         enginePort: Int? = nil,
         fileManager: FileManager = .default,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        applicationShutdownGate: ApplicationShutdownGate? = nil,
-        startupPause: (@MainActor () async -> Void)? = nil
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         let resolvedEnginePort = enginePort ?? Self.resolveConfiguredEnginePort(from: environment)
         self.environment = environment
@@ -102,8 +80,6 @@ final class DesignChatBackendController: ObservableObject {
         )
         self.enginePort = resolvedEnginePort
         self.fileManager = fileManager
-        self.applicationShutdownGate = applicationShutdownGate ?? .shared
-        self.startupPause = startupPause
     }
 
     nonisolated static func resolveConfiguredPort(
@@ -190,28 +166,6 @@ final class DesignChatBackendController: ObservableObject {
     /// launch problems are surfaced via `statusMessage` / `lastErrorMessage` so the
     /// rest of the app keeps working.
     func startIfNeeded() async {
-        await startIfNeeded(allowDuringTerminationRecovery: false)
-    }
-
-    private func startIfNeeded(
-        allowDuringTerminationRecovery: Bool
-    ) async {
-        if !allowDuringTerminationRecovery {
-            do {
-                try await applicationShutdownGate.waitUntilLaunchAllowed()
-            } catch {
-                statusMessage = "Design backend shut down"
-                return
-            }
-        }
-        guard startIsAllowed(
-            allowDuringTerminationRecovery: allowDuringTerminationRecovery
-        ) else {
-            statusMessage = applicationShutdownGate.isCommitted || shutdownIsLatched
-                ? "Design backend shut down"
-                : "Design backend shutting down"
-            return
-        }
         if isReady {
             return
         }
@@ -225,23 +179,7 @@ final class DesignChatBackendController: ObservableObject {
             } catch {
                 return
             }
-            guard startIsAllowed(
-                allowDuringTerminationRecovery: allowDuringTerminationRecovery
-            ), isReady else {
-                if lastErrorMessage == nil {
-                    lastErrorMessage = "The joined design backend startup did not become ready."
-                }
-                return
-            }
             return
-        }
-
-        if let process {
-            guard !process.isRunning else {
-                statusMessage = "Design backend is still stopping"
-                return
-            }
-            releaseOwnedProcess(process)
         }
 
         let generation = launchLifecycle.advance()
@@ -253,16 +191,6 @@ final class DesignChatBackendController: ObservableObject {
             if launchLifecycle.accepts(generation) {
                 isStarting = false
             }
-        }
-
-        await startupPause?()
-        guard
-            launchLifecycle.accepts(generation),
-            startIsAllowed(
-                allowDuringTerminationRecovery: allowDuringTerminationRecovery
-            )
-        else {
-            return
         }
 
         let nextBearerToken = Self.makeBearerToken()
@@ -283,11 +211,6 @@ final class DesignChatBackendController: ObservableObject {
         }
 
         guard launchLifecycle.accepts(generation) else {
-            return
-        }
-        guard startIsAllowed(
-            allowDuringTerminationRecovery: allowDuringTerminationRecovery
-        ) else {
             return
         }
         bearerToken = nextBearerToken
@@ -313,12 +236,6 @@ final class DesignChatBackendController: ObservableObject {
                 bearerToken: nextBearerToken
             )
             try launchLifecycle.requireCurrent(generation)
-            guard startIsAllowed(
-                allowDuringTerminationRecovery: allowDuringTerminationRecovery
-            ) else {
-                _ = requestStop()
-                return
-            }
             isReady = true
             statusMessage = "Design backend ready"
         } catch is CancellationError {
@@ -338,55 +255,20 @@ final class DesignChatBackendController: ObservableObject {
         }
     }
 
-    private func startIsAllowed(
-        allowDuringTerminationRecovery: Bool
-    ) -> Bool {
-        do {
-            try applicationShutdownGate.requireLaunchAllowed(
-                allowDuringTerminationPreparation: allowDuringTerminationRecovery
-            )
-        } catch {
-            return false
-        }
-        guard !shutdownIsLatched else {
-            return false
-        }
-        return allowDuringTerminationRecovery
-            ? shutdownIsInProgress
-            : !shutdownIsInProgress && !disappearanceCleanupIsInProgress
-    }
-
     func restart() async {
-        do {
-            try await applicationShutdownGate.waitUntilLaunchAllowed()
-        } catch {
-            statusMessage = "Design backend shut down"
-            return
-        }
-        guard
-            !applicationShutdownGate.isCommitted,
-            !applicationShutdownGate.isTransferringServiceOwnership,
-            !shutdownIsLatched,
-            !shutdownIsInProgress,
-            !disappearanceCleanupIsInProgress
-        else {
-            statusMessage = applicationShutdownGate.isCommitted || shutdownIsLatched
-                ? "Design backend shut down"
-                : "Design backend shutting down"
-            return
-        }
         let processToStop = requestStop()
         let stoppedGeneration = launchLifecycle.generation
         do {
             if let processToStop {
-                _ = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-                releaseOwnedProcess(processToStop)
+                let didStop = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
+                guard didStop else {
+                    lastErrorMessage = "Design backend process did not stop before restart."
+                    statusMessage = "Design backend failed to restart"
+                    return
+                }
             }
             try launchLifecycle.requireCurrent(stoppedGeneration)
-            try launchLifecycle.requireLaunchAllowed()
         } catch {
-            lastErrorMessage = error.localizedDescription
-            statusMessage = "Design backend failed to restart"
             return
         }
         await startIfNeeded()
@@ -402,144 +284,16 @@ final class DesignChatBackendController: ObservableObject {
         _ = requestStop()
     }
 
-    func beginTerminationShutdown() {
-        guard !shutdownIsLatched, !shutdownIsInProgress else {
-            return
-        }
-        shutdownRecoveryShouldRestart = process != nil || isReady || isStarting || startedByApp
-        shutdownRecoveryCanReuseRunningProcess = process?.isRunning == true && isReady && !isStarting
-        launchLifecycle.beginShutdown()
-    }
-
-    /// Blocks starts for the current termination transaction, requests SIGTERM,
-    /// and waits for the directly launched Python child. The owned `Process` is
-    /// retained until exit is observed so a failed SIGKILL remains retryable.
-    @discardableResult
-    func stopAndWait() async throws -> LocalProcessShutdown.Outcome {
-        beginTerminationShutdown()
+    /// Stops the helper and waits (graceful SIGTERM, then SIGKILL) for the
+    /// child process to exit. The quit-preparation path must use this instead
+    /// of the fire-and-forget `stop()` so the app cannot terminate before the
+    /// Python helper has left, orphaning it.
+    func stopAndWait() async {
         let processToStop = requestStop()
         guard let processToStop else {
-            return .alreadyExited
-        }
-        let outcome = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-        releaseOwnedProcess(processToStop)
-        return outcome
-    }
-
-    /// Reversible cleanup for a non-terminating SwiftUI disappearance.
-    @discardableResult
-    func stopAndWaitForDisappearance() async throws -> LocalProcessShutdown.Outcome {
-        guard launchLifecycle.beginDisappearanceCleanup() else {
-            throw CancellationError()
-        }
-        let processToStop = requestStop()
-        guard let processToStop else {
-            return .alreadyExited
-        }
-        let outcome = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-        releaseOwnedProcess(processToStop)
-        return outcome
-    }
-
-    @discardableResult
-    func stopAndWaitForRetiredTerminationOwner() async throws -> LocalProcessShutdown.Outcome {
-        guard !shutdownIsLatched else {
-            throw CancellationError()
-        }
-        guard shutdownIsInProgress else {
-            return try await stopAndWaitForDisappearance()
-        }
-
-        let outcome = try await stopAndWait()
-        guard process?.isRunning != true else {
-            throw DesignChatError.startFailed(
-                "Design backend process is still stopping after retired quit cleanup."
-            )
-        }
-        launchLifecycle.retireShutdownIntoDisappearanceCleanup()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
-        return outcome
-    }
-
-    func beginDisappearanceCleanup() throws {
-        guard !shutdownIsLatched else {
-            throw CancellationError()
-        }
-        guard !shutdownIsInProgress else {
             return
         }
-        guard launchLifecycle.beginDisappearanceCleanup() else {
-            throw CancellationError()
-        }
-    }
-
-    func completeDisappearanceCleanupForRemount() throws {
-        guard process?.isRunning != true else {
-            throw DesignChatError.startFailed(
-                "Design backend process is still stopping after view disappearance."
-            )
-        }
-        launchLifecycle.completeDisappearanceCleanup()
-    }
-
-    func commitTerminationShutdown() throws {
-        guard shutdownIsInProgress else {
-            if shutdownIsLatched {
-                return
-            }
-            throw DesignChatError.startFailed("Design backend shutdown was not prepared.")
-        }
-        guard process?.isRunning != true else {
-            throw DesignChatError.startFailed("Design backend process is still running.")
-        }
-        launchLifecycle.commitShutdown()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
-        statusMessage = "Design backend shut down"
-    }
-
-    func recoverFromCancelledTermination() async throws {
-        guard !shutdownIsLatched else {
-            throw DesignChatError.startFailed("Committed design backend shutdown cannot be reversed.")
-        }
-        guard shutdownIsInProgress else {
-            return
-        }
-        let shouldRestart = shutdownRecoveryShouldRestart
-        let canReuseRunningProcess = shutdownRecoveryCanReuseRunningProcess
-        let terminationWasRequested = stopRequested
-
-        guard shouldRestart else {
-            launchLifecycle.cancelShutdown()
-            shutdownRecoveryShouldRestart = false
-            shutdownRecoveryCanReuseRunningProcess = false
-            return
-        }
-        if let process, process.isRunning, !terminationWasRequested, canReuseRunningProcess {
-            launchLifecycle.cancelShutdown()
-            shutdownRecoveryShouldRestart = false
-            shutdownRecoveryCanReuseRunningProcess = false
-            return
-        }
-        if let process {
-            if process.isRunning {
-                process.terminate()
-                _ = try await LocalProcessShutdown.waitForExitOrKill(process)
-            }
-            releaseOwnedProcess(process)
-        }
-        isStarting = false
-        isReady = false
-        await startIfNeeded(allowDuringTerminationRecovery: true)
-        guard isReady else {
-            throw DesignChatError.startFailed(
-                lastErrorMessage ?? "Design backend could not be restored after quit was cancelled."
-            )
-        }
-        launchLifecycle.cancelShutdown()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
+        _ = try? await LocalProcessShutdown.waitForExitOrKill(processToStop)
     }
 
     @discardableResult
@@ -549,29 +303,18 @@ final class DesignChatBackendController: ObservableObject {
         isReady = false
         isStarting = false
         let processToStop = process
+        clearPipeHandlers()
+        self.process = nil
         if let processToStop, processToStop.isRunning {
             processToStop.terminate()
         }
         bearerToken = nil
-        if startedByApp {
-            statusMessage = "Design backend stopping"
-        }
-        return processToStop
-    }
-
-    private func releaseOwnedProcess(_ stoppedProcess: Process) {
-        guard process === stoppedProcess, !stoppedProcess.isRunning else {
-            return
-        }
-        clearPipeHandlers()
-        process = nil
-        stopRequested = false
-        startedByApp = false
-        bearerToken = nil
         instanceNonce = nil
-        if !shutdownIsLatched {
+        if startedByApp {
             statusMessage = "Design backend stopped"
         }
+        startedByApp = false
+        return processToStop
     }
 
     private func resolveLaunchSpec(
@@ -830,10 +573,8 @@ final class DesignChatBackendController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard
                     let self,
-                    LocalProcessOutputOwnership.accepts(
-                        currentPipe: self.stdoutPipe,
-                        sourcePipe: stdoutPipe
-                    )
+                    self.launchLifecycle.accepts(generation),
+                    self.stdoutPipe === stdoutPipe
                 else {
                     return
                 }
@@ -849,10 +590,8 @@ final class DesignChatBackendController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard
                     let self,
-                    LocalProcessOutputOwnership.accepts(
-                        currentPipe: self.stderrPipe,
-                        sourcePipe: stderrPipe
-                    )
+                    self.launchLifecycle.accepts(generation),
+                    self.stderrPipe === stderrPipe
                 else {
                     return
                 }
@@ -864,6 +603,7 @@ final class DesignChatBackendController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard
                     let self,
+                    self.launchLifecycle.accepts(generation),
                     self.process === terminatedProcess
                 else {
                     return
@@ -884,9 +624,6 @@ final class DesignChatBackendController: ObservableObject {
                 self.startedByApp = false
 
                 if expectedStop {
-                    self.statusMessage = self.shutdownIsLatched
-                        ? "Design backend shut down"
-                        : "Design backend stopped"
                     return
                 }
 

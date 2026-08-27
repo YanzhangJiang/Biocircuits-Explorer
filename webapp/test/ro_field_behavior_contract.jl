@@ -1,5 +1,4 @@
 using Test
-using JSON3
 using BindingAndCatalysis
 using BiocircuitsExplorerBackend
 
@@ -67,37 +66,11 @@ end
 
 const _ROFS_FIELD_HASH = repeat("a", 64)
 
-function _signature_external_copy(complex)
-    return ROCellComplex2D(
-        complex.domain,
-        complex.output_indices,
-        complex.cells,
-        complex.facets,
-        complex.singular_strata,
-        complex.candidate_regime_count,
-        complex.regular_candidate_count,
-        complex.domain_area,
-        complex.covered_area_sum,
-        complex.gap_area,
-        complex.coverage_complete,
-        complex.has_ambiguity,
-        complex.geometry_tolerance,
-    )
-end
-
-function _signature_classify_synthetic(complex, field_sha256; kwargs...)
-    return _ROFS_BACKEND._rofb_classify_ro_cell_complex_impl(
-        _ROFS_BACKEND._ROFB_VALIDATED_ARTIFACT_TOKEN,
-        complex,
-        field_sha256;
-        kwargs...,
-    )
-end
-
 @testset "versioned exact 2D regular-cell gradient signature" begin
     complex = _signature_heterodimer_complex()
     signature = _ROFS_BACKEND.classify_ro_cell_complex(
-        complex;
+        complex,
+        _ROFS_FIELD_HASH;
         axis_ids=["tA", "tB"],
         output_ids=["AB"],
     )
@@ -108,37 +81,13 @@ end
         "regular-cell-gradient/v1.0.0"
     @test signature["scope"] ==
         "regular_cell_interiors_excluding_declared_lower_dimensional_strata"
-    @test _ROFS_BACKEND.RO_FIELD_SIGNATURE_PROVENANCE_CLAIM ==
-        "regular_cell_exact_pwa_plus_field_sha256_only_no_engine_or_model_provenance"
     @test signature["classifiable"]
-    @test signature["field_sha256"] == complex.content_sha256
-    @test _ROFS_BACKEND.classify_ro_cell_complex(
-        complex,
-        complex.content_sha256;
-        axis_ids=["tA", "tB"], output_ids=["AB"],
-    ) == signature
-    @test_throws ArgumentError _ROFS_BACKEND.classify_ro_cell_complex(
-        complex,
-        _ROFS_FIELD_HASH;
-        axis_ids=["tA", "tB"], output_ids=["AB"],
-    )
-
-    # The artifact-owner path keeps the existing v1 wire/hash identity. Its
-    # field hash is derived by that owner from canonical RPB2 payload bytes.
-    artifact_signature = _signature_classify_synthetic(
-        _signature_external_copy(complex),
-        _ROFS_FIELD_HASH;
-        axis_ids=["tA", "tB"], output_ids=["AB"],
-    )
-    @test artifact_signature["signature_sha256"] ==
-        "a4d5d24627905b9916784953cb673898d0693fe681f3216df1ebf2a64abfcf26"
+    @test occursin(r"^[0-9a-f]{64}$", signature["signature_sha256"])
     @test signature["diagnostics"]["eligibility_reasons"] == String[]
     @test signature["diagnostics"][
         "excluded_lower_dimensional_strata_count"] == 1
     normalized = _ROFS_BACKEND.validate_ro_field_signature!(signature)
     @test normalized == signature
-    @test _ROFS_BACKEND.validate_ro_field_signature!(
-        JSON3.read(JSON3.write(signature))) == signature
     @test _ROFS_BACKEND.canonical_hash(
         _ROFS_BACKEND.ro_field_signature_identity_payload(signature)) ==
         signature["signature_sha256"]
@@ -157,17 +106,24 @@ end
         ["++<->+0", "++<->0+", "+0<->0+"]
 
     repeat_signature = _ROFS_BACKEND.classify_ro_cell_complex(
-        complex;
+        complex,
+        _ROFS_FIELD_HASH;
         axis_ids=["tA", "tB"],
         output_ids=["AB"],
     )
     @test repeat_signature["signature_sha256"] ==
         signature["signature_sha256"]
+    @test _ROFS_BACKEND.classify_ro_cell_complex(
+        complex,
+        repeat("b", 64);
+        axis_ids=["tA", "tB"], output_ids=["AB"],
+    )["signature_sha256"] != signature["signature_sha256"]
 end
 
 @testset "signature trust boundary rejects structural and hash tampering" begin
     signature = _ROFS_BACKEND.classify_ro_cell_complex(
-        _signature_heterodimer_complex();
+        _signature_heterodimer_complex(),
+        _ROFS_FIELD_HASH;
         axis_ids=["tA", "tB"],
         output_ids=["AB"],
     )
@@ -208,19 +164,6 @@ end
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
         wrong_budget)
 
-    # Re-hashing the whole document must not make a contradictory gap claim
-    # authoritative.  A classifiable field has complete coverage and exactly
-    # zero serialized gap area; positive and negative gaps require their
-    # corresponding eligibility reasons.
-    for forged_gap in (100.0, -100.0)
-        forged = deepcopy(signature)
-        forged["diagnostics"]["gap_area"] = forged_gap
-        forged["signature_sha256"] = _ROFS_BACKEND.canonical_hash(
-            _ROFS_BACKEND._rofb_signature_identity_from_normalized(forged))
-        @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
-            forged)
-    end
-
     future = deepcopy(signature)
     future["schema_version"] = "bne-ro-field-signature/v2.0.0"
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(future)
@@ -230,25 +173,21 @@ end
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
         extension)
 
-    duplicate_key = Dict{Any,Any}(pairs(signature))
-    duplicate_key[:schema_version] = signature["schema_version"]
-    @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
-        duplicate_key)
-
     malformed_hash = deepcopy(signature)
     malformed_hash["signature_sha256"] = repeat("f", 63)
     @test_throws ArgumentError _ROFS_BACKEND.validate_ro_field_signature!(
         malformed_hash)
-
 end
 
 @testset "axis order is covariant and identity-bearing" begin
     original = _ROFS_BACKEND.classify_ro_cell_complex(
-        _signature_heterodimer_complex(axes=(1, 2));
+        _signature_heterodimer_complex(axes=(1, 2)),
+        _ROFS_FIELD_HASH;
         axis_ids=["tA", "tB"], output_ids=["AB"],
     )
     swapped = _ROFS_BACKEND.classify_ro_cell_complex(
-        _signature_heterodimer_complex(axes=(2, 1));
+        _signature_heterodimer_complex(axes=(2, 1)),
+        _ROFS_FIELD_HASH;
         axis_ids=["tB", "tA"], output_ids=["AB"],
     )
     @test swapped["axis_ids"] == ["tB", "tA"]
@@ -269,12 +208,7 @@ end
         for cell in base.cells
     ]
     multi = _signature_with_labels(base, [3, 1], multi_matrices)
-    @test multi.authority_status === :external_unverified
-    @test_throws ArgumentError _ROFS_BACKEND.classify_ro_cell_complex(
-        multi;
-        axis_ids=["tA", "tB"], output_ids=["AB", "A_inverse"],
-    )
-    signature = _signature_classify_synthetic(
+    signature = _ROFS_BACKEND.classify_ro_cell_complex(
         multi, _ROFS_FIELD_HASH;
         axis_ids=["tA", "tB"], output_ids=["AB", "A_inverse"],
     )
@@ -295,7 +229,7 @@ end
         [0.5tolerance -0.5tolerance],
     ]
     boundary = _signature_with_labels(base, [3], boundary_matrices)
-    boundary_signature = _signature_classify_synthetic(
+    boundary_signature = _ROFS_BACKEND.classify_ro_cell_complex(
         boundary, _ROFS_FIELD_HASH;
         axis_ids=["u", "v"], output_ids=["y"],
         config=_ROFS_BACKEND.ROFieldSignatureConfig(
@@ -317,20 +251,10 @@ end
     label_b = ROAffineLabel2D([2], [0.0 1.0], [0.0])
     ambiguous_cell = ROCell2D(
         1, vertices, 4.0, [1, 2], [label_a, label_b], true)
-    boundary_facets = ROFacet2D[
-        ROFacet2D(1, :domain, ((-1.0, -1.0), (-1.0, 1.0)),
-            [1], Int[], (1.0, 0.0), 1.0, false, :axis1_lower),
-        ROFacet2D(2, :domain, ((-1.0, -1.0), (1.0, -1.0)),
-            [1], Int[], (0.0, 1.0), 1.0, false, :axis2_lower),
-        ROFacet2D(3, :domain, ((-1.0, 1.0), (1.0, 1.0)),
-            [1], Int[], (0.0, 1.0), -1.0, false, :axis2_upper),
-        ROFacet2D(4, :domain, ((1.0, -1.0), (1.0, 1.0)),
-            [1], Int[], (1.0, 0.0), -1.0, false, :axis1_upper),
-    ]
     ambiguous = ROCellComplex2D(
-        domain, [3], [ambiguous_cell], boundary_facets,
+        domain, [3], [ambiguous_cell], ROFacet2D[],
         ROSingularStratum2D[], 2, 2, 4.0, 4.0, 0.0, true, true, 1e-9)
-    ambiguous_signature = _signature_classify_synthetic(
+    ambiguous_signature = _ROFS_BACKEND.classify_ro_cell_complex(
         ambiguous, _ROFS_FIELD_HASH;
         axis_ids=["u", "v"], output_ids=["y"],
     )
@@ -349,7 +273,7 @@ end
     gap = ROCellComplex2D(
         domain, [3], ROCell2D[], ROFacet2D[], ROSingularStratum2D[],
         0, 0, 4.0, 0.0, 4.0, false, false, 1e-9)
-    gap_signature = _signature_classify_synthetic(
+    gap_signature = _ROFS_BACKEND.classify_ro_cell_complex(
         gap, _ROFS_FIELD_HASH;
         axis_ids=["u", "v"], output_ids=["y"],
     )
@@ -358,63 +282,6 @@ end
         gap_signature["component_classifications"])
     @test "positive_area_gap" in gap_signature[
         "diagnostics"]["eligibility_reasons"]
-
-    @test_throws ArgumentError ROCellComplex2D(
-        domain, [3], ROCell2D[], ROFacet2D[], ROSingularStratum2D[],
-        0, 0, 4.0, 0.0, 4.0, true, false, 1e-9)
-
-    wide_sign_gap = _signature_classify_synthetic(
-        gap, _ROFS_FIELD_HASH;
-        axis_ids=["u", "v"], output_ids=["y"],
-        config=_ROFS_BACKEND.ROFieldSignatureConfig(
-            zero_tolerance=100.0),
-    )
-    @test !wide_sign_gap["classifiable"]
-    @test !wide_sign_gap["diagnostics"]["coverage_complete"]
-    @test wide_sign_gap["diagnostics"]["gap_area"] == 4.0
-    @test Set(wide_sign_gap["diagnostics"]["eligibility_reasons"]) ==
-        Set(["coverage_incomplete", "positive_area_gap"])
-    @test _ROFS_BACKEND.validate_ro_field_signature!(
-        wide_sign_gap) == wide_sign_gap
-
-    base = _signature_heterodimer_complex()
-    with_gap_and_tolerance(gap_area, geometry_tolerance) = ROCellComplex2D(
-        base.domain,
-        base.output_indices,
-        base.cells,
-        base.facets,
-        base.singular_strata,
-        base.candidate_regime_count,
-        base.regular_candidate_count,
-        base.domain_area,
-        base.covered_area_sum,
-        gap_area,
-        true,
-        false,
-        geometry_tolerance,
-    )
-
-    # Geometry coverage is an exact evidence claim. Neither the caller-owned
-    # engine tolerance nor the reaction-order sign tolerance may wash a gap.
-    for forged_gap in (100.0, -100.0)
-        @test_throws ArgumentError with_gap_and_tolerance(
-            forged_gap, 100.0)
-        @test_throws ArgumentError with_gap_and_tolerance(
-            forged_gap, 1e-9)
-    end
-    for invalid_tolerance in (Inf, NaN, -1.0, 1.0e-5)
-        @test_throws ArgumentError with_gap_and_tolerance(
-            0.0, invalid_tolerance)
-    end
-
-    validator_roundoff = _signature_classify_synthetic(
-        with_gap_and_tolerance(1.0e-9, 1.0e-9),
-        _ROFS_FIELD_HASH;
-        axis_ids=["u", "v"], output_ids=["y"],
-    )
-    @test validator_roundoff["classifiable"]
-    @test validator_roundoff["diagnostics"]["coverage_complete"]
-    @test validator_roundoff["diagnostics"]["gap_area"] == 0.0
 end
 
 @testset "signature budgets preflight before callbacks and supports cancellation" begin
@@ -424,7 +291,7 @@ end
 
     cell_error = try
         _ROFS_BACKEND.classify_ro_cell_complex(
-            complex;
+            complex, _ROFS_FIELD_HASH;
             axis_ids=["u", "v"], output_ids=["y"],
             config=_ROFS_BACKEND.ROFieldSignatureConfig(max_cells=2),
             cancel_check=callback,
@@ -440,7 +307,7 @@ end
 
     facet_error = try
         _ROFS_BACKEND.classify_ro_cell_complex(
-            complex;
+            complex, _ROFS_FIELD_HASH;
             axis_ids=["u", "v"], output_ids=["y"],
             config=_ROFS_BACKEND.ROFieldSignatureConfig(max_facets=8),
             cancel_check=callback,
@@ -456,7 +323,7 @@ end
 
     matrix_error = try
         _ROFS_BACKEND.classify_ro_cell_complex(
-            complex;
+            complex, _ROFS_FIELD_HASH;
             axis_ids=["u", "v"], output_ids=["y"],
             config=_ROFS_BACKEND.ROFieldSignatureConfig(
                 max_matrix_elements=41),
@@ -474,7 +341,7 @@ end
     cancel_checks = Ref(0)
     @test_throws ROFieldSignatureCancelProbe begin
         _ROFS_BACKEND.classify_ro_cell_complex(
-            complex;
+            complex, _ROFS_FIELD_HASH;
             axis_ids=["u", "v"], output_ids=["y"],
             cancel_check=() -> begin
                 cancel_checks[] += 1

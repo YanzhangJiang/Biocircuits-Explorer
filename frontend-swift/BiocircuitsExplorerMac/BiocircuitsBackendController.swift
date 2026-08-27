@@ -81,26 +81,6 @@ enum LocalLoopbackService {
 }
 
 enum LocalProcessShutdown {
-    enum Outcome: Equatable, Sendable {
-        case alreadyExited
-        case terminated
-        case killed
-    }
-
-    enum Error: LocalizedError, Equatable, Sendable {
-        case signalFailed(processIdentifier: pid_t, errorNumber: Int32)
-        case forcedTerminationTimedOut(processIdentifier: pid_t)
-
-        var errorDescription: String? {
-            switch self {
-            case let .signalFailed(processIdentifier, errorNumber):
-                return "Could not send SIGKILL to direct child process \(processIdentifier) (errno \(errorNumber))."
-            case let .forcedTerminationTimedOut(processIdentifier):
-                return "Direct child process \(processIdentifier) was still running after SIGKILL."
-            }
-        }
-    }
-
     nonisolated static func waitForExit(
         _ process: Process,
         timeout: TimeInterval
@@ -113,59 +93,27 @@ enum LocalProcessShutdown {
         return !process.isRunning
     }
 
-    /// Waits for a directly launched child after its controller has requested
-    /// SIGTERM, then sends SIGKILL to that same PID if needed. This deliberately
-    /// makes no process-tree claim: descendants are governed by the launchers'
-    /// parent-watchdog contracts, while this function owns only `process`.
     nonisolated static func waitForExitOrKill(
         _ process: Process,
         gracefulTimeout: TimeInterval = 3,
-        forcedTimeout: TimeInterval = 1,
-        sendSIGKILL: @Sendable (pid_t) -> Int32 = { processIdentifier in
-            Darwin.kill(processIdentifier, SIGKILL)
-        }
-    ) async throws -> Outcome {
+        forcedTimeout: TimeInterval = 1
+    ) async throws -> Bool {
         guard process.isRunning else {
-            return .alreadyExited
+            return true
         }
         if try await waitForExit(process, timeout: gracefulTimeout) {
-            return .terminated
+            return true
         }
 
         if process.isRunning {
-            let processIdentifier = process.processIdentifier
-            let signalResult = sendSIGKILL(processIdentifier)
-            if signalResult != 0, process.isRunning {
-                throw Error.signalFailed(
-                    processIdentifier: processIdentifier,
-                    errorNumber: Darwin.errno
-                )
-            }
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
         }
-        if try await waitForExit(process, timeout: forcedTimeout) {
-            return .killed
-        }
-        throw Error.forcedTerminationTimedOut(
-            processIdentifier: process.processIdentifier
-        )
-    }
-}
-
-struct LocalProcessOutputOwnership {
-    /// Pipe identity, rather than launch generation, owns process output. A
-    /// temporary shutdown transaction deliberately invalidates asynchronous
-    /// startup work, but a still-owned ready process may be reused after quit
-    /// cancellation and must continue contributing diagnostic output.
-    static func accepts(currentPipe: Pipe?, sourcePipe: Pipe) -> Bool {
-        currentPipe === sourcePipe
+        return try await waitForExit(process, timeout: forcedTimeout)
     }
 }
 
 struct BackendLaunchLifecycle {
     private(set) var generation: UInt64 = 0
-    private(set) var shutdownIsInProgress = false
-    private(set) var shutdownIsLatched = false
-    private(set) var disappearanceCleanupIsInProgress = false
 
     @discardableResult
     mutating func advance() -> UInt64 {
@@ -179,68 +127,6 @@ struct BackendLaunchLifecycle {
 
     func requireCurrent(_ generation: UInt64) throws {
         guard accepts(generation) else {
-            throw CancellationError()
-        }
-    }
-
-    mutating func beginShutdown() {
-        guard !shutdownIsLatched else {
-            return
-        }
-        disappearanceCleanupIsInProgress = false
-        shutdownIsInProgress = true
-        advance()
-    }
-
-    mutating func commitShutdown() {
-        shutdownIsInProgress = false
-        shutdownIsLatched = true
-        advance()
-    }
-
-    mutating func cancelShutdown() {
-        guard shutdownIsInProgress, !shutdownIsLatched else {
-            return
-        }
-        shutdownIsInProgress = false
-        advance()
-    }
-
-    @discardableResult
-    mutating func beginDisappearanceCleanup() -> Bool {
-        guard !shutdownIsInProgress, !shutdownIsLatched else {
-            return false
-        }
-        if !disappearanceCleanupIsInProgress {
-            disappearanceCleanupIsInProgress = true
-            advance()
-        }
-        return true
-    }
-
-    mutating func completeDisappearanceCleanup() {
-        guard disappearanceCleanupIsInProgress else {
-            return
-        }
-        disappearanceCleanupIsInProgress = false
-        advance()
-    }
-
-    mutating func retireShutdownIntoDisappearanceCleanup() {
-        guard shutdownIsInProgress, !shutdownIsLatched else {
-            return
-        }
-        shutdownIsInProgress = false
-        disappearanceCleanupIsInProgress = true
-        advance()
-    }
-
-    func requireLaunchAllowed() throws {
-        guard
-            !shutdownIsInProgress,
-            !shutdownIsLatched,
-            !disappearanceCleanupIsInProgress
-        else {
             throw CancellationError()
         }
     }
@@ -274,8 +160,6 @@ final class BiocircuitsBackendController: ObservableObject {
 
     private let environment: [String: String]
     private let fileManager: FileManager
-    private let applicationShutdownGate: ApplicationShutdownGate
-    private let startupPause: (@MainActor () async throws -> Void)?
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
@@ -284,24 +168,6 @@ final class BiocircuitsBackendController: ObservableObject {
     private var logBuffer = ""
     private var launchLifecycle = BackendLaunchLifecycle()
     private var instanceNonce: String?
-    private var shutdownRecoveryShouldRestart = false
-    private var shutdownRecoveryCanReuseRunningProcess = false
-
-    var shutdownIsLatched: Bool {
-        launchLifecycle.shutdownIsLatched
-    }
-
-    var shutdownIsInProgress: Bool {
-        launchLifecycle.shutdownIsInProgress
-    }
-
-    var disappearanceCleanupIsInProgress: Bool {
-        launchLifecycle.disappearanceCleanupIsInProgress
-    }
-
-    var terminationShutdownCanCommit: Bool {
-        shutdownIsInProgress && process?.isRunning != true
-    }
 
     nonisolated static let serviceIdentity = "biocircuits-explorer-backend"
 
@@ -312,15 +178,11 @@ final class BiocircuitsBackendController: ObservableObject {
     init(
         port: Int? = nil,
         fileManager: FileManager = .default,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        applicationShutdownGate: ApplicationShutdownGate? = nil,
-        startupPause: (@MainActor () async throws -> Void)? = nil
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.environment = environment
         self.port = port ?? Self.resolveConfiguredPort(from: environment)
         self.fileManager = fileManager
-        self.applicationShutdownGate = applicationShutdownGate ?? .shared
-        self.startupPause = startupPause
     }
 
     nonisolated static func resolveConfiguredPort(from environment: [String: String]) -> Int {
@@ -343,40 +205,13 @@ final class BiocircuitsBackendController: ObservableObject {
     }
 
     func startIfNeeded() async throws {
-        try await startIfNeeded(allowDuringTerminationRecovery: false)
-    }
-
-    private func startIfNeeded(
-        allowDuringTerminationRecovery: Bool
-    ) async throws {
-        if !allowDuringTerminationRecovery {
-            try await applicationShutdownGate.waitUntilLaunchAllowed()
-        }
-        try requireStartAllowed(
-            allowDuringTerminationRecovery: allowDuringTerminationRecovery
-        )
         if isReady {
             return
         }
 
         if isStarting {
             try await waitForOngoingStartup()
-            try requireStartAllowed(
-                allowDuringTerminationRecovery: allowDuringTerminationRecovery
-            )
-            guard isReady else {
-                throw BackendError.startFailed(
-                    lastErrorMessage ?? "The joined backend startup did not become ready."
-                )
-            }
             return
-        }
-
-        if let process {
-            guard !process.isRunning else {
-                throw BackendError.startFailed("Backend process is still stopping.")
-            }
-            releaseOwnedProcess(process)
         }
 
         let generation = launchLifecycle.advance()
@@ -390,11 +225,7 @@ final class BiocircuitsBackendController: ObservableObject {
             }
         }
 
-        try await startupPause?()
         try launchLifecycle.requireCurrent(generation)
-        try requireStartAllowed(
-            allowDuringTerminationRecovery: allowDuringTerminationRecovery
-        )
         let nextInstanceNonce = LocalLoopbackService.makeNonce()
         let launchSpec = try resolveLaunchSpec(instanceNonce: nextInstanceNonce)
         instanceNonce = nextInstanceNonce
@@ -407,9 +238,6 @@ final class BiocircuitsBackendController: ObservableObject {
                 expectedNonce: nextInstanceNonce
             )
             try launchLifecycle.requireCurrent(generation)
-            try requireStartAllowed(
-                allowDuringTerminationRecovery: allowDuringTerminationRecovery
-            )
             isReady = true
             statusMessage = "Backend ready"
         } catch is CancellationError {
@@ -426,34 +254,16 @@ final class BiocircuitsBackendController: ObservableObject {
         }
     }
 
-    private func requireStartAllowed(
-        allowDuringTerminationRecovery: Bool
-    ) throws {
-        try applicationShutdownGate.requireLaunchAllowed(
-            allowDuringTerminationPreparation: allowDuringTerminationRecovery
-        )
-        if allowDuringTerminationRecovery {
-            guard shutdownIsInProgress, !shutdownIsLatched else {
-                throw CancellationError()
-            }
-            return
-        }
-        try launchLifecycle.requireLaunchAllowed()
-    }
-
     func restart() async throws {
-        try await applicationShutdownGate.waitUntilLaunchAllowed()
-        try applicationShutdownGate.requireLaunchAllowed()
-        try launchLifecycle.requireLaunchAllowed()
         let processToStop = requestStop()
         let stoppedGeneration = launchLifecycle.generation
         if let processToStop {
-            _ = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-            releaseOwnedProcess(processToStop)
+            let didStop = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
+            if !didStop {
+                throw BackendError.startFailed("Backend process did not stop before restart.")
+            }
         }
         try launchLifecycle.requireCurrent(stoppedGeneration)
-        try applicationShutdownGate.requireLaunchAllowed()
-        try launchLifecycle.requireLaunchAllowed()
         try await startIfNeeded()
     }
 
@@ -461,150 +271,17 @@ final class BiocircuitsBackendController: ObservableObject {
         _ = requestStop()
     }
 
-    func beginTerminationShutdown() {
-        guard !shutdownIsLatched, !shutdownIsInProgress else {
-            return
-        }
-        shutdownRecoveryShouldRestart = process != nil || isReady || isStarting || startedByApp
-        shutdownRecoveryCanReuseRunningProcess = process?.isRunning == true && isReady && !isStarting
-        launchLifecycle.beginShutdown()
-    }
-
-    /// Blocks starts for the current termination transaction, requests SIGTERM,
-    /// and waits for the directly launched Julia child. The owned `Process` is
-    /// retained until exit is observed so a failed SIGKILL remains retryable.
-    @discardableResult
-    func stopAndWait() async throws -> LocalProcessShutdown.Outcome {
-        beginTerminationShutdown()
+    /// Stops the backend and waits (graceful SIGTERM, then SIGKILL) for the
+    /// child process to exit. The quit-preparation path must use this instead
+    /// of the fire-and-forget `stop()` so the app cannot terminate before the
+    /// Julia process has left, orphaning it (the historical macOS orphan
+    /// process failure mode).
+    func stopAndWait() async {
         let processToStop = requestStop()
         guard let processToStop else {
-            return .alreadyExited
-        }
-        let outcome = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-        releaseOwnedProcess(processToStop)
-        return outcome
-    }
-
-    /// Reversible cleanup for a SwiftUI view that is removed while the app
-    /// remains alive. Unlike termination shutdown, this never commits or even
-    /// opens the permanent launch latch, so a remounted root can start again.
-    @discardableResult
-    func stopAndWaitForDisappearance() async throws -> LocalProcessShutdown.Outcome {
-        guard launchLifecycle.beginDisappearanceCleanup() else {
-            throw CancellationError()
-        }
-        let processToStop = requestStop()
-        guard let processToStop else {
-            return .alreadyExited
-        }
-        let outcome = try await LocalProcessShutdown.waitForExitOrKill(processToStop)
-        releaseOwnedProcess(processToStop)
-        return outcome
-    }
-
-    /// Takes ownership from a quit preparation whose view disappeared while
-    /// rollback was in flight. If rollback retained the termination gate, keep
-    /// using that retryable TERM→KILL path; after confirmed exit, convert it to
-    /// the reversible disappearance gate so a later remount may start afresh.
-    @discardableResult
-    func stopAndWaitForRetiredTerminationOwner() async throws -> LocalProcessShutdown.Outcome {
-        guard !shutdownIsLatched else {
-            throw CancellationError()
-        }
-        guard shutdownIsInProgress else {
-            return try await stopAndWaitForDisappearance()
-        }
-
-        let outcome = try await stopAndWait()
-        guard process?.isRunning != true else {
-            throw BackendError.startFailed("Backend process is still stopping after retired quit cleanup.")
-        }
-        launchLifecycle.retireShutdownIntoDisappearanceCleanup()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
-        return outcome
-    }
-
-    func beginDisappearanceCleanup() throws {
-        guard !shutdownIsLatched else {
-            throw CancellationError()
-        }
-        // A failed/cancelled quit intentionally retains the stronger shutdown
-        // gate and Process ownership. Treat it as an already-closed cleanup
-        // barrier; the retired-owner stop path will retry TERM/KILL and then
-        // convert it to the reversible disappearance state.
-        guard !shutdownIsInProgress else {
             return
         }
-        guard launchLifecycle.beginDisappearanceCleanup() else {
-            throw CancellationError()
-        }
-    }
-
-    func completeDisappearanceCleanupForRemount() throws {
-        guard process?.isRunning != true else {
-            throw BackendError.startFailed("Backend process is still stopping after view disappearance.")
-        }
-        launchLifecycle.completeDisappearanceCleanup()
-    }
-
-    func commitTerminationShutdown() throws {
-        guard shutdownIsInProgress else {
-            if shutdownIsLatched {
-                return
-            }
-            throw BackendError.startFailed("Backend shutdown was not prepared.")
-        }
-        guard process?.isRunning != true else {
-            throw BackendError.startFailed("Backend process is still running.")
-        }
-        launchLifecycle.commitShutdown()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
-        statusMessage = "Backend shut down"
-    }
-
-    func recoverFromCancelledTermination() async throws {
-        guard !shutdownIsLatched else {
-            throw BackendError.startFailed("Committed backend shutdown cannot be reversed.")
-        }
-        guard shutdownIsInProgress else {
-            return
-        }
-        let shouldRestart = shutdownRecoveryShouldRestart
-        let canReuseRunningProcess = shutdownRecoveryCanReuseRunningProcess
-        let terminationWasRequested = stopRequested
-
-        guard shouldRestart else {
-            launchLifecycle.cancelShutdown()
-            shutdownRecoveryShouldRestart = false
-            shutdownRecoveryCanReuseRunningProcess = false
-            return
-        }
-        if let process, process.isRunning, !terminationWasRequested, canReuseRunningProcess {
-            launchLifecycle.cancelShutdown()
-            shutdownRecoveryShouldRestart = false
-            shutdownRecoveryCanReuseRunningProcess = false
-            return
-        }
-        if let process {
-            if process.isRunning {
-                process.terminate()
-                _ = try await LocalProcessShutdown.waitForExitOrKill(process)
-            }
-            releaseOwnedProcess(process)
-        }
-        isStarting = false
-        isReady = false
-        try await startIfNeeded(allowDuringTerminationRecovery: true)
-        guard isReady else {
-            throw BackendError.startFailed(
-                lastErrorMessage ?? "Backend recovery did not become ready."
-            )
-        }
-        launchLifecycle.cancelShutdown()
-        shutdownRecoveryShouldRestart = false
-        shutdownRecoveryCanReuseRunningProcess = false
+        _ = try? await LocalProcessShutdown.waitForExitOrKill(processToStop)
     }
 
     @discardableResult
@@ -614,27 +291,17 @@ final class BiocircuitsBackendController: ObservableObject {
         isReady = false
         isStarting = false
         let processToStop = process
+        clearPipeHandlers()
+        self.process = nil
         if let processToStop, processToStop.isRunning {
             processToStop.terminate()
         }
         if startedByApp {
-            statusMessage = "Backend stopping"
-        }
-        return processToStop
-    }
-
-    private func releaseOwnedProcess(_ stoppedProcess: Process) {
-        guard process === stoppedProcess, !stoppedProcess.isRunning else {
-            return
-        }
-        clearPipeHandlers()
-        process = nil
-        stopRequested = false
-        startedByApp = false
-        instanceNonce = nil
-        if !shutdownIsLatched {
             statusMessage = "Backend stopped"
         }
+        startedByApp = false
+        instanceNonce = nil
+        return processToStop
     }
 
     private func waitForOngoingStartup() async throws {
@@ -1148,10 +815,8 @@ final class BiocircuitsBackendController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard
                     let self,
-                    LocalProcessOutputOwnership.accepts(
-                        currentPipe: self.stdoutPipe,
-                        sourcePipe: stdoutPipe
-                    )
+                    self.launchLifecycle.accepts(generation),
+                    self.stdoutPipe === stdoutPipe
                 else {
                     return
                 }
@@ -1167,10 +832,8 @@ final class BiocircuitsBackendController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard
                     let self,
-                    LocalProcessOutputOwnership.accepts(
-                        currentPipe: self.stderrPipe,
-                        sourcePipe: stderrPipe
-                    )
+                    self.launchLifecycle.accepts(generation),
+                    self.stderrPipe === stderrPipe
                 else {
                     return
                 }
@@ -1183,7 +846,10 @@ final class BiocircuitsBackendController: ObservableObject {
                 guard let self else {
                     return
                 }
-                guard self.process === terminatedProcess else {
+                guard
+                    self.launchLifecycle.accepts(generation),
+                    self.process === terminatedProcess
+                else {
                     return
                 }
 
@@ -1201,9 +867,6 @@ final class BiocircuitsBackendController: ObservableObject {
                 self.startedByApp = false
 
                 if expectedStop {
-                    self.statusMessage = self.shutdownIsLatched
-                        ? "Backend shut down"
-                        : "Backend stopped"
                     return
                 }
 

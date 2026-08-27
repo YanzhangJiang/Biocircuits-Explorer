@@ -267,8 +267,8 @@
       "mode": "inline",
       "complete": true,
       "stored_count": 4,
-      "payload_bytes": 3792,
-      "content_sha256": "9d11b0f5bceb4fab0e9e099ade62e45311b666c0c5fcd10a4cf3e6fc9569b40d",
+      "payload_bytes": 4096,
+      "content_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
       "artifacts": []
     }
   },
@@ -288,7 +288,7 @@
     "source_commit": "9b05d021060fb1750a94ed90f6400405e2368e17",
     "source_dirty": true,
     "network_ir_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
-    "domain_sha256": "975cd1d18d256eba4f4a602c4c1375b0b9aadd7b5d14fa77f12df60e7ceb1ae8",
+    "domain_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
     "algorithm": {
       "name": "analytic-heterodimer-cell-complex-fixture",
       "version": "1",

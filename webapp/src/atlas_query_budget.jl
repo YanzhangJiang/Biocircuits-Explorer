@@ -366,11 +366,7 @@ function _enforce_sync_sqlite_service_policy(raw, handler_name::Symbol)
     return raw
 end
 
-function enforce_sync_atlas_request_budget(
-    raw,
-    handler_name::Symbol=:unspecified;
-    sqlite_db=nothing,
-)
+function enforce_sync_atlas_request_budget(raw, handler_name::Symbol=:unspecified)
     (raw isa AbstractDict || raw isa JSON3.Object) ||
         throw(ArgumentError("service request must be an object"))
     _enforce_sync_sqlite_service_policy(raw, handler_name)
@@ -386,8 +382,7 @@ function enforce_sync_atlas_request_budget(
         :handle_merge_atlas_library,
         :handle_run_inverse_design,
     )
-        referenced_slice_count = _enforce_sync_referenced_corpus_budget(
-            raw, handler_name; sqlite_db=sqlite_db)
+        referenced_slice_count = _enforce_sync_referenced_corpus_budget(raw, handler_name)
     else
         referenced_slice_count = 0
     end
