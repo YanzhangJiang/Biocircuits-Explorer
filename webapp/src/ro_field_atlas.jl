@@ -592,15 +592,16 @@ function build_ro_field_atlas(
 
         eligible_count += 1
         evaluated_count += 1
-        source = exact_sources[record.record_id]
-        signature = classify_ro_cell_complex(
-            source.complex,
-            source.field_sha256;
-            axis_ids=source.axis_ids,
-            output_ids=source.output_ids,
-            config=config.signature_config,
+        preflight_source = exact_sources[record.record_id]
+        source = _rofa_classify_stored_exact_payload(
+            preflight_source.field_payload,
+            config.signature_config;
             cancel_check=cancel_check,
         )
+        source.field_sha256 == preflight_source.field_sha256 ||
+            throw(ArgumentError(
+                "exact Atlas source changed after preflight"))
+        signature = source.signature
         signature["classifiable"] === true || throw(ArgumentError(
             "validated exact Atlas input $(record.record_id) did not produce a complete signature"))
         classified_count += 1
@@ -937,6 +938,32 @@ function _rofa_exact_source_from_input(record::ROFieldAtlasInput)
     )
 end
 
+function _rofa_classify_stored_exact_payload(
+    raw,
+    signature_config::ROFieldSignatureConfig;
+    cancel_check=() -> nothing,
+)
+    field_hash, canonical_payload, complex, axis_ids, output_ids =
+        _rofa_source_from_stored_payload(raw)
+    signature = _rofb_classify_ro_cell_complex_impl(
+        _ROFB_VALIDATED_ARTIFACT_TOKEN,
+        complex,
+        field_hash;
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+        config=signature_config,
+        cancel_check=cancel_check,
+    )
+    return (
+        field_sha256=field_hash,
+        field_payload=canonical_payload,
+        complex=complex,
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+        signature=signature,
+    )
+end
+
 function _rofa_validate_atlas!(atlas::AbstractDict)
     _rofa_exact_keys(
         atlas, _RO_FIELD_ATLAS_TOP_LEVEL_KEYS, "RO-field Atlas")
@@ -1140,12 +1167,23 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
     preflight_facets <= max_total_facets || throw(ArgumentError(
         "RO-field Atlas facet population exceeds its declared config"))
 
+    replay_signature_config = ROFieldSignatureConfig(
+        zero_tolerance=atlas_signature_config["zero_tolerance"],
+        max_cells=atlas_signature_config["max_cells"],
+        max_facets=atlas_signature_config["max_facets"],
+        max_matrix_elements=atlas_signature_config["max_matrix_elements"],
+    )
     actual_cells = 0
     actual_facets = 0
     for record in records
-        field_hash, _, complex, axis_ids, output_ids =
-            _rofa_source_from_stored_payload(
-                _rofa_dict_get(record, "field_payload"))
+        replayed_source = _rofa_classify_stored_exact_payload(
+            _rofa_dict_get(record, "field_payload"),
+            replay_signature_config,
+        )
+        field_hash = replayed_source.field_sha256
+        complex = replayed_source.complex
+        axis_ids = replayed_source.axis_ids
+        output_ids = replayed_source.output_ids
         _rofa_dict_get(record, "field_sha256") == field_hash ||
             throw(ArgumentError(
                 "RO-field Atlas record hash does not match field_payload"))
@@ -1173,19 +1211,7 @@ function _rofa_validate_atlas!(atlas::AbstractDict)
             _ro_field_canonical_json(atlas_signature_config) ||
             throw(ArgumentError(
                 "RO-field Atlas signature config differs from atlas config"))
-        expected_signature = classify_ro_cell_complex(
-            complex,
-            field_hash;
-            axis_ids=axis_ids,
-            output_ids=output_ids,
-            config=ROFieldSignatureConfig(
-                zero_tolerance=atlas_signature_config["zero_tolerance"],
-                max_cells=atlas_signature_config["max_cells"],
-                max_facets=atlas_signature_config["max_facets"],
-                max_matrix_elements=atlas_signature_config[
-                    "max_matrix_elements"],
-            ),
-        )
+        expected_signature = replayed_source.signature
         _ro_field_canonical_json(expected_signature) ==
             _ro_field_canonical_json(normalized_signature) ||
             throw(ArgumentError(

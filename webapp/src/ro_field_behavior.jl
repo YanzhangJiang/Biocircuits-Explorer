@@ -4,6 +4,14 @@ const RO_FIELD_SIGNATURE_CLASSIFIER_VERSION =
     "regular-cell-gradient/v1.0.0"
 const RO_FIELD_SIGNATURE_SCOPE =
     "regular_cell_interiors_excluding_declared_lower_dimensional_strata"
+const RO_FIELD_SIGNATURE_PROVENANCE_CLAIM =
+    "regular_cell_exact_pwa_plus_field_sha256_only_no_engine_or_model_provenance"
+
+abstract type _ROFBClassifierToken end
+mutable struct _ROFBEngineClassifierToken <: _ROFBClassifierToken end
+mutable struct _ROFBValidatedArtifactToken <: _ROFBClassifierToken end
+const _ROFB_ENGINE_CLASSIFIER_TOKEN = _ROFBEngineClassifierToken()
+const _ROFB_VALIDATED_ARTIFACT_TOKEN = _ROFBValidatedArtifactToken()
 
 const _RO_FIELD_SIGNATURE_MAX_CELLS = 256
 const _RO_FIELD_SIGNATURE_MAX_FACETS = 512
@@ -783,16 +791,44 @@ function _rofb_result(
 end
 
 """
+    classify_ro_cell_complex(complex;
+        axis_ids, output_ids, config=ROFieldSignatureConfig(), cancel_check=()->nothing)
     classify_ro_cell_complex(complex, field_sha256;
         axis_ids, output_ids, config=ROFieldSignatureConfig(), cancel_check=()->nothing)
 
 Create a versioned gradient-sign signature for the full-dimensional regular
-cells of an exact two-input RO cell complex. The result deliberately makes no
-claim about singular strata, finite-domain global monotonicity, logic gates,
-or synergy. If coverage has a positive-area gap, geometry is ambiguous, or a
-cell is set-valued, every scientific classification is `"unknown"` and no
-label is selected from that cell.
+cells of an engine-replayed exact two-input RO cell complex. Public callers
+cannot promote an `external_unverified` complex. This direct engine-owner path
+uses `complex.content_sha256` as the exact-PWA field identity; the compatibility
+overload accepts a supplied hash only when it equals that identity. A separate
+internal artifact-owner path first validates a canonical RPB2 payload and then
+uses the artifact hash derived from that payload. Neither path establishes
+engine/model provenance beyond its named owner. If coverage has a positive-area
+gap, geometry is ambiguous, or a cell is set-valued, every scientific
+classification is `"unknown"` and no label is selected from that cell.
 """
+function classify_ro_cell_complex(
+    complex::ROCellComplex2D;
+    axis_ids,
+    output_ids,
+    config::ROFieldSignatureConfig=ROFieldSignatureConfig(),
+    cancel_check=() -> nothing,
+)
+    complex.authority_status === :engine_replayed || throw(ArgumentError(
+        "external_unverified ROCellComplex2D values cannot produce an " *
+        "authoritative signature; use a validated exact field artifact " *
+        "through its owner path"))
+    return _rofb_classify_ro_cell_complex_impl(
+        _ROFB_ENGINE_CLASSIFIER_TOKEN,
+        complex,
+        complex.content_sha256;
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+        config=config,
+        cancel_check=cancel_check,
+    )
+end
+
 function classify_ro_cell_complex(
     complex::ROCellComplex2D,
     field_sha256;
@@ -801,6 +837,47 @@ function classify_ro_cell_complex(
     config::ROFieldSignatureConfig=ROFieldSignatureConfig(),
     cancel_check=() -> nothing,
 )
+    complex.authority_status === :engine_replayed || throw(ArgumentError(
+        "external_unverified ROCellComplex2D values cannot produce an " *
+        "authoritative signature; use a validated exact field artifact " *
+        "through its owner path"))
+    supplied_hash = try
+        String(field_sha256)
+    catch
+        throw(ArgumentError(
+            "field_sha256 must equal complex.content_sha256"))
+    end
+    supplied_hash == complex.content_sha256 || throw(ArgumentError(
+        "field_sha256 must equal complex.content_sha256"))
+    return _rofb_classify_ro_cell_complex_impl(
+        _ROFB_ENGINE_CLASSIFIER_TOKEN,
+        complex,
+        supplied_hash;
+        axis_ids=axis_ids,
+        output_ids=output_ids,
+        config=config,
+        cancel_check=cancel_check,
+    )
+end
+
+function _rofb_classify_ro_cell_complex_impl(
+    token::_ROFBClassifierToken,
+    complex::ROCellComplex2D,
+    field_sha256;
+    axis_ids,
+    output_ids,
+    config::ROFieldSignatureConfig=ROFieldSignatureConfig(),
+    cancel_check=() -> nothing,
+)
+    if token === _ROFB_ENGINE_CLASSIFIER_TOKEN
+        complex.authority_status === :engine_replayed || throw(ArgumentError(
+            "engine classifier token requires an engine-replayed complex"))
+    elseif token === _ROFB_VALIDATED_ARTIFACT_TOKEN
+        complex.authority_status === :external_unverified || throw(ArgumentError(
+            "validated-artifact classifier token requires a detached replay"))
+    else
+        throw(ArgumentError("invalid RO-field classifier token"))
+    end
     field_hash = String(field_sha256)
     occursin(_RO_FIELD_SIGNATURE_SHA256_PATTERN, field_hash) ||
         throw(ArgumentError("field_sha256 must contain 64 lowercase hex digits"))
