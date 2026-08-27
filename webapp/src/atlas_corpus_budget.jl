@@ -107,11 +107,6 @@ function _enforce_sync_corpus_slice_budget(corpus, label::AbstractString)
     return length(slices)
 end
 
-function _sync_sqlite_uri_path(path::AbstractString)
-    encoded = replace(String(path), "%" => "%25", "?" => "%3F", "#" => "%23")
-    return "file:$(encoded)?mode=ro"
-end
-
 function _sync_sqlite_table_exists(db::SQLite.DB, table::AbstractString)
     query = DBInterface.execute(
         db,
@@ -141,73 +136,77 @@ function _sync_sqlite_table_count(db::SQLite.DB, table::AbstractString)
     return 0
 end
 
-function _sync_sqlite_readonly_counts(path::AbstractString)
+function _sync_sqlite_readonly_counts(
+    db::SQLite.DB,
+    path::AbstractString,
+)
+    _atlas_sqlite_require_exact_readonly_target!(db, path)
+    SQLite.intransaction(db) || throw(ArgumentError(
+        "synchronous SQLite budget preflight requires one read transaction"))
     total_bytes = filesize(path)
     wal_path = String(path) * "-wal"
     isfile(wal_path) && (total_bytes += filesize(wal_path))
     total_bytes <= MAX_SYNC_ATLAS_SQLITE_BYTES ||
         _sync_budget_exceeded(
             "SQLite corpus exceeds the synchronous file-size limit of $(MAX_SYNC_ATLAS_SQLITE_BYTES) bytes.")
-
-    db = try
-        SQLite.DB(_sync_sqlite_uri_path(path))
-    catch err
+    _sync_sqlite_table_exists(db, "atlas_metadata") ||
         _sync_budget_exceeded(
-            "SQLite corpus could not be opened read-only: $(sprint(showerror, err)).")
-    end
-    try
-        _sync_sqlite_table_exists(db, "atlas_metadata") ||
+            "SQLite corpus schema is unknown; synchronous preflight will not initialize or migrate it.")
+    _sync_sqlite_table_exists(db, "behavior_slices") ||
+        _sync_budget_exceeded(
+            "SQLite corpus lacks behavior_slices; synchronous preflight will not initialize or migrate it.")
+    tables = (
+        "network_entries",
+        "input_graph_slices",
+        "behavior_slices",
+        "regime_records",
+        "transition_records",
+        "family_buckets",
+        "path_records",
+        "path_only_records",
+    )
+    counts = Dict(table => _sync_sqlite_table_count(db, table) for table in tables)
+    get(counts, "network_entries", 0) <= MAX_SYNC_ATLAS_QUERY_NETWORKS ||
+        _sync_budget_exceeded(
+            "SQLite corpus exceeds the synchronous network limit of $(MAX_SYNC_ATLAS_QUERY_NETWORKS).")
+    if get(counts, "network_entries", 0) > 0
+        query = try
+            DBInterface.execute(
+                db,
+                "SELECT record_json FROM network_entries ORDER BY network_id",
+            )
+        catch err
             _sync_budget_exceeded(
-                "SQLite corpus schema is unknown; synchronous preflight will not initialize or migrate it.")
-        _sync_sqlite_table_exists(db, "behavior_slices") ||
-            _sync_budget_exceeded(
-                "SQLite corpus lacks behavior_slices; synchronous preflight will not initialize or migrate it.")
-        tables = (
-            "network_entries",
-            "input_graph_slices",
-            "behavior_slices",
-            "regime_records",
-            "transition_records",
-            "family_buckets",
-            "path_records",
-            "path_only_records",
-        )
-        counts = Dict(table => _sync_sqlite_table_count(db, table) for table in tables)
-        get(counts, "network_entries", 0) <= MAX_SYNC_ATLAS_QUERY_NETWORKS ||
-            _sync_budget_exceeded(
-                "SQLite corpus exceeds the synchronous network limit of $(MAX_SYNC_ATLAS_QUERY_NETWORKS).")
-        if get(counts, "network_entries", 0) > 0
-            query = try
-                DBInterface.execute(
-                    db,
-                    "SELECT record_json FROM network_entries ORDER BY network_id",
-                )
-            catch err
-                _sync_budget_exceeded(
-                    "SQLite network_entries cannot be validated read-only: $(sprint(showerror, err)).")
-            end
-            try
-                for (idx, row) in enumerate(query)
-                    entry = try
-                        _materialize(JSON3.read(String(row[:record_json])))
-                    catch err
-                        throw(ArgumentError(
-                            "sqlite network_entries[$idx].record_json is invalid: $(sprint(showerror, err))"))
-                    end
-                    _sync_validate_corpus_network_entry(
-                        entry, "sqlite network_entries[$idx]")
-                end
-            finally
-                DBInterface.close!(query)
-            end
+                "SQLite network_entries cannot be validated read-only: $(sprint(showerror, err)).")
         end
-        return counts
-    finally
-        SQLite.close(db)
+        try
+            for (idx, row) in enumerate(query)
+                entry = try
+                    _materialize(JSON3.read(String(row[:record_json])))
+                catch err
+                    throw(ArgumentError(
+                        "sqlite network_entries[$idx].record_json is invalid: $(sprint(showerror, err))"))
+                end
+                _sync_validate_corpus_network_entry(
+                    entry, "sqlite network_entries[$idx]")
+            end
+        finally
+            DBInterface.close!(query)
+        end
     end
+    return counts
 end
 
-function _enforce_sync_referenced_corpus_budget(raw, handler_name::Symbol)
+function _sync_sqlite_readonly_counts(path::AbstractString)
+    return _atlas_sqlite_with_readonly_db(
+        db -> _sync_sqlite_readonly_counts(db, path), path)
+end
+
+function _enforce_sync_referenced_corpus_budget(
+    raw,
+    handler_name::Symbol;
+    sqlite_db=nothing,
+)
     max_slice_count = 0
     _sync_is_atlas_corpus(raw) &&
         (max_slice_count = max(max_slice_count,
@@ -222,7 +221,9 @@ function _enforce_sync_referenced_corpus_budget(raw, handler_name::Symbol)
 
     sqlite_path = _sqlite_path_from_raw(raw)
     if sqlite_path !== nothing && isfile(sqlite_path)
-        counts = _sync_sqlite_readonly_counts(sqlite_path)
+        counts = sqlite_db === nothing ?
+            _sync_sqlite_readonly_counts(sqlite_path) :
+            _sync_sqlite_readonly_counts(sqlite_db, sqlite_path)
         slice_count = sync_bounded_int(
             get(counts, "behavior_slices", 0),
             "sqlite behavior_slice_count";

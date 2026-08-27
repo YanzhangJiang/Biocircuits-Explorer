@@ -8,6 +8,15 @@ end
 
 function handle_query_atlas(req)
     body = _normalize_http_atlas_paths(read_json(req))
+    sqlite_path = _sqlite_path_from_raw(body)
+    if sqlite_path !== nothing
+        return _atlas_sqlite_with_readonly_db(sqlite_path) do db
+            enforce_sync_atlas_request_budget(
+                body, :handle_query_atlas; sqlite_db=db)
+            json_response(query_behavior_atlas_from_spec(
+                body; sqlite_db=db))
+        end
+    end
     enforce_sync_atlas_request_budget(body, :handle_query_atlas)
     return json_response(query_behavior_atlas_from_spec(body))
 end

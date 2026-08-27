@@ -962,6 +962,8 @@ end
 
 function _ro_field_serialize_exact(complex::ROCellComplex2D,
                                    normalized::NormalizedROFieldRequest)
+    complex.authority_status === :engine_replayed || throw(ArgumentError(
+        "exact RO-field serialization requires an engine-replayed cell complex"))
     cells = Dict{String,Any}[]
     for cell in complex.cells
         cell_id = _ro_field_cell_id(cell.id)

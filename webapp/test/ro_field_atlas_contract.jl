@@ -179,8 +179,14 @@ end
     reversed = _ROFA_BACKEND.build_ro_field_atlas(
         [heterodimer, opposed]; config=config)
     @test reversed["atlas_sha256"] == atlas["atlas_sha256"]
+    @test atlas["atlas_sha256"] ==
+        "bf128136f9b6b0475e043f689cb23fc4ed84c1e406de5f430e4056f2edcd69ac"
     @test getindex.(atlas["records"], "signature_sha256") ==
         getindex.(reversed["records"], "signature_sha256")
+    @test getindex.(atlas["records"], "signature_sha256") == [
+        "098941f9f088cc3ca874aaacc09766080b11ded6547f7e3387eb7dac668fb19e",
+        "0567422fab589ad9d205fea81076ba6acf2ea204dc78c82e8a52de05e0c5603f",
+    ]
     @test all(occursin(r"^[0-9a-f]{64}$", record["signature_sha256"])
               for record in atlas["records"])
 end
@@ -347,6 +353,33 @@ end
     @test input_a.field_sha256 == input_b.field_sha256
     @test _ROFA_BACKEND.build_ro_field_atlas([input_a])["atlas_sha256"] ==
         _ROFA_BACKEND.build_ro_field_atlas([input_b])["atlas_sha256"]
+
+    numeric_sources = _rofa_test_artifact()
+    source_sets = (
+        Any["regime-2", "regime-10"],
+        Any["regime-20"],
+        Any["regime-30"],
+    )
+    for (cell, sources) in zip(
+        numeric_sources["data"]["cells"], source_sets)
+        cell["source_regime_ids"] = copy(sources)
+        only(cell["affine_labels"])["source_regime_ids"] = copy(sources)
+    end
+    numeric_sources["data"]["source_candidate_regime_count"] = 4
+    numeric_sources["data"]["regular_candidate_regime_count"] = 4
+    numeric_bytes = _ROFA_BACKEND.canonical_ro_field_data_bytes(
+        numeric_sources)
+    numeric_sources["coverage"]["storage"]["payload_bytes"] =
+        length(numeric_bytes)
+    numeric_sources["coverage"]["storage"]["content_sha256"] =
+        _ROFA_BACKEND._ro_field_sha256(numeric_bytes)
+    numeric_input = _ROFA_BACKEND.ROFieldAtlasInput(
+        "numeric_source_order";
+        representation=:exact_cell_complex,
+        field_artifact=numeric_sources,
+    )
+    @test _ROFA_BACKEND.build_ro_field_atlas([numeric_input])[
+        "population"]["classified_count"] == 1
 end
 
 @testset "v1.1 Atlas trust boundary reconstructs builder-only state" begin
@@ -376,13 +409,8 @@ end
 
     mismatched_config = deepcopy(atlas)
     wide_config = _ROFA_BACKEND.ROFieldSignatureConfig(zero_tolerance=100.0)
-    wide_signature = _ROFA_BACKEND.classify_ro_cell_complex(
-        heterodimer.complex,
-        heterodimer.field_sha256;
-        axis_ids=heterodimer.axis_ids,
-        output_ids=heterodimer.output_ids,
-        config=wide_config,
-    )
+    wide_signature = _ROFA_BACKEND._rofa_classify_stored_exact_payload(
+        heterodimer.field_payload, wide_config).signature
     mismatched_config["records"][1]["signature"] = wide_signature
     mismatched_config["records"][1]["signature_sha256"] =
         wide_signature["signature_sha256"]

@@ -1,4 +1,5 @@
 using Test
+using HTTP
 using JSON3
 using SQLite
 using DBInterface
@@ -77,8 +78,9 @@ function _rofss_complex(; ambiguous=false)
     cells = copy(complex.cells)
     first_cell = first(cells)
     first_label = only(first_cell.labels)
+    alternate_source_id = complex.candidate_regime_count + 1
     alternate_label = ROAffineLabel2D(
-        [999],
+        [alternate_source_id],
         first_label.reaction_order_matrix .+ 1.0,
         copy(first_label.output_offset),
     )
@@ -86,7 +88,7 @@ function _rofss_complex(; ambiguous=false)
         first_cell.id,
         first_cell.vertices,
         first_cell.area,
-        first_cell.source_regime_ids,
+        sort!(vcat(first_cell.source_regime_ids, alternate_source_id)),
         [first_label, alternate_label],
         true,
     )
@@ -96,8 +98,8 @@ function _rofss_complex(; ambiguous=false)
         cells,
         complex.facets,
         complex.singular_strata,
-        complex.candidate_regime_count,
-        complex.regular_candidate_count,
+        complex.candidate_regime_count + 1,
+        complex.regular_candidate_count + 1,
         complex.domain_area,
         complex.covered_area_sum,
         complex.gap_area,
@@ -113,12 +115,27 @@ function _rofss_signature(
     output_ids=["output_ab"],
     ambiguous=false,
 )
-    return _ROFSS_BACKEND.classify_ro_cell_complex(
-        _rofss_complex(; ambiguous=ambiguous),
-        artifact_sha256;
-        axis_ids=axis_ids,
-        output_ids=output_ids,
+    complex = _rofss_complex(; ambiguous=ambiguous)
+    detached = ROCellComplex2D(
+        complex.domain,
+        complex.output_indices,
+        complex.cells,
+        complex.facets,
+        complex.singular_strata,
+        complex.candidate_regime_count,
+        complex.regular_candidate_count,
+        complex.domain_area,
+        complex.covered_area_sum,
+        complex.gap_area,
+        complex.coverage_complete,
+        complex.has_ambiguity,
+        complex.geometry_tolerance,
     )
+    return _ROFSS_BACKEND._rofb_classify_ro_cell_complex_impl(
+        _ROFSS_BACKEND._ROFB_VALIDATED_ARTIFACT_TOKEN,
+        detached,
+        artifact_sha256;
+        axis_ids=axis_ids, output_ids=output_ids)
 end
 
 function _rofss_scalar(db, sql, params=())
@@ -1077,6 +1094,265 @@ end
                 "WHERE key='updated_at'") == "readonly-sentinel"
         finally
             SQLite.close(reader)
+        end
+    end
+end
+
+@testset "path and HTTP Atlas queries use one read transaction and never migrate" begin
+    mktempdir() do parent
+        root = joinpath(parent, "allowed")
+        mkpath(root)
+        query = Dict{String,Any}("limit" => 1)
+        function http_query(path)
+            request = HTTP.Request(
+                "POST",
+                "/api/v1/query_atlas",
+                ["Content-Type" => "application/json"],
+                JSON3.write(Dict{String,Any}(
+                    "sqlite_path" => path,
+                    "query" => query,
+                )),
+            )
+            return withenv(
+                "BIOCIRCUITS_EXPLORER_ALLOW_HTTP_SQLITE_PATHS" => "1",
+                "BIOCIRCUITS_EXPLORER_ATLAS_STORE_ROOT" => root,
+            ) do
+                _ROFSS_BACKEND.router(request)
+            end
+        end
+
+        missing_path = joinpath(root, "missing-query.sqlite")
+        @test_throws ArgumentError _ROFSS_BACKEND.atlas_sqlite_load_query_corpus(
+            missing_path, query)
+        @test !ispath(missing_path)
+
+        current_path = joinpath(root, "current % # query.sqlite")
+        current_writer = _ROFSS_BACKEND.atlas_sqlite_connect(current_path)
+        SQLite.close(current_writer)
+        current_before = read(current_path)
+        current_mtime = stat(current_path).mtime
+        current_corpus = _ROFSS_BACKEND.atlas_sqlite_load_query_corpus(
+            current_path, query)
+        @test isempty(current_corpus["network_entries"])
+        @test read(current_path) == current_before
+        @test stat(current_path).mtime == current_mtime
+        readonly = _ROFSS_BACKEND._atlas_sqlite_connect_readonly(current_path)
+        try
+            @test SQLite.C.sqlite3_db_readonly(
+                getfield(readonly, :handle), "main") == 1
+            @test _rofss_scalar(readonly, "PRAGMA query_only") == 1
+            @test SQLite.intransaction(readonly)
+            @test_throws SQLite.SQLiteException DBInterface.execute(
+                readonly,
+                "UPDATE atlas_metadata SET value_text='mutated' " *
+                "WHERE key='schema_version'",
+            )
+        finally
+            SQLite.close(readonly)
+        end
+        current_response = http_query(current_path)
+        @test current_response.status == 200
+        @test read(current_path) == current_before
+        @test stat(current_path).mtime == current_mtime
+
+        active_wal_path = joinpath(root, "active-wal.sqlite")
+        active_writer = _ROFSS_BACKEND.atlas_sqlite_connect(active_wal_path)
+        try
+            DBInterface.execute(active_writer, "PRAGMA wal_autocheckpoint = 0")
+            DBInterface.execute(
+                active_writer,
+                "UPDATE atlas_metadata SET value_text='wal-visible' " *
+                "WHERE key='updated_at'",
+            )
+            active_wal = active_wal_path * "-wal"
+            @test isfile(active_wal)
+            active_main_before = read(active_wal_path)
+            active_wal_before = read(active_wal)
+            active_reader = _ROFSS_BACKEND._atlas_sqlite_connect_readonly(
+                active_wal_path)
+            try
+                @test _rofss_scalar(
+                    active_reader,
+                    "SELECT value_text FROM atlas_metadata " *
+                    "WHERE key='updated_at'",
+                ) == "wal-visible"
+            finally
+                SQLite.close(active_reader)
+            end
+            @test read(active_wal_path) == active_main_before
+            @test read(active_wal) == active_wal_before
+
+            snapshot_reader = _ROFSS_BACKEND._atlas_sqlite_connect_readonly(
+                active_wal_path)
+            try
+                @test _rofss_scalar(
+                    snapshot_reader,
+                    "SELECT value_text FROM atlas_metadata " *
+                    "WHERE key='updated_at'",
+                ) == "wal-visible"
+                concurrent_writer = SQLite.DB(active_wal_path)
+                try
+                    DBInterface.execute(
+                        concurrent_writer,
+                        "UPDATE atlas_metadata SET value_text='writer-newer' " *
+                        "WHERE key='updated_at'",
+                    )
+                finally
+                    SQLite.close(concurrent_writer)
+                end
+                @test _rofss_scalar(
+                    snapshot_reader,
+                    "SELECT value_text FROM atlas_metadata " *
+                    "WHERE key='updated_at'",
+                ) == "wal-visible"
+            finally
+                SQLite.close(snapshot_reader)
+            end
+            fresh_reader = _ROFSS_BACKEND._atlas_sqlite_connect_readonly(
+                active_wal_path)
+            try
+                @test _rofss_scalar(
+                    fresh_reader,
+                    "SELECT value_text FROM atlas_metadata " *
+                    "WHERE key='updated_at'",
+                ) == "writer-newer"
+            finally
+                SQLite.close(fresh_reader)
+            end
+            @test http_query(active_wal_path).status == 200
+        finally
+            SQLite.close(active_writer)
+        end
+
+        legacy_path = joinpath(root, "legacy-query.sqlite")
+        legacy_writer = SQLite.DB(legacy_path)
+        try
+            _ROFSS_BACKEND._atlas_sqlite_create_0_3_0!(legacy_writer)
+        finally
+            SQLite.close(legacy_writer)
+        end
+        legacy_before = read(legacy_path)
+        legacy_mtime = stat(legacy_path).mtime
+
+        direct_error = try
+            _ROFSS_BACKEND.atlas_sqlite_load_query_corpus(
+                legacy_path, query)
+            nothing
+        catch err
+            err
+        end
+        @test direct_error isa ArgumentError
+        @test occursin("migration", lowercase(sprint(showerror, direct_error)))
+        @test read(legacy_path) == legacy_before
+        @test stat(legacy_path).mtime == legacy_mtime
+
+        response = http_query(legacy_path)
+        @test response.status == 400
+        @test occursin("migration", lowercase(String(response.body)))
+        @test read(legacy_path) == legacy_before
+        @test stat(legacy_path).mtime == legacy_mtime
+
+        inspector = SQLite.DB(
+            _ROFSS_BACKEND._atlas_sqlite_readonly_uri(legacy_path))
+        try
+            @test SQLite.C.sqlite3_db_readonly(
+                getfield(inspector, :handle), "main") == 1
+            @test _rofss_scalar(inspector,
+                "SELECT value_text FROM atlas_metadata " *
+                "WHERE key='schema_version'") == "0.3.0"
+            @test _rofss_scalar(inspector,
+                "SELECT COUNT(*) FROM sqlite_master " *
+                "WHERE type='table' AND name='schema_migrations'") == 0
+        finally
+            SQLite.close(inspector)
+        end
+
+        future_path = joinpath(root, "future-query.sqlite")
+        future_writer = _ROFSS_BACKEND.atlas_sqlite_connect(future_path)
+        try
+            DBInterface.execute(
+                future_writer,
+                "UPDATE atlas_metadata SET value_text='9.9.9' " *
+                "WHERE key='schema_version'",
+            )
+        finally
+            SQLite.close(future_writer)
+        end
+        future_before = read(future_path)
+        future_mtime = stat(future_path).mtime
+        future_error = try
+            _ROFSS_BACKEND.atlas_sqlite_load_query_corpus(future_path, query)
+            nothing
+        catch err
+            err
+        end
+        @test future_error isa ArgumentError
+        @test occursin("unsupported", lowercase(sprint(showerror, future_error)))
+        future_response = http_query(future_path)
+        @test future_response.status == 400
+        @test occursin("unsupported", lowercase(String(future_response.body)))
+        @test read(future_path) == future_before
+        @test stat(future_path).mtime == future_mtime
+
+        corrupt_path = joinpath(root, "corrupt-query.sqlite")
+        cp(current_path, corrupt_path)
+        corrupt_writer = SQLite.DB(corrupt_path)
+        try
+            DBInterface.execute(
+                corrupt_writer,
+                "DROP TABLE ro_field_output_gradient_features",
+            )
+        finally
+            SQLite.close(corrupt_writer)
+        end
+        corrupt_before = read(corrupt_path)
+        corrupt_mtime = stat(corrupt_path).mtime
+        corrupt_error = try
+            _ROFSS_BACKEND.atlas_sqlite_load_query_corpus(corrupt_path, query)
+            nothing
+        catch err
+            err
+        end
+        @test corrupt_error isa ArgumentError
+        corrupt_response = http_query(corrupt_path)
+        @test corrupt_response.status == 400
+        @test read(corrupt_path) == corrupt_before
+        @test stat(corrupt_path).mtime == corrupt_mtime
+
+        if !Sys.iswindows()
+            outside_name = "outside-$(basename(parent)).sqlite"
+            outside_path = joinpath(parent, outside_name)
+            outside_writer = SQLite.DB(outside_path)
+            try
+                _ROFSS_BACKEND._atlas_sqlite_create_0_3_0!(outside_writer)
+            finally
+                SQLite.close(outside_writer)
+            end
+            outside_before = read(outside_path)
+            outside_mtime = stat(outside_path).mtime
+            literal_backslash_path = joinpath(root, "\\..\\$(outside_name)")
+            literal_writer = _ROFSS_BACKEND.atlas_sqlite_connect(
+                literal_backslash_path)
+            SQLite.close(literal_writer)
+            literal_before = read(literal_backslash_path)
+            literal_response = http_query(literal_backslash_path)
+            @test literal_response.status == 200
+            @test read(literal_backslash_path) == literal_before
+            @test read(outside_path) == outside_before
+            @test stat(outside_path).mtime == outside_mtime
+            outside_inspector = SQLite.DB(
+                _ROFSS_BACKEND._atlas_sqlite_readonly_uri(outside_path))
+            try
+                @test SQLite.C.sqlite3_db_readonly(
+                    getfield(outside_inspector, :handle), "main") == 1
+                @test _rofss_scalar(
+                    outside_inspector,
+                    "SELECT value_text FROM atlas_metadata " *
+                    "WHERE key='schema_version'",
+                ) == "0.3.0"
+            finally
+                SQLite.close(outside_inspector)
+            end
         end
     end
 end

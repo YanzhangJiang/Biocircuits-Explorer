@@ -1558,6 +1558,107 @@ function atlas_sqlite_connect(db_path::AbstractString=atlas_sqlite_default_path(
     return db
 end
 
+function _atlas_sqlite_readonly_path(db_path::AbstractString)
+    path = normpath(abspath(expanduser(db_path)))
+    isfile(path) || throw(ArgumentError(
+        "Atlas SQLite read-only query path must reference an existing database file"))
+    if Sys.iswindows() && startswith(path, "\\\\")
+        throw(ArgumentError(
+            "Atlas SQLite read-only queries do not accept UNC or device paths"))
+    end
+    return path
+end
+
+function _atlas_sqlite_readonly_uri(path::AbstractString)
+    uri_path = Sys.iswindows() ? replace(path, '\\' => '/') : String(path)
+    Sys.iswindows() && !startswith(uri_path, "/") &&
+        (uri_path = "/" * uri_path)
+    encoded = replace(
+        uri_path,
+        "%" => "%25",
+        "?" => "%3F",
+        "#" => "%23",
+    )
+    Sys.iswindows() || (encoded = replace(encoded, "\\" => "%5C"))
+    return "file:$(encoded)?mode=ro&cache=private"
+end
+
+function _atlas_sqlite_require_exact_readonly_target!(
+    db::SQLite.DB,
+    expected_path::AbstractString,
+)
+    handle = getfield(db, :handle)
+    SQLite.C.sqlite3_db_readonly(handle, "main") == 1 || throw(ArgumentError(
+        "Atlas SQLite query connection did not open the database read-only"))
+    filename_ptr = SQLite.C.sqlite3_db_filename(handle, "main")
+    filename_ptr == C_NULL && throw(ArgumentError(
+        "Atlas SQLite query connection did not expose its database filename"))
+    opened_path = unsafe_string(filename_ptr)
+    realpath(opened_path) == realpath(expected_path) || throw(ArgumentError(
+        "Atlas SQLite query connection opened a different database file"))
+    return db
+end
+
+function _atlas_sqlite_require_current_readonly_schema!(db::SQLite.DB)
+    try
+        _atlas_sqlite_preflight_schema_versions!(db)
+    catch err
+        err isa InterruptException && rethrow()
+        err isa ArgumentError && rethrow()
+        if err isa ErrorException || err isa SQLite.SQLiteException
+            throw(ArgumentError(
+                "Atlas SQLite read-only query rejected the database schema: " *
+                sprint(showerror, err)))
+        end
+        rethrow()
+    end
+    _atlas_sqlite_schema_object_exists(db, "table", "atlas_metadata") ||
+        throw(ArgumentError(
+            "Atlas SQLite read-only query requires an initialized current schema"))
+    stored_version = _atlas_sqlite_metadata_schema_version(db)
+    stored_version == ATLAS_SQLITE_SCHEMA_VERSION || throw(ArgumentError(
+        "Atlas SQLite schema $(stored_version) requires migration to " *
+        "$(ATLAS_SQLITE_SCHEMA_VERSION); read-only queries never migrate databases"))
+    return db
+end
+
+function _atlas_sqlite_connect_readonly(db_path::AbstractString)
+    path = _atlas_sqlite_readonly_path(db_path)
+    db = try
+        SQLite.DB(_atlas_sqlite_readonly_uri(path))
+    catch err
+        err isa InterruptException && rethrow()
+        err isa SQLite.SQLiteException || rethrow()
+        throw(ArgumentError(
+            "Atlas SQLite read-only query could not open the database: " *
+            sprint(showerror, err)))
+    end
+    try
+        _atlas_sqlite_require_exact_readonly_target!(db, path)
+        _atlas_sqlite_execute(
+            db, "PRAGMA busy_timeout = $(ATLAS_SQLITE_BUSY_TIMEOUT_MS)")
+        _atlas_sqlite_prepare_connection!(db)
+        _atlas_sqlite_execute(db, "PRAGMA query_only = ON")
+        _atlas_sqlite_execute(db, "BEGIN")
+        _atlas_sqlite_require_current_readonly_schema!(db)
+        return db
+    catch err
+        SQLite.intransaction(db) && try
+            _atlas_sqlite_execute(db, "ROLLBACK")
+        catch
+        end
+        SQLite.close(db)
+        err isa InterruptException && rethrow()
+        err isa ArgumentError && rethrow()
+        if err isa ErrorException || err isa SQLite.SQLiteException
+            throw(ArgumentError(
+                "Atlas SQLite read-only query rejected the database: " *
+                sprint(showerror, err)))
+        end
+        rethrow()
+    end
+end
+
 function _atlas_sqlite_with_db(f::Function, db::SQLite.DB)
     _atlas_sqlite_prepare_connection!(db)
     return f(db)
@@ -1569,6 +1670,22 @@ function _atlas_sqlite_with_db(f::Function, db_path::AbstractString)
         return f(db)
     finally
         SQLite.close(db)
+    end
+end
+
+function _atlas_sqlite_with_readonly_db(f::Function, db_path::AbstractString)
+    path = _atlas_sqlite_readonly_path(db_path)
+    return _with_atlas_sqlite_write_lock(path) do
+        db = _atlas_sqlite_connect_readonly(path)
+        try
+            return f(db)
+        finally
+            SQLite.intransaction(db) && try
+                _atlas_sqlite_execute(db, "ROLLBACK")
+            catch
+            end
+            SQLite.close(db)
+        end
     end
 end
 
@@ -2880,7 +2997,8 @@ function atlas_sqlite_load_query_corpus(db::SQLite.DB, raw_query_or_spec)
 end
 
 atlas_sqlite_load_query_corpus(db_path::AbstractString, raw_query_or_spec) =
-    _atlas_sqlite_with_db(db -> atlas_sqlite_load_query_corpus(db, raw_query_or_spec), db_path)
+    _atlas_sqlite_with_readonly_db(
+        db -> atlas_sqlite_load_query_corpus(db, raw_query_or_spec), db_path)
 
 function atlas_sqlite_existing_ok_slice_ids(db::SQLite.DB)
     _atlas_sqlite_prepare_connection!(db)
@@ -4485,6 +4603,35 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
     domain_area = (upper[1] - lower[1]) * (upper[2] - lower[2])
 
     data = _ro_field_identity_get(artifact, "data")
+    source_regime_keys = String[]
+    for raw_cell in _ro_field_identity_vector(data, "cells")
+        append!(source_regime_keys, String.(_ro_field_identity_vector(
+            raw_cell, "source_regime_ids")))
+        for raw_label in _ro_field_identity_vector(
+            raw_cell, "affine_labels")
+            append!(source_regime_keys, String.(_ro_field_identity_vector(
+                raw_label, "source_regime_ids")))
+        end
+    end
+    for raw_stratum in _ro_field_identity_vector(data, "singular_strata")
+        append!(source_regime_keys, String.(_ro_field_identity_vector(
+            raw_stratum, "source_regime_ids")))
+    end
+    source_regime_order = sort!(unique(source_regime_keys))
+    source_regime_id = Dict(
+        identifier => index
+        for (index, identifier) in enumerate(source_regime_order)
+    )
+    mapped_source_ids(raw, path::AbstractString) = sort!(Int[
+            get(source_regime_id, String(identifier)) do
+                _atlas_sqlite_ro_signature_error(
+                    :invalid_artifact_geometry,
+                    "$(path) references an unknown source regime",
+                )
+            end
+            for identifier in _ro_field_identity_vector(
+                raw, "source_regime_ids")
+        ])
     cell_order, raw_cells = _atlas_sqlite_ro_signature_ordered_records(
         data, "cell_order", "cells", "cell_id")
     cell_id_map = Dict(
@@ -4561,7 +4708,11 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 for value in offsets_raw
             ]
             push!(labels, ROAffineLabel2D(
-                [label_index], matrix, offsets))
+                mapped_source_ids(
+                    raw_label, "data.cells[$(cell_index)].affine_labels[$(label_index)]"),
+                matrix,
+                offsets,
+            ))
         end
         set_valued = _ro_field_identity_bool(raw_cell, "set_valued")
         push!(cells, ROCell2D(
@@ -4571,7 +4722,7 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 _ro_field_identity_get(raw_cell, "area"),
                 "data.cells[$(cell_index)].area",
             ),
-            [cell_index],
+            mapped_source_ids(raw_cell, "data.cells[$(cell_index)]"),
             labels,
             set_valued,
         ))
@@ -4611,7 +4762,8 @@ function _atlas_sqlite_ro_signature_complex_from_artifact(
                 "singular_strata.dimension",
             ),
             vertices,
-            [stratum_index],
+            mapped_source_ids(
+                raw_stratum, "data.singular_strata[$(stratum_index)]"),
             nullities,
             reasons,
         ))
@@ -4747,6 +4899,13 @@ function _atlas_sqlite_verify_ro_signature_artifact!(
             :foreign_artifact,
             "behavior signatures may reference exact_cell_complex artifacts only",
         )
+    derived_artifact_sha256 = _ro_field_sha256(_ro_field_utf8_bytes(
+        _ro_field_canonical_json(artifact)))
+    derived_artifact_sha256 == metadata.artifact_sha256 ||
+        _atlas_sqlite_ro_signature_error(
+            :foreign_artifact,
+            "signature field_sha256 does not match the canonical exact artifact",
+        )
     domain = _ro_field_identity_get(artifact, "domain")
     artifact_axis_ids = String.(
         _ro_field_identity_vector(domain, "axis_order"))
@@ -4812,7 +4971,9 @@ function _atlas_sqlite_verify_ro_signature_artifact!(
         max_facets=config_raw["max_facets"],
         max_matrix_elements=config_raw["max_matrix_elements"],
     )
-    expected = getfield(@__MODULE__, :classify_ro_cell_complex)(
+    expected = getfield(
+        @__MODULE__, :_rofb_classify_ro_cell_complex_impl)(
+        getfield(@__MODULE__, :_ROFB_VALIDATED_ARTIFACT_TOKEN),
         complex,
         metadata.artifact_sha256;
         axis_ids=metadata.axis_ids,
