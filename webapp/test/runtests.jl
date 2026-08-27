@@ -328,10 +328,7 @@ if [ "\$1" = "s3" ] && [ "\$2" = "cp" ]; then
         --metadata)
           metadata="\$2"
           if [[ "\$metadata" == bne-result-sha256=* ]]; then
-            sha256="\${metadata#bne-result-sha256=}"
-            printf '%s' "\${sha256%%,*}" > "\$target.bne-sha256"
-            identity_sha256="\${metadata#*bne-result-artifact-identity-sha256=}"
-            printf '%s' "\$identity_sha256" > "\$target.bne-identity-sha256"
+            printf '%s' "\${metadata#bne-result-sha256=}" > "\$target.bne-sha256"
           fi
           shift 2
           ;;
@@ -361,12 +358,8 @@ if [ "\$1" = "s3api" ] && [ "\$2" = "head-object" ]; then
     if [ -f "\$target.bne-sha256" ]; then
       sha256="\$(cat "\$target.bne-sha256")"
     fi
-    identity_sha256=""
-    if [ -f "\$target.bne-identity-sha256" ]; then
-      identity_sha256="\$(cat "\$target.bne-identity-sha256")"
-    fi
-    printf '{"ContentLength":%s,"ContentType":"application/json","Metadata":{"bne-result-sha256":"%s","bne-result-artifact-identity-sha256":"%s"}}\\n' \
-      "\$(wc -c <"\$target" | tr -d ' ')" "\$sha256" "\$identity_sha256"
+    printf '{"ContentLength":%s,"ContentType":"application/json","Metadata":{"bne-result-sha256":"%s"}}\\n' \
+      "\$(wc -c <"\$target" | tr -d ' ')" "\$sha256"
     exit 0
   fi
   printf 'An error occurred (404) when calling the HeadObject operation: Not Found (%s)\\n' "\$target" >&2
@@ -458,12 +451,6 @@ function stage_mock_committed_job_result(root::AbstractString,
         filesize(result_path),
         sha256_hex,
     )
-    identity_sha256 =
-        BiocircuitsExplorerBackend._job_result_manifest_identity_sha256(
-            manifest["artifact_identity"],
-            manifest["result"]["payload_key_count"],
-        )
-    write("$(result_path).bne-identity-sha256", identity_sha256)
     manifest_path = mock_s3_path(root, String(record["result_manifest_uri"]))
     mkpath(dirname(manifest_path))
     open(manifest_path, "w") do io
@@ -3576,7 +3563,7 @@ end
         ("network-ir.schema.json", NETWORK_IR_SCHEMA_VERSION),
         ("design-spec.schema.json", DESIGN_SPEC_SCHEMA_VERSION),
         ("result-artifact.schema.json", RESULT_ARTIFACT_SCHEMA_VERSION),
-        ("job-result-manifest.schema.json", "bne-job-result-manifest/v1.1.0"),
+        ("job-result-manifest.schema.json", "bne-job-result-manifest/v1.0.0"),
         ("designability-spec.schema.json", "bne-designability/v1.0.0"),
         ("designability-screen.schema.json", "bne-design-screen/v0.3.0"),
     ]

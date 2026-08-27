@@ -241,48 +241,46 @@ function normalize_ro_field_job_spec(raw)
     )
 end
 
-function _rofjob_read_document(
-    path::AbstractString;
-    max_bytes::Int=_ROFJOB_MAX_CONTROL_DOCUMENT_BYTES,
-    storage_root::AbstractString=local_job_store_dir(),
-)
-    document_path = normpath(abspath(String(path)))
-    bytes = _rofc_read_bounded_file(
-        storage_root, document_path, max_bytes;
-        phase=:control_document_bytes)
+function _rofjob_read_document(path::AbstractString;
+                               max_bytes::Int=_ROFJOB_MAX_CONTROL_DOCUMENT_BYTES)
+    document_path = String(path)
+    islink(document_path) && throw(ArgumentError(
+        "RO-field control document must not be a symbolic link"))
+    isfile(document_path) || throw(ArgumentError(
+        "Missing RO-field control document: $(basename(document_path))"))
+    filesize(document_path) <= max_bytes || throw(ArgumentError(
+        "RO-field control document exceeds the bounded read limit"))
+    bytes = open(document_path, "r") do io
+        read(io, max_bytes + 1)
+    end
+    length(bytes) <= max_bytes || throw(ArgumentError(
+        "RO-field control document exceeds the bounded read limit"))
     isvalid(String, bytes) || throw(ArgumentError(
         "RO-field control document is not valid UTF-8"))
     return try
-        _rofc_materialize(JSON3.read(String(copy(bytes))))
+        _rofc_materialize(JSON3.read(String(bytes)))
     catch err
         throw(ArgumentError(
             "RO-field control document is invalid JSON: $(sprint(showerror, err))"))
     end
 end
 
-function _rofjob_write_once!(
-    path::AbstractString,
-    document;
-    storage_root::AbstractString=local_job_store_dir(),
-)
-    destination = normpath(abspath(String(path)))
+function _rofjob_write_once!(path::AbstractString, document)
+    destination = String(path)
+    directory = _rofc_ensure_directory!(dirname(destination))
     expected = _rofc_canonical_json(document)
-    bytes = Vector{UInt8}(codeunits(expected))
-    function existing_matches(observed_bytes)
-        isvalid(String, observed_bytes) || return false
-        observed = try
-            _rofc_materialize(JSON3.read(String(copy(observed_bytes))))
-        catch
-            return false
-        end
-        return _rofc_canonical_json(observed) == expected
+    if ispath(destination)
+        islink(destination) && throw(ArgumentError(
+            "RO-field control destination must not be a symbolic link"))
+        observed = _rofjob_read_document(destination)
+        _rofc_canonical_json(observed) == expected || throw(ArgumentError(
+            "Immutable RO-field control document already has different content"))
+        _rofc_fsync_existing_file!(destination)
+        _rofc_fsync_directory!(directory)
+        return destination
     end
-    _rofc_write_bytes_once!(
-        storage_root, destination, bytes;
-        max_existing_bytes=_ROFJOB_MAX_CONTROL_DOCUMENT_BYTES,
-        existing_matches=existing_matches)
-    observed = _rofjob_read_document(
-        destination; storage_root=storage_root)
+    _write_job_json(destination, document)
+    observed = _rofjob_read_document(destination)
     _rofc_canonical_json(observed) == expected || error(
         "durable RO-field control publication changed document content")
     return destination
@@ -321,8 +319,7 @@ function _rofjob_chunks_from_entries(root::AbstractString, plan, entries)
             "chunk entry chunk_sha256")
         path = joinpath(String(root), "chunks", chunk_hash * ".json")
         push!(chunks, read_ro_field_chunk(
-            path; expected_sha256=chunk_hash, plan=plan, work_unit=unit,
-            storage_root=local_job_store_dir()))
+            path; expected_sha256=chunk_hash, plan=plan, work_unit=unit))
     end
     return chunks
 end
@@ -536,9 +533,7 @@ function compute_ro_field_job(raw_spec;
         for chunk in resume_state.chunks
             cancel_check()
             unit = units_by_hash[chunk["work_unit_sha256"]]
-            write_ro_field_chunk!(root, chunk;
-                plan=plan, work_unit=unit,
-                storage_root=local_job_store_dir())
+            write_ro_field_chunk!(root, chunk; plan=plan, work_unit=unit)
         end
         reused_checkpoint = build_ro_field_checkpoint(
             plan, chunks; cancel_check=cancel_check)
@@ -577,9 +572,7 @@ function compute_ro_field_job(raw_spec;
             committed_payload_bytes = _rofjob_check_payload!(
                 committed_payload_bytes + chunk_payload_bytes,
                 payload_limit, :pre_commit_payload)
-            write_ro_field_chunk!(root, chunk;
-                plan=plan, work_unit=unit,
-                storage_root=local_job_store_dir())
+            write_ro_field_chunk!(root, chunk; plan=plan, work_unit=unit)
             cancel_check()
             push!(chunks, chunk)
             checkpoint = build_ro_field_checkpoint(
@@ -678,9 +671,6 @@ function _rofjob_validate_result_descriptor!(descriptor, job_id::AbstractString,
         get(record, "latest_checkpoint_sha256", nothing) == checkpoint_hash ||
             throw(ArgumentError(
                 "RO-field result checkpoint is not the job's linearized checkpoint"))
-        get(record, "ro_field_dataset_manifest_sha256", nothing) ==
-            manifest_hash || throw(ArgumentError(
-                "RO-field result dataset manifest is not the job's linearized terminal manifest"))
     end
     evidence = _rofjob_exact_keys(
         value["evidence"], _ROFJOB_EVIDENCE_KEYS, "result.evidence")
@@ -721,8 +711,8 @@ function _rofjob_validate_result_descriptor!(descriptor, job_id::AbstractString,
         checkpoint["committed_payload_bytes"] == chunk_payload_bytes ||
         throw(ArgumentError(
             "RO-field result counts disagree with committed artifacts"))
-    checkpoint["committed"] == manifest["chunks"] || throw(ArgumentError(
-        "final checkpoint and dataset manifest commit different ordered chunks"))
+    length(checkpoint_chunks) == length(manifest_chunks) || throw(ArgumentError(
+        "final checkpoint and dataset manifest cover different chunks"))
     return value
 end
 

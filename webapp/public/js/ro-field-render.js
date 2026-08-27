@@ -81,67 +81,6 @@ function finiteNumber(value, path) {
   return value;
 }
 
-function greatestCommonDivisor(left, right) {
-  let a = left < 0n ? -left : left;
-  let b = right < 0n ? -right : right;
-  while (b !== 0n) {
-    const remainder = a % b;
-    a = b;
-    b = remainder;
-  }
-  return a;
-}
-
-function rationalParts(value, path) {
-  if (typeof value !== 'string' || !/^-?[0-9]+(?:\/[1-9][0-9]*)?$/.test(value)) {
-    fail(path, 'expected an integer/rational coefficient string');
-  }
-  const [rawNumerator, rawDenominator = '1'] = value.split('/');
-  let numerator;
-  let denominator;
-  try {
-    numerator = BigInt(rawNumerator);
-    denominator = BigInt(rawDenominator);
-  } catch {
-    fail(path, 'expected an integer/rational coefficient string');
-  }
-  const divisor = greatestCommonDivisor(numerator, denominator);
-  return {
-    numerator: numerator / divisor,
-    denominator: denominator / divisor,
-  };
-}
-
-function rationalApproximation(parts, path) {
-  const numerator = Number(parts.numerator);
-  const denominator = Number(parts.denominator);
-  let approximation = numerator / denominator;
-  if (!Number.isFinite(approximation)) {
-    const sign = parts.numerator < 0n ? -1 : 1;
-    const numeratorDigits = (parts.numerator < 0n ? -parts.numerator : parts.numerator).toString();
-    const denominatorDigits = parts.denominator.toString();
-    const numeratorHead = Number(numeratorDigits.slice(0, 16));
-    const denominatorHead = Number(denominatorDigits.slice(0, 16));
-    approximation = sign * (numeratorHead / denominatorHead)
-      * (10 ** (numeratorDigits.length - denominatorDigits.length));
-  }
-  if (!Number.isFinite(approximation)) fail(path, 'coefficient is outside the renderable range');
-  return approximation;
-}
-
-function coefficientIdentity(value, path, encoding = null) {
-  if (encoding === 'integer_or_rational_string') {
-    const parts = rationalParts(value, path);
-    return `${parts.numerator}/${parts.denominator}`;
-  }
-  const number = coefficientNumber(value, path, encoding);
-  const normalized = Object.is(number, -0) ? 0 : number;
-  const bytes = new ArrayBuffer(8);
-  const view = new DataView(bytes);
-  view.setFloat64(0, normalized, false);
-  return `float64:${view.getBigUint64(0, false).toString(16).padStart(16, '0')}`;
-}
-
 function coefficientNumber(value, path, encoding = null) {
   if (encoding === 'float64' && typeof value !== 'number') {
     fail(path, 'coefficient_encoding=float64 requires JSON numbers');
@@ -150,7 +89,13 @@ function coefficientNumber(value, path, encoding = null) {
     fail(path, 'coefficient_encoding=integer_or_rational_string requires strings');
   }
   if (typeof value === 'number') return finiteNumber(value, path);
-  return rationalApproximation(rationalParts(value, path), path);
+  if (typeof value !== 'string' || !/^-?[0-9]+(?:\/[1-9][0-9]*)?$/.test(value)) {
+    fail(path, 'expected a finite number or an integer/rational coefficient string');
+  }
+  const [numerator, denominator = '1'] = value.split('/');
+  const parsed = Number(numerator) / Number(denominator);
+  if (!Number.isFinite(parsed)) fail(path, 'coefficient is outside the renderable range');
+  return parsed;
 }
 
 function integer(value, path, minimum = 0) {
@@ -673,287 +618,19 @@ function explicitVertices(value, rank, path) {
       fail(`${path}[${vertexIndex}]`, `expected a rank-${rank} point`);
     }
     return coordinates.map((coordinate, coordinateIndex) => (
-      finiteNumber(coordinate, `${path}[${vertexIndex}][${coordinateIndex}]`)
+      coefficientNumber(coordinate, `${path}[${vertexIndex}][${coordinateIndex}]`)
     ));
   });
 }
 
 function signedPolygonArea(vertices) {
   if (vertices.length < 3) return 0;
-  const [originX, originY] = vertices[0];
   let twiceArea = 0;
   vertices.forEach((vertex, index) => {
     const next = vertices[(index + 1) % vertices.length];
-    twiceArea += ((vertex[0] - originX) * (next[1] - originY))
-      - ((next[0] - originX) * (vertex[1] - originY));
+    twiceArea += (vertex[0] * next[1]) - (next[0] * vertex[1]);
   });
   return twiceArea / 2;
-}
-
-function polygonIsConvex(vertices, lengthTolerance) {
-  return vertices.every((vertex, index) => {
-    const second = vertices[(index + 1) % vertices.length];
-    const third = vertices[(index + 2) % vertices.length];
-    const firstDx = second[0] - vertex[0];
-    const firstDy = second[1] - vertex[1];
-    const secondDx = third[0] - second[0];
-    const secondDy = third[1] - second[1];
-    const cross = (firstDx * secondDy) - (firstDy * secondDx);
-    const firstLength = Math.hypot(firstDx, firstDy);
-    const secondLength = Math.hypot(secondDx, secondDy);
-    const crossTolerance = (Math.max(firstLength, secondLength) * lengthTolerance)
-      + (64 * Number.EPSILON * firstLength * secondLength);
-    return cross >= -crossTolerance;
-  });
-}
-
-function edgeCross(first, second, point) {
-  return ((second[0] - first[0]) * (point[1] - first[1]))
-    - ((second[1] - first[1]) * (point[0] - first[0]));
-}
-
-function edgeCrossTolerance(first, second, point, lengthTolerance) {
-  const edgeLength = Math.hypot(second[0] - first[0], second[1] - first[1]);
-  const pointDistance = Math.hypot(point[0] - first[0], point[1] - first[1]);
-  // Intersection area must retain real sub-tolerance overlaps and holes so
-  // their global budget can accumulate them. Use the domain tolerance only as
-  // a cap on arithmetic roundoff, never as a per-edge geometric expansion.
-  return Math.min(
-    edgeLength * lengthTolerance,
-    64 * Number.EPSILON * edgeLength * pointDistance,
-  );
-}
-
-function clipConvexPolygon(subject, clip, lengthTolerance) {
-  let output = subject.map(point => point.slice());
-  clip.forEach((clipStart, clipIndex) => {
-    if (output.length === 0) return;
-    const clipEnd = clip[(clipIndex + 1) % clip.length];
-    const input = output;
-    output = [];
-    let previous = input[input.length - 1];
-    let previousDistance = edgeCross(clipStart, clipEnd, previous);
-    let previousInside = previousDistance >= -edgeCrossTolerance(
-      clipStart, clipEnd, previous, lengthTolerance,
-    );
-    input.forEach(current => {
-      const currentDistance = edgeCross(clipStart, clipEnd, current);
-      const currentInside = currentDistance >= -edgeCrossTolerance(
-        clipStart, clipEnd, current, lengthTolerance,
-      );
-      if (currentInside !== previousInside) {
-        const denominator = previousDistance - currentDistance;
-        const denominatorTolerance = 64 * Number.EPSILON * Math.max(
-          Math.abs(previousDistance),
-          Math.abs(currentDistance),
-          Number.MIN_VALUE,
-        );
-        if (Math.abs(denominator) > denominatorTolerance) {
-          const fraction = previousDistance / denominator;
-          output.push([
-            previous[0] + (fraction * (current[0] - previous[0])),
-            previous[1] + (fraction * (current[1] - previous[1])),
-          ]);
-        }
-      }
-      if (currentInside) output.push(current.slice());
-      previous = current;
-      previousDistance = currentDistance;
-      previousInside = currentInside;
-    });
-  });
-  return output;
-}
-
-function convexIntersectionArea(left, right, lengthTolerance) {
-  const intersection = clipConvexPolygon(left, right, lengthTolerance);
-  return intersection.length >= 3 ? Math.abs(signedPolygonArea(intersection)) : 0;
-}
-
-function exactDomainTolerances(axes) {
-  const spans = axes.map(axis => axis.bounds.upper - axis.bounds.lower);
-  const minimumSpan = Math.min(...spans);
-  const coordinateScale = Math.max(
-    minimumSpan,
-    ...axes.flatMap(axis => [Math.abs(axis.bounds.lower), Math.abs(axis.bounds.upper)]),
-  );
-  const lengthTolerance = Math.max(
-    1e-10 * minimumSpan,
-    64 * Number.EPSILON * Math.max(coordinateScale, minimumSpan),
-  );
-  if (lengthTolerance > 1e-5 * minimumSpan) {
-    fail('$.domain.axes', 'domain is not resolvable tightly enough for geometry validation');
-  }
-  const domainArea = spans[0] * spans[1];
-  const areaTolerance = (8 * lengthTolerance * (spans[0] + spans[1]))
-    + (128 * Number.EPSILON * domainArea);
-  return { domainArea, lengthTolerance, areaTolerance };
-}
-
-function segmentIntervalOnEdge(segment, edge, tolerance) {
-  const [start, end] = edge;
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = (dx * dx) + (dy * dy);
-  const edgeLength = Math.sqrt(lengthSquared);
-  if (!(edgeLength > tolerance)) return null;
-  const parameterTolerance = Math.max(128 * Number.EPSILON, tolerance / edgeLength);
-  const parameters = [];
-  for (const point of segment) {
-    const cross = (dx * (point[1] - start[1])) - (dy * (point[0] - start[0]));
-    if (Math.abs(cross) / edgeLength > tolerance) return null;
-    const parameter = (((point[0] - start[0]) * dx) + ((point[1] - start[1]) * dy))
-      / lengthSquared;
-    if (parameter < -parameterTolerance || parameter > 1 + parameterTolerance) return null;
-    parameters.push(Math.max(0, Math.min(1, parameter)));
-  }
-  const lower = Math.min(...parameters);
-  const upper = Math.max(...parameters);
-  if ((upper - lower) * edgeLength <= tolerance) return null;
-  return { lower, upper };
-}
-
-function segmentsHavePositiveOverlap(left, right, tolerance) {
-  const [start, end] = left;
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = (dx * dx) + (dy * dy);
-  const segmentLength = Math.sqrt(lengthSquared);
-  if (!(segmentLength > tolerance)) return false;
-  for (const point of right) {
-    const cross = (dx * (point[1] - start[1])) - (dy * (point[0] - start[0]));
-    if (Math.abs(cross) / segmentLength > tolerance) return false;
-  }
-  const parameters = right.map(point => (
-    (((point[0] - start[0]) * dx) + ((point[1] - start[1]) * dy)) / lengthSquared
-  ));
-  const lower = Math.max(0, Math.min(...parameters));
-  const upper = Math.min(1, Math.max(...parameters));
-  return (upper - lower) * segmentLength > tolerance;
-}
-
-function geometricDomainSide(endpoints, axes, tolerance) {
-  for (let axisIndex = 0; axisIndex < axes.length; axisIndex += 1) {
-    const bounds = axes[axisIndex].bounds;
-    if (endpoints.every(point => Math.abs(point[axisIndex] - bounds.lower) <= tolerance)) {
-      return `axis${axisIndex + 1}_lower`;
-    }
-    if (endpoints.every(point => Math.abs(point[axisIndex] - bounds.upper) <= tolerance)) {
-      return `axis${axisIndex + 1}_upper`;
-    }
-  }
-  return null;
-}
-
-function validateExactGeometry(cells, facets, gaps, axes) {
-  const { domainArea, lengthTolerance, areaTolerance } = exactDomainTolerances(axes);
-  let accumulatedOverlapArea = 0;
-  for (let leftIndex = 0; leftIndex < cells.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < cells.length; rightIndex += 1) {
-      const overlapArea = convexIntersectionArea(
-        cells[leftIndex].vertices,
-        cells[rightIndex].vertices,
-        lengthTolerance,
-      );
-      accumulatedOverlapArea += overlapArea;
-      if (overlapArea > areaTolerance) {
-        fail('$.data.cells', `${cells[leftIndex].id} and ${cells[rightIndex].id} overlap with positive area`);
-      }
-    }
-  }
-  if (accumulatedOverlapArea > areaTolerance) {
-    fail('$.data.cells', 'cumulative cell overlap with positive area exceeds the global tolerance');
-  }
-  if (gaps.length === 0) {
-    const coveredArea = cells.reduce((sum, cell) => sum + cell.geometricArea, 0);
-    if (Math.abs(coveredArea - domainArea) > areaTolerance) {
-      fail('$.data.cells', 'gap-free exact cells do not cover the complete declared domain');
-    }
-    const uncoveredAreaUpperBound = Math.max(0, domainArea - coveredArea)
-      + accumulatedOverlapArea;
-    if (uncoveredAreaUpperBound > areaTolerance) {
-      fail('$.data.cells', 'gap-free exact cells exceed the combined global overlap/gap budget');
-    }
-  }
-
-  const edgeCoverage = new Map();
-  cells.forEach(cell => cell.vertices.forEach((vertex, edgeIndex) => {
-    const next = cell.vertices[(edgeIndex + 1) % cell.vertices.length];
-    edgeCoverage.set(`${cell.id}:${edgeIndex}`, {
-      edgeLength: Math.hypot(next[0] - vertex[0], next[1] - vertex[1]),
-      intervals: [],
-    });
-  }));
-
-  facets.forEach((facet, facetIndex) => {
-    const path = `$.data.facets[${facetIndex}]`;
-    const actualIncident = [];
-    const memberships = [];
-    cells.forEach(cell => {
-      const matches = [];
-      cell.vertices.forEach((vertex, edgeIndex) => {
-        const edge = [vertex, cell.vertices[(edgeIndex + 1) % cell.vertices.length]];
-        const interval = segmentIntervalOnEdge(facet.endpoints, edge, lengthTolerance);
-        if (interval !== null) matches.push({ edgeIndex, interval });
-      });
-      if (matches.length > 1) fail(path, `lies on multiple canonical edges of cell ${cell.id}`);
-      if (matches.length === 1) {
-        actualIncident.push(cell.id);
-        memberships.push({ cell, ...matches[0] });
-      }
-    });
-    const declaredIncident = facet.incidentCellIds.slice().sort();
-    actualIncident.sort();
-    if (JSON.stringify(declaredIncident) !== JSON.stringify(actualIncident)) {
-      fail(`${path}.incident_cell_ids`, 'does not equal the geometric incident-cell population');
-    }
-    const actualDomainSide = geometricDomainSide(facet.endpoints, axes, lengthTolerance);
-    if (actualDomainSide === null) {
-      if (actualIncident.length !== 2) fail(path, 'internal facets require two geometric incident cells');
-      if (facet.domainSide !== null) fail(`${path}.domain_side`, 'internal facets require null domain_side');
-      const expectedKind = facet.singularStratumIds.length > 0
-        ? 'singular_boundary' : 'regime_transition';
-      if (facet.kind !== expectedKind) fail(`${path}.kind`, 'does not match geometric singular incidence');
-    } else {
-      if (actualIncident.length !== 1) fail(path, 'domain facets require one geometric incident cell');
-      if (facet.kind !== 'domain_boundary') fail(`${path}.kind`, 'domain geometry requires domain_boundary');
-      if (facet.domainSide !== actualDomainSide) {
-        fail(`${path}.domain_side`, 'does not match the geometric domain side');
-      }
-    }
-    memberships.forEach(({ cell, edgeIndex, interval }) => {
-      edgeCoverage.get(`${cell.id}:${edgeIndex}`).intervals.push({ ...interval, facetIndex });
-    });
-  });
-
-  let totalUncoveredFacetLength = 0;
-  let totalOverlappingFacetLength = 0;
-  edgeCoverage.forEach(({ edgeLength, intervals: rawIntervals }, key) => {
-    if (rawIntervals.length === 0) fail('$.data.facets', `cell edge ${key} has no facet`);
-    const intervals = rawIntervals.slice().sort((left, right) => (
-      left.lower - right.lower || left.upper - right.upper || left.facetIndex - right.facetIndex
-    ));
-    let cursor = 0;
-    intervals.forEach(interval => {
-      if (interval.lower > cursor) {
-        totalUncoveredFacetLength += (interval.lower - cursor) * edgeLength;
-      } else if (interval.lower < cursor) {
-        totalOverlappingFacetLength += (
-          Math.min(cursor, interval.upper) - interval.lower
-        ) * edgeLength;
-      }
-      cursor = Math.max(cursor, interval.upper);
-    });
-    if (cursor < 1) {
-      totalUncoveredFacetLength += (1 - cursor) * edgeLength;
-    }
-  });
-  if (totalUncoveredFacetLength > lengthTolerance) {
-    fail('$.data.facets', 'cumulative uncovered facet length exceeds the global tolerance');
-  }
-  if (totalOverlappingFacetLength > lengthTolerance) {
-    fail('$.data.facets', 'cumulative overlapping facet length exceeds the global tolerance');
-  }
 }
 
 function normalizeAffineLabels(cell, path, common, selected, encoding) {
@@ -977,26 +654,16 @@ function normalizeAffineLabels(cell, path, common, selected, encoding) {
     if (offsets.length !== common.outputIds.length) {
       fail(`${labelPath}.output_offset`, 'length must equal the output count');
     }
-    const offsetIdentities = offsets.map((value, index) => coefficientIdentity(
-      value,
-      `${labelPath}.output_offset[${index}]`,
-      encoding,
-    ));
+    offsets.forEach((value, index) => coefficientNumber(value, `${labelPath}.output_offset[${index}]`, encoding));
     const matrix = arrayAt(label.reaction_order_matrix, `${labelPath}.reaction_order_matrix`);
     if (matrix.length !== common.outputIds.length) {
       fail(`${labelPath}.reaction_order_matrix`, 'row count must equal the output count');
     }
-    const matrixIdentities = [];
     const numericMatrix = matrix.map((row, outputIndex) => {
       const values = arrayAt(row, `${labelPath}.reaction_order_matrix[${outputIndex}]`);
       if (values.length !== common.axisIds.length) {
         fail(`${labelPath}.reaction_order_matrix[${outputIndex}]`, 'column count must equal the input count');
       }
-      matrixIdentities.push(values.map((value, inputIndex) => coefficientIdentity(
-        value,
-        `${labelPath}.reaction_order_matrix[${outputIndex}][${inputIndex}]`,
-        encoding,
-      )));
       return values.map((value, inputIndex) => coefficientNumber(
         value,
         `${labelPath}.reaction_order_matrix[${outputIndex}][${inputIndex}]`,
@@ -1008,12 +675,7 @@ function normalizeAffineLabels(cell, path, common, selected, encoding) {
       sourceRegimeIds,
       outputOffset: offsets.map((value, index) => coefficientNumber(value, `${labelPath}.output_offset[${index}]`, encoding)),
       matrix: numericMatrix,
-      exactIdentity: { outputOffset: offsetIdentities, matrix: matrixIdentities },
       selectedValue: numericMatrix[selected.outputIndex][selected.inputIndex],
-      selectedExactValue: matrixIdentities[selected.outputIndex][selected.inputIndex],
-      selectedDisplayValue: encoding === 'integer_or_rational_string'
-        ? matrixIdentities[selected.outputIndex][selected.inputIndex]
-        : String(numericMatrix[selected.outputIndex][selected.inputIndex]),
     };
   });
   exactArray(labelOrder, normalized.map(label => label.id), `${path}.label_order`);
@@ -1027,10 +689,6 @@ function normalizeExact(common, selection) {
   if (common.rank !== 2) {
     fail('$.domain.axes', 'exact_cell_complex v1 and this renderer require exactly two axes');
   }
-  const {
-    lengthTolerance: exactLengthTolerance,
-    areaTolerance: exactAreaTolerance,
-  } = exactDomainTolerances(common.axes);
   const data = objectAt(common.artifact.data, '$.data');
   exactKeys(
     data,
@@ -1111,18 +769,15 @@ function normalizeExact(common, selection) {
     }
     const signedArea = signedPolygonArea(vertices);
     if (!(signedArea > 0)) fail(`${path}.vertices`, 'vertices must be counter-clockwise with positive area');
-    if (!polygonIsConvex(vertices, exactLengthTolerance)) {
-      fail(`${path}.vertices`, 'must describe a convex polygon');
-    }
     const area = finiteNumber(cell.area, `${path}.area`);
-    if (!(area > 0) || Math.abs(area - signedArea) > exactAreaTolerance) {
+    if (!(area > 0) || Math.abs(area - signedArea) > 1e-8 * Math.max(1, area, signedArea)) {
       fail(`${path}.area`, 'must match the ordered polygon area');
     }
     vertices.forEach((point, vertexIndex) => {
       point.forEach((coordinate, axisIndex) => {
         const bounds = common.axes[axisIndex].bounds;
-        if (coordinate < bounds.lower - exactLengthTolerance
-            || coordinate > bounds.upper + exactLengthTolerance) {
+        if (coordinate < bounds.lower - GEOMETRY_TOLERANCE
+            || coordinate > bounds.upper + GEOMETRY_TOLERANCE) {
           fail(`${path}.vertices[${vertexIndex}][${axisIndex}]`, 'cell vertex is outside the declared domain');
         }
       });
@@ -1158,7 +813,7 @@ function normalizeExact(common, selection) {
     if (!setValued && labels.length !== 1) {
       fail(`${path}.affine_labels`, 'a regular cell must have exactly one affine label');
     }
-    const signatures = labels.map(label => JSON.stringify(label.exactIdentity));
+    const signatures = labels.map(label => JSON.stringify([label.outputOffset, label.matrix]));
     if (new Set(signatures).size !== signatures.length) {
       fail(`${path}.affine_labels`, 'equal affine values must be merged');
     }
@@ -1168,11 +823,9 @@ function normalizeExact(common, selection) {
       setValued,
       vertices,
       area,
-      geometricArea: signedArea,
       sourceRegimeIds,
       labels,
       selectedValues: labels.map(label => label.selectedValue),
-      selectedDisplayValues: labels.map(label => label.selectedDisplayValue),
     };
   });
   const knownCellIds = new Set(normalizedCells.map(cell => cell.id));
@@ -1256,9 +909,7 @@ function normalizeExact(common, selection) {
     const dx = endpoints[1][0] - endpoints[0][0];
     const dy = endpoints[1][1] - endpoints[0][1];
     const magnitude = Math.hypot(dx, dy);
-    if (!(magnitude > exactLengthTolerance)) {
-      fail(`${path}.endpoints`, 'facet must have positive resolvable length');
-    }
+    if (!(magnitude > 0)) fail(`${path}.endpoints`, 'facet must have positive length');
     const incidentCellIds = uniqueStringArray(
       facet.incident_cell_ids,
       `${path}.incident_cell_ids`,
@@ -1266,6 +917,14 @@ function normalizeExact(common, selection) {
     );
     incidentCellIds.forEach((cellId, cellIndex) => {
       if (!knownCellIds.has(cellId)) fail(`${path}.incident_cell_ids[${cellIndex}]`, 'unknown incident cell');
+      const cell = normalizedCells.find(item => item.id === cellId);
+      endpoints.forEach((endpoint, endpointIndex) => {
+        const matches = cell.vertices.some(vertex => (
+          Math.abs(vertex[0] - endpoint[0]) <= GEOMETRY_TOLERANCE
+          && Math.abs(vertex[1] - endpoint[1]) <= GEOMETRY_TOLERANCE
+        ));
+        if (!matches) fail(`${path}.endpoints[${endpointIndex}]`, 'not a vertex of every incident cell');
+      });
     });
     const expectedIncidence = facet.kind === 'domain_boundary' ? 1 : 2;
     if (incidentCellIds.length !== expectedIncidence) {
@@ -1277,25 +936,15 @@ function normalizeExact(common, selection) {
       { identifiers: true },
     );
     singularStratumIds.forEach((stratumId, stratumIndex) => {
-      if (!knownStrata.has(stratumId)) {
-        fail(`${path}.singular_stratum_ids[${stratumIndex}]`, 'unknown singular stratum');
-      }
+      const stratum = knownStrata.get(stratumId);
+      if (!stratum) fail(`${path}.singular_stratum_ids[${stratumIndex}]`, 'unknown singular stratum');
+      stratum.vertices.forEach(point => {
+        const cross = dx * (point[1] - endpoints[0][1]) - dy * (point[0] - endpoints[0][0]);
+        if (Math.abs(cross) > 1e-8 * Math.max(1, magnitude)) {
+          fail(`${path}.singular_stratum_ids[${stratumIndex}]`, 'stratum does not lie on the facet');
+        }
+      });
     });
-    const expectedSingularStratumIds = singularStrata
-      .filter(stratum => (
-        stratum.dimension === 1
-        && segmentsHavePositiveOverlap(endpoints, stratum.vertices, exactLengthTolerance)
-      ))
-      .map(stratum => stratum.id)
-      .sort();
-    const declaredSingularStratumIds = singularStratumIds.slice().sort();
-    if (JSON.stringify(declaredSingularStratumIds)
-        !== JSON.stringify(expectedSingularStratumIds)) {
-      fail(
-        `${path}.singular_stratum_ids`,
-        'must equal the positively overlapping one-dimensional strata',
-      );
-    }
     if (facet.kind === 'singular_boundary' && singularStratumIds.length === 0) {
       fail(`${path}.singular_stratum_ids`, 'singular boundaries require a stratum reference');
     }
@@ -1304,8 +953,8 @@ function normalizeExact(common, selection) {
     }
     const normal = explicitVertices([facet.normal], 2, `${path}.normal-wrapper`)[0];
     let expectedNormal = [dy / magnitude, -dx / magnitude];
-    if (expectedNormal[0] < 0
-        || (expectedNormal[0] === 0 && expectedNormal[1] < 0)) {
+    if (expectedNormal[0] < -GEOMETRY_TOLERANCE
+        || (Math.abs(expectedNormal[0]) <= GEOMETRY_TOLERANCE && expectedNormal[1] < 0)) {
       expectedNormal = expectedNormal.map(value => -value);
     }
     if (normal.some((value, normalIndex) => (
@@ -1313,8 +962,7 @@ function normalizeExact(common, selection) {
     ))) fail(`${path}.normal`, 'must be the canonical unit normal');
     const offset = finiteNumber(facet.offset, `${path}.offset`);
     endpoints.forEach((endpoint, endpointIndex) => {
-      if (Math.abs((normal[0] * endpoint[0])
-          + (normal[1] * endpoint[1]) + offset) > exactLengthTolerance) {
+      if (Math.abs((normal[0] * endpoint[0]) + (normal[1] * endpoint[1]) + offset) > 1e-8) {
         fail(`${path}.offset`, `does not contain endpoint ${endpointIndex}`);
       }
     });
@@ -1331,9 +979,7 @@ function normalizeExact(common, selection) {
       const axisIndex = domainSide.startsWith('axis1') ? 0 : 1;
       const bound = domainSide.endsWith('lower')
         ? common.axes[axisIndex].bounds.lower : common.axes[axisIndex].bounds.upper;
-      if (endpoints.some(endpoint => (
-        Math.abs(endpoint[axisIndex] - bound) > exactLengthTolerance
-      ))) {
+      if (endpoints.some(endpoint => Math.abs(endpoint[axisIndex] - bound) > 1e-8)) {
         fail(`${path}.domain_side`, 'does not match the facet endpoints');
       }
     } else if (facet.domain_side !== null) {
@@ -1377,12 +1023,6 @@ function normalizeExact(common, selection) {
     normalizedCells.length + singularStrata.length + normalizedGaps.length,
     normalizedCells.length - setValuedCount,
     setValuedCount + singularStrata.length + normalizedGaps.length,
-  );
-  validateExactGeometry(
-    normalizedCells,
-    normalizedFacets,
-    normalizedGaps,
-    common.axes,
   );
 
   const warnings = [...common.warnings];
@@ -1610,9 +1250,7 @@ function renderExactSvg(documentRef, view) {
     appendTitle(
       documentRef,
       polygon,
-      `${cell.id}; ${cell.setValued
-        ? `SET-VALUED RO={${cell.selectedDisplayValues.join(', ')}}`
-        : `RO=${cell.selectedDisplayValues[0]}`}; area=${cell.area}; labels=${cell.labels.map(label => label.id).join(', ')}`,
+      `${cell.id}; ${cell.setValued ? 'SET-VALUED' : `RO=${cell.selectedValues[0]}`}; area=${cell.area}; labels=${cell.labels.map(label => label.id).join(', ')}`,
     );
     svg.appendChild(polygon);
   });

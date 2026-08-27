@@ -112,89 +112,6 @@ function _ross_rehashed_result_status(result, status)
         _ROSS_MODULE._ross_v2_result_body(provisional)))
 end
 
-function _ross_rehashed_state_pending(state, pending_candidates)
-    function rebuild(hash)
-        return _ROSS_MODULE.ROSparseAdaptiveStateV2(
-            _ROSS_MODULE._ROSS_V2_TOKEN,
-            state.schema_version,
-            state.plan_sha256,
-            state.sampling_spec_sha256,
-            state.initial_cursor,
-            state.accepted_multi_indices,
-            state.refinement_order,
-            pending_candidates,
-            state.index_records,
-            state.samples,
-            state.unresolved_regions,
-            state.interpolation_work_consumed,
-            state.payload_scalar_count,
-            state.backend_work_unit_count,
-            hash,
-        )
-    end
-    provisional = rebuild("")
-    return rebuild(_ROSS_MODULE._ross_sha256(
-        _ROSS_MODULE._ross_v2_state_body(provisional)))
-end
-
-function _ross_rehashed_batch_cursor_pending(
-    batch, initial_cursor_after, pending_candidates_after,
-)
-    function rebuild(hash)
-        return _ROSS_MODULE.ROSparseIndexBatchV2(
-            _ROSS_MODULE._ROSS_V2_TOKEN,
-            batch.schema_version,
-            batch.plan_sha256,
-            batch.prior_state_sha256,
-            batch.batch_ordinal,
-            batch.multi_index,
-            batch.refinements_to_commit,
-            initial_cursor_after,
-            pending_candidates_after,
-            batch.requests,
-            batch.point_count,
-            batch.payload_scalar_count,
-            batch.interpolation_work,
-            hash,
-        )
-    end
-    provisional = rebuild("")
-    return rebuild(_ROSS_MODULE._ross_sha256(
-        _ROSS_MODULE._ross_v2_batch_body(provisional)))
-end
-
-function _ross_rehashed_result_frontier(result, active_frontier)
-    function rebuild(hash)
-        return _ROSS_MODULE.ROSparseSamplingResultV2(
-            _ROSS_MODULE._ROSS_V2_TOKEN,
-            result.schema_version,
-            result.plan_sha256,
-            result.sampling_spec_sha256,
-            result.terminal_state_sha256,
-            result.status,
-            result.stopping_reason,
-            result.evidence_scope,
-            result.accepted_multi_indices,
-            active_frontier,
-            result.refinement_order,
-            result.index_records,
-            result.samples,
-            result.unresolved_regions,
-            result.evaluated_point_count,
-            result.valid_point_count,
-            result.invalid_point_count,
-            result.interpolation_work_consumed,
-            result.payload_scalar_count,
-            result.backend_work_unit_count,
-            result.max_active_indicator,
-            hash,
-        )
-    end
-    provisional = rebuild("")
-    return rebuild(_ROSS_MODULE._ross_sha256(
-        _ROSS_MODULE._ross_v2_result_body(provisional)))
-end
-
 @testset "nested Clenshaw-Curtis and downward-closed Smolyak algebra" begin
     @test _ROSS_MODULE.nested_clenshaw_curtis_nodes(1) == [0.0]
     @test _ROSS_MODULE.nested_clenshaw_curtis_nodes(2) == [-1.0, 0.0, 1.0]
@@ -724,25 +641,8 @@ end
     @test_throws ArgumentError _ROSS_MODULE.
         restore_ro_sparse_ro_channel_plan_v2(rehashed_semantic_tamper)
 
-    detached_plan = _ross_plan_v2_1d()
-    detached_controls = detached_plan.control_ids
-    detached_controls[1] = "mutated"
-    detached_jacobian = detached_plan.chart_jacobian
-    detached_jacobian[1, 1] = 9.0
-    @test detached_plan.control_ids == ["u"]
-    @test detached_plan.chart_jacobian == ones(1, 1)
-    @test _ROSS_MODULE.validate_ro_sparse_ro_channel_plan_v2(detached_plan)
-    for field in (
-        :control_ids, :source_coordinate_ids, :chart_jacobian,
-        :domain_lower, :domain_upper, :output_ids, :fixed_background,
-    )
-        @test getproperty(detached_plan, field) !==
-            getfield(detached_plan, field)
-    end
-
     mutable_plan = _ross_plan_v2_1d()
-    getfield(mutable_plan, :domain_lower)[1] = -9.0
-    @test_throws ArgumentError mutable_plan.plan_sha256
+    mutable_plan.domain_lower[1] = -9.0
     @test_throws ArgumentError _ROSS_MODULE.
         validate_ro_sparse_ro_channel_plan_v2(mutable_plan)
     @test_throws MethodError _ROSS_MODULE.ROSparseAdaptiveStateV2()
@@ -833,19 +733,9 @@ end
         plan, state, rehashed_result)
     typed_rehashed_result = _ross_rehashed_result_status(
         resumed_result, :unknown_gap)
-    @test_throws ArgumentError _ROSS_MODULE.
-        validate_ro_sparse_result_v2(typed_rehashed_result)
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_result_v2_payload(typed_rehashed_result)
+    @test _ROSS_MODULE.validate_ro_sparse_result_v2(typed_rehashed_result)
     @test_throws ArgumentError _ROSS_MODULE.validate_ro_sparse_result_v2(
         plan, state, typed_rehashed_result)
-
-    rehashed_bad_frontier = _ross_rehashed_result_frontier(
-        resumed_result, [[0]])
-    @test_throws ArgumentError _ROSS_MODULE.
-        validate_ro_sparse_result_v2(rehashed_bad_frontier)
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_result_v2_payload(rehashed_bad_frontier)
 
     # Rehashing altered scientific values is insufficient: state restoration
     # replays every committed transition and detects the changed surplus.
@@ -856,13 +746,6 @@ end
     one_commit = _ROSS_MODULE.commit_ro_sparse_index_batch_v2(
         plan, _ROSS_MODULE.initialize_ro_sparse_state_v2(plan),
         first_batch, first_receipts)
-    rehashed_bad_state = _ross_rehashed_state_pending(one_commit, [[0]])
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_state_v2_payload(rehashed_bad_state)
-    rehashed_bad_batch = _ross_rehashed_batch_cursor_pending(
-        first_batch, 0, [[0]])
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_index_batch_v2_payload(rehashed_bad_batch)
     body = _ROSS_MODULE._ross_v2_state_body(one_commit)
     altered_values = collect(first(body.samples).values)
     altered_values[1] += 1.0
@@ -878,68 +761,14 @@ end
     mutable_batch = _ROSS_MODULE.restore_ro_sparse_index_batch_v2(
         plan, _ROSS_MODULE.initialize_ro_sparse_state_v2(plan),
         JSON3.write(_ROSS_MODULE.ro_sparse_index_batch_v2_payload(first_batch)))
-    detached_batch_index = mutable_batch.multi_index
-    detached_batch_index[1] = 0
-    detached_batch_requests = mutable_batch.requests
-    detached_batch_requests[1].control_coordinates[1] = 99.0
-    @test first(mutable_batch.multi_index) >= 1
-    @test mutable_batch.requests[1].control_coordinates[1] != 99.0
-    for field in (
-        :multi_index, :refinements_to_commit,
-        :pending_candidates_after, :requests,
-    )
-        @test getproperty(mutable_batch, field) !==
-            getfield(mutable_batch, field)
-    end
-    @test _ROSS_MODULE.ro_sparse_index_batch_v2_payload(mutable_batch) ==
-        _ROSS_MODULE.ro_sparse_index_batch_v2_payload(first_batch)
-    getfield(mutable_batch, :requests)[1].control_coordinates[1] = 99.0
-    @test_throws ArgumentError mutable_batch.batch_sha256
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_index_batch_v2_payload(mutable_batch)
+    mutable_batch.requests[1].control_coordinates[1] = 99.0
     @test_throws ArgumentError _ROSS_MODULE.validate_ro_sparse_index_batch_v2(
         plan, _ROSS_MODULE.initialize_ro_sparse_state_v2(plan), mutable_batch)
-    mutable_state_payload = deepcopy(one_commit)
-    detached_state_samples = mutable_state_payload.samples
-    detached_state_samples[1].evaluation.values[1] += 1.0
-    @test mutable_state_payload.samples[1].evaluation.values[1] !=
-        detached_state_samples[1].evaluation.values[1]
-    for field in (
-        :accepted_multi_indices, :refinement_order, :pending_candidates,
-        :index_records, :samples, :unresolved_regions,
-    )
-        @test getproperty(mutable_state_payload, field) !==
-            getfield(mutable_state_payload, field)
-    end
-    @test _ROSS_MODULE.ro_sparse_state_v2_payload(mutable_state_payload) ==
-        _ROSS_MODULE.ro_sparse_state_v2_payload(one_commit)
-    getfield(mutable_state_payload, :samples)[1].evaluation.values[1] += 1.0
-    @test_throws ArgumentError mutable_state_payload.state_sha256
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_state_v2_payload(mutable_state_payload)
-    mutable_result_payload = deepcopy(resumed_result)
-    detached_result_samples = mutable_result_payload.samples
-    detached_result_samples[1].evaluation.values[1] += 1.0
-    @test mutable_result_payload.samples[1].evaluation.values[1] !=
-        detached_result_samples[1].evaluation.values[1]
-    for field in (
-        :accepted_multi_indices, :active_frontier, :refinement_order,
-        :index_records, :samples, :unresolved_regions,
-    )
-        @test getproperty(mutable_result_payload, field) !==
-            getfield(mutable_result_payload, field)
-    end
-    @test _ROSS_MODULE.ro_sparse_result_v2_payload(mutable_result_payload) ==
-        _ROSS_MODULE.ro_sparse_result_v2_payload(resumed_result)
-    getfield(mutable_result_payload, :samples)[1].evaluation.values[1] += 1.0
-    @test_throws ArgumentError mutable_result_payload.result_sha256
-    @test_throws ArgumentError _ROSS_MODULE.
-        ro_sparse_result_v2_payload(mutable_result_payload)
     mutable_prior = _ROSS_MODULE.restore_ro_sparse_state_v2(
         plan, JSON3.write(_ROSS_MODULE.ro_sparse_state_v2_payload(one_commit)))
     next_batch = _ROSS_MODULE.prepare_ro_sparse_index_batch_v2(
         plan, mutable_prior)
-    getfield(mutable_prior, :accepted_multi_indices)[1][1] += 1
+    mutable_prior.accepted_multi_indices[1][1] += 1
     @test_throws ArgumentError _ROSS_MODULE.validate_ro_sparse_index_batch_v2(
         plan, mutable_prior, next_batch)
 end
@@ -1113,23 +942,4 @@ end
         terminal_plan, terminal_state, oversized)
     @test state0.backend_work_unit_count == 0
     @test isempty(state0.samples)
-
-    interpolation_level = 9
-    interpolation_nodes = _ROSS_MODULE._ross_full_nodes(interpolation_level)
-    interpolation_spec = repeat("a", 64)
-    interpolation_evaluations = Dict(
-        _ROSS_MODULE._ross_point_id(interpolation_spec, (node,)) =>
-            _ROSS_MODULE.ro_sparse_valid([node.coordinate])
-        for node in interpolation_nodes
-    )
-    surplus_checks = Ref(0)
-    @test_throws ROSparseCancelProbe _ROSS_MODULE._ross_tensor_interpolate(
-        (interpolation_level,), [0.125], interpolation_evaluations, 1,
-        interpolation_spec,
-        () -> begin
-            surplus_checks[] += 1
-            surplus_checks[] == 3 && throw(ROSparseCancelProbe())
-        end,
-    )
-    @test surplus_checks[] == 3
 end

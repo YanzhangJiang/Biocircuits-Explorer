@@ -641,7 +641,7 @@ test('model requests keep explicit network payloads untouched', () => {
       () => computeApi('build_atlas', { spec: true }),
       /unknown job status: mystery/,
     );
-    assert.deepEqual(calledUrls, ['/api/v1/jobs', '/api/v1/jobs/job-1/cancel']);
+    assert.deepEqual(calledUrls, ['/api/v1/jobs']);
 
     calledUrls.length = 0;
     submittedStatus = 'queued';

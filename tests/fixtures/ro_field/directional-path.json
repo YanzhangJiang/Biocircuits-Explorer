@@ -47,18 +47,15 @@
     "path": {
       "kind": "polyline",
       "parameterization": "gamma(s) = (s, s), s in [-1, 1]",
-      "vertex_parameter_values": [-1.0, 1.0],
       "vertices": [[-1.0, -1.0], [1.0, 1.0]]
     },
     "path_shape": [3, 2],
-    "path_tangent_shape": [3, 2],
     "output_shape": [3, 1],
     "reaction_order_shape": [3, 1, 2],
     "directional_order_shape": [3, 1],
     "flatten_order": "row_major_last_axis_fastest",
     "path_parameter_values": [-1.0, 0.0, 1.0],
     "input_log_coordinates": [-1.0, -1.0, 0.0, 0.0, 1.0, 1.0],
-    "path_tangent_values": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     "output_values": [-2.0, 0.0, 2.0],
     "reaction_order_values": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     "directional_reaction_order_values": [2.0, 2.0, 2.0],
@@ -86,8 +83,8 @@
       "mode": "inline",
       "complete": true,
       "stored_count": 3,
-      "payload_bytes": 609,
-      "content_sha256": "ffb4611c971511b1bc65162d17053304d428045be1d7c658c8dc830900afb98b",
+      "payload_bytes": 384,
+      "content_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
       "artifacts": []
     }
   },
@@ -107,7 +104,7 @@
     "source_commit": "9b05d021060fb1750a94ed90f6400405e2368e17",
     "source_dirty": true,
     "network_ir_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
-    "domain_sha256": "3ea9f4f7562e7e5b889f812e6f44e1572168e2cabf89b7c3c923fa73eb9c3535",
+    "domain_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
     "algorithm": {
       "name": "directional-pullback-contract-fixture",
       "version": "1",

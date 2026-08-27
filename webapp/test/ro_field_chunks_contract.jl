@@ -296,28 +296,6 @@ end
             limits=_ROFCC_BACKEND.ROFieldChunkLimits(max_chunk_bytes=128),
         )
     end
-    @test_throws _ROFCC_BACKEND.ROFieldChunkLimitExceeded begin
-        _ROFCC_BACKEND._rofc_materialize(
-            Any[1, 2, 3], "bounded document"; max_nodes=3)
-    end
-    @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-        _ROFCC_BACKEND._rofc_materialize(
-            Any[Any[Any[1]]], "bounded document"; max_depth=2)
-    end
-    @test_throws _ROFCC_BACKEND.ROFieldChunkLimitExceeded begin
-        _ROFCC_BACKEND._rofc_materialize(
-            Any["abcd"], "bounded document";
-            max_total_string_bytes=3)
-    end
-    long_key = repeat("k", _ROFCC_BACKEND._ROFC_HARD_MAX_STRING_BYTES)
-    wide_count = 32_768
-    @test ncodeunits(_ROFCC_BACKEND._rofc_object_child_path(
-        "bounded document", long_key)) <=
-        _ROFCC_BACKEND._ROFC_MAX_DIAGNOSTIC_PATH_BYTES
-    wide_document = Dict{String,Any}(long_key => fill(1, wide_count))
-    materialized_wide = _ROFCC_BACKEND._rofc_materialize(
-        wide_document, "bounded document"; max_nodes=wide_count + 2)
-    @test length(materialized_wide[long_key]) == wide_count
 
     cancel_checks = Ref(0)
     @test_throws ROFieldChunkCancelProbe begin
@@ -403,52 +381,6 @@ end
     end
 
     if Sys.isapple() || Sys.islinux()
-        @test _ROFCC_BACKEND._rofc_top_level_alias_is_trusted(
-            0, 0, 0o040755)
-        @test !_ROFCC_BACKEND._rofc_top_level_alias_is_trusted(
-            501, 0, 0o040755)
-        @test !_ROFCC_BACKEND._rofc_top_level_alias_is_trusted(
-            0, 0, 0o040777)
-
-        mktempdir() do sandbox
-            outside = mktempdir()
-            try
-                bridge = joinpath(sandbox, "bridge")
-                top_alias = joinpath(sandbox, "top-alias")
-                symlink(outside, bridge)
-                symlink("bridge", top_alias)
-                resolved = _ROFCC_BACKEND._rofc_single_hop_alias_target(
-                    top_alias)
-                @test resolved == bridge
-                @test islink(resolved)
-            finally
-                rm(outside; recursive=true, force=true)
-            end
-        end
-
-        mktempdir() do sandbox
-            nested_root = joinpath(sandbox, "missing", "parents", "root")
-            path = _ROFCC_BACKEND.write_ro_field_chunk!(
-                nested_root, chunk; plan=plan, work_unit=work_unit)
-            @test isfile(path)
-            @test startswith(path, nested_root)
-        end
-
-        mktempdir() do sandbox
-            missing_root = joinpath(
-                sandbox, "read-must-not-create", "nested", "root")
-            @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                _ROFCC_BACKEND.read_ro_field_chunk(
-                    joinpath(missing_root, "chunks",
-                        chunk_hash * ".json");
-                    expected_sha256=chunk_hash,
-                    plan=plan,
-                    work_unit=work_unit,
-                    storage_root=missing_root)
-            end
-            @test !ispath(joinpath(sandbox, "read-must-not-create"))
-        end
-
         mktempdir() do root
             outside = mktempdir()
             try
@@ -457,97 +389,6 @@ end
                     _ROFCC_BACKEND.write_ro_field_chunk!(root, chunk;
                         plan=plan, work_unit=work_unit)
                 end
-            finally
-                rm(outside; recursive=true, force=true)
-            end
-        end
-
-        mktempdir() do sandbox
-            outside = mktempdir()
-            root_alias = joinpath(sandbox, "root-alias")
-            try
-                symlink(outside, root_alias)
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND.write_ro_field_chunk!(root_alias, chunk;
-                        plan=plan, work_unit=work_unit)
-                end
-                @test isempty(readdir(outside))
-            finally
-                rm(outside; recursive=true, force=true)
-            end
-        end
-
-        mktempdir() do root
-            outside = mktempdir()
-            try
-                mkpath(joinpath(outside, "chunks"))
-                symlink(outside, joinpath(root, "alias"))
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND.write_ro_field_chunk!(
-                        joinpath(root, "alias"), chunk;
-                        plan=plan, work_unit=work_unit)
-                end
-                @test isempty(readdir(joinpath(outside, "chunks")))
-                outside_path = joinpath(
-                    outside, "chunks", chunk_hash * ".json")
-                write(outside_path, canonical)
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND.read_ro_field_chunk(
-                        joinpath(root, "alias", "chunks",
-                            chunk_hash * ".json");
-                        expected_sha256=chunk_hash,
-                        plan=plan,
-                        work_unit=work_unit,
-                        storage_root=root)
-                end
-            finally
-                rm(outside; recursive=true, force=true)
-            end
-        end
-
-        mktempdir() do sandbox
-            outside = mktempdir()
-            try
-                mkpath(joinpath(outside, "container", "root"))
-                symlink(outside, joinpath(sandbox, "alias"))
-                declared_root = joinpath(
-                    sandbox, "alias", "container", "root")
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND.write_ro_field_chunk!(
-                        declared_root, chunk;
-                        plan=plan, work_unit=work_unit)
-                end
-                outside_chunks = joinpath(
-                    outside, "container", "root", "chunks")
-                @test !ispath(outside_chunks)
-
-                mkpath(outside_chunks)
-                write(joinpath(outside_chunks, chunk_hash * ".json"),
-                    canonical)
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND.read_ro_field_chunk(
-                        joinpath(declared_root, "chunks",
-                            chunk_hash * ".json");
-                        expected_sha256=chunk_hash,
-                        plan=plan,
-                        work_unit=work_unit,
-                        storage_root=declared_root)
-                end
-            finally
-                rm(outside; recursive=true, force=true)
-            end
-        end
-
-        mktempdir() do root
-            outside = mktempdir()
-            try
-                symlink(outside, joinpath(root, "intermediate"))
-                @test_throws _ROFCC_BACKEND.ROFieldChunkContractError begin
-                    _ROFCC_BACKEND._rofc_ensure_directory!(
-                        joinpath(root, "intermediate", "nested");
-                        storage_root=root)
-                end
-                @test isempty(readdir(outside))
             finally
                 rm(outside; recursive=true, force=true)
             end

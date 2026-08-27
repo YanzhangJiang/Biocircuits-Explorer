@@ -148,10 +148,6 @@ if [ "$1" = "s3api" ] && [ "$2" = "head-object" ]; then
     if [ -f "$target.bne-sha256" ]; then
       sha256="$(cat "$target.bne-sha256")"
     fi
-    identity_sha256=""
-    if [ -f "$target.bne-identity-sha256" ]; then
-      identity_sha256="$(cat "$target.bne-identity-sha256")"
-    fi
     content_type=""
     if [ -f "$target.content-type" ]; then
       content_type="$(cat "$target.content-type")"
@@ -160,8 +156,8 @@ if [ "$1" = "s3api" ] && [ "$2" = "head-object" ]; then
     if [ -f "$target.head-content-length-json" ]; then
       content_length="$(cat "$target.head-content-length-json")"
     fi
-    printf '{"ContentLength":%s,"ContentType":"%s","Metadata":{"bne-result-sha256":"%s","bne-result-artifact-identity-sha256":"%s"}}\n' \
-      "$content_length" "$content_type" "$sha256" "$identity_sha256"
+    printf '{"ContentLength":%s,"ContentType":"%s","Metadata":{"bne-result-sha256":"%s"}}\n' \
+      "$content_length" "$content_type" "$sha256"
     exit 0
   fi
   printf 'An error occurred (NoSuchKey) when calling the HeadObject operation\n' >&2
@@ -197,10 +193,7 @@ if [ "$1" = "s3" ] && [ "$2" = "cp" ]; then
           metadata="$2"
           case "$metadata" in
             bne-result-sha256=*)
-              sha256="${metadata#bne-result-sha256=}"
-              printf '%s' "${sha256%%,*}" > "$target.bne-sha256"
-              identity_sha256="${metadata#*bne-result-artifact-identity-sha256=}"
-              printf '%s' "$identity_sha256" > "$target.bne-identity-sha256"
+              printf '%s' "${metadata#bne-result-sha256=}" > "$target.bne-sha256"
               ;;
           esac
           shift 2
@@ -362,11 +355,6 @@ function stage_committed_result(root::AbstractString,
         filesize(result_path),
         sha256_hex,
     )
-    identity_sha256 = Backend._job_result_manifest_identity_sha256(
-        manifest["artifact_identity"],
-        manifest["result"]["payload_key_count"],
-    )
-    write("$(result_path).bne-identity-sha256", identity_sha256)
     stage_manifest(root, record, manifest)
     return manifest
 end
@@ -393,9 +381,7 @@ end
             expected_hash = Backend._canonical_hash(spec)
 
             make_payload = function(job_id, status_path, result_path;
-                                    manifest_path=nothing,
-                                    protocol_version=
-                                        Backend.JOB_RESULT_PROTOCOL_VERSION)
+                                    manifest_path=nothing)
                 artifacts = Dict{String, Any}(
                     "status" => status_path,
                     "result" => result_path,
@@ -410,7 +396,7 @@ end
                 if manifest_path !== nothing
                     artifacts["result_manifest"] = manifest_path
                     payload["result_protocol_version"] =
-                        protocol_version
+                        Backend.JOB_RESULT_PROTOCOL_VERSION
                     payload["expected_artifact_config_hash"] = expected_hash
                 end
                 return payload
@@ -493,58 +479,6 @@ end
             @test length(result_directory_syncs) == 2
             @test result_parent_sync < result_staging_sync < result_rename <
                   first(result_directory_syncs)
-
-            local_record = Dict{String,Any}(
-                "job_id" => "local-manifest-retry",
-                "kind" => "query_atlas",
-                "result_protocol_version" => Backend.JOB_RESULT_PROTOCOL_VERSION,
-                "result_uri" => result_path,
-                "result_manifest_uri" => manifest_path,
-                "expected_artifact_config_hash" => expected_hash,
-            )
-            @test Backend._verify_job_result_artifact(local_record).status == :valid
-            original_local_manifest = read(manifest_path)
-            altered_local_manifest = Backend._read_job_json(manifest_path)
-            altered_local_manifest["artifact_identity"]["algorithm_name"] =
-                "different_algorithm"
-            Backend._write_job_json(manifest_path, altered_local_manifest)
-            @test Backend._verify_job_result_artifact(local_record).status == :invalid
-            write(manifest_path, original_local_manifest)
-            @test Backend._verify_job_result_artifact(local_record).status == :valid
-
-            manifest_v1_root = joinpath(publication_root, "manifest-v1-worker")
-            manifest_v1_status = joinpath(manifest_v1_root, "status.json")
-            manifest_v1_result = joinpath(manifest_v1_root, "result.json")
-            manifest_v1_path =
-                joinpath(manifest_v1_root, "result-manifest.json")
-            Backend._run_biocircuits_job_payload_with_ops(
-                make_payload(
-                    "local-manifest-v1-worker",
-                    manifest_v1_status,
-                    manifest_v1_result;
-                    manifest_path=manifest_v1_path,
-                    protocol_version=
-                        Backend.JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION,
-                ),
-                Backend._DEFAULT_JOB_PERSISTENCE_OPS,
-            )
-            @test Backend._read_job_json(
-                manifest_v1_path)["schema_version"] ==
-                Backend.JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION
-            manifest_v1_record = Dict{String,Any}(
-                "job_id" => "local-manifest-v1-worker",
-                "kind" => "query_atlas",
-                "result_protocol_version" =>
-                    Backend.JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION,
-                "result_uri" => manifest_v1_result,
-                "result_manifest_uri" => manifest_v1_path,
-                "expected_artifact_config_hash" => expected_hash,
-            )
-            manifest_v1_verification =
-                Backend._verify_job_result_artifact(manifest_v1_record)
-            @test manifest_v1_verification.status == :valid
-            @test manifest_v1_verification.verification_mode ==
-                :legacy_manifest_v1_0
 
             # The pre-manifest compatibility path applies the same strict local
             # result rule and may publish success only after its retry succeeds.
@@ -782,23 +716,11 @@ end
                     (manifest["artifact_identity"]["config_hash"] = repeat("0", 64)),
                     "config identity")
                 invalid_manifest_case((manifest, _) ->
-                    (manifest["artifact_identity"]["algorithm_name"] =
-                        "different_algorithm"), "artifact identity")
-                invalid_manifest_case((manifest, _) ->
-                    (manifest["artifact_identity"]["algorithm_version"] =
-                        "999.0.0"), "artifact identity")
-                invalid_manifest_case((manifest, _) ->
-                    (manifest["artifact_identity"]["artifact_metadata_hash"] =
-                        repeat("0", 64)), "artifact identity")
-                invalid_manifest_case((manifest, _) ->
                     (manifest["result"]["uri"] = "s3://artifact-bucket/wrong/result.json"),
                     "manifest uri")
                 invalid_manifest_case((manifest, _) ->
                     (manifest["result"]["payload_key_count"] = 0),
                     "payload_key_count")
-                invalid_manifest_case((manifest, _) ->
-                    (manifest["result"]["payload_key_count"] += 1),
-                    "artifact identity")
                 invalid_manifest_case((manifest, _) ->
                     (manifest["result"]["content_length"] += 1),
                     "byte length")
@@ -825,35 +747,6 @@ end
                 missing_sha = Backend._refresh_aws_batch_job!(missing_sha_id)
                 @test missing_sha["status"] == "failed"
                 @test occursin("sha-256 object metadata", lowercase(String(missing_sha["error"])))
-
-                missing_identity_id = seed_aws_job()
-                missing_identity_record = Backend._job_record(missing_identity_id)
-                stage_committed_result(s3_root, missing_identity_record)
-                rm("$(s3_path(s3_root, String(missing_identity_record["result_uri"]))).bne-identity-sha256";
-                   force=true)
-                missing_identity = Backend._refresh_aws_batch_job!(missing_identity_id)
-                @test missing_identity["status"] == "failed"
-                @test occursin(
-                    "artifact-identity sha-256 object metadata",
-                    lowercase(String(missing_identity["error"])),
-                )
-
-                wrong_identity_id = seed_aws_job()
-                wrong_identity_record = Backend._job_record(wrong_identity_id)
-                stage_committed_result(s3_root, wrong_identity_record)
-                wrong_identity_path = s3_path(
-                    s3_root, String(wrong_identity_record["result_uri"]))
-                write(
-                    "$(wrong_identity_path).bne-identity-sha256",
-                    repeat("f", 64),
-                )
-                wrong_identity =
-                    Backend._refresh_aws_batch_job!(wrong_identity_id)
-                @test wrong_identity["status"] == "failed"
-                @test occursin(
-                    "committed identity metadata",
-                    lowercase(String(wrong_identity["error"])),
-                )
 
                 wrong_type_id = seed_aws_job()
                 wrong_type_record = Backend._job_record(wrong_type_id)
@@ -974,54 +867,6 @@ end
                 @test unknown["progress"]["artifact_verification_mode"] == "manifest"
                 @test !haskey(unknown, "finished_at")
                 @test !haskey(unknown, "error")
-
-                manifest_v1_id = seed_aws_job()
-                lock(Backend.JOBS_LOCK) do
-                    record = Backend.JOBS[manifest_v1_id]
-                    candidate = deepcopy(record)
-                    candidate["result_protocol_version"] =
-                        Backend.JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION
-                    Backend._commit_job_candidate_unlocked!(record, candidate)
-                end
-                manifest_v1_record = Backend._job_record(manifest_v1_id)
-                manifest_v1 = stage_committed_result(
-                    s3_root, manifest_v1_record)
-                manifest_v1["schema_version"] =
-                    Backend.JOB_RESULT_LEGACY_MANIFEST_PROTOCOL_VERSION
-                manifest_v1["artifact_identity"]["algorithm_name"] =
-                    "uncommitted_v1_algorithm"
-                manifest_v1["artifact_identity"]["algorithm_version"] =
-                    "uncommitted-v1"
-                manifest_v1["artifact_identity"]["artifact_metadata_hash"] =
-                    repeat("f", 64)
-                manifest_v1["result"]["payload_key_count"] += 1
-                stage_manifest(s3_root, manifest_v1_record, manifest_v1)
-                manifest_v1_result_path = s3_path(
-                    s3_root, String(manifest_v1_record["result_uri"]))
-                rm("$(manifest_v1_result_path).bne-identity-sha256";
-                   force=true)
-
-                wrong_v1_config = deepcopy(manifest_v1)
-                wrong_v1_config["artifact_identity"]["config_hash"] =
-                    repeat("0", 64)
-                stage_manifest(s3_root, manifest_v1_record, wrong_v1_config)
-                @test Backend._verify_job_result_artifact(
-                    manifest_v1_record).status == :invalid
-                stage_manifest(s3_root, manifest_v1_record, manifest_v1)
-
-                write(aws_log, "")
-                manifest_v1_completed =
-                    Backend._refresh_aws_batch_job!(manifest_v1_id)
-                @test manifest_v1_completed["status"] == "succeeded"
-                @test manifest_v1_completed["result_available"] == true
-                @test manifest_v1_completed["progress"]["artifact_status"] ==
-                    "valid"
-                @test manifest_v1_completed["progress"][
-                    "artifact_verification_mode"] == "legacy_manifest_v1_0"
-                @test !occursin(
-                    "s3 cp $(manifest_v1_record["result_uri"])",
-                    read(aws_log, String),
-                )
 
                 legacy_id = seed_aws_job(manifest_protocol=false)
                 legacy_record = Backend._job_record(legacy_id)

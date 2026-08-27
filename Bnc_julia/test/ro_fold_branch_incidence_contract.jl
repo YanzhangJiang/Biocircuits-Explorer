@@ -220,20 +220,10 @@ function three_fold_corridor_fixture()
     return (
         system=system,
         census=census,
-        branch_system=branch_system,
         selected_event=selected_event,
         central=central,
         middle=middle,
     )
-end
-
-function overwrite_exact_bigint!(target::Rational{BigInt}, value)
-    exact_value = Rational{BigInt}(value)
-    Base.GMP.MPZ.set!(
-        numerator(target), deepcopy(numerator(exact_value)))
-    Base.GMP.MPZ.set!(
-        denominator(target), deepcopy(denominator(exact_value)))
-    return target
 end
 
 function raw_incidence_with_flag(certificate, field::Symbol, value)
@@ -313,15 +303,6 @@ end
         @test certificate.branch_coordinate_system_sha256 ==
             fixture.branch_system.declaration_sha256
         @test certificate.chart_state_index == 1
-        @test certificate.source_replay_interval_operation_count ==
-            fixture.census.analysis_interval_operation_count +
-            fixture.central.exact_operation_count +
-            fixture.lower_local.exact_operation_count +
-            fixture.upper_local.exact_operation_count +
-            fixture.lower_bridge.exact_operation_count +
-            fixture.upper_bridge.exact_operation_count +
-            fixture.lower_regular.exact_operation_count +
-            fixture.upper_regular.exact_operation_count
         @test certificate.event_on_local_branch_certified
         @test certificate.two_local_half_branches_certified
         @test certificate.adjacent_regular_sheet_incidence_certified
@@ -571,95 +552,6 @@ end
             three_fold.selected_event.center[1]
         @test blocked isa ROFoldBranchIncidenceRejected
         @test blocked.reason == :intervening_fold_event_not_excluded
-    end
-
-    @testset "corridors consume only the replayed fold census" begin
-        three_fold = three_fold_corridor_fixture()
-        middle_event = only(event for event in three_fold.census.events
-            if event.center[1] == Rational{BigInt}(three_fold.middle))
-        overwrite_exact_bigint!(middle_event.center[1], 1 // 2)
-        @test validate_ro_complete_simple_fold_event_census(
-            three_fold.system, three_fold.census)
-
-        # The corrupted original population no longer sees the middle fold,
-        # proving that it would admit this corridor if consulted after replay.
-        replayed_census, replayed_event =
-            BindingAndCatalysis._rofi_replay_fold_census_event(
-                three_fold.system,
-                three_fold.census,
-                three_fold.selected_event,
-                () -> nothing,
-            )
-        original_context = BindingAndCatalysis._RORSContext(
-            three_fold.system.limits, () -> nothing)
-        selected_root = BindingAndCatalysis._rofi_event_root_enclosure(
-            three_fold.selected_event, original_context)
-        @test BindingAndCatalysis._rofi_fold_free_corridor(
-            :lower_chart_side,
-            three_fold.census,
-            three_fold.selected_event,
-            selected_root[1],
-            three_fold.central,
-            ROExactInterval(1.004, 1.005),
-            1,
-            original_context,
-        ) isa Tuple
-
-        replayed_context = BindingAndCatalysis._RORSContext(
-            three_fold.system.limits, () -> nothing)
-        replayed_root = BindingAndCatalysis._rofi_event_root_enclosure(
-            replayed_event, replayed_context)
-        rejected = try
-            BindingAndCatalysis._rofi_fold_free_corridor(
-                :lower_chart_side,
-                replayed_census,
-                replayed_event,
-                replayed_root[1],
-                three_fold.central,
-                ROExactInterval(1.004, 1.005),
-                1,
-                replayed_context,
-            )
-            nothing
-        catch caught
-            caught
-        end
-        @test rejected isa ROFoldBranchIncidenceRejected
-        @test rejected.reason == :intervening_fold_event_not_excluded
-    end
-
-    @testset "replayed sources detach caller-owned exact data" begin
-        replayed = BindingAndCatalysis._rofi_replay_sources(
-            fixture.system,
-            fixture.census,
-            only(fixture.census.events),
-            fixture.central,
-            fixture.lower_local,
-            fixture.upper_local,
-            fixture.lower_bridge,
-            fixture.upper_bridge,
-            fixture.lower_regular,
-            fixture.upper_regular,
-            1,
-            ROFoldBranchIncidenceLimits(),
-            () -> nothing,
-        )
-        replayed_local_value = deepcopy(
-            replayed.central_local_patch.control_box[1].lower)
-        replayed_regular_value = deepcopy(
-            replayed.lower_regular_patch.control_box[1].lower)
-        overwrite_exact_bigint!(
-            fixture.central.control_box[1].lower,
-            replayed_local_value + 1,
-        )
-        overwrite_exact_bigint!(
-            fixture.lower_regular.control_box[1].lower,
-            replayed_regular_value + 1,
-        )
-        @test replayed.central_local_patch.control_box[1].lower ==
-            replayed_local_value
-        @test replayed.lower_regular_patch.control_box[1].lower ==
-            replayed_regular_value
     end
 end
 

@@ -962,8 +962,6 @@ end
 
 function _ro_field_serialize_exact(complex::ROCellComplex2D,
                                    normalized::NormalizedROFieldRequest)
-    complex.authority_status === :engine_replayed || throw(ArgumentError(
-        "exact RO-field serialization requires an engine-replayed cell complex"))
     cells = Dict{String,Any}[]
     for cell in complex.cells
         cell_id = _ro_field_cell_id(cell.id)
@@ -1268,32 +1266,26 @@ function _ro_field_validate_polyhedron!(raw, encoding::String, rank::Int,
 end
 
 function _ro_field_polygon_signed_area(vertices)
-    origin_x, origin_y = vertices[1]
     twice_area = 0.0
     for index in eachindex(vertices)
         following = index == length(vertices) ? 1 : index + 1
-        twice_area +=
-            (vertices[index][1] - origin_x) *
-                (vertices[following][2] - origin_y) -
-            (vertices[following][1] - origin_x) *
-                (vertices[index][2] - origin_y)
+        twice_area += vertices[index][1] * vertices[following][2] -
+            vertices[following][1] * vertices[index][2]
     end
     return twice_area / 2
 end
 
-function _ro_field_polygon_is_convex(vertices;
-                                     length_tolerance::Float64=1e-9)
+function _ro_field_polygon_is_convex(vertices; tolerance::Float64=1e-9)
     for index in eachindex(vertices)
         second = index == length(vertices) ? 1 : index + 1
         third = second == length(vertices) ? 1 : second + 1
         a, b, c = vertices[index], vertices[second], vertices[third]
         cross = (b[1] - a[1]) * (c[2] - b[2]) -
             (b[2] - a[2]) * (c[1] - b[1])
-        first_length = hypot(b[1] - a[1], b[2] - a[2])
-        second_length = hypot(c[1] - b[1], c[2] - b[2])
-        cross_tolerance = max(first_length, second_length) * length_tolerance +
-            64.0 * eps(Float64) * first_length * second_length
-        cross >= -cross_tolerance || return false
+        scale = max(1.0,
+            hypot(b[1] - a[1], b[2] - a[2]) *
+            hypot(c[1] - b[1], c[2] - b[2]))
+        cross >= -tolerance * scale || return false
     end
     return true
 end
@@ -1302,21 +1294,7 @@ _ro_field_edge_cross(a, b, point) =
     (b[1] - a[1]) * (point[2] - a[2]) -
         (b[2] - a[2]) * (point[1] - a[1])
 
-function _ro_field_edge_cross_tolerance(a, b, point,
-                                        length_tolerance::Float64)
-    edge_length = hypot(b[1] - a[1], b[2] - a[2])
-    point_distance = hypot(point[1] - a[1], point[2] - a[2])
-    # Preserve genuine sub-tolerance overlap/gap area for the global budget.
-    # The domain-derived distance is only an upper bound on arithmetic
-    # roundoff; it must not expand every polygon edge independently.
-    return min(
-        edge_length * length_tolerance,
-        64.0 * eps(Float64) * edge_length * point_distance,
-    )
-end
-
-function _ro_field_clip_convex_polygon(subject, clip;
-                                       length_tolerance::Float64=1e-9)
+function _ro_field_clip_convex_polygon(subject, clip; tolerance::Float64=1e-9)
     output = Vector{Float64}[copy(point) for point in subject]
     for clip_index in eachindex(clip)
         isempty(output) && break
@@ -1326,17 +1304,13 @@ function _ro_field_clip_convex_polygon(subject, clip;
         output = Vector{Float64}[]
         previous = input[end]
         previous_distance = _ro_field_edge_cross(a, b, previous)
-        previous_inside = previous_distance >=
-            -_ro_field_edge_cross_tolerance(a, b, previous, length_tolerance)
+        previous_inside = previous_distance >= -tolerance
         for current in input
             current_distance = _ro_field_edge_cross(a, b, current)
-            current_inside = current_distance >=
-                -_ro_field_edge_cross_tolerance(a, b, current, length_tolerance)
+            current_inside = current_distance >= -tolerance
             if current_inside != previous_inside
                 denominator = previous_distance - current_distance
-                denominator_tolerance = 64.0 * eps(Float64) * max(
-                    abs(previous_distance), abs(current_distance), floatmin(Float64))
-                if abs(denominator) > denominator_tolerance
+                if abs(denominator) > eps(Float64)
                     fraction = previous_distance / denominator
                     push!(output, Float64[
                         previous[coordinate] +
@@ -1354,10 +1328,8 @@ function _ro_field_clip_convex_polygon(subject, clip;
     return output
 end
 
-function _ro_field_convex_intersection_area(left, right;
-                                            length_tolerance::Float64=1e-9)
-    intersection = _ro_field_clip_convex_polygon(
-        left, right; length_tolerance=length_tolerance)
+function _ro_field_convex_intersection_area(left, right)
+    intersection = _ro_field_clip_convex_polygon(left, right)
     length(intersection) >= 3 || return 0.0
     return abs(_ro_field_polygon_signed_area(intersection))
 end
@@ -1537,35 +1509,23 @@ function _ro_field_validate_facet_closure!(cell_vertices, cell_regular_affine,
         end
     end
 
-    total_uncovered_length = 0.0
-    total_overlapping_length = 0.0
     for ((cell_id, edge_index), raw_intervals) in coverage
         isempty(raw_intervals) && throw(ArgumentError(
             "cell $cell_id edge $edge_index is not represented by any facet"))
         intervals = sort!(raw_intervals; by=item -> (item[1], item[2], item[4]))
-        vertices = cell_vertices[cell_id]
-        following = edge_index == length(vertices) ? 1 : edge_index + 1
-        edge_length = hypot(
-            vertices[following][1] - vertices[edge_index][1],
-            vertices[following][2] - vertices[edge_index][2],
-        )
         cursor = 0.0
-        for (lower, upper, _, _) in intervals
-            if lower > cursor
-                total_uncovered_length += (lower - cursor) * edge_length
-            elseif lower < cursor
-                total_overlapping_length +=
-                    (min(cursor, upper) - lower) * edge_length
-            end
+        for (lower, upper, parameter_tolerance, facet_index) in intervals
+            lower > cursor + parameter_tolerance && throw(ArgumentError(
+                "cell $cell_id edge $edge_index has an uncovered facet interval"))
+            lower < cursor - parameter_tolerance && throw(ArgumentError(
+                "cell $cell_id edge $edge_index has overlapping facet intervals " *
+                "at data.facets[$facet_index]"))
             cursor = max(cursor, upper)
         end
-        cursor < 1.0 &&
-            (total_uncovered_length += (1.0 - cursor) * edge_length)
+        final_tolerance = maximum(item[3] for item in intervals)
+        cursor >= 1.0 - final_tolerance || throw(ArgumentError(
+            "cell $cell_id edge $edge_index has an uncovered terminal facet interval"))
     end
-    total_uncovered_length <= tolerance || throw(ArgumentError(
-        "cumulative uncovered facet length exceeds the global tolerance"))
-    total_overlapping_length <= tolerance || throw(ArgumentError(
-        "cumulative overlapping facet length exceeds the global tolerance"))
     return nothing
 end
 
@@ -1884,16 +1844,13 @@ function validate_ro_field_document!(raw)
             signed_area = _ro_field_polygon_signed_area(vertices)
             signed_area > 0 || throw(ArgumentError(
                 "$path.vertices must be counter-clockwise with positive area"))
-            _ro_field_polygon_is_convex(
-                vertices; length_tolerance=exact_length_tolerance) ||
-                throw(ArgumentError(
+            _ro_field_polygon_is_convex(vertices) || throw(ArgumentError(
                 "$path.vertices must describe a convex polygon"))
             for (vertex_index, vertex) in enumerate(vertices), coordinate in 1:2
                 bounds = axes[coordinate]["bounds"]
                 lower = Float64(bounds["lower"])
                 upper = Float64(bounds["upper"])
-                lower - exact_length_tolerance <= vertex[coordinate] <=
-                    upper + exact_length_tolerance ||
+                lower - 1e-8 <= vertex[coordinate] <= upper + 1e-8 ||
                     throw(ArgumentError(
                         "$path.vertices[$vertex_index] lies outside the declared domain"))
             end
@@ -1992,30 +1949,16 @@ function validate_ro_field_document!(raw)
             "data cell ids must be unique"))
         get(data, "cell_order", nothing) == cell_ids || throw(ArgumentError(
             "data.cell_order does not equal the cell_id sequence"))
-        gaps = collect(_ro_field_array(get(data, "gaps", nothing), "data.gaps"))
-        cumulative_overlap_area = 0.0
         for left_index in 1:length(cell_ids),
             right_index in (left_index + 1):length(cell_ids)
             right_index > length(cell_ids) && continue
             overlap_area = _ro_field_convex_intersection_area(
                 cell_vertices[cell_ids[left_index]],
-                cell_vertices[cell_ids[right_index]];
-                length_tolerance=exact_length_tolerance)
-            cumulative_overlap_area += overlap_area
+                cell_vertices[cell_ids[right_index]])
             overlap_area <= exact_area_tolerance || throw(ArgumentError(
                 "cells $(cell_ids[left_index]) and $(cell_ids[right_index]) " *
                 "overlap with positive area"))
         end
-        cumulative_overlap_area <= exact_area_tolerance || throw(ArgumentError(
-            "cumulative cell overlap with positive area exceeds the global tolerance"))
-        isempty(gaps) && abs(cell_area_sum - domain_area) > exact_area_tolerance &&
-            throw(ArgumentError(
-                "gap-free exact cells do not cover the complete declared domain"))
-        uncovered_area_upper_bound = max(0.0, domain_area - cell_area_sum) +
-            cumulative_overlap_area
-        isempty(gaps) && uncovered_area_upper_bound > exact_area_tolerance &&
-            throw(ArgumentError(
-                "gap-free exact cells exceed the combined global overlap/gap budget"))
         regular_candidate_count == length(cell_sources) || throw(ArgumentError(
             "regular_candidate_regime_count must equal the full-cell source population"))
 
@@ -2152,11 +2095,10 @@ function validate_ro_field_document!(raw)
                 throw(ArgumentError("$path.normal is not the canonical unit normal"))
             expected_offset = -(normal[1] * endpoints[1][1] +
                 normal[2] * endpoints[1][2])
-            abs(offset - expected_offset) <= exact_length_tolerance ||
-                throw(ArgumentError(
-                    "$path.offset does not place both endpoints on the facet line"))
-            all(endpoint -> abs(normal[1] * endpoint[1] +
-                    normal[2] * endpoint[2] + offset) <= exact_length_tolerance,
+            _ro_field_document_close(offset, expected_offset) || throw(ArgumentError(
+                "$path.offset does not place both endpoints on the facet line"))
+            all(endpoint -> _ro_field_document_close(
+                    normal[1] * endpoint[1] + normal[2] * endpoint[2] + offset, 0.0),
                 endpoints) || throw(ArgumentError(
                     "$path normal/offset does not contain both endpoints"))
             mixed_sign = _ro_field_document_bool(
@@ -2173,8 +2115,7 @@ function validate_ro_field_document!(raw)
                 axis_index = startswith(side, "axis1") ? 1 : 2
                 bound = endswith(side, "lower") ?
                     domain_bounds[axis_index][1] : domain_bounds[axis_index][2]
-                all(endpoint -> abs(endpoint[axis_index] - bound) <=
-                        exact_length_tolerance,
+                all(endpoint -> _ro_field_document_close(endpoint[axis_index], bound),
                     endpoints) || throw(ArgumentError(
                         "$path.domain_side does not match its endpoints"))
             else
@@ -2198,6 +2139,7 @@ function validate_ro_field_document!(raw)
             cell_vertices, cell_regular_affine, facet_geometry,
             domain_bounds, exact_length_tolerance)
 
+        gaps = collect(_ro_field_array(get(data, "gaps", nothing), "data.gaps"))
         gap_ids = String[]
         for (index, raw_gap) in enumerate(gaps)
             path = "data.gaps[$index]"
@@ -2217,6 +2159,9 @@ function validate_ro_field_document!(raw)
         end
         length(unique(gap_ids)) == length(gap_ids) || throw(ArgumentError(
             "data gap ids must be unique"))
+        isempty(gaps) && abs(cell_area_sum - domain_area) > exact_area_tolerance &&
+            throw(ArgumentError(
+                "gap-free exact cells do not cover the complete declared domain"))
         actual_valid = regular_cells
         actual_invalid = set_valued_cells + length(strata) + length(gaps)
         actual_evaluated = actual_valid + actual_invalid

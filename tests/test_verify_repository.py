@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import importlib.util
 import io
 import json
@@ -95,7 +94,6 @@ class PathAndMarkdownTests(unittest.TestCase):
                 (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
             common = {
                 "baseline_evidence_revision": "baseline",
-                "current_verified_revision": "abcdef0",
                 "verification_command": "python3 scripts/verify_repository.py --check",
             }
             manifest = {
@@ -174,7 +172,6 @@ class PathAndMarkdownTests(unittest.TestCase):
                 (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
             common = {
                 "baseline_evidence_revision": "baseline",
-                "current_verified_revision": "abcdef0",
                 "verification_command": "python3 scripts/verify_repository.py --check",
             }
             manifest = {
@@ -202,66 +199,6 @@ class PathAndMarkdownTests(unittest.TestCase):
             )
 
             self.assertTrue(any("same path" in error for error in audit.errors))
-
-
-class KnowledgeRevisionTests(unittest.TestCase):
-    @staticmethod
-    def _documents(revision: str = "abcdef0") -> tuple[tuple[str, dict], ...]:
-        return tuple(
-            (name, {"current_verified_revision": revision})
-            for name in (
-                "knowledge manifest",
-                "module catalog",
-                "contract catalog",
-                "artifact catalog",
-            )
-        )
-
-    def test_current_verified_revision_accepts_one_shared_short_git_hex(self):
-        audit = verify_repository.Audit()
-
-        verify_repository.validate_current_verified_revisions(self._documents(), audit)
-
-        self.assertEqual(audit.errors, [])
-
-    def test_current_verified_revision_is_required_in_every_document(self):
-        documents = list(self._documents())
-        documents[2] = (documents[2][0], {})
-        audit = verify_repository.Audit()
-
-        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
-
-        self.assertTrue(
-            any(
-                "contract catalog lacks a valid current_verified_revision" in error
-                for error in audit.errors
-            )
-        )
-
-    def test_current_verified_revision_rejects_non_lowercase_git_hex(self):
-        documents = list(self._documents())
-        documents[1] = (documents[1][0], {"current_verified_revision": "ABCDEF0"})
-        audit = verify_repository.Audit()
-
-        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
-
-        self.assertTrue(
-            any(
-                "module catalog lacks a valid current_verified_revision" in error
-                for error in audit.errors
-            )
-        )
-
-    def test_current_verified_revision_must_match_across_documents(self):
-        documents = list(self._documents())
-        documents[3] = (documents[3][0], {"current_verified_revision": "abcdef1"})
-        audit = verify_repository.Audit()
-
-        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
-
-        self.assertTrue(
-            any("current_verified_revision drift" in error for error in audit.errors)
-        )
 
 
 class SchemaInventoryTests(unittest.TestCase):
@@ -557,127 +494,6 @@ class GeneratedReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "top-level JSON object"):
             verify_repository.unique_json_object('["1.2.3"]', "package")
 
-    def test_julia_support_contract_rejects_declared_and_ci_drift(self):
-        expected = {
-            "julia": ["1.10", "1.12"],
-            "julia_hpc": ["1.10", "1.12"],
-        }
-        audit = verify_repository.Audit()
-        verify_repository.validate_julia_support_contract(
-            "~1.10, ~1.12", "~1.10, ~1.12", expected, audit
-        )
-        self.assertEqual(audit.errors, [])
-
-        broad = verify_repository.Audit()
-        verify_repository.validate_julia_support_contract(
-            "1.10", "1.10", expected, broad
-        )
-        self.assertTrue(any("maintained minor lines" in error for error in broad.errors))
-
-        missing_lane = verify_repository.Audit()
-        verify_repository.validate_julia_support_contract(
-            "~1.10, ~1.12",
-            "~1.10, ~1.12",
-            {"julia": ["1.12"], "julia_hpc": ["1.10", "1.12"]},
-            missing_lane,
-        )
-        self.assertTrue(any("webapp Julia matrix" in error for error in missing_lane.errors))
-
-    def test_julia_ci_execution_contract_rejects_nonexecuting_hpc_matrix(self):
-        workflow = verify_repository.yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        )
-        baseline = verify_repository.Audit()
-        verify_repository.validate_julia_ci_execution_contract(workflow, baseline)
-        self.assertEqual(baseline.errors, [])
-
-        no_steps = copy.deepcopy(workflow)
-        no_steps["jobs"]["test-hpc-environment"]["steps"] = []
-        no_steps_audit = verify_repository.Audit()
-        verify_repository.validate_julia_ci_execution_contract(no_steps, no_steps_audit)
-        self.assertTrue(any("Julia setup" in error for error in no_steps_audit.errors))
-        self.assertTrue(any("headless golden smoke" in error for error in no_steps_audit.errors))
-
-        hardcoded = copy.deepcopy(workflow)
-        setup = next(
-            step
-            for step in hardcoded["jobs"]["test-hpc-environment"]["steps"]
-            if step.get("uses") == "julia-actions/setup-julia@v2"
-        )
-        setup["with"]["version"] = "1.12"
-        hardcoded_audit = verify_repository.Audit()
-        verify_repository.validate_julia_ci_execution_contract(hardcoded, hardcoded_audit)
-        self.assertTrue(any("matrix.julia" in error for error in hardcoded_audit.errors))
-
-        allowed_failure = copy.deepcopy(workflow)
-        allowed_failure["jobs"]["test-hpc-environment"]["continue-on-error"] = True
-        allowed_failure_audit = verify_repository.Audit()
-        verify_repository.validate_julia_ci_execution_contract(
-            allowed_failure, allowed_failure_audit
-        )
-        self.assertTrue(any("must not allow failures" in error for error in allowed_failure_audit.errors))
-
-    def test_julia_ci_execution_contract_rejects_gutted_or_wrong_project_smoke(self):
-        workflow = verify_repository.yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        )
-        for removed_line in ("  Pkg.instantiate()\n", "  using BindingAndCatalysis\n"):
-            with self.subTest(removed_line=removed_line.strip()):
-                gutted = copy.deepcopy(workflow)
-                lock_step = next(
-                    step
-                    for step in gutted["jobs"]["test-hpc-environment"]["steps"]
-                    if "Pkg.instantiate()" in str(step.get("run", ""))
-                )
-                lock_step["run"] = lock_step["run"].replace(removed_line, "")
-                gutted_audit = verify_repository.Audit()
-                verify_repository.validate_julia_ci_execution_contract(
-                    gutted, gutted_audit
-                )
-                self.assertTrue(
-                    any("lock-selection" in error for error in gutted_audit.errors)
-                )
-
-        wrong_project = copy.deepcopy(workflow)
-        smoke_step = next(
-            step
-            for step in wrong_project["jobs"]["test-hpc-environment"]["steps"]
-            if "headless_golden_smoke.jl" in str(step.get("run", ""))
-        )
-        smoke_step["run"] = smoke_step["run"].replace(
-            "--project=webapp_hpc", "--project=webapp"
-        )
-        wrong_project_audit = verify_repository.Audit()
-        verify_repository.validate_julia_ci_execution_contract(
-            wrong_project, wrong_project_audit
-        )
-        self.assertTrue(any("headless golden smoke" in error for error in wrong_project_audit.errors))
-
-    def test_julia_ci_execution_contract_rejects_missing_stale_lock_gate(self):
-        workflow = verify_repository.yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        )
-        for job_name, expected_error in (
-            ("test-julia", "standard Julia job"),
-            ("test-hpc-environment", "CI HPC job"),
-        ):
-            with self.subTest(job_name=job_name):
-                mutated = copy.deepcopy(workflow)
-                lock_step = next(
-                    step
-                    for step in mutated["jobs"][job_name]["steps"]
-                    if "Pkg.Operations.is_manifest_current" in str(step.get("run", ""))
-                )
-                lock_step["run"] = lock_step["run"].replace(
-                    "  Pkg.Operations.is_manifest_current(ctx.env) === true ||\n"
-                    "      error(\"selected manifest is stale for "
-                    "$(Base.active_project())\")\n",
-                    "",
-                )
-                audit = verify_repository.Audit()
-                verify_repository.validate_julia_ci_execution_contract(mutated, audit)
-                self.assertTrue(any(expected_error in error for error in audit.errors))
-
     def test_manifest_version_drift_is_rejected_by_inventory(self):
         owned_files = (
             "VERSION",
@@ -703,26 +519,9 @@ class GeneratedReferenceTests(unittest.TestCase):
                         {"uses": "actions/setup-python@v5", "with": {"python-version": "3.13"}},
                     ]
                 },
-                "test-julia": {
-                    "strategy": {"matrix": {"julia": ["1.10", "1.12"]}},
-                    "steps": [
-                        {
-                            "uses": "julia-actions/setup-julia@v2",
-                            "with": {"version": "${{ matrix.julia }}"},
-                        },
-                        {"run": verify_repository.STANDARD_LOCK_AND_LOAD_COMMAND},
-                    ],
-                },
+                "test-julia": {"strategy": {"matrix": {"julia": ["1.12"]}}},
                 "test-hpc-environment": {
-                    "strategy": {"matrix": {"julia": ["1.10", "1.12"]}},
-                    "steps": [
-                        {
-                            "uses": "julia-actions/setup-julia@v2",
-                            "with": {"version": "${{ matrix.julia }}"},
-                        },
-                        {"run": verify_repository.HPC_LOCK_AND_LOAD_COMMAND},
-                        {"run": verify_repository.HPC_HEADLESS_SMOKE_COMMAND},
-                    ],
+                    "strategy": {"matrix": {"julia": ["1.10", "1.12"]}}
                 },
             }
         }

@@ -4116,11 +4116,7 @@ function query_behavior_atlas(atlas, query::AtlasQuerySpec=atlas_query_spec_defa
     return query_behavior_atlas_v2(atlas, query; strict=false)["result"]
 end
 
-function query_behavior_atlas_from_spec(
-    spec;
-    cancel_check::Function=_no_cancel_check,
-    sqlite_db=nothing,
-)
+function query_behavior_atlas_from_spec(spec; cancel_check::Function=_no_cancel_check)
     cancel_check()
     _raw_haskey(spec, :query) || error("Atlas query request must include `query`.")
     query_raw = _raw_get(spec, :query, nothing)
@@ -4130,9 +4126,7 @@ function query_behavior_atlas_from_spec(
     elseif _raw_haskey(spec, :library)
         _raw_get(spec, :library, nothing)
     elseif (sqlite_path = _sqlite_path_from_raw(spec)) !== nothing
-        corpus = sqlite_db === nothing ?
-            atlas_sqlite_load_query_corpus(sqlite_path, query_raw) :
-            atlas_sqlite_load_query_corpus(sqlite_db, query_raw)
+        corpus = atlas_sqlite_load_query_corpus(sqlite_path, query_raw)
         sqlite_prefilter = _raw_get(corpus, :sqlite_prefilter, nothing)
         corpus
     elseif _raw_haskey(spec, :atlas_spec)

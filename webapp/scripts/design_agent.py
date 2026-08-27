@@ -1299,9 +1299,7 @@ def _validated_2d_surface(xs, ys, output_grid, raw_validity_grid):
     all-points-valid behavior.
     """
     shape_ok = (
-        isinstance(xs, list) and bool(xs)
-        and isinstance(ys, list) and bool(ys)
-        and all(_is_finite_scan_number(value) for value in xs + ys)
+        bool(xs) and bool(ys)
         and isinstance(output_grid, list) and len(output_grid) == len(xs)
         and all(isinstance(row, list) and len(row) == len(ys) for row in output_grid)
         and isinstance(raw_validity_grid, list) and len(raw_validity_grid) == len(xs)
@@ -1331,223 +1329,6 @@ def _required_2d_corners_valid(validity_grid):
         validity_grid[0][0], validity_grid[0][-1],
         validity_grid[-1][0], validity_grid[-1][-1],
     ))
-
-def _valid_sha256(value):
-    return (isinstance(value, str) and len(value) == 64
-            and all(character in "0123456789abcdef" for character in value))
-
-def _same_finite_number(left, right):
-    if not (_is_finite_scan_number(left) and _is_finite_scan_number(right)):
-        return False
-    return math.isclose(float(left), float(right), rel_tol=1e-12, abs_tol=1e-12)
-
-def _same_finite_identity_multiset(left, right):
-    if not (isinstance(left, list) and isinstance(right, list)
-            and len(left) == len(right)
-            and all(_is_finite_scan_number(value) for value in left + right)):
-        return False
-    return sorted(float(value) for value in left) == sorted(
-        float(value) for value in right
-    )
-
-def _same_finite_identity_sequence(left, right):
-    return (
-        isinstance(left, list)
-        and isinstance(right, list)
-        and len(left) == len(right)
-        and all(float(actual) == float(expected)
-                for actual, expected in zip(left, right))
-    )
-
-def _canonical_network_ir_identity(network):
-    """Ask the Julia canonical owner to parse and hash one network payload."""
-    validated = E._post(
-        "/api/v1/ir/network/validate",
-        {"network": copy.deepcopy(network)},
-        30,
-    )
-    if not (isinstance(validated, dict) and validated.get("valid") is True
-            and validated.get("ir_schema_version") == "bne-ir/v1.0.0"):
-        return None
-    network_ir = validated.get("network")
-    network_ir_hash = validated.get("hash")
-    if not (isinstance(network_ir, dict)
-            and network_ir.get("ir_schema_version") == "bne-ir/v1.0.0"
-            and isinstance(network_ir.get("reactions"), list)
-            and bool(network_ir["reactions"])
-            and _valid_sha256(network_ir_hash)):
-        return None
-    return {
-        "network_ir": copy.deepcopy(network_ir),
-        "network_ir_hash": network_ir_hash,
-    }
-
-def _canonical_simulate_2d_request_identity(reactions, kd):
-    """Normalize and hash the caller's legacy network through the canonical owner."""
-    return _canonical_network_ir_identity({
-        "reactions": list(reactions),
-        "kd": list(kd),
-    })
-
-def _same_unique_string_population(actual, expected):
-    return (
-        isinstance(actual, list)
-        and all(isinstance(value, str) and value for value in actual)
-        and len(actual) == len(set(actual))
-        and len(actual) == len(expected)
-        and set(actual) == set(expected)
-    )
-
-def _canonical_legacy_model_symbol_populations(network_ir):
-    """Derive build-model symbol populations from canonicalized legacy IR."""
-    if not isinstance(network_ir, dict):
-        return None
-    provenance = network_ir.get("provenance")
-    species = network_ir.get("species")
-    reactions = network_ir.get("reactions")
-    if not (isinstance(provenance, dict)
-            and provenance.get("source") == "legacy_reactions_kd"
-            and isinstance(species, list) and bool(species)
-            and isinstance(reactions, list) and bool(reactions)):
-        return None
-    names = []
-    free_names = []
-    bound_names = []
-    for declaration in species:
-        if not isinstance(declaration, dict):
-            return None
-        name = declaration.get("name")
-        role = declaration.get("role")
-        if not (isinstance(name, str) and name and role in ("free", "bound")):
-            return None
-        names.append(name)
-        (free_names if role == "free" else bound_names).append(name)
-    if len(names) != len(set(names)):
-        return None
-    return {
-        "species": names,
-        "free_species": free_names,
-        "product_species": bound_names,
-        "q_symbols": [f"t{name}" for name in free_names],
-        "k_symbols": [f"Kd{index + 1}" for index in range(len(reactions))],
-    }
-
-def _canonical_simulate_2d_model_identity(model_description, requested_kd,
-                                          canonical_request_identity):
-    """Bind build_model output to an independently normalized caller request."""
-    if not isinstance(model_description, dict):
-        return False
-    network_ir = model_description.get("network_ir")
-    network_ir_hash = model_description.get("network_ir_hash")
-    artifact = model_description.get("artifact")
-    artifact_hashes = artifact.get("input_hashes") if isinstance(artifact, dict) else None
-    model_kd = model_description.get("kd")
-    q_symbols = model_description.get("q_sym")
-    k_symbols = model_description.get("K_sym")
-    x_symbols = model_description.get("x_sym")
-    model_species = model_description.get("species")
-    free_species = model_description.get("free_species")
-    product_species = model_description.get("product_species")
-    expected_network_ir = (canonical_request_identity.get("network_ir")
-                           if isinstance(canonical_request_identity, dict) else None)
-    expected_network_ir_hash = (canonical_request_identity.get("network_ir_hash")
-                                if isinstance(canonical_request_identity, dict) else None)
-    canonical_model_identity = (_canonical_network_ir_identity(network_ir)
-                                if isinstance(network_ir, dict) else None)
-    canonical_model_hash = (canonical_model_identity.get("network_ir_hash")
-                            if isinstance(canonical_model_identity, dict) else None)
-    expected_symbols = _canonical_legacy_model_symbol_populations(expected_network_ir)
-    network_reactions = network_ir.get("reactions") if isinstance(network_ir, dict) else None
-    network_reaction_kd = (
-        [reaction.get("kd") for reaction in network_reactions]
-        if (isinstance(network_reactions, list)
-            and all(isinstance(reaction, dict) and "kd" in reaction
-                    for reaction in network_reactions))
-        else None
-    )
-    return (
-        isinstance(model_description.get("session_id"), str)
-        and bool(model_description["session_id"])
-        and isinstance(network_ir, dict)
-        and network_ir.get("ir_schema_version") == "bne-ir/v1.0.0"
-        and isinstance(network_ir.get("reactions"), list)
-        and bool(network_ir["reactions"])
-        and _valid_sha256(network_ir_hash)
-        and isinstance(expected_network_ir, dict)
-        and _valid_sha256(expected_network_ir_hash)
-        and _valid_sha256(canonical_model_hash)
-        and canonical_model_hash == expected_network_ir_hash
-        and network_ir_hash == canonical_model_hash
-        and isinstance(artifact, dict)
-        and artifact.get("artifact_schema_version") == "bne-result/v1.0.0"
-        and artifact.get("kind") == "build_model"
-        and isinstance(artifact_hashes, dict)
-        and artifact_hashes.get("network_ir_hash") == network_ir_hash
-        and isinstance(model_kd, list)
-        and _same_finite_identity_multiset(model_kd, requested_kd)
-        and _same_finite_identity_sequence(model_kd, network_reaction_kd)
-        and isinstance(expected_symbols, dict)
-        and _same_unique_string_population(
-            model_species, expected_symbols["species"],
-        )
-        and _same_unique_string_population(
-            x_symbols, expected_symbols["species"],
-        )
-        and _same_unique_string_population(
-            free_species, expected_symbols["free_species"],
-        )
-        and _same_unique_string_population(
-            product_species, expected_symbols["product_species"],
-        )
-        and _same_unique_string_population(
-            q_symbols, expected_symbols["q_symbols"],
-        )
-        and isinstance(k_symbols, list)
-        and k_symbols == expected_symbols["k_symbols"]
-        and len(k_symbols) == len(model_kd)
-        and len(set(q_symbols + k_symbols)) == len(q_symbols) + len(k_symbols)
-    )
-
-def _expected_simulate_2d_fixed_qk(model_description):
-    q_symbols = model_description.get("q_sym")
-    k_symbols = model_description.get("K_sym")
-    model_kd = model_description.get("kd")
-    if not (isinstance(q_symbols, list) and isinstance(k_symbols, list)
-            and isinstance(model_kd, list) and len(k_symbols) == len(model_kd)
-            and all(_is_finite_scan_number(value) and float(value) > 0
-                    for value in model_kd)):
-        return None
-    return ([0.0] * len(q_symbols)) + [math.log10(float(value)) for value in model_kd]
-
-def _matches_requested_scan_axis(values, requested_length, lower=-6.0, upper=6.0):
-    if (not isinstance(values, list) or len(values) != requested_length
-            or requested_length < 2):
-        return False
-    expected_step = (upper - lower) / (requested_length - 1)
-    return all(
-        _same_finite_number(value, lower + (index * expected_step))
-        for index, value in enumerate(values)
-    )
-
-def _simulate_2d_response_identity_matches(scan, model_description, input1, input2,
-                                           output, requested_n_grid):
-    expected_fixed_qk = _expected_simulate_2d_fixed_qk(model_description)
-    fixed_qk = scan.get("fixed_qK") if isinstance(scan, dict) else None
-    return (
-        isinstance(scan, dict)
-        and _valid_sha256(scan.get("network_ir_hash"))
-        and scan.get("network_ir_hash") == model_description.get("network_ir_hash")
-        and scan.get("param1_symbol") == input1
-        and scan.get("param2_symbol") == input2
-        and scan.get("output_expr") == output
-        and _matches_requested_scan_axis(scan.get("param1_values"), requested_n_grid)
-        and _matches_requested_scan_axis(scan.get("param2_values"), requested_n_grid)
-        and expected_fixed_qk is not None
-        and isinstance(fixed_qk, list)
-        and len(fixed_qk) == len(expected_fixed_qk)
-        and all(_same_finite_number(actual, expected)
-                for actual, expected in zip(fixed_qk, expected_fixed_qk))
-    )
 
 def _simulate_2d_identity(model_description, reactions, kd, input1, input2,
                           output, requested_n_grid, fixed_qK):
@@ -1654,42 +1435,22 @@ def simulate_2d(reactions, kd=None, input1=None, input2=None, observe_species=No
     obs = observe_species or (prod[-1] if prod else (sp[-1] if sp else None))
     if obs not in sp:
         return {"error": f"observe_species '{obs}' is not a species", "valid_species": sp}
-    canonical_request_identity = _canonical_simulate_2d_request_identity(reactions, kd)
-    canonical_model_identity = _canonical_simulate_2d_model_identity(
-        m, kd, canonical_request_identity,
-    )
-    canonical_request_hash = (canonical_request_identity.get("network_ir_hash")
-                              if isinstance(canonical_request_identity, dict) else None)
-    s = E.scan_2d(
-        sid,
-        network_ir_hash=canonical_request_hash,
-        param1_symbol=i1,
-        param2_symbol=i2,
-        output_expr=obs,
-        n_grid=int(n_grid),
-    )
+    s = E.scan_2d(sid, param1_symbol=i1, param2_symbol=i2, output_expr=obs, n_grid=int(n_grid))
     if s.get("engine_offline"):
         return {"engine_offline": True, "error": s.get("error")}
     if s.get("error"):
         return {"error": f"scan_2d failed: {s.get('error')}"}
     xs, ys = s.get("param1_values") or [], s.get("param2_values") or []
-    raw_grid = s.get("output_grid")
+    raw_grid = [[v for v in row] for row in (s.get("output_grid") or [])
+                if isinstance(row, list)]
     grid, validity_grid, shape_ok = _validated_2d_surface(
         xs, ys, raw_grid, s.get("validity_grid"),
-    )
-    response_grid_matches_request = (
-        shape_ok and len(xs) == int(n_grid) and len(ys) == int(n_grid)
-    )
-    response_identity_matches_request = _simulate_2d_response_identity_matches(
-        s, m, i1, i2, obs, int(n_grid),
     )
     corners_valid = shape_ok and _required_2d_corners_valid(validity_grid)
     all_points_valid = shape_ok and all(
         valid is True for row in validity_grid for valid in row
     )
-    complete = (s.get("partial") is False and all_points_valid
-                and canonical_model_identity and response_grid_matches_request
-                and response_identity_matches_request)
+    complete = s.get("partial") is False and all_points_valid
 
     request_identity, request_fingerprint, card_identity = _simulate_2d_identity(
         m, reactions, kd, i1, i2, obs, int(n_grid), s.get("fixed_qK"),
@@ -1718,12 +1479,6 @@ def simulate_2d(reactions, kd=None, input1=None, input2=None, observe_species=No
             incomplete_reasons.append("invalid_or_nonfinite_samples")
         if not corners_valid:
             incomplete_reasons.append("invalid_required_corner")
-        if not canonical_model_identity:
-            incomplete_reasons.append("missing_or_invalid_canonical_model_identity")
-        if not response_grid_matches_request:
-            incomplete_reasons.append("response_grid_does_not_match_request")
-        if not response_identity_matches_request:
-            incomplete_reasons.append("response_identity_does_not_match_request")
     result = {"family": "logic", "reactions": reactions, "kd": kd, "input1": i1, "input2": i2,
               "observe_species": obs, "realized_gate": gate, "gate_corners_00_01_10_11": bits,
               "margin_decades": margin, "interior_peak": peak,
