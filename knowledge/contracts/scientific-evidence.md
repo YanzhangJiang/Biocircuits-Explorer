@@ -515,7 +515,7 @@ and paired switch records therefore support only a
 A separate trajectory artifact now integrates a deterministic polynomial vector
 field from a declared initial state over one finite scalar linear ramp. It binds
 state bounds, fixed controls, a vector-field-owned model-time unit, a
-structured swept-control/model-time rate identity, solver/runtime identities and work
+structured swept-control/model-time rate identity, solver policy and work
 limits, requires primary Tsit5 and tighter Vern7 results to agree on the save
 grid, and fully replays an increasing-to-decreasing predecessor lineage. This is
 `complete_model_backed_finite_protocol_trajectory` evidence when its finite

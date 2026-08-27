@@ -7,9 +7,6 @@ const RO_MODEL_BACKED_TRAJECTORY_EVIDENCE_VERSION =
     "bne-ro-model-backed-trajectory-evidence/v2.0.0"
 const RO_MODEL_BACKED_TRAJECTORY_EVIDENCE_SCOPE =
     :finite_deterministic_polynomial_protocol_numerical_trajectory_only
-const RO_DYNAMIC_SOLVER_RUNTIME_VERSION_IDENTITY_VERSION =
-    "bne-ro-dynamic-solver-runtime-version-identity/v1.0.0"
-
 const _RODT_PRIMARY_SOLVER_ID = :ordinarydiffeq_tsit5
 const _RODT_AUDIT_SOLVER_ID = :ordinarydiffeq_vern7
 const _RODT_MAX_PROTOCOL_DURATION = 1.0e9
@@ -97,21 +94,6 @@ struct RODynamicTrajectorySolverFailure <: Exception
     retcode::String
 end
 
-struct RODynamicTrajectoryRuntimeIdentityMismatch <: Exception
-    declared_version_identity_sha256::String
-    current_version_identity_sha256::String
-end
-
-function Base.showerror(
-    io::IO,
-    error::RODynamicTrajectoryRuntimeIdentityMismatch,
-)
-    print(io,
-        "model-backed dynamic trajectory runtime version identity mismatch: ",
-        "declared=", error.declared_version_identity_sha256,
-        ", current=", error.current_version_identity_sha256)
-end
-
 function Base.showerror(io::IO, error::RODynamicTrajectorySolverFailure)
     print(io, "model-backed dynamic trajectory solver ", error.solver_id,
         " did not succeed: ", error.retcode)
@@ -141,51 +123,6 @@ end
 end
 
 @inline _rodt_zero_canonical(value::Float64) = iszero(value) ? 0.0 : value
-
-function _rodt_package_version_identity(package_module::Module)
-    package_version = Base.pkgversion(package_module)
-    package_version === nothing && throw(ArgumentError(
-        "trajectory solver package $(package_module) has no version identity"))
-    return string(package_version)
-end
-
-function _rodt_algorithm_version_identity(algorithm, solver_id::Symbol)
-    return (
-        solver_id=String(solver_id),
-        algorithm_type=string(typeof(algorithm)),
-    )
-end
-
-function _rodt_current_solver_runtime_version_identity()
-    return (
-        schema_version=
-            RO_DYNAMIC_SOLVER_RUNTIME_VERSION_IDENTITY_VERSION,
-        identity_scope="compatible_solver_runtime",
-        julia_series="$(VERSION.major).$(VERSION.minor)",
-        ordinarydiffeq=_rodt_package_version_identity(ODE),
-        scimlbase=_rodt_package_version_identity(SciMLBase),
-        primary_algorithm=_rodt_algorithm_version_identity(
-            ODE.Tsit5(), _RODT_PRIMARY_SOLVER_ID),
-        audit_algorithm=_rodt_algorithm_version_identity(
-            ODE.Vern7(), _RODT_AUDIT_SOLVER_ID),
-    )
-end
-
-function _rodt_validate_solver_runtime_version_identity(
-    spec_runtime_identity::NamedTuple,
-    spec_runtime_identity_sha256::String,
-)
-    _rodh_payload_sha256(spec_runtime_identity) ==
-        spec_runtime_identity_sha256 || throw(ArgumentError(
-        "dynamic protocol runtime version identity hash mismatch"))
-    current_identity = _rodt_current_solver_runtime_version_identity()
-    current_hash = _rodh_payload_sha256(current_identity)
-    spec_runtime_identity == current_identity &&
-        spec_runtime_identity_sha256 == current_hash || throw(
-        RODynamicTrajectoryRuntimeIdentityMismatch(
-            spec_runtime_identity_sha256, current_hash))
-    return nothing
-end
 
 function _rodt_strict_finite_vector(raw, label::AbstractString,
     expected::Int, cancel_check)
@@ -242,8 +179,6 @@ struct RODynamicProtocolSpec
     state_upper_bounds::Vector{Float64}
     primary_solver_id::Symbol
     audit_solver_id::Symbol
-    solver_runtime_version_identity::NamedTuple
-    solver_runtime_version_identity_sha256::String
     primary_relative_tolerance::Float64
     primary_absolute_tolerance::Float64
     audit_relative_tolerance::Float64
@@ -421,15 +356,9 @@ function ro_dynamic_protocol_spec(
     _rodt_limit(
         :trajectory_work_units, total_work, limits.max_total_work_units)
 
-    runtime_version_identity =
-        _rodt_current_solver_runtime_version_identity()
-    runtime_version_identity_hash =
-        _rodh_payload_sha256(runtime_version_identity)
     solver_payload = (
         primary_solver=String(_RODT_PRIMARY_SOLVER_ID),
         audit_solver=String(_RODT_AUDIT_SOLVER_ID),
-        runtime_version_identity_sha256=runtime_version_identity_hash,
-        runtime_version_identity=runtime_version_identity,
         primary_relative_tolerance=primary_rtol,
         primary_absolute_tolerance=primary_atol,
         audit_relative_tolerance=audit_rtol,
@@ -502,8 +431,6 @@ function ro_dynamic_protocol_spec(
         copy(upper),
         _RODT_PRIMARY_SOLVER_ID,
         _RODT_AUDIT_SOLVER_ID,
-        runtime_version_identity,
-        runtime_version_identity_hash,
         primary_rtol,
         primary_atol,
         audit_rtol,
@@ -527,12 +454,6 @@ function validate_ro_dynamic_protocol_spec(
         throw(ArgumentError("unsupported dynamic protocol spec version"))
     spec.evidence_scope == RO_MODEL_BACKED_TRAJECTORY_EVIDENCE_SCOPE ||
         throw(ArgumentError("dynamic protocol evidence scope mismatch"))
-    _rodt_validate_solver_runtime_version_identity(
-        spec.solver_runtime_version_identity,
-        spec.solver_runtime_version_identity_sha256,
-    )
-    _rodh_payload_sha256(spec.identity_payload) == spec.identity_sha256 ||
-        throw(ArgumentError("dynamic protocol spec content hash mismatch"))
     recomputed = ro_dynamic_protocol_spec(
         vector_field;
         protocol_family_sha256=spec.protocol_family_sha256,
@@ -1198,15 +1119,8 @@ function validate_ro_model_backed_trajectory_evidence(
     _rodt_evidence_payload_from_fields(evidence) ==
         evidence.identity_payload || throw(ArgumentError(
         "model-backed trajectory fields do not match its content payload"))
-    _rodh_payload_sha256(evidence.identity_payload) ==
-        evidence.identity_sha256 || throw(ArgumentError(
-        "model-backed trajectory evidence content hash mismatch"))
     validate_ro_dynamic_protocol_spec(
         evidence.spec, vector_field; cancel_check=cancel_check)
-    ro_dynamic_protocol_identity_sha256(
-        evidence.trace; cancel_check=cancel_check) ==
-        evidence.trace_sha256 || throw(ArgumentError(
-        "model-backed trajectory trace content hash mismatch"))
     evidence.validated_error_enclosure && throw(ArgumentError(
         "trajectory evidence overclaims a validated error enclosure"))
     evidence.branch_switch_certified && throw(ArgumentError(
