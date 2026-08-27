@@ -5,6 +5,8 @@ import {
 
 export const RO_FIELD_REQUEST_VERSION = 'bne-ro-field-request/v1.0.0';
 export const RO_FIELD_ENDPOINT = '/api/v1/ro_field';
+export const RO_FIELD_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_RO_FIELD_REQUEST_TIMEOUT_MS = 60_000;
 
 // Kept in sync with tests/fixtures/ro_field_request/sampled-inline-network.json.
 // The browser intentionally sends an inline, nine-point demonstration request;
@@ -105,6 +107,56 @@ export function extractROFieldResponse(payload) {
   return field;
 }
 
+function requestError(name, message) {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+async function withRequestDeadline(operation, { signal, timeoutMs }) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0
+      || timeoutMs > MAX_RO_FIELD_REQUEST_TIMEOUT_MS) {
+    throw new Error(`timeoutMs must be an integer within [1, ${MAX_RO_FIELD_REQUEST_TIMEOUT_MS}]`);
+  }
+  if (signal !== undefined && signal !== null
+      && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function')) {
+    throw new Error('signal must be an AbortSignal');
+  }
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason : requestError('AbortError', 'RO-field request was aborted');
+  }
+
+  const controller = new AbortController();
+  const abortFromCaller = () => {
+    const reason = signal.reason instanceof Error
+      ? signal.reason : requestError('AbortError', 'RO-field request was aborted');
+    controller.abort(reason);
+  };
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
+
+  const timer = setTimeout(() => {
+    controller.abort(requestError(
+      'TimeoutError',
+      `RO-field request timed out after ${timeoutMs} ms`,
+    ));
+  }, timeoutMs);
+  const aborted = new Promise((_resolve, reject) => {
+    if (controller.signal.aborted) {
+      reject(controller.signal.reason);
+      return;
+    }
+    controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+  });
+  const pending = Promise.resolve().then(() => operation(controller.signal));
+  try {
+    return await Promise.race([pending, aborted]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortFromCaller);
+  }
+}
+
 export async function fetchROField(request, options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch is unavailable');
@@ -115,25 +167,31 @@ export async function fetchROField(request, options = {}) {
   if (request.storage?.mode !== 'inline') {
     throw new Error('this demo only sends storage.mode="inline"');
   }
-  const response = await fetchImpl(RO_FIELD_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
+  return withRequestDeadline(async signal => {
+    const response = await fetchImpl(RO_FIELD_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+      signal,
+    });
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`server returned non-JSON data (HTTP ${response.status})`);
+    }
+    if (!response.ok) {
+      const detail = payload?.error ?? payload?.message ?? `HTTP ${response.status}`;
+      throw new Error(String(detail));
+    }
+    return { payload, roField: extractROFieldResponse(payload) };
+  }, {
+    signal: options.signal,
+    timeoutMs: options.timeoutMs ?? RO_FIELD_REQUEST_TIMEOUT_MS,
   });
-  let payload;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`server returned non-JSON data (HTTP ${response.status})`);
-  }
-  if (!response.ok) {
-    const detail = payload?.error ?? payload?.message ?? `HTTP ${response.status}`;
-    throw new Error(String(detail));
-  }
-  return { payload, roField: extractROFieldResponse(payload) };
 }
 
 function initializeDemo(documentRef) {
