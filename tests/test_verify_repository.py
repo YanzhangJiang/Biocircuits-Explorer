@@ -95,6 +95,7 @@ class PathAndMarkdownTests(unittest.TestCase):
                 (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
             common = {
                 "baseline_evidence_revision": "baseline",
+                "current_verified_revision": "abcdef0",
                 "verification_command": "python3 scripts/verify_repository.py --check",
             }
             manifest = {
@@ -173,6 +174,7 @@ class PathAndMarkdownTests(unittest.TestCase):
                 (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
             common = {
                 "baseline_evidence_revision": "baseline",
+                "current_verified_revision": "abcdef0",
                 "verification_command": "python3 scripts/verify_repository.py --check",
             }
             manifest = {
@@ -200,6 +202,66 @@ class PathAndMarkdownTests(unittest.TestCase):
             )
 
             self.assertTrue(any("same path" in error for error in audit.errors))
+
+
+class KnowledgeRevisionTests(unittest.TestCase):
+    @staticmethod
+    def _documents(revision: str = "abcdef0") -> tuple[tuple[str, dict], ...]:
+        return tuple(
+            (name, {"current_verified_revision": revision})
+            for name in (
+                "knowledge manifest",
+                "module catalog",
+                "contract catalog",
+                "artifact catalog",
+            )
+        )
+
+    def test_current_verified_revision_accepts_one_shared_short_git_hex(self):
+        audit = verify_repository.Audit()
+
+        verify_repository.validate_current_verified_revisions(self._documents(), audit)
+
+        self.assertEqual(audit.errors, [])
+
+    def test_current_verified_revision_is_required_in_every_document(self):
+        documents = list(self._documents())
+        documents[2] = (documents[2][0], {})
+        audit = verify_repository.Audit()
+
+        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
+
+        self.assertTrue(
+            any(
+                "contract catalog lacks a valid current_verified_revision" in error
+                for error in audit.errors
+            )
+        )
+
+    def test_current_verified_revision_rejects_non_lowercase_git_hex(self):
+        documents = list(self._documents())
+        documents[1] = (documents[1][0], {"current_verified_revision": "ABCDEF0"})
+        audit = verify_repository.Audit()
+
+        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
+
+        self.assertTrue(
+            any(
+                "module catalog lacks a valid current_verified_revision" in error
+                for error in audit.errors
+            )
+        )
+
+    def test_current_verified_revision_must_match_across_documents(self):
+        documents = list(self._documents())
+        documents[3] = (documents[3][0], {"current_verified_revision": "abcdef1"})
+        audit = verify_repository.Audit()
+
+        verify_repository.validate_current_verified_revisions(tuple(documents), audit)
+
+        self.assertTrue(
+            any("current_verified_revision drift" in error for error in audit.errors)
+        )
 
 
 class SchemaInventoryTests(unittest.TestCase):

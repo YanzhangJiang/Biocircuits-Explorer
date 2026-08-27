@@ -51,6 +51,7 @@ SEMVER = re.compile(
     rf"(?:-{SEMVER_IDENTIFIER}(?:\.{SEMVER_IDENTIFIER})*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+GIT_REVISION = re.compile(r"^[0-9a-f]{7,40}$")
 APPLICATION_MANIFESTS = {
     Path("webapp/Manifest.toml"): (
         "BiocircuitsExplorerBackend",
@@ -541,6 +542,32 @@ def require_local_path(root: Path, value: Any, owner: str, audit: Audit) -> None
         audit.require(candidate.exists(), f"missing path in {owner}: {value}")
 
 
+def validate_current_verified_revisions(
+    documents: tuple[tuple[str, dict[str, Any]], ...],
+    audit: Audit,
+) -> None:
+    revisions: dict[str, str] = {}
+    all_valid = True
+    for name, document in documents:
+        revision = document.get("current_verified_revision")
+        valid = isinstance(revision, str) and GIT_REVISION.fullmatch(revision) is not None
+        audit.require(
+            valid,
+            f"{name} lacks a valid current_verified_revision "
+            "(expected 7-40 lowercase hexadecimal characters)",
+        )
+        if valid:
+            revisions[name] = revision
+        else:
+            all_valid = False
+
+    if all_valid and len(set(revisions.values())) != 1:
+        rendered = ", ".join(f"{name}={revision!r}" for name, revision in revisions.items())
+        audit.errors.append(
+            f"current_verified_revision drift across knowledge documents: {rendered}"
+        )
+
+
 def validate_knowledge(
     root: Path,
     manifest: dict[str, Any],
@@ -556,12 +583,13 @@ def validate_knowledge(
     audit.require(contracts_doc.get("schema_version") == "bcx-contract-catalog/v1.0.0", "contract catalog schema drift")
     audit.require(artifacts_doc.get("schema_version") == "bcx-artifact-catalog/v1.0.0", "artifact catalog schema drift")
     verification_command = "python3 scripts/verify_repository.py --check"
-    for name, document in (
+    knowledge_documents = (
         ("knowledge manifest", manifest),
         ("module catalog", modules_doc),
         ("contract catalog", contracts_doc),
         ("artifact catalog", artifacts_doc),
-    ):
+    )
+    for name, document in knowledge_documents:
         audit.require("verified_against" not in document, f"{name} uses stale snapshot-style verified_against")
         audit.require(
             isinstance(document.get("baseline_evidence_revision"), str)
@@ -572,6 +600,7 @@ def validate_knowledge(
             document.get("verification_command") == verification_command,
             f"{name} does not declare the unified current-tree gate",
         )
+    validate_current_verified_revisions(knowledge_documents, audit)
 
     maintained: list[Path] = [Path("README.md"), Path("PROJECT_SUMMARY.md")]
     for relative in maintained:
