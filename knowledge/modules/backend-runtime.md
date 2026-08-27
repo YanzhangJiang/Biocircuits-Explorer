@@ -146,16 +146,13 @@ prior-state/batch/chunk/next-state, so a cancellation may leave an unreferenced
 CAS object but cannot make it committed evidence.
 
 The plan includes a server-derived numerical execution policy rather than only
-nominal solver labels. It binds module-load-frozen Project/Manifest, engine, and
-`webapp/src/**/*.jl` source identities plus Julia and critical SciML package
-versions, explicit
+nominal solver labels. It binds the sparse algorithm, plan/state/checkpoint
+formats, Julia runtime, and critical package versions, plus explicit
 homotopy/Tsit5 tolerances, per-point step and RHS caps, strict Float64
 closed-cell regime membership, and replay-work limits over actual artifact and
 scheduler/transition work. Cancellation is checked
 on each homotopy
-RHS evaluation. The local path accepts at most 512 multi-index work units, and
-a runtime-lock change makes old resume artifacts foreign instead of mixing old
-and new numerical chunks.
+RHS evaluation. The local path accepts at most 512 multi-index work units.
 
 Sparse-v2 submission performs only bounded ownership/status/identity and
 control-artifact admission checks. A resumed child then performs one metered

@@ -5,6 +5,7 @@ import {
   getWorkspaceRuntimeEpoch,
 } from './state.js';
 import { api, handleNodeError, renderNodeError, syncSelectOptions } from './api.js';
+import { stableJson } from './stable-json.js';
 import { applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { setNodeLoading, setupPlotResize, getModelContextForNode, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
@@ -24,14 +25,6 @@ import {
 
 const REGIME_GRAPH_ENDPOINT = '/api/v1/build_graph';
 const REGIME_GRAPH_LIFECYCLE_KEY = '_regimeGraphLifecycle';
-
-function canonicalLifecycleValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) normalized[key] = canonicalLifecycleValue(value[key]);
-  return normalized;
-}
 
 function upstreamConnectionIdentity(nodeId) {
   const visited = new Set();
@@ -76,11 +69,11 @@ function currentRegimeGraphContext(nodeId) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: JSON.stringify(canonicalLifecycleValue({
+    inputFingerprint: stableJson({
       config: readRegimeGraphConfig(nodeId),
       model: modelIdentity(nodeId),
       upstream: upstreamConnectionIdentity(nodeId),
-    })),
+    }),
     endpoint: REGIME_GRAPH_ENDPOINT,
   };
 }

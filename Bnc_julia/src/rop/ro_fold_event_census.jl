@@ -184,7 +184,6 @@ struct ROSimpleFoldEvent
         quadratic_nondegeneracy_certified::Bool,
         simple_fold_certified::Bool,
         fold_point_strictly_inside_event_box::Bool,
-        certificate_sha256::String,
     )
         version == RO_SIMPLE_FOLD_EVENT_VERSION || throw(ArgumentError(
             "simple-fold event version mismatch"))
@@ -252,8 +251,7 @@ struct ROSimpleFoldEvent
             "simple-fold event lost its simple-fold conclusion"))
         fold_point_strictly_inside_event_box || throw(ArgumentError(
             "simple-fold event root is not certified strictly interior"))
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
-        expected = _rofe_event_sha256(
+        certificate_sha256 = _rofe_event_sha256(
             linear_index,
             grid_index,
             event_box,
@@ -264,8 +262,6 @@ struct ROSimpleFoldEvent
             augmented_jacobian_enclosure,
             contraction_beta,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "simple-fold event hash mismatch"))
         return new(
             version,
             linear_index,
@@ -299,17 +295,6 @@ function _rofe_make_event(
     augmented_jacobian_enclosure::ROExactIntervalMatrix,
     contraction_beta::_RORSExact,
 )
-    hash = _rofe_event_sha256(
-        linear_index,
-        grid_index,
-        event_box,
-        center,
-        preconditioner,
-        krawczyk_offset_image,
-        augmented_residual_enclosure,
-        augmented_jacobian_enclosure,
-        contraction_beta,
-    )
     return ROSimpleFoldEvent(
         _ROFE_VALIDATED_TOKEN,
         RO_SIMPLE_FOLD_EVENT_VERSION,
@@ -328,7 +313,6 @@ function _rofe_make_event(
         true,
         true,
         true,
-        hash,
     )
 end
 
@@ -378,7 +362,6 @@ struct ROFoldEventCensusCell
         excluding_augmented_equation_index::Int,
         augmented_residual_enclosure::Tuple,
         event_certificate_sha256::String,
-        evidence_sha256::String,
     )
         version == RO_FOLD_EVENT_CENSUS_CELL_VERSION || throw(ArgumentError(
             "fold-event census cell version mismatch"))
@@ -422,8 +405,7 @@ struct ROFoldEventCensusCell
                 excluding_augmented_equation_index]) || throw(ArgumentError(
                 "the named augmented equation does not exclude zero"))
         end
-        _rors_validate_sha256(evidence_sha256, "cell evidence_sha256")
-        expected = _rofe_cell_sha256(
+        evidence_sha256 = _rofe_cell_sha256(
             linear_index,
             grid_index,
             event_box,
@@ -432,8 +414,6 @@ struct ROFoldEventCensusCell
             augmented_residual_enclosure,
             event_certificate_sha256,
         )
-        evidence_sha256 == expected || throw(ArgumentError(
-            "fold-event census cell hash mismatch"))
         return new(
             version,
             linear_index,
@@ -457,15 +437,6 @@ function _rofe_make_cell(
     augmented_residual_enclosure::Tuple,
     event_certificate_sha256::String,
 )
-    hash = _rofe_cell_sha256(
-        linear_index,
-        grid_index,
-        event_box,
-        classification,
-        excluding_augmented_equation_index,
-        augmented_residual_enclosure,
-        event_certificate_sha256,
-    )
     return ROFoldEventCensusCell(
         _ROFE_VALIDATED_TOKEN,
         RO_FOLD_EVENT_CENSUS_CELL_VERSION,
@@ -476,7 +447,6 @@ function _rofe_make_cell(
         excluding_augmented_equation_index,
         augmented_residual_enclosure,
         event_certificate_sha256,
-        hash,
     )
 end
 
@@ -619,14 +589,12 @@ struct ROCompleteSimpleFoldEventCensus
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_SIMPLE_FOLD_EVENT_CENSUS_VERSION ||
             throw(ArgumentError(
                 "complete simple-fold event census version mismatch"))
         _rors_validate_sha256(
             system_declaration_sha256, "system_declaration_sha256")
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
         evidence_scope == RO_SIMPLE_FOLD_EVENT_CENSUS_SCOPE ||
             throw(ArgumentError("fold-event census evidence scope mismatch"))
         fold_event_set_complete_inside_declared_domain ||
@@ -741,18 +709,6 @@ struct ROCompleteSimpleFoldEventCensus
                     throw(ArgumentError(
                         "fold-event census cell bounds do not match their axis"))
             end
-            expected_cell_hash = _rofe_cell_sha256(
-                cell.linear_index,
-                cell.grid_index,
-                cell.event_box,
-                cell.classification,
-                cell.excluding_augmented_equation_index,
-                cell.augmented_residual_enclosure,
-                cell.event_certificate_sha256,
-            )
-            cell.evidence_sha256 == expected_cell_hash ||
-                throw(ArgumentError(
-                    "fold-event census nested cell hash mismatch"))
             if cell.classification == :unique_simple_fold_event
                 unique_count += 1
                 event = get(event_by_grid, grid_index, nothing)
@@ -793,19 +749,6 @@ struct ROCompleteSimpleFoldEventCensus
                 event.preconditioner.data == preconditioner.data ||
                 throw(ArgumentError(
                     "fold-event preconditioner does not match its seed"))
-            expected_event_hash = _rofe_event_sha256(
-                event.linear_index,
-                event.grid_index,
-                event.event_box,
-                event.center,
-                event.preconditioner,
-                event.krawczyk_offset_image,
-                event.augmented_residual_enclosure,
-                event.augmented_jacobian_enclosure,
-                event.contraction_beta,
-            )
-            event.certificate_sha256 == expected_event_hash ||
-                throw(ArgumentError("nested simple-fold event hash mismatch"))
         end
         analysis_interval_operation_count >= 0 || throw(ArgumentError(
             "fold-event census operation count must be nonnegative"))
@@ -814,7 +757,7 @@ struct ROCompleteSimpleFoldEventCensus
             analysis_interval_operation_count,
             limits.max_interval_operations,
         )
-        expected = _rofe_census_sha256(
+        certificate_sha256 = _rofe_census_sha256(
             system_declaration_sha256,
             limits,
             augmented_variable_names,
@@ -831,8 +774,6 @@ struct ROCompleteSimpleFoldEventCensus
             fold_free_cell_count,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "complete simple-fold event census hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -1424,23 +1365,6 @@ function _rofe_certify_exact(
             system.control_units[1],
         ))
         declared_event_tuple = Tuple(declared_event_box)
-        certificate_sha256 = _rofe_census_sha256(
-            system.declaration_sha256,
-            limits,
-            augmented_variable_names,
-            augmented_variable_units,
-            event_axis_breaks,
-            declared_event_tuple,
-            event_indices,
-            preconditioner_wrappers,
-            event_tuple,
-            cell_tuple,
-            length(cells),
-            unique_count,
-            unique_count,
-            free_count,
-            analysis_operations,
-        )
         return ROCompleteSimpleFoldEventCensus(
             _ROFE_VALIDATED_TOKEN,
             RO_SIMPLE_FOLD_EVENT_CENSUS_VERSION,
@@ -1469,7 +1393,6 @@ function _rofe_certify_exact(
             false,
             false,
             RO_SIMPLE_FOLD_EVENT_CENSUS_SCOPE,
-            certificate_sha256,
         )
     catch err
         if err isa RORegularSheetLimitExceeded &&

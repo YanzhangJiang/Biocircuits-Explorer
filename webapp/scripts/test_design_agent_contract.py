@@ -273,7 +273,7 @@ class TraceRetentionContractTests(unittest.TestCase):
                 "family": "dose_shape",
                 "computed_series": [{"x": 0.0, "y": 1.0}],
             }
-            result_hash = design_agent._hash(card)
+            result_hash = design_agent._sha256_json(card)[:16]
             artifact_dir = os.path.join(tmpdir, "artifacts")
             os.makedirs(artifact_dir)
             artifact_path = os.path.join(artifact_dir, result_hash + ".json")
@@ -299,7 +299,7 @@ class TraceRetentionContractTests(unittest.TestCase):
             artifact_dir = os.path.join(tmpdir, "artifacts")
             os.makedirs(artifact_dir)
             card = {"family": "dose_shape", "computed_series": [{"x": 0.0, "y": 1.0}]}
-            result_hash = design_agent._hash(card)
+            result_hash = design_agent._sha256_json(card)[:16]
             reused_path = os.path.join(artifact_dir, result_hash + ".json")
             with open(reused_path, "w", encoding="utf-8") as fh:
                 json.dump(card, fh)

@@ -1865,7 +1865,6 @@ struct RORegularSheetPatchCertificate
         implicit_derivative_enclosed::Bool,
         evidence_scope::Symbol,
         branch_identity_sha256::String,
-        certificate_sha256::String,
         ::Val{:validated},
     )
         version == RO_REGULAR_SHEET_PATCH_VERSION || throw(ArgumentError(
@@ -1874,7 +1873,6 @@ struct RORegularSheetPatchCertificate
             system_declaration_sha256, "system_declaration_sha256")
         _rors_validate_sha256(
             branch_identity_sha256, "branch_identity_sha256")
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
         evidence_scope == RO_REGULAR_SHEET_PATCH_SCOPE || throw(ArgumentError(
             "regular-sheet patch evidence scope mismatch"))
         root_exists_for_every_control || throw(ArgumentError(
@@ -1936,9 +1934,7 @@ struct RORegularSheetPatchCertificate
             evidence_scope,
             branch_identity_sha256,
         )
-        expected = _rors_patch_sha256(data)
-        certificate_sha256 == expected || throw(ArgumentError(
-            "regular-sheet patch certificate hash mismatch"))
+        certificate_sha256 = _rors_patch_sha256(data)
         return new(
             version,
             system_declaration_sha256,
@@ -2242,7 +2238,6 @@ function _rors_certify_patch_exact(
         RO_REGULAR_SHEET_PATCH_SCOPE,
         branch_identity_sha256,
     )
-    certificate_sha256 = _rors_patch_sha256(data)
     return RORegularSheetPatchCertificate(
         data.version,
         data.system_declaration_sha256,
@@ -2276,7 +2271,6 @@ function _rors_certify_patch_exact(
         data.implicit_derivative_enclosed,
         data.evidence_scope,
         data.branch_identity_sha256,
-        certificate_sha256,
         Val(:validated),
     )
 end
@@ -2461,7 +2455,6 @@ struct RORegularSheetBridgeCertificate
         child_tube_contained::Bool,
         same_root_on_overlap::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
         ::Val{:validated},
     )
         version == RO_REGULAR_SHEET_BRIDGE_VERSION || throw(ArgumentError(
@@ -2472,7 +2465,6 @@ struct RORegularSheetBridgeCertificate
             ("child_patch_sha256", child_patch_sha256),
             ("inherited_branch_identity_sha256",
                 inherited_branch_identity_sha256),
-            ("certificate_sha256", certificate_sha256),
         )
             _rors_validate_sha256(value, label)
         end
@@ -2488,7 +2480,7 @@ struct RORegularSheetBridgeCertificate
             "bridge exact_operation_count must be nonnegative"))
         _rors_limit(:interval_operations, exact_operation_count,
             bridge_patch.limits.max_interval_operations)
-        expected = _rors_bridge_sha256(
+        certificate_sha256 = _rors_bridge_sha256(
             system_declaration_sha256,
             parent_patch_sha256,
             child_patch_sha256,
@@ -2500,8 +2492,6 @@ struct RORegularSheetBridgeCertificate
             same_root_on_overlap,
             evidence_scope,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "regular-sheet bridge certificate hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -2646,18 +2636,6 @@ function _rors_certify_bridge_exact(
         ))
     operation_count = Int(operation_count_big)
     inherited_branch_identity_sha256 = rebuilt_parent.branch_identity_sha256
-    certificate_sha256 = _rors_bridge_sha256(
-        system.declaration_sha256,
-        rebuilt_parent.certificate_sha256,
-        rebuilt_child.certificate_sha256,
-        bridge_patch.certificate_sha256,
-        inherited_branch_identity_sha256,
-        operation_count,
-        true,
-        true,
-        true,
-        RO_REGULAR_SHEET_BRIDGE_SCOPE,
-    )
     return RORegularSheetBridgeCertificate(
         RO_REGULAR_SHEET_BRIDGE_VERSION,
         system.declaration_sha256,
@@ -2670,7 +2648,6 @@ function _rors_certify_bridge_exact(
         true,
         true,
         RO_REGULAR_SHEET_BRIDGE_SCOPE,
-        certificate_sha256,
         Val(:validated),
     )
 end

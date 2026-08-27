@@ -1,4 +1,5 @@
 import { api, escapeHtml, renderNodeError } from '../api.js';
+import { stableJson } from '../stable-json.js';
 import {
   ensureModelSession,
   getModelContextForNode,
@@ -32,16 +33,6 @@ import {
 
 const VERTICES_TABLE_ENDPOINT = '/api/v1/find_vertices';
 const VERTICES_TABLE_LIFECYCLE_KEY = '_verticesTableExecutionLifecycle';
-
-function canonicalFingerprintValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalFingerprintValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) {
-    normalized[key] = canonicalFingerprintValue(value[key]);
-  }
-  return normalized;
-}
 
 function verticesUpstreamSignature(nodeId) {
   const visited = new Set();
@@ -99,10 +90,10 @@ function verticesBuilderIdentity(nodeId) {
 }
 
 function verticesInputFingerprint(nodeId, model = verticesModelIdentity(nodeId)) {
-  return JSON.stringify(canonicalFingerprintValue({
+  return stableJson({
     model,
     upstream: verticesUpstreamSignature(nodeId),
-  }));
+  });
 }
 
 function verticesExecutionContext(nodeId) {
@@ -123,10 +114,10 @@ function verticesPreflightContext(nodeId) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: JSON.stringify(canonicalFingerprintValue({
+    inputFingerprint: stableJson({
       builder: verticesBuilderIdentity(nodeId),
       upstream: verticesUpstreamSignature(nodeId),
-    })),
+    }),
     endpoint: VERTICES_TABLE_ENDPOINT,
   };
 }

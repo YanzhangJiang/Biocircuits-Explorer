@@ -5,6 +5,7 @@
 // request is display/history data only and is never trusted as fresh input.
 
 import { escapeHtml, optimizeRopShape } from '../api.js';
+import { sameJson, stableJson } from '../stable-json.js';
 import { renderRopShapeOptimizationResult } from '../rop-shape-render.js';
 import {
   connections,
@@ -162,20 +163,8 @@ export function cloneRopShapeJson(value, path = 'payload') {
   return cloneJsonValue(value, path, new WeakSet());
 }
 
-function canonicalJsonValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalJsonValue);
-  if (!isPlainObject(value)) return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) normalized[key] = canonicalJsonValue(value[key]);
-  return normalized;
-}
-
-function sameJson(left, right) {
-  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
-}
-
 function stableRopShapeFingerprint(value) {
-  return JSON.stringify(canonicalJsonValue(value));
+  return stableJson(value);
 }
 
 function ropShapeLifecycleFor(info, key) {

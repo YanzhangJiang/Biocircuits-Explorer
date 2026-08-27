@@ -6,6 +6,7 @@ import {
   getWorkspaceRuntimeEpoch,
 } from './state.js';
 import { api, showToast, handleNodeError, renderNodeError, escapeHtml } from './api.js';
+import { stableJson } from './stable-json.js';
 import { applyPlotLayoutTheme, getPlotTheme, themedColorbar } from './theme.js';
 import { quantileSorted, plotHeatmap } from './plotting.js';
 import {
@@ -33,18 +34,6 @@ const ROP_CLOUD_ENDPOINT = '/api/v1/rop_cloud';
 const FRET_ENDPOINT = '/api/v1/fret_heatmap';
 const ROP_CLOUD_LIFECYCLE_KEY = '_ropCloudResultLifecycle';
 const FRET_LIFECYCLE_KEY = '_fretResultLifecycle';
-
-function canonicalLifecycleValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) normalized[key] = canonicalLifecycleValue(value[key]);
-  return normalized;
-}
-
-function stableLifecycleFingerprint(value) {
-  return JSON.stringify(canonicalLifecycleValue(value));
-}
 
 function upstreamConnectionIdentity(nodeId) {
   const visited = new Set();
@@ -104,7 +93,7 @@ function currentROPCloudContext(nodeId) {
   const owner = nodeRegistry[nodeId];
   if (!owner) return null;
   const connected = connectedConfig(nodeId, 'rop-cloud-params');
-  return lifecycleContext(owner, ROP_CLOUD_ENDPOINT, stableLifecycleFingerprint({
+  return lifecycleContext(owner, ROP_CLOUD_ENDPOINT, stableJson({
     connections: upstreamConnectionIdentity(nodeId),
     config: connected?.config || null,
     model: modelIdentityForNode(nodeId),
@@ -116,7 +105,7 @@ function currentFRETContext(nodeId) {
   const owner = nodeRegistry[nodeId];
   if (!owner) return null;
   const connected = connectedConfig(nodeId, 'fret-params');
-  return lifecycleContext(owner, FRET_ENDPOINT, stableLifecycleFingerprint({
+  return lifecycleContext(owner, FRET_ENDPOINT, stableJson({
     connections: upstreamConnectionIdentity(nodeId),
     config: connected?.config || null,
     model: modelIdentityForNode(nodeId),

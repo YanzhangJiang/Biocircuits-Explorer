@@ -268,7 +268,6 @@ struct ROHopfPeriodicOrbitGermEvent
         full_state_periodic_orbit_stability_certified::Bool,
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
-        certificate_sha256::String,
     )
         version == RO_HOPF_PERIODIC_ORBIT_GERM_EVENT_VERSION ||
             throw(ArgumentError(
@@ -350,7 +349,7 @@ struct ROHopfPeriodicOrbitGermEvent
             value && throw(ArgumentError(
                 "P8s1c2a cannot certify $label"))
         end
-        expected = _rohpg_event_sha256(
+        certificate_sha256 = _rohpg_event_sha256(
             parent_spectral_event_sha256,
             parent_hopf_event_sha256,
             original_control_name,
@@ -362,8 +361,6 @@ struct ROHopfPeriodicOrbitGermEvent
             original_control_side,
             center_manifold_radial_stability_at_onset,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "Hopf periodic-orbit germ event hash mismatch"))
         return new(
             version,
             theorem_version,
@@ -412,18 +409,6 @@ function _rohpg_make_event(
     side = _rohpg_control_side(side_sign)
     stability = _rohpg_center_stability(
         first_lyapunov_coefficient_sign)
-    hash = _rohpg_event_sha256(
-        parent_spectral_event_sha256,
-        parent_hopf_event_sha256,
-        original_control_name,
-        original_control_unit,
-        preconditioner_determinant_sign,
-        state_jacobian_determinant_sign,
-        real_part_crossing_speed_sign,
-        first_lyapunov_coefficient_sign,
-        side,
-        stability,
-    )
     return ROHopfPeriodicOrbitGermEvent(
         _ROHPG_VALIDATED_TOKEN,
         RO_HOPF_PERIODIC_ORBIT_GERM_EVENT_VERSION,
@@ -453,7 +438,6 @@ function _rohpg_make_event(
         false,
         false,
         false,
-        hash,
     )
 end
 
@@ -574,7 +558,6 @@ struct ROCompleteHopfPeriodicOrbitGermCensus
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_COMPLETE_HOPF_PERIODIC_ORBIT_GERM_CENSUS_VERSION ||
             throw(ArgumentError(
@@ -593,7 +576,6 @@ struct ROCompleteHopfPeriodicOrbitGermCensus
             (spectral_parent_census_sha256,
                 "spectral_parent_census_sha256"),
             (hopf_parent_census_sha256, "hopf_parent_census_sha256"),
-            (certificate_sha256, "certificate_sha256"),
         )
             _rors_validate_sha256(hash, label)
         end
@@ -655,7 +637,7 @@ struct ROCompleteHopfPeriodicOrbitGermCensus
             analysis_interval_operation_count,
             limits.max_analysis_interval_operations,
         )
-        expected = _rohpg_census_sha256(
+        certificate_sha256 = _rohpg_census_sha256(
             system_declaration_sha256,
             dynamics_binding_declaration_sha256,
             spectral_parent_census_sha256,
@@ -664,8 +646,6 @@ struct ROCompleteHopfPeriodicOrbitGermCensus
             events,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "complete Hopf periodic-orbit germ census hash mismatch"))
         return new(
             version,
             theorem_version,
@@ -911,15 +891,6 @@ function _rohpg_certify_exact(
         ))
     operation_count = Int(context.operations)
     event_tuple = Tuple(events)
-    hash = _rohpg_census_sha256(
-        system.declaration_sha256,
-        spectral_parent.dynamics_binding.declaration_sha256,
-        spectral_parent.certificate_sha256,
-        hopf_parent.certificate_sha256,
-        limits,
-        event_tuple,
-        operation_count,
-    )
     return ROCompleteHopfPeriodicOrbitGermCensus(
         _ROHPG_VALIDATED_TOKEN,
         RO_COMPLETE_HOPF_PERIODIC_ORBIT_GERM_CENSUS_VERSION,
@@ -950,7 +921,6 @@ function _rohpg_certify_exact(
         false,
         false,
         RO_COMPLETE_HOPF_PERIODIC_ORBIT_GERM_CENSUS_SCOPE,
-        hash,
     )
 end
 

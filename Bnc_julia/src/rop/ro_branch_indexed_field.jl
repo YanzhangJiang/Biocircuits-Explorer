@@ -245,7 +245,6 @@ struct ROPolynomialDynamicsBinding
         equations_are_state_time_derivatives::Bool,
         unit_algebra_verified::Bool,
         evidence_scope::Symbol,
-        declaration_sha256::String,
     )
         version == RO_POLYNOMIAL_DYNAMICS_BINDING_VERSION ||
             throw(ArgumentError("polynomial dynamics-binding version mismatch"))
@@ -268,8 +267,7 @@ struct ROPolynomialDynamicsBinding
             state_rate_units,
             dynamics_policy_sha256,
         )
-        declaration_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "polynomial dynamics-binding declaration hash mismatch"))
+        declaration_sha256 = _robs_hash(payload)
         return new(
             version,
             system_declaration_sha256,
@@ -327,12 +325,6 @@ function ROPolynomialDynamicsBinding(
         init=BigInt(0),
     )
     _robs_limit(:metadata_bytes, metadata_bytes, limits.max_metadata_bytes)
-    payload = _robs_dynamics_binding_payload(
-        system.declaration_sha256,
-        admitted_time_unit,
-        admitted_rate_units,
-        policy,
-    )
     return ROPolynomialDynamicsBinding(
         _ROBS_VALIDATED_TOKEN,
         RO_POLYNOMIAL_DYNAMICS_BINDING_VERSION,
@@ -343,7 +335,6 @@ function ROPolynomialDynamicsBinding(
         true,
         false,
         :declared_polynomial_vector_field_semantics_only,
-        _robs_hash(payload),
     )
 end
 
@@ -392,7 +383,6 @@ struct ROBranchPatchEvidence
         fold_excluded_inside_declared_tube::Bool,
         hopf_excluded_inside_declared_tube::Bool,
         evidence_scope::Symbol,
-        evidence_sha256::String,
     )
         _rors_validate_sha256(
             patch_certificate_sha256, "patch_certificate_sha256")
@@ -448,8 +438,7 @@ struct ROBranchPatchEvidence
             fold_excluded_inside_declared_tube,
             hopf_excluded_inside_declared_tube,
         )
-        evidence_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "branch-patch evidence hash mismatch"))
+        evidence_sha256 = _robs_hash(payload)
         return new(
             patch_certificate_sha256,
             source_branch_identity_sha256,
@@ -519,7 +508,6 @@ struct ROBranchComponentEvidence
         unstable_patch_count::Int,
         unknown_patch_count::Int,
         stability_coverage_status::Symbol,
-        evidence_sha256::String,
     )
         branch_index > 0 || throw(ArgumentError(
             "branch_index must be positive"))
@@ -566,8 +554,7 @@ struct ROBranchComponentEvidence
             unknown_patch_count,
             stability_coverage_status,
         )
-        evidence_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "branch component evidence hash mismatch"))
+        evidence_sha256 = _robs_hash(payload)
         return new(
             branch_index,
             branch_identity_sha256,
@@ -619,7 +606,6 @@ struct ROBranchSeparationEvidence
         separating_state_index::Int,
         separating_state_name::String,
         strict_separation_margin::_RORSExact,
-        evidence_sha256::String,
     )
         _rors_validate_sha256(
             left_branch_identity_sha256,
@@ -645,8 +631,7 @@ struct ROBranchSeparationEvidence
             separating_state_name,
             strict_separation_margin,
         )
-        evidence_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "branch separation evidence hash mismatch"))
+        evidence_sha256 = _robs_hash(payload)
         return new(
             left_branch_identity_sha256,
             right_branch_identity_sha256,
@@ -701,7 +686,6 @@ struct ROMultistabilityWitnessEvidence
         folds_outside_selected_tubes_excluded::Bool,
         bifurcation_boundaries_enclosed::Bool,
         evidence_scope::Symbol,
-        evidence_sha256::String,
     )
         !isempty(control_box) &&
             all(interval -> interval isa ROExactInterval &&
@@ -781,8 +765,7 @@ struct ROMultistabilityWitnessEvidence
             pairwise_separations,
             certified_stable_root_lower_bound,
         )
-        evidence_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "multistability witness evidence hash mismatch"))
+        evidence_sha256 = _robs_hash(payload)
         return new(
             control_box,
             selected_patch_certificate_sha256s,
@@ -870,7 +853,6 @@ struct ROBranchIndexedRegularField
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_BRANCH_INDEXED_REGULAR_FIELD_VERSION ||
             throw(ArgumentError(
@@ -1014,8 +996,7 @@ struct ROBranchIndexedRegularField
             analysis_interval_operation_count,
             maximum_witnessed_stable_root_lower_bound,
         )
-        certificate_sha256 == _robs_hash(payload) || throw(ArgumentError(
-            "branch-indexed regular-field certificate hash mismatch"))
+        certificate_sha256 = _robs_hash(payload)
         return new(
             version,
             system_declaration_sha256,
@@ -1273,17 +1254,6 @@ function _robs_patch_evidence(
             context, trace_lower, _RORSExact(state_count)) : nothing
     hopf_excluded = status == _ROBS_STABLE
     response = _robs_patch_log_response(patch, context)
-    payload = _robs_patch_evidence_payload(
-        patch.certificate_sha256,
-        patch.branch_identity_sha256,
-        right_tuple,
-        trace_lower,
-        status,
-        margin,
-        response,
-        true,
-        hopf_excluded,
-    )
     return ROBranchPatchEvidence(
         _ROBS_VALIDATED_TOKEN,
         patch.certificate_sha256,
@@ -1296,7 +1266,6 @@ function _robs_patch_evidence(
         true,
         hopf_excluded,
         :exact_tube_stability_and_state_log_response_enclosure,
-        _robs_hash(payload),
     )
 end
 
@@ -1400,16 +1369,6 @@ function _robs_build_branches(
             :all_supplied_patches_certified_stable :
             stable_count > 0 ? :contains_certified_stable_patches :
             :no_certified_stable_patch
-        payload = _robs_branch_payload(
-            branch_index,
-            spec.identity,
-            spec.patch_hashes,
-            spec.bridge_hashes,
-            stable_count,
-            unstable_count,
-            unknown_count,
-            status,
-        )
         branch = ROBranchComponentEvidence(
             _ROBS_VALIDATED_TOKEN,
             branch_index,
@@ -1420,7 +1379,6 @@ function _robs_build_branches(
             unstable_count,
             unknown_count,
             status,
-            _robs_hash(payload),
         )
         push!(branches, branch)
         for patch_hash in spec.patch_hashes
@@ -1513,13 +1471,6 @@ function _robs_pair_separation(
         :selected_stable_root_tubes_not_separated,
         "two selected branch tubes are not strictly separated on the witness box",
     ))
-    payload = _robs_separation_payload(
-        left_branch,
-        right_branch,
-        best_state,
-        system.state_names[best_state],
-        best_margin,
-    )
     return ROBranchSeparationEvidence(
         _ROBS_VALIDATED_TOKEN,
         left_branch,
@@ -1527,7 +1478,6 @@ function _robs_pair_separation(
         best_state,
         system.state_names[best_state],
         best_margin,
-        _robs_hash(payload),
     )
 end
 
@@ -1668,14 +1618,6 @@ function _robs_build_witnesses(
         state_tubes = Tuple(selection.state_tube
             for selection in selections)
         separation_tuple = Tuple(separations)
-        payload = _robs_witness_payload(
-            spec.control_box,
-            patch_hashes,
-            branch_hash_tuple,
-            state_tubes,
-            separation_tuple,
-            length(selections),
-        )
         push!(witnesses, ROMultistabilityWitnessEvidence(
             _ROBS_VALIDATED_TOKEN,
             spec.control_box,
@@ -1688,7 +1630,6 @@ function _robs_build_witnesses(
             false,
             false,
             :stable_root_lower_bound_on_declared_control_box,
-            _robs_hash(payload),
         ))
     end
     sort!(witnesses; by=witness -> witness.evidence_sha256)
@@ -1783,19 +1724,6 @@ function _robs_certify_exact(
     patch_evidence_tuple = Tuple(patch_evidence)
     branch_tuple = Tuple(branches)
     witness_tuple = Tuple(witnesses)
-    payload = _robs_field_payload(
-        system.declaration_sha256,
-        binding,
-        limits,
-        patch_tuple,
-        bridge_tuple,
-        patch_evidence_tuple,
-        branch_tuple,
-        witness_tuple,
-        source_operations,
-        analysis_operations,
-        maximum_lower_bound,
-    )
     return ROBranchIndexedRegularField(
         _ROBS_VALIDATED_TOKEN,
         RO_BRANCH_INDEXED_REGULAR_FIELD_VERSION,
@@ -1819,7 +1747,6 @@ function _robs_certify_exact(
         false,
         false,
         RO_BRANCH_INDEXED_REGULAR_FIELD_SCOPE,
-        _robs_hash(payload),
     )
 end
 

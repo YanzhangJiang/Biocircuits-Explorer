@@ -229,7 +229,6 @@ struct ROHopfLyapunovSeed
         second_harmonic_center::Tuple,
         second_harmonic_remainder_box::Tuple,
         second_harmonic_preconditioner::ROExactMatrix,
-        seed_sha256::String,
     )
         version == RO_HOPF_LYAPUNOV_SEED_VERSION ||
             throw(ArgumentError("Hopf-Lyapunov seed version mismatch"))
@@ -286,8 +285,7 @@ struct ROHopfLyapunovSeed
                 throw(DimensionMismatch(
                     "Hopf-Lyapunov preconditioner $proof has the wrong shape"))
         end
-        _rors_validate_sha256(seed_sha256, "seed_sha256")
-        expected = _rohl_seed_sha256(
+        seed_sha256 = _rohl_seed_sha256(
             event_certificate_sha256,
             state_count,
             anchor_state_index,
@@ -304,8 +302,6 @@ struct ROHopfLyapunovSeed
             second_harmonic_remainder_box,
             second_harmonic_preconditioner,
         )
-        seed_sha256 == expected || throw(ArgumentError(
-            "Hopf-Lyapunov seed hash mismatch"))
         return new(
             version,
             event_certificate_sha256,
@@ -530,15 +526,6 @@ function ROHopfLyapunovSeed(
         Tuple(zero_box),
         Tuple(second_box),
     )
-    seed_sha256 = _rohl_seed_sha256(
-        event.certificate_sha256,
-        state_count,
-        anchor,
-        centers[1], boxes[1], wrappers[1],
-        centers[2], boxes[2], wrappers[2],
-        centers[3], boxes[3], wrappers[3],
-        centers[4], boxes[4], wrappers[4],
-    )
     return ROHopfLyapunovSeed(
         _ROHL_VALIDATED_TOKEN,
         RO_HOPF_LYAPUNOV_SEED_VERSION,
@@ -549,7 +536,6 @@ function ROHopfLyapunovSeed(
         centers[2], boxes[2], wrappers[2],
         centers[3], boxes[3], wrappers[3],
         centers[4], boxes[4], wrappers[4],
-        seed_sha256,
     )
 end
 
@@ -1382,7 +1368,6 @@ struct ROFirstLyapunovHopfEvent
         original_control_side_certified::Bool,
         periodic_orbit_incidence_certified::Bool,
         full_state_periodic_orbit_stability_certified::Bool,
-        certificate_sha256::String,
     )
         version == RO_FIRST_LYAPUNOV_HOPF_EVENT_VERSION ||
             throw(ArgumentError("first-Lyapunov event version mismatch"))
@@ -1396,7 +1381,6 @@ struct ROFirstLyapunovHopfEvent
             (parent_event_certificate_sha256,
                 "parent_event_certificate_sha256"),
             (seed_sha256, "seed_sha256"),
-            (certificate_sha256, "certificate_sha256"),
         )
             _rors_validate_sha256(hash, label)
         end
@@ -1483,7 +1467,7 @@ struct ROFirstLyapunovHopfEvent
             value && throw(ArgumentError(
                 "P8s1c1 cannot certify $label"))
         end
-        expected = _rohl_event_sha256(
+        certificate_sha256 = _rohl_event_sha256(
             parent_event_certificate_sha256,
             seed_sha256,
             root_enclosure,
@@ -1501,8 +1485,6 @@ struct ROFirstLyapunovHopfEvent
             first_lyapunov_coefficient_enclosure,
             center_manifold_criticality,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "first-Lyapunov event hash mismatch"))
         return new(
             version,
             formula_version,
@@ -1554,24 +1536,6 @@ function _rohl_make_event(
     first_lyapunov_coefficient_enclosure::ROExactInterval,
     center_manifold_criticality::Symbol,
 )
-    hash = _rohl_event_sha256(
-        parent_event_certificate_sha256,
-        seed_sha256,
-        root_enclosure,
-        frequency_enclosure,
-        right_solution_enclosure,
-        adjoint_solution_enclosure,
-        zero_resolvent_solution_enclosure,
-        second_harmonic_solution_enclosure,
-        contraction_betas,
-        q_norm_squared_enclosure,
-        adjoint_pairing.real,
-        adjoint_pairing.imaginary,
-        g21.real,
-        g21.imaginary,
-        first_lyapunov_coefficient_enclosure,
-        center_manifold_criticality,
-    )
     return ROFirstLyapunovHopfEvent(
         _ROHL_VALIDATED_TOKEN,
         RO_FIRST_LYAPUNOV_HOPF_EVENT_VERSION,
@@ -1603,7 +1567,6 @@ function _rohl_make_event(
         false,
         false,
         false,
-        hash,
     )
 end
 
@@ -1714,7 +1677,6 @@ struct ROCompleteNondegenerateHopfCensus
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_COMPLETE_NONDEGENERATE_HOPF_CENSUS_VERSION ||
             throw(ArgumentError(
@@ -1730,7 +1692,6 @@ struct ROCompleteNondegenerateHopfCensus
             (dynamics_binding_declaration_sha256,
                 "dynamics_binding_declaration_sha256"),
             (parent_census_sha256, "parent_census_sha256"),
-            (certificate_sha256, "certificate_sha256"),
         )
             _rors_validate_sha256(hash, label)
         end
@@ -1790,7 +1751,7 @@ struct ROCompleteNondegenerateHopfCensus
             analysis_interval_operation_count,
             limits.max_analysis_interval_operations,
         )
-        expected = _rohl_census_sha256(
+        certificate_sha256 = _rohl_census_sha256(
             system_declaration_sha256,
             dynamics_binding_declaration_sha256,
             parent_census_sha256,
@@ -1799,8 +1760,6 @@ struct ROCompleteNondegenerateHopfCensus
             events,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "complete nondegenerate-Hopf census hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -1914,23 +1873,6 @@ function _rohl_preflight_inputs(
         haskey(seed_by_event, seed.event_certificate_sha256) &&
             throw(ArgumentError(
                 "duplicate Hopf-Lyapunov seed for one parent event"))
-        seed.seed_sha256 == _rohl_seed_sha256(
-            seed.event_certificate_sha256,
-            seed.state_count,
-            seed.anchor_state_index,
-            seed.right_bordered_center,
-            seed.right_bordered_remainder_box,
-            seed.right_bordered_preconditioner,
-            seed.adjoint_bordered_center,
-            seed.adjoint_bordered_remainder_box,
-            seed.adjoint_bordered_preconditioner,
-            seed.zero_resolvent_center,
-            seed.zero_resolvent_remainder_box,
-            seed.zero_resolvent_preconditioner,
-            seed.second_harmonic_center,
-            seed.second_harmonic_remainder_box,
-            seed.second_harmonic_preconditioner,
-        ) || throw(ArgumentError("nested Hopf-Lyapunov seed hash mismatch"))
         seed_by_event[seed.event_certificate_sha256] = seed
     end
     canonical_seeds = ROHopfLyapunovSeed[]
@@ -2163,15 +2105,6 @@ function _rohl_certify_exact(
     operation_count = Int(context.operations)
     seed_tuple = Tuple(canonical_seeds)
     event_tuple = Tuple(events)
-    hash = _rohl_census_sha256(
-        system.declaration_sha256,
-        parent_census.dynamics_binding.declaration_sha256,
-        parent_census.certificate_sha256,
-        limits,
-        seed_tuple,
-        event_tuple,
-        operation_count,
-    )
     return ROCompleteNondegenerateHopfCensus(
         _ROHL_VALIDATED_TOKEN,
         RO_COMPLETE_NONDEGENERATE_HOPF_CENSUS_VERSION,
@@ -2197,7 +2130,6 @@ function _rohl_certify_exact(
         false,
         false,
         RO_COMPLETE_NONDEGENERATE_HOPF_CENSUS_SCOPE,
-        hash,
     )
 end
 

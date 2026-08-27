@@ -247,16 +247,17 @@ end
     @test runtime_identity.schema_version ==
         RODT.RO_DYNAMIC_SOLVER_RUNTIME_VERSION_IDENTITY_VERSION
     @test runtime_identity.identity_scope ==
-        "runtime_package_and_algorithm_module_versions_only"
-    @test runtime_identity.julia.version == string(VERSION)
-    @test runtime_identity.ordinarydiffeq.package_name == "OrdinaryDiffEq"
-    @test runtime_identity.scimlbase.package_name == "SciMLBase"
+        "compatible_solver_runtime"
+    @test runtime_identity.julia_series ==
+        "$(VERSION.major).$(VERSION.minor)"
+    @test runtime_identity.ordinarydiffeq ==
+        string(Base.pkgversion(RODT.ODE))
+    @test runtime_identity.scimlbase ==
+        string(Base.pkgversion(RODT.SciMLBase))
     @test runtime_identity.primary_algorithm.solver_id ==
         "ordinarydiffeq_tsit5"
     @test runtime_identity.audit_algorithm.solver_id ==
         "ordinarydiffeq_vern7"
-    @test !runtime_identity.external_provenance.
-        complete_active_manifest_sha256_embedded
     @test spec.identity_payload.solver.config.runtime_version_identity ==
         runtime_identity
     @test spec.solver_runtime_version_identity_sha256 ==
@@ -353,10 +354,7 @@ end
 
     foreign_runtime_identity = merge(
         runtime_identity,
-        (julia=merge(
-            runtime_identity.julia,
-            (version="0.0.0-foreign-runtime",),
-        ),),
+        (julia_series="0.0-foreign-runtime",),
     )
     foreign_spec = copy_spec_with_runtime_version_identity(
         spec, foreign_runtime_identity)

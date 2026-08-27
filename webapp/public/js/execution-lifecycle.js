@@ -10,6 +10,7 @@ import {
   wiringState,
 } from './state.js';
 import { setNodeLoading } from './node-loading.js';
+import { stableJson } from './stable-json.js';
 import {
   begin as beginLifecycle,
   block as blockLifecycle,
@@ -61,20 +62,6 @@ const ATLAS_LIFECYCLE_KEY = '_atlasExecutionLifecycle';
 export const PLACER_RESULT_LIFECYCLE_KEY = '_placerResultLifecycle';
 const SCAN_LIFECYCLE_KEY = '_scanExecutionLifecycle';
 
-function canonicalFingerprintValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalFingerprintValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) {
-    normalized[key] = canonicalFingerprintValue(value[key]);
-  }
-  return normalized;
-}
-
-function stableFingerprint(value) {
-  return JSON.stringify(canonicalFingerprintValue(value));
-}
-
 function scanEndpoint(kind = '', nodeType = '') {
   const hint = `${kind} ${nodeType}`.toLowerCase();
   return hint.includes('2d')
@@ -102,7 +89,7 @@ function defaultScanContext(nodeId, kind) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: stableFingerprint({
+    inputFingerprint: stableJson({
       kind,
       nodeType: owner.type,
       upstream: scanUpstreamSignature(nodeId),
@@ -130,7 +117,7 @@ function defaultAtlasContext(nodeId, kind) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: stableFingerprint({
+    inputFingerprint: stableJson({
       kind,
       nodeType: owner.type,
       upstream: atlasUpstreamSignature(nodeId),
@@ -345,7 +332,7 @@ export function restoreAtlasNodeExecution(nodeId, data = {}) {
     context: {
       owner,
       workspaceEpoch: getWorkspaceRuntimeEpoch(),
-      inputFingerprint: stableFingerprint(restoredAtlasInputIdentity(nodeId, owner, data)),
+      inputFingerprint: stableJson(restoredAtlasInputIdentity(nodeId, owner, data)),
       endpoint: atlasEndpoint('', owner.type),
     },
     result: data[resultKey],
@@ -494,7 +481,7 @@ export function restoreScanExecution(nodeId, data = {}) {
     context: {
       owner,
       workspaceEpoch: getWorkspaceRuntimeEpoch(),
-      inputFingerprint: savedMeta.requestFingerprint || stableFingerprint({
+      inputFingerprint: savedMeta.requestFingerprint || stableJson({
         request: savedMeta.request || null,
         model: savedMeta.model || null,
         upstream: scanUpstreamSignature(nodeId),

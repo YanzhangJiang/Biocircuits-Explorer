@@ -315,6 +315,7 @@ function raw_census_with_flag(census, field::Symbol, value)
     fields = fieldnames(typeof(census))
     raw = Any[getfield(census, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROCompleteSimpleSpectralHopfEventCensus(
         BindingAndCatalysis._ROHSC_VALIDATED_TOKEN,
         raw...,
@@ -325,6 +326,7 @@ function raw_event_with_field(event, field::Symbol, value)
     fields = fieldnames(typeof(event))
     raw = Any[getfield(event, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROSimpleSpectralHopfEvent(
         BindingAndCatalysis._ROHSC_VALIDATED_TOKEN,
         raw...,
@@ -796,8 +798,6 @@ end
             :first_lyapunov_coefficient_nonzero_certified,
             true,
         )
-        @test_throws ArgumentError raw_event_with_field(
-            event, :certificate_sha256, repeat("0", 64))
         for field in (
             :first_lyapunov_coefficients_nonzero_certified,
             :nonlinear_hopf_bifurcations_certified,

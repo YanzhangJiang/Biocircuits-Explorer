@@ -6,6 +6,7 @@ import {
   nodeRegistry,
 } from './state.js';
 import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, syncSelectOptions } from './api.js';
+import { stableJson } from './stable-json.js';
 import { setNodeLoading } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
 import { triggerConfigUpdate } from './nodes.js';
@@ -2074,22 +2075,12 @@ export function hydrateAtlasResultContent(nodeId, data = null) {
 /*  Execution                                                          */
 /* ------------------------------------------------------------------ */
 
-function canonicalAtlasFingerprintValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalAtlasFingerprintValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  Object.keys(value).sort().forEach(key => {
-    normalized[key] = canonicalAtlasFingerprintValue(value[key]);
-  });
-  return normalized;
-}
-
 function atlasRequestFingerprint(nodeId, endpoint, request) {
-  return JSON.stringify(canonicalAtlasFingerprintValue({
+  return stableJson({
     endpoint,
     request,
     upstream: atlasUpstreamSignature(nodeId),
-  }));
+  });
 }
 
 function atlasExecutionContext(nodeId, endpoint, request) {

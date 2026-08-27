@@ -168,257 +168,29 @@ function _rofsj_portable_engine_payload(raw, path::AbstractString)
     return _rofc_materialize(JSON3.read(encoded), path)
 end
 
-_rofsj_file_sha256(path::AbstractString) = "sha256:" *
-    bytes2hex(SHA.sha256(read(String(path))))
-
-function _rofsj_source_tree_identity(source_root::AbstractString)
-    root = normpath(String(source_root))
-    isdir(root) || throw(ArgumentError(
-        "adaptive solver source-tree root is missing"))
-    Base.include_dependency(root)
-    paths = String[]
-    for (directory, _, names) in walkdir(root)
-        Base.include_dependency(directory)
-        for name in names
-            endswith(name, ".jl") || continue
-            path = joinpath(directory, name)
-            Base.include_dependency(path)
-            push!(paths, path)
-        end
-    end
-    sort!(paths; by=path -> replace(relpath(path, root), '\\' => '/'))
-    entries = Dict{String,Any}[]
-    total_bytes = BigInt(0)
-    for path in paths
-        relative_path = replace(relpath(path, root), '\\' => '/')
-        byte_count = filesize(path)
-        total_bytes += byte_count
-        push!(entries, Dict{String,Any}(
-            "relative_path" => relative_path,
-            "byte_count" => byte_count,
-            "sha256" => _rofsj_file_sha256(path),
-        ))
-    end
-    total_bytes <= typemax(Int) || throw(ArgumentError(
-        "adaptive solver source tree does not fit in Int"))
-    return Dict{String,Any}(
-        "path_policy" => "recursive_julia_files_relative_posix_order",
-        "capture_semantics" =>
-            "module_load_frozen_with_precompile_content_dependencies",
-        "file_count" => length(entries),
-        "total_bytes" => Int(total_bytes),
-        "tree_sha256" => _rofc_sha256(Dict{String,Any}(
-            "files" => entries)),
-    )
-end
-
-# This digest describes the source bytes that were present when the backend
-# module was loaded.  Resume and result validation compare against this frozen
-# process identity instead of re-hashing a potentially changed checkout.
-const _ROFSJ_LOADED_WEB_SOURCE_IDENTITY =
-    _rofsj_source_tree_identity(@__DIR__)
-const _ROFSJ_LOADED_SPARSE_IMPLEMENTATION_SHA256 =
-    _rofsj_file_sha256(@__FILE__)
-const _ROFSJ_WEB_SOURCE_IDENTITY_TEST_OVERRIDE = Ref{Any}(nothing)
-
-function _rofsj_loaded_web_source_identity()
-    override = _ROFSJ_WEB_SOURCE_IDENTITY_TEST_OVERRIDE[]
-    identity = override === nothing ?
-        _ROFSJ_LOADED_WEB_SOURCE_IDENTITY : override
-    identity isa AbstractDict || throw(ArgumentError(
-        "adaptive loaded Web source identity must be an object"))
-    Set(String.(keys(identity))) == Set((
-        "path_policy", "capture_semantics", "file_count", "total_bytes",
-        "tree_sha256",
-    )) || throw(ArgumentError(
-        "adaptive loaded Web source identity fields are incomplete"))
-    identity["path_policy"] ==
-        "recursive_julia_files_relative_posix_order" ||
-        throw(ArgumentError(
-            "unsupported adaptive Web source-tree path policy"))
-    identity["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies" ||
-        throw(ArgumentError(
-            "unsupported adaptive Web source-tree capture semantics"))
-    _rofjob_int(identity["file_count"],
-        "web source file_count"; minimum=1)
-    _rofjob_int(identity["total_bytes"],
-        "web source total_bytes"; minimum=1)
-    _rofjob_sha(identity["tree_sha256"], "web source tree_sha256")
-    return deepcopy(identity)
-end
-
-function _rofsj_with_web_source_identity_test_override(
-    f::Function,
-    identity,
-)
-    previous = _ROFSJ_WEB_SOURCE_IDENTITY_TEST_OVERRIDE[]
-    _ROFSJ_WEB_SOURCE_IDENTITY_TEST_OVERRIDE[] = deepcopy(identity)
-    try
-        return f()
-    finally
-        _ROFSJ_WEB_SOURCE_IDENTITY_TEST_OVERRIDE[] = previous
-    end
-end
-
-function _rofsj_package_version_identity(package_module::Module)
-    package_id = Base.PkgId(package_module)
+function _rofsj_package_version(package_module::Module)
     version = Base.pkgversion(package_module)
     version === nothing && throw(ArgumentError(
-        "adaptive solver package $(package_id.name) has no version identity"))
-    return Dict{String,Any}(
-        "module_name" => string(package_module),
-        "package_name" => package_id.name,
-        "package_uuid" => string(package_id.uuid),
-        "package_version" => string(version),
-    )
-end
-
-function _rofsj_binding_source_identity()
-    entrypoint = pathof(BindingAndCatalysis)
-    entrypoint === nothing && throw(ArgumentError(
-        "BindingAndCatalysis has no source entrypoint identity"))
-    return _rofsj_source_tree_identity(dirname(String(entrypoint)))
-end
-
-function _rofsj_active_lock_identity()
-    project_path = Base.active_project()
-    project_path === nothing && throw(ArgumentError(
-        "adaptive solver requires an active Julia project"))
-    project = String(project_path)
-    manifest = VERSION < v"1.11" ?
-        joinpath(dirname(project), "Manifest-v1.10.toml") :
-        joinpath(dirname(project), "Manifest.toml")
-    isfile(project) || throw(ArgumentError(
-        "adaptive solver active Project.toml is missing"))
-    isfile(manifest) || throw(ArgumentError(
-        "adaptive solver selected Manifest is missing"))
-    Base.include_dependency(project)
-    Base.include_dependency(manifest)
-    return Dict{String,Any}(
-        "capture_semantics" =>
-            "module_load_frozen_with_precompile_content_dependencies",
-        "selection_policy" => VERSION < v"1.11" ?
-            "julia_1_10_versioned_manifest" : "default_manifest",
-        "project_sha256" => _rofsj_file_sha256(project),
-        "manifest_sha256" => _rofsj_file_sha256(manifest),
-    )
-end
-
-const _ROFSJ_LOADED_BINDING_SOURCE_IDENTITY =
-    _rofsj_binding_source_identity()
-const _ROFSJ_LOADED_ACTIVE_LOCK_IDENTITY =
-    _rofsj_active_lock_identity()
-const _ROFSJ_BINDING_SOURCE_IDENTITY_TEST_OVERRIDE = Ref{Any}(nothing)
-const _ROFSJ_ACTIVE_LOCK_IDENTITY_TEST_OVERRIDE = Ref{Any}(nothing)
-
-function _rofsj_loaded_binding_source_identity()
-    override = _ROFSJ_BINDING_SOURCE_IDENTITY_TEST_OVERRIDE[]
-    identity = override === nothing ?
-        _ROFSJ_LOADED_BINDING_SOURCE_IDENTITY : override
-    identity isa AbstractDict || throw(ArgumentError(
-        "adaptive loaded BindingAndCatalysis source identity must be an object"))
-    Set(String.(keys(identity))) == Set((
-        "path_policy", "capture_semantics", "file_count", "total_bytes",
-        "tree_sha256",
-    )) || throw(ArgumentError(
-        "adaptive loaded BindingAndCatalysis source identity fields are incomplete"))
-    identity["path_policy"] ==
-        "recursive_julia_files_relative_posix_order" ||
-        throw(ArgumentError(
-            "unsupported BindingAndCatalysis source-tree path policy"))
-    identity["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies" ||
-        throw(ArgumentError(
-            "unsupported BindingAndCatalysis source-tree capture semantics"))
-    _rofjob_int(identity["file_count"],
-        "binding source file_count"; minimum=1)
-    _rofjob_int(identity["total_bytes"],
-        "binding source total_bytes"; minimum=1)
-    _rofjob_sha(identity["tree_sha256"], "binding source tree_sha256")
-    return deepcopy(identity)
-end
-
-function _rofsj_loaded_active_lock_identity()
-    override = _ROFSJ_ACTIVE_LOCK_IDENTITY_TEST_OVERRIDE[]
-    identity = override === nothing ?
-        _ROFSJ_LOADED_ACTIVE_LOCK_IDENTITY : override
-    identity isa AbstractDict || throw(ArgumentError(
-        "adaptive loaded Project/Manifest identity must be an object"))
-    Set(String.(keys(identity))) == Set((
-        "capture_semantics", "selection_policy", "project_sha256",
-        "manifest_sha256",
-    )) || throw(ArgumentError(
-        "adaptive loaded Project/Manifest identity fields are incomplete"))
-    identity["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies" ||
-        throw(ArgumentError(
-            "unsupported Project/Manifest capture semantics"))
-    identity["selection_policy"] in (
-        "julia_1_10_versioned_manifest", "default_manifest") ||
-        throw(ArgumentError("unsupported manifest selection policy"))
-    for (key, label) in (
-        ("project_sha256", "active Project sha256"),
-        ("manifest_sha256", "active Manifest sha256"),
-    )
-        raw = identity[key]
-        raw isa AbstractString &&
-            occursin(r"^sha256:[0-9a-f]{64}$", String(raw)) ||
-            throw(ArgumentError(
-                "$label must be a sha256:-prefixed lowercase SHA-256 string"))
-    end
-    return deepcopy(identity)
-end
-
-function _rofsj_with_binding_source_identity_test_override(
-    f::Function,
-    identity,
-)
-    previous = _ROFSJ_BINDING_SOURCE_IDENTITY_TEST_OVERRIDE[]
-    _ROFSJ_BINDING_SOURCE_IDENTITY_TEST_OVERRIDE[] = deepcopy(identity)
-    try
-        return f()
-    finally
-        _ROFSJ_BINDING_SOURCE_IDENTITY_TEST_OVERRIDE[] = previous
-    end
-end
-
-function _rofsj_with_active_lock_identity_test_override(
-    f::Function,
-    identity,
-)
-    previous = _ROFSJ_ACTIVE_LOCK_IDENTITY_TEST_OVERRIDE[]
-    _ROFSJ_ACTIVE_LOCK_IDENTITY_TEST_OVERRIDE[] = deepcopy(identity)
-    try
-        return f()
-    finally
-        _ROFSJ_ACTIVE_LOCK_IDENTITY_TEST_OVERRIDE[] = previous
-    end
+        "adaptive solver package $(Base.PkgId(package_module).name) has no version"))
+    return string(version)
 end
 
 function _rofsj_solver_runtime_identity()
     identity = Dict{String,Any}(
-        "scope" =>
-            "exact_runtime_lock_and_executed_source_tree_for_local_resume",
-        "julia" => Dict{String,Any}(
-            "version" => string(VERSION),
-            "machine" => Sys.MACHINE,
-            "word_size" => Sys.WORD_SIZE,
-        ),
-        "binding_and_catalysis" =>
-            _rofsj_package_version_identity(BindingAndCatalysis),
-        "ordinary_diffeq" => _rofsj_package_version_identity(
+        "scope" => "compatible_runtime_for_local_resume",
+        "algorithm_version" => RO_FIELD_SPARSE_JOB_ALGORITHM_VERSION,
+        "plan_version" => RO_FIELD_SPARSE_PLAN_VERSION,
+        "state_version" => RO_FIELD_SPARSE_STATE_ARTIFACT_VERSION,
+        "checkpoint_version" => RO_FIELD_SPARSE_CHECKPOINT_VERSION,
+        "julia_series" => "$(VERSION.major).$(VERSION.minor)",
+        "binding_and_catalysis_version" =>
+            _rofsj_package_version(BindingAndCatalysis),
+        "ordinary_diffeq_version" => _rofsj_package_version(
             BindingAndCatalysis.ODE),
-        "diff_eq_callbacks" => _rofsj_package_version_identity(
+        "diff_eq_callbacks_version" => _rofsj_package_version(
             BindingAndCatalysis.CB),
-        "sciml_base" => _rofsj_package_version_identity(
+        "sciml_base_version" => _rofsj_package_version(
             BindingAndCatalysis.SciMLBase),
-        "active_lock" => _rofsj_loaded_active_lock_identity(),
-        "binding_source" => _rofsj_loaded_binding_source_identity(),
-        "webapp_loaded_source" =>
-            _rofsj_loaded_web_source_identity(),
-        "web_sparse_implementation_sha256" =>
-            _ROFSJ_LOADED_SPARSE_IMPLEMENTATION_SHA256,
     )
     return Dict{String,Any}(
         "identity" => identity,

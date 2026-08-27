@@ -589,27 +589,6 @@ end
         second_harmonic_preconditioner=Matrix{Float64}(I, 4, 4),
     )
 
-    @test_throws ArgumentError BindingAndCatalysis.ROHopfLyapunovSeed(
-        BindingAndCatalysis._ROHL_VALIDATED_TOKEN,
-        seed.version,
-        seed.event_certificate_sha256,
-        seed.state_count,
-        seed.anchor_state_index,
-        seed.right_bordered_center,
-        seed.right_bordered_remainder_box,
-        seed.right_bordered_preconditioner,
-        seed.adjoint_bordered_center,
-        seed.adjoint_bordered_remainder_box,
-        seed.adjoint_bordered_preconditioner,
-        seed.zero_resolvent_center,
-        seed.zero_resolvent_remainder_box,
-        seed.zero_resolvent_preconditioner,
-        seed.second_harmonic_center,
-        seed.second_harmonic_remainder_box,
-        seed.second_harmonic_preconditioner,
-        repeat("0", 64),
-    )
-
     valid = certify_ro_complete_nondegenerate_hopf_census(
         system, parent, [seed])
     valid_event = only(valid.events)
@@ -636,7 +615,6 @@ end
         valid_event.center_manifold_criticality,
         true, true, true, true, true, true, true,
         false, false, false,
-        valid_event.certificate_sha256,
     )
     beta_error = try
         BindingAndCatalysis.ROFirstLyapunovHopfEvent(
@@ -662,7 +640,6 @@ end
             valid_event.center_manifold_criticality,
             true, true, true, true, true, true, true,
             false, false, false,
-            valid_event.certificate_sha256,
         )
         nothing
     catch err

@@ -8,6 +8,7 @@ import {
   getWorkspaceRuntimeEpoch,
 } from './state.js';
 import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable } from './api.js';
+import { stableJson } from './stable-json.js';
 import { applyPlotLayoutTheme, getPlotTheme, themedColorbar, prefersLightTheme } from './theme.js';
 import { setNodeLoading, setupPlotResize, getModelContextFromBuilder, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
@@ -552,14 +553,6 @@ export function plotParameterScan2D(data, plotId) {
 const ROP_POLY_ENDPOINT = '/api/v1/rop_polyhedron';
 const ROP_POLY_LIFECYCLE_KEY = '_ropPolyResultLifecycle';
 
-function canonicalROPPolyValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalROPPolyValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) normalized[key] = canonicalROPPolyValue(value[key]);
-  return normalized;
-}
-
 function currentROPPolyContext(nodeId) {
   const owner = nodeRegistry[nodeId];
   if (!owner) return null;
@@ -574,12 +567,12 @@ function currentROPPolyContext(nodeId) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: JSON.stringify(canonicalROPPolyValue({
+    inputFingerprint: stableJson({
       endpoint: ROP_POLY_ENDPOINT,
       config,
       model: scanModelIdentity(nodeId),
       upstream: scanUpstreamSignature(nodeId),
-    })),
+    }),
     endpoint: ROP_POLY_ENDPOINT,
   };
 }
