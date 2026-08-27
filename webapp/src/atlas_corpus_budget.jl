@@ -198,8 +198,14 @@ function _sync_sqlite_readonly_counts(
 end
 
 function _sync_sqlite_readonly_counts(path::AbstractString)
-    return _atlas_sqlite_with_readonly_db(
-        db -> _sync_sqlite_readonly_counts(db, path), path)
+    try
+        return _atlas_sqlite_with_readonly_db(
+            db -> _sync_sqlite_readonly_counts(db, path), path)
+    catch err
+        err isa SyncBudgetExceeded && rethrow()
+        _sync_budget_exceeded(
+            "SQLite corpus could not be opened read-only for synchronous preflight: $(sprint(showerror, err)).")
+    end
 end
 
 function _enforce_sync_referenced_corpus_budget(
