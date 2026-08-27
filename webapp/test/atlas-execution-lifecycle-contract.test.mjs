@@ -192,9 +192,9 @@ await test('Atlas restore fingerprints bounded persisted inputs instead of the r
   assert.match(source, /function restoredAtlasInputIdentity[\s\S]*lastSpec[\s\S]*lastQuery[\s\S]*lastInverseRequest/);
   assert.match(
     source,
-    /inputFingerprint: stableFingerprint\(restoredAtlasInputIdentity\(nodeId, owner, data\)\)/,
+    /inputFingerprint: stableJson\(restoredAtlasInputIdentity\(nodeId, owner, data\)\)/,
   );
-  assert.doesNotMatch(source, /inputFingerprint: stableFingerprint\([^\n]*data\[resultKey\]/);
+  assert.doesNotMatch(source, /inputFingerprint: stableJson\([^\n]*data\[resultKey\]/);
 });
 
 await test('real Atlas build rejects fingerprint drift and never republishes stale data', async () => {

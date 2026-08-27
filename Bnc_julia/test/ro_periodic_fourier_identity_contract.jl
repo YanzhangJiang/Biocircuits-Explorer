@@ -309,8 +309,7 @@ const AUDIT_FLAG_FIELDS = (
 
 function raw_audit_with_fields(
     audit::ROExactPolynomialPeriodicFourierAudit,
-    replacements::Pair...;
-    rehash::Bool=false,
+    replacements::Pair...,
 )
     names = fieldnames(typeof(audit))
     raw = Any[getfield(audit, name) for name in names]
@@ -319,48 +318,21 @@ function raw_audit_with_fields(
         index === nothing && throw(ArgumentError("unknown audit field $field"))
         raw[index] = value
     end
-    if rehash
-        flag_values = Tuple(
-            raw[findfirst(==(name), names)] for name in AUDIT_FLAG_FIELDS)
-        raw[findfirst(==(:certificate_sha256), names)] =
-            BindingAndCatalysis._ropf_audit_sha256(
-                raw[findfirst(==(:system_declaration_sha256), names)],
-                raw[findfirst(==(:dynamics_binding_declaration_sha256), names)],
-                raw[findfirst(==(:state_series), names)],
-                raw[findfirst(==(:controls), names)],
-                raw[findfirst(==(:omega), names)],
-                raw[findfirst(==(:galerkin_half_bandwidth), names)],
-                raw[findfirst(==(:weight_nu), names)],
-                raw[findfirst(==(:residual_series), names)],
-                raw[findfirst(==(:galerkin_head_residual_norms), names)],
-                raw[findfirst(==(:omitted_tail_residual_norms), names)],
-                raw[findfirst(==(:weighted_l1_residual_norms), names)],
-                raw[findfirst(==(:first_omitted_nonzero_mode), names)],
-                raw[findfirst(==(:planned_convolution_pair_count), names)],
-                raw[findfirst(==(:convolution_pair_count), names)],
-                raw[findfirst(==(:analysis_exact_operation_count), names)],
-                raw[findfirst(==(:limits), names)],
-                flag_values,
-            )
-    end
     flag_values = Tuple(
         raw[findfirst(==(name), names)] for name in AUDIT_FLAG_FIELDS)
     limits_index = findfirst(==(:limits), names)
-    certificate_index = findfirst(==(:certificate_sha256), names)
     return BindingAndCatalysis.ROExactPolynomialPeriodicFourierAudit(
         BindingAndCatalysis._ROPF_AUDIT_VALIDATED_TOKEN,
         raw[1:limits_index]...,
         flag_values,
-        raw[certificate_index],
     )
 end
 
 raw_audit_with_field(
     audit::ROExactPolynomialPeriodicFourierAudit,
     field::Symbol,
-    value;
-    rehash::Bool=false,
-) = raw_audit_with_fields(audit, field => value; rehash=rehash)
+    value,
+) = raw_audit_with_fields(audit, field => value)
 
 @testset "pre-c2b exact Fourier identity foundation" begin
     @testset "full complex half-spectrum admission is exact and canonical" begin
@@ -616,7 +588,7 @@ raw_audit_with_field(
 
         # Rational{BigInt} values can only be altered through low-level Julia
         # internals, but a consumer still must not treat the object or its
-        # self-hash as authority.  Both nested-series and source-bound audit
+        # object identity as authority. Both nested-series and source-bound audit
         # validation fail closed after such a mutation.
         mutated = audit_forced_hopf()
         mutated_series = getfield(mutated, :state_series)[1]
@@ -646,7 +618,7 @@ raw_audit_with_field(
             system, foreign_dynamics, audit)
     end
 
-    @testset "raw tampering and self-consistent hashes have no authority" begin
+    @testset "source replay rejects fabricated audits" begin
         system = forced_second_harmonic_hopf_system()
         dynamics = dynamics_binding(system)
         audit = audit_forced_hopf(system=system, dynamics=dynamics)
@@ -654,10 +626,10 @@ raw_audit_with_field(
         @test_throws MethodError ROExactPolynomialPeriodicFourierAudit(raw...)
 
         fake_source = raw_audit_with_field(
-            audit, :system_declaration_sha256, repeat("f", 64); rehash=true)
+            audit, :system_declaration_sha256, repeat("f", 64))
         fake_dynamics = raw_audit_with_field(
             audit, :dynamics_binding_declaration_sha256,
-            repeat("e", 64); rehash=true)
+            repeat("e", 64))
         @test_throws ArgumentError replay_ro_exact_polynomial_periodic_fourier_residual(
             system, dynamics, fake_source)
         @test_throws ArgumentError replay_ro_exact_polynomial_periodic_fourier_residual(
@@ -668,17 +640,12 @@ raw_audit_with_field(
                 include_z_second_harmonic=false),
             galerkin_half_bandwidth=1,
         )
-        # A plain norm-policy tamper is caught by the content hash.  Rehashing
-        # a different nu would instead be a legitimate new request when the
-        # exact residual is zero, so it is not mislabeled as a forgery here.
-        @test_throws ArgumentError raw_audit_with_field(
-            audit, :weight_nu, q(3))
         valid_nu_variant = raw_audit_with_field(
-            audit, :weight_nu, q(3); rehash=true)
+            audit, :weight_nu, q(3))
         @test validate_ro_exact_polynomial_periodic_fourier_residual(
             system, dynamics, valid_nu_variant)
         valid_cutoff_variant = raw_audit_with_field(
-            audit, :galerkin_half_bandwidth, 3; rehash=true)
+            audit, :galerkin_half_bandwidth, 3)
         @test validate_ro_exact_polynomial_periodic_fourier_residual(
             system, dynamics, valid_cutoff_variant)
         for (field, value) in (
@@ -687,25 +654,24 @@ raw_audit_with_field(
             (:state_series, trap.state_series),
         )
             forged = raw_audit_with_field(
-                audit, field, value; rehash=true)
+                audit, field, value)
             @test_throws Exception validate_ro_exact_polynomial_periodic_fourier_residual(
                 system, dynamics, forged)
         end
 
         # Structural reconstruction rejects inconsistent nested limits,
         # candidate cutoffs, or residual/norm pairs before any caller can
-        # obtain a self-hashed object with contradictory derived claims.
+        # obtain an object with contradictory derived claims.
         @test_throws Exception raw_audit_with_field(
-            audit, :galerkin_half_bandwidth, 1; rehash=true)
+            audit, :galerkin_half_bandwidth, 1)
         @test_throws Exception raw_audit_with_field(
             audit, :limits,
-            fourier_limits_with(audit.limits; max_states=15);
-            rehash=true,
+            fourier_limits_with(audit.limits; max_states=15),
         )
         @test_throws Exception raw_audit_with_field(
-            audit, :residual_series, trap.residual_series; rehash=true)
+            audit, :residual_series, trap.residual_series)
 
-        # Even a structurally self-consistent fabricated residual receipt is
+        # Even a structurally consistent fabricated residual receipt is
         # replaced by source replay and rejected by the validator.  Here the
         # forged residual's k=2 defect is placed inside a cutoff-2 head, and
         # every dependent norm/flag/hash is changed consistently.
@@ -719,8 +685,7 @@ raw_audit_with_field(
             :galerkin_head_residual_exactly_zero => false,
             :omitted_residual_tail_exactly_zero => true,
             :full_residual_exactly_zero => false,
-            :single_exact_ode_periodic_parameterization_certified => false;
-            rehash=true,
+            :single_exact_ode_periodic_parameterization_certified => false,
         )
         @test replay_ro_exact_polynomial_periodic_fourier_residual(
             system, dynamics, residual_forgery) == audit
@@ -729,7 +694,7 @@ raw_audit_with_field(
 
         for field in AUDIT_FLAG_FIELDS[8:end]
             @test_throws ArgumentError raw_audit_with_field(
-                audit, field, true; rehash=true)
+                audit, field, true)
         end
     end
 

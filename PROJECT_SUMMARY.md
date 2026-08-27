@@ -141,7 +141,7 @@ prepare/commit/finalize v2 adaptive sparse state machine, declared-population
 uncertainty/identifiability,
 conditional equilibrium-branch-loop evidence, finite model-backed numerical
 trajectories, content-addressed local Cartesian and adaptive-sparse jobs/resume,
-runtime/source-locked sparse solver bounds with in-solve cancellation, explicit
+version-bound sparse solver policy with in-solve cancellation, explicit
 model-time and structured control/time rate identities,
 exact-index/no-interpolation Cartesian slices, and campaign
 preparation/metadata QC. The current evidence and test boundaries are

@@ -10,6 +10,7 @@
 //   spec -> design target -> model-builder -> placer
 //   [/api/v1/design_screen]
 import { api, escapeHtml, showToast, syncSelectOptions } from '../api.js';
+import { stableJson } from '../stable-json.js';
 import {
   captureEditorGraphPlanningGraph,
   createEditorGraphPatchCommand,
@@ -77,20 +78,6 @@ function deepCloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function canonicalLifecycleValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) {
-    normalized[key] = canonicalLifecycleValue(value[key]);
-  }
-  return normalized;
-}
-
-function stableLifecycleFingerprint(value) {
-  return JSON.stringify(canonicalLifecycleValue(value));
-}
-
 function persistedLifecycleKey(runtimeKey) {
   return runtimeKey === DESIGN_SELECTION_LIFECYCLE_KEY
     ? 'selectionLifecycle'
@@ -110,7 +97,7 @@ function restoredDesignLifecycleContext(info, runtimeKey) {
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
     // The restored result itself is deliberately absent from this bounded
     // owner context. Historical payload bytes never become an input identity.
-    inputFingerprint: stableLifecycleFingerprint({
+    inputFingerprint: stableJson({
       contract: DESIGN_HISTORICAL_CONTEXT,
       nodeType: info.type,
       role,
@@ -1907,7 +1894,7 @@ function designSearchAttemptFingerprint(nodeId) {
   let specSourceNodeId = null;
   try { specSourceNodeId = designSpecSourceForTarget(nodeId); }
   catch { specSourceNodeId = 'invalid-source'; }
-  return stableLifecycleFingerprint({
+  return stableJson({
     kind: document.getElementById(`${nodeId}-kind`)?.value ?? null,
     target: document.getElementById(`${nodeId}-target`)?.value ?? null,
     specSourceNodeId,
@@ -1918,7 +1905,7 @@ function designSearchAttemptFingerprint(nodeId) {
 }
 
 function designSearchRequestFingerprint(request) {
-  return stableLifecycleFingerprint({ endpoint: DESIGN_SCREEN_ENDPOINT, request });
+  return stableJson({ endpoint: DESIGN_SCREEN_ENDPOINT, request });
 }
 
 function currentDesignSearchContext(nodeId) {
@@ -1928,7 +1915,7 @@ function currentDesignSearchContext(nodeId) {
   try {
     inputFingerprint = designSearchRequestFingerprint(readDesignSearchRequest(nodeId));
   } catch {
-    inputFingerprint = stableLifecycleFingerprint({
+    inputFingerprint = stableJson({
       invalid: true,
       attempt: designSearchAttemptFingerprint(nodeId),
     });
@@ -1972,7 +1959,7 @@ function publishSelectedNetwork(nodeId, entry, rules) {
 
   const card = entry.card;
   const selectedKey = designCandidateKey(card.nid, card.inp, card.out);
-  const inputFingerprint = stableLifecycleFingerprint({
+  const inputFingerprint = stableJson({
     screenInputFingerprint: screen.inputFingerprint,
     selectedKey,
     card,
@@ -2048,7 +2035,7 @@ export async function runDesignSearch(nodeId) {
   try {
     request = readDesignSearchRequest(nodeId);
   } catch (e) {
-    const context = designLifecycleContext(nodeId, stableLifecycleFingerprint({
+    const context = designLifecycleContext(nodeId, stableJson({
       invalid: true,
       attempt: designSearchAttemptFingerprint(nodeId),
     }));

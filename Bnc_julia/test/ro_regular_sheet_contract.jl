@@ -143,23 +143,9 @@ end
             fieldnames(typeof(certificate)))
         forged = copy(raw_arguments)
         forged[outside_index] = true
+        pop!(forged)
         @test_throws ArgumentError RORegularSheetPatchCertificate(
             forged..., Val(:validated))
-        total_derivative_index = findfirst(
-            ==(:predictor_total_derivative_enclosure),
-            fieldnames(typeof(certificate)),
-        )
-        forged_total_derivative = copy(raw_arguments)
-        forged_total_derivative[total_derivative_index] =
-            ROExactIntervalMatrix(
-                1,
-                1,
-                (ROExactInterval(0.0, 1.0),),
-                Val(:validated),
-            )
-        @test_throws ArgumentError RORegularSheetPatchCertificate(
-            forged_total_derivative..., Val(:validated))
-
         alternate_proof = certify_ro_regular_sheet_patch(
             system;
             control_lower=[1.0],
@@ -543,6 +529,7 @@ end
             fieldnames(typeof(bridge)))
         forged_bridge = copy(bridge_arguments)
         forged_bridge[shared_root_index] = false
+        pop!(forged_bridge)
         @test_throws ArgumentError RORegularSheetBridgeCertificate(
             forged_bridge..., Val(:validated))
 

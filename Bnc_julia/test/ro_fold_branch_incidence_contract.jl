@@ -230,6 +230,7 @@ function raw_incidence_with_flag(certificate, field::Symbol, value)
     fields = fieldnames(typeof(certificate))
     raw = Any[getfield(certificate, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROSimpleFoldBranchIncidenceCertificate(
         BindingAndCatalysis._ROFI_VALIDATED_TOKEN,
         raw...,
@@ -240,6 +241,7 @@ function raw_half_with_flag(incidence, field::Symbol, value)
     fields = fieldnames(typeof(incidence))
     raw = Any[getfield(incidence, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROFoldHalfBranchIncidence(
         BindingAndCatalysis._ROFI_VALIDATED_TOKEN,
         raw...,

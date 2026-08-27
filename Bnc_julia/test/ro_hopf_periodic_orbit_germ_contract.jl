@@ -369,6 +369,7 @@ function raw_germ_event_with_field(event, field::Symbol, value)
     fields = fieldnames(typeof(event))
     raw = Any[getfield(event, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROHopfPeriodicOrbitGermEvent(
         BindingAndCatalysis._ROHPG_VALIDATED_TOKEN,
         raw...,
@@ -379,6 +380,7 @@ function raw_germ_census_with_field(census, field::Symbol, value)
     fields = fieldnames(typeof(census))
     raw = Any[getfield(census, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROCompleteHopfPeriodicOrbitGermCensus(
         BindingAndCatalysis._ROHPG_VALIDATED_TOKEN,
         raw...,
@@ -610,8 +612,6 @@ end
         end
 
         @test_throws ArgumentError raw_germ_event_with_field(
-            event, :parent_spectral_event_sha256, repeat("0", 64))
-        @test_throws ArgumentError raw_germ_event_with_field(
             event, :real_part_crossing_speed_sign, -1)
         @test_throws ArgumentError raw_germ_event_with_field(
             event, :original_control_side, :control_below_hopf_event)
@@ -641,52 +641,24 @@ end
             @test_throws ArgumentError raw_germ_census_with_field(
                 census, field, true)
         end
-        @test_throws ArgumentError raw_germ_census_with_field(
-            census, :analysis_interval_operation_count,
-            census.analysis_interval_operation_count - 1)
-
-        # A caller with access to internal constructors can recompute a
-        # self-consistent local hash, but that object still has no authority:
-        # source-bound replay must rebuild the canonical parent attachment.
+        # Source-bound replay, rather than an in-memory object identity, owns
+        # the parent attachment.
         fake_parent_hash = repeat("f", 64)
-        fake_event_hash = BindingAndCatalysis._rohpg_event_sha256(
-            fake_parent_hash,
-            event.parent_hopf_event_sha256,
-            event.original_control_name,
-            event.original_control_unit,
-            event.preconditioner_determinant_sign,
-            event.state_jacobian_determinant_sign,
-            event.real_part_crossing_speed_sign,
-            event.first_lyapunov_coefficient_sign,
-            event.original_control_side,
-            event.center_manifold_radial_stability_at_onset,
-        )
         event_fields = fieldnames(typeof(event))
         fake_event_raw = Any[getfield(event, name) for name in event_fields]
         fake_event_raw[findfirst(==(:parent_spectral_event_sha256),
             event_fields)] = fake_parent_hash
-        fake_event_raw[findfirst(==(:certificate_sha256), event_fields)] =
-            fake_event_hash
+        pop!(fake_event_raw)
         fake_event = BindingAndCatalysis.ROHopfPeriodicOrbitGermEvent(
             BindingAndCatalysis._ROHPG_VALIDATED_TOKEN,
             fake_event_raw...,
         )
         fake_events = (fake_event,)
-        fake_census_hash = BindingAndCatalysis._rohpg_census_sha256(
-            census.system_declaration_sha256,
-            census.dynamics_binding_declaration_sha256,
-            census.spectral_parent_census_sha256,
-            census.hopf_parent_census_sha256,
-            census.limits,
-            fake_events,
-            census.analysis_interval_operation_count,
-        )
         census_fields = fieldnames(typeof(census))
         fake_census_raw = Any[
             getfield(census, name) for name in census_fields]
         fake_census_raw[findfirst(==(:events), census_fields)] = fake_events
-        fake_census_raw[findfirst(==(:certificate_sha256), census_fields)] =
-            fake_census_hash
+        pop!(fake_census_raw)
         fake_census = BindingAndCatalysis.
             ROCompleteHopfPeriodicOrbitGermCensus(
                 BindingAndCatalysis._ROHPG_VALIDATED_TOKEN,

@@ -214,7 +214,6 @@ struct ROFoldHalfBranchIncidence
         local_tube_strictly_inside_regular_patch::Bool,
         same_equilibrium_branch_on_overlap::Bool,
         intervening_fold_event_excluded::Bool,
-        evidence_sha256::String,
     )
         version == RO_FOLD_HALF_BRANCH_INCIDENCE_VERSION ||
             throw(ArgumentError(
@@ -257,8 +256,7 @@ struct ROFoldHalfBranchIncidence
             "fold half-branch lost its replayed branch identity"))
         intervening_fold_event_excluded || throw(ArgumentError(
             "an intervening fold event was not excluded"))
-        _rors_validate_sha256(evidence_sha256, "evidence_sha256")
-        expected = _rofi_half_sha256(
+        evidence_sha256 = _rofi_half_sha256(
             side,
             chart_interval,
             local_half_patch_sha256,
@@ -269,8 +267,6 @@ struct ROFoldHalfBranchIncidence
             regular_remainder_enclosure,
             corridor_augmented_enclosure,
         )
-        evidence_sha256 == expected || throw(ArgumentError(
-            "fold half-branch incidence hash mismatch"))
         return new(
             version,
             side,
@@ -302,17 +298,6 @@ function _rofi_make_half(
     regular_remainder_enclosure::Tuple,
     corridor_augmented_enclosure::Tuple,
 )
-    hash = _rofi_half_sha256(
-        side,
-        chart_interval,
-        local_half_patch_sha256,
-        local_bridge_sha256,
-        regular_patch_sha256,
-        local_state_enclosure,
-        regular_control_enclosure,
-        regular_remainder_enclosure,
-        corridor_augmented_enclosure,
-    )
     return ROFoldHalfBranchIncidence(
         _ROFI_VALIDATED_TOKEN,
         RO_FOLD_HALF_BRANCH_INCIDENCE_VERSION,
@@ -329,7 +314,6 @@ function _rofi_make_half(
         true,
         true,
         true,
-        hash,
     )
 end
 
@@ -482,7 +466,6 @@ struct ROSimpleFoldBranchIncidenceCertificate
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_SIMPLE_FOLD_BRANCH_INCIDENCE_VERSION ||
             throw(ArgumentError(
@@ -506,7 +489,6 @@ struct ROSimpleFoldBranchIncidenceCertificate
             (upper_local_bridge_sha256, "upper_local_bridge_sha256"),
             (lower_regular_patch_sha256, "lower_regular_patch_sha256"),
             (upper_regular_patch_sha256, "upper_regular_patch_sha256"),
-            (certificate_sha256, "certificate_sha256"),
         )
             _rors_validate_sha256(hash, label)
         end
@@ -556,22 +538,6 @@ struct ROSimpleFoldBranchIncidenceCertificate
         lower_regular_patch_sha256 != upper_regular_patch_sha256 ||
             throw(ArgumentError(
                 "the two incident regular patches must be distinct"))
-        for incidence in (lower_incidence, upper_incidence)
-            expected_half_hash = _rofi_half_sha256(
-                incidence.side,
-                incidence.chart_interval,
-                incidence.local_half_patch_sha256,
-                incidence.local_bridge_sha256,
-                incidence.regular_patch_sha256,
-                incidence.local_state_enclosure,
-                incidence.regular_control_enclosure,
-                incidence.regular_remainder_enclosure,
-                incidence.corridor_augmented_enclosure,
-            )
-            incidence.evidence_sha256 == expected_half_hash ||
-                throw(ArgumentError(
-                    "nested fold half-branch incidence hash mismatch"))
-        end
         source_replay_interval_operation_count >= 0 &&
             analysis_interval_operation_count >= 0 || throw(ArgumentError(
             "fold-incidence operation counts must be nonnegative"))
@@ -610,7 +576,7 @@ struct ROSimpleFoldBranchIncidenceCertificate
             "P8s1b1 is not a global continuation certificate"))
         true_hysteresis_certified && throw(ArgumentError(
             "static fold incidence cannot certify true hysteresis"))
-        expected = _rofi_certificate_sha256(
+        certificate_sha256 = _rofi_certificate_sha256(
             system_declaration_sha256,
             limits,
             fold_event_census_sha256,
@@ -631,8 +597,6 @@ struct ROSimpleFoldBranchIncidenceCertificate
             source_replay_interval_operation_count,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "simple-fold branch-incidence hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -1273,27 +1237,6 @@ function _rofi_certify_exact(
                 limits.max_analysis_interval_operations,
             ))
         analysis_operations = Int(context.operations)
-        certificate_sha256 = _rofi_certificate_sha256(
-            system.declaration_sha256,
-            limits,
-            census.certificate_sha256,
-            replayed_event.certificate_sha256,
-            chart_state_index,
-            branch_system.declaration_sha256,
-            central_local_patch.certificate_sha256,
-            lower_local_patch.certificate_sha256,
-            upper_local_patch.certificate_sha256,
-            lower_local_bridge.certificate_sha256,
-            upper_local_bridge.certificate_sha256,
-            lower_regular_patch.certificate_sha256,
-            upper_regular_patch.certificate_sha256,
-            event_root,
-            event_local_remainder,
-            lower_incidence,
-            upper_incidence,
-            source_operations,
-            analysis_operations,
-        )
         return ROSimpleFoldBranchIncidenceCertificate(
             _ROFI_VALIDATED_TOKEN,
             RO_SIMPLE_FOLD_BRANCH_INCIDENCE_VERSION,
@@ -1329,7 +1272,6 @@ function _rofi_certify_exact(
             false,
             false,
             RO_SIMPLE_FOLD_BRANCH_INCIDENCE_SCOPE,
-            certificate_sha256,
         )
     catch err
         if err isa RORegularSheetLimitExceeded &&

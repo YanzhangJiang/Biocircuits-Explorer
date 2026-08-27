@@ -210,27 +210,13 @@ end
         "checkpoint_and_terminal_artifact_chain_after_bounded_plan_reconstruction"
     @test occursin(r"^[0-9a-f]{64}$",
         policy["runtime_lock"]["identity_sha256"])
-    active_lock = policy["runtime_lock"]["identity"]["active_lock"]
-    @test active_lock == Backend._ROFSJ_LOADED_ACTIVE_LOCK_IDENTITY
-    @test active_lock["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies"
-    @test startswith(active_lock["manifest_sha256"], "sha256:")
-    binding_source = policy["runtime_lock"]["identity"][
-        "binding_source"]
-    @test binding_source == Backend._ROFSJ_LOADED_BINDING_SOURCE_IDENTITY
-    @test binding_source["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies"
-    @test occursin(r"^[0-9a-f]{64}$",
-        binding_source["tree_sha256"])
-    web_source = policy["runtime_lock"]["identity"][
-        "webapp_loaded_source"]
-    @test web_source == Backend._ROFSJ_LOADED_WEB_SOURCE_IDENTITY
-    @test web_source["path_policy"] ==
-        "recursive_julia_files_relative_posix_order"
-    @test web_source["capture_semantics"] ==
-        "module_load_frozen_with_precompile_content_dependencies"
-    @test web_source["file_count"] > 1
-    @test occursin(r"^[0-9a-f]{64}$", web_source["tree_sha256"])
+    runtime_identity = policy["runtime_lock"]["identity"]
+    @test runtime_identity["scope"] ==
+        "compatible_runtime_for_local_resume"
+    @test runtime_identity["algorithm_version"] ==
+        Backend.RO_FIELD_SPARSE_JOB_ALGORITHM_VERSION
+    @test runtime_identity["checkpoint_version"] ==
+        Backend.RO_FIELD_SPARSE_CHECKPOINT_VERSION
     @test normalize_ro_field_job_spec(raw) == normalized
     @test !occursin("axis_coordinates",
         Backend._rofc_canonical_json(normalized))
@@ -268,84 +254,6 @@ end
         "execution" => Dict("mode" => "aws_batch"),
     )
     @test_throws ArgumentError submit_biocircuits_job_from_spec(aws)
-end
-
-@testset "loaded runtime digests fail plan, resume, and final read closed" begin
-    _with_rofsj_store() do _
-        parent_id = "7"^32
-        raw = _rofsj_spec(max_multi_indices=1)
-        normalized = normalize_ro_field_job_spec(raw)
-        parent_calls = Dict{String,Any}[]
-        result = compute_ro_field_job(
-            raw;
-            job_context=Dict{String,Any}(
-                "job_id" => parent_id,
-                "user_sub" => "alice",
-                "sparse_batch_evaluator" =>
-                    _rofsj_evaluator(parent_calls),
-            ),
-        )
-        descriptor = result["ro_field_job_result"]
-        root = Backend._rofsj_data_root(parent_id)
-        checkpoint = Backend._rofsj_read_canonical(
-            Backend._rofsj_checkpoint_path(
-                root, descriptor["checkpoint_sha256"]))
-        record = _rofsj_parent_record(
-            parent_id, raw, checkpoint; status="cancelled")
-        Backend._job_cache_publish!(parent_id, record)
-        resume = Dict{String,Any}(
-            "parent_job_id" => parent_id,
-            "checkpoint_sha256" => checkpoint["checkpoint_sha256"],
-        )
-        child_spec = deepcopy(normalized)
-        child_spec["resume_from"] = resume
-        altered_web = deepcopy(Backend._ROFSJ_LOADED_WEB_SOURCE_IDENTITY)
-        altered_web["tree_sha256"] =
-            altered_web["tree_sha256"] == "b"^64 ? "c"^64 : "b"^64
-        altered_binding = deepcopy(
-            Backend._ROFSJ_LOADED_BINDING_SOURCE_IDENTITY)
-        altered_binding["tree_sha256"] =
-            altered_binding["tree_sha256"] == "d"^64 ? "e"^64 : "d"^64
-        altered_lock = deepcopy(Backend._ROFSJ_LOADED_ACTIVE_LOCK_IDENTITY)
-        altered_lock["manifest_sha256"] =
-            altered_lock["manifest_sha256"] == "sha256:" * "f"^64 ?
-            "sha256:" * "a"^64 : "sha256:" * "f"^64
-        overrides = (
-            (Backend._rofsj_with_web_source_identity_test_override,
-                altered_web, "8"^32),
-            (Backend._rofsj_with_binding_source_identity_test_override,
-                altered_binding, "9"^32),
-            (Backend._rofsj_with_active_lock_identity_test_override,
-                altered_lock, "a"^32),
-        )
-        try
-            for (with_override, altered, drift_child_id) in overrides
-                resume_calls = Dict{String,Any}[]
-                with_override(altered) do
-                    @test_throws ArgumentError Backend._rofsj_validate_plan(
-                        normalized["plan"])
-                    @test_throws ArgumentError Backend._rofsj_resume_parent_snapshot(
-                        child_spec, "alice")
-                    @test_throws ArgumentError compute_ro_field_job(
-                        child_spec;
-                        job_context=Dict{String,Any}(
-                            "job_id" => drift_child_id,
-                            "user_sub" => "alice",
-                            "sparse_batch_evaluator" =>
-                                _rofsj_evaluator(resume_calls),
-                        ),
-                    )
-                    @test isempty(resume_calls)
-                    @test_throws ArgumentError validate_ro_field_job_result!(
-                        result, parent_id, descriptor["plan_sha256"])
-                end
-            end
-            @test validate_ro_field_job_result!(
-                result, parent_id, descriptor["plan_sha256"]) == descriptor
-        finally
-            Backend._job_cache_remove!(parent_id)
-        end
-    end
 end
 
 @testset "equilibrium work caps and cancellation enter the homotopy solve" begin

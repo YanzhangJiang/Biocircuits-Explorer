@@ -73,16 +73,8 @@ DESIGN_SCREEN_SCHEMA_VERSION = "bne-design-screen/v0.3.0"
 ROP_SHAPE_OPTIMIZE_REQUEST_VERSION = "bne-rop-shape-optimize-request/v1.0.0"
 ROP_SHAPE_OPTIMIZATION_VERSION = "bne-rop-shape-optimization/v1.0.0"
 
-def _hash(obj):
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
-
 def _sha256_json(obj):
-    """Full content fingerprint for reusable scientific-result identity.
-
-    Trace summaries intentionally use the short `_hash` above.  A scan request,
-    however, is part of a candidate card's scientific identity and must not use
-    that display-sized prefix.
-    """
+    """Return one canonical JSON content digest."""
     payload = json.dumps(
         obj, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"),
     )
@@ -112,7 +104,7 @@ def _tool_summary(res):
 def _spill_card(card):
     """Write a candidate card's FULL artifact (incl. computed_series / surface) keyed by content hash,
     so the trace can stay compact yet the heavy result is replayable. Returns the hash."""
-    rh = _hash(card)
+    rh = _sha256_json(card)[:16]
     tmp_path = None
     try:
         payload = json.dumps(card, default=str).encode("utf-8")
@@ -2955,7 +2947,7 @@ def run_turn(state, message, llm_cfg=None, top=3):
         trace["tool_calls"].append({"call_id": "call_%03d" % (len(trace["tool_calls"]) + 1), "tool": name,
                                     "args": {k: v for k, v in call_args.items() if k != "top"},
                                     "status": status, "summary": _tool_summary(res),
-                                    "result_hash": _hash(res) if isinstance(res, dict) else None})
+                                    "result_hash": _sha256_json(res)[:16] if isinstance(res, dict) else None})
         if isinstance(res, dict):
             if res.get("engine_offline"):
                 holder["engine_offline"] = True

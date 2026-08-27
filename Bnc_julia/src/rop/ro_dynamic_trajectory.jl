@@ -109,9 +109,7 @@ function Base.showerror(
     print(io,
         "model-backed dynamic trajectory runtime version identity mismatch: ",
         "declared=", error.declared_version_identity_sha256,
-        ", current=", error.current_version_identity_sha256,
-        "; bit-exact replay additionally requires the complete active ",
-        "Manifest.toml SHA-256 as external provenance")
+        ", current=", error.current_version_identity_sha256)
 end
 
 function Base.showerror(io::IO, error::RODynamicTrajectorySolverFailure)
@@ -145,26 +143,16 @@ end
 @inline _rodt_zero_canonical(value::Float64) = iszero(value) ? 0.0 : value
 
 function _rodt_package_version_identity(package_module::Module)
-    package_id = Base.PkgId(package_module)
     package_version = Base.pkgversion(package_module)
     package_version === nothing && throw(ArgumentError(
-        "trajectory solver package $(package_id.name) has no version identity"))
-    return (
-        module_name=string(package_module),
-        package_name=package_id.name,
-        package_uuid=string(package_id.uuid),
-        package_version=string(package_version),
-    )
+        "trajectory solver package $(package_module) has no version identity"))
+    return string(package_version)
 end
 
 function _rodt_algorithm_version_identity(algorithm, solver_id::Symbol)
-    implementation_module = parentmodule(typeof(algorithm))
     return (
         solver_id=String(solver_id),
         algorithm_type=string(typeof(algorithm)),
-        constructor_policy="zero_argument_defaults",
-        implementation_module=
-            _rodt_package_version_identity(implementation_module),
     )
 end
 
@@ -172,24 +160,14 @@ function _rodt_current_solver_runtime_version_identity()
     return (
         schema_version=
             RO_DYNAMIC_SOLVER_RUNTIME_VERSION_IDENTITY_VERSION,
-        identity_scope=
-            "runtime_package_and_algorithm_module_versions_only",
-        julia=(
-            version=string(VERSION),
-            machine=Sys.MACHINE,
-            word_size=Sys.WORD_SIZE,
-        ),
+        identity_scope="compatible_solver_runtime",
+        julia_series="$(VERSION.major).$(VERSION.minor)",
         ordinarydiffeq=_rodt_package_version_identity(ODE),
         scimlbase=_rodt_package_version_identity(SciMLBase),
         primary_algorithm=_rodt_algorithm_version_identity(
             ODE.Tsit5(), _RODT_PRIMARY_SOLVER_ID),
         audit_algorithm=_rodt_algorithm_version_identity(
             ODE.Vern7(), _RODT_AUDIT_SOLVER_ID),
-        external_provenance=(
-            complete_active_manifest_sha256_embedded=false,
-            requirement=
-                "supply_complete_active_manifest_sha256_out_of_band_for_bit_exact_replay",
-        ),
     )
 end
 

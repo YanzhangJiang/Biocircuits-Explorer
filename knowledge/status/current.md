@@ -373,9 +373,8 @@ checkpoint, terminal result, and dataset manifest are content-addressed; an
 uncommitted CAS object left by cancellation cannot enter resume lineage. A
 child resumes only from the parent's linearized checkpoint, and final reads
 perform one metered authoritative forward replay of every committed transition
-plus the plan/terminal/result relationship. The plan also binds the selected
-Project/Manifest, engine tree, and `webapp/src/**/*.jl` tree as module-load-
-frozen identities, plus Julia and SciML package identities, explicit
+plus the plan/terminal/result relationship. The plan binds the sparse
+algorithm and artifact-format versions, Julia and SciML package identities, explicit
 homotopy/Tsit5 tolerances, per-point step/RHS caps,
 strict Float64 closed-cell membership without best-fit fallback, and a bounded
 replay-work model. Resume replay and artifact copying share one cumulative
@@ -383,8 +382,7 @@ meter. Plan/model reconstruction precedes that artifact-chain meter. Terminal
 result, terminal checkpoint, and manifest bytes are reserved before first
 publication, while plan/initial/superseded/orphan objects remain outside a
 complete disk-quota claim. The homotopy checks cancellation at every RHS
-evaluation; a changed runtime lock cannot extend an older checkpoint. The Web
-path admits at most 512 sparse work
+evaluation. The Web path admits at most 512 sparse work
 units. The v1 Cartesian identity and behavior remain unchanged. Both paths are
 local-only and capped research contracts; AWS/Slurm, shared object
 storage, remote leases, multi-process work stealing, safe orphan GC, and

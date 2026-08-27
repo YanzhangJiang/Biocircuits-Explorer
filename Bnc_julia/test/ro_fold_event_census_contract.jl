@@ -84,6 +84,7 @@ function raw_census_with_flag(census, field::Symbol, value)
     fields = fieldnames(typeof(census))
     raw = Any[getfield(census, name) for name in fields]
     raw[findfirst(==(field), fields)] = value
+    pop!(raw)
     return BindingAndCatalysis.ROCompleteSimpleFoldEventCensus(
         BindingAndCatalysis._ROFE_VALIDATED_TOKEN,
         raw...,

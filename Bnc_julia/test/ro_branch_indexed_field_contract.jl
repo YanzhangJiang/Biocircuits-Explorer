@@ -437,7 +437,7 @@ end
         forged[completeness_index] = true
         @test_throws ArgumentError BindingAndCatalysis.ROBranchIndexedRegularField(
             BindingAndCatalysis._ROBS_VALIDATED_TOKEN,
-            forged...,
+            forged[1:end-1]...,
         )
         @test_throws ArgumentError ROBranchIndexedFieldLimits(
             max_branches=typemax(Int),

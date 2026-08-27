@@ -486,7 +486,6 @@ struct ROSimpleSpectralHopfEvent
         first_lyapunov_coefficient_nonzero_certified::Bool,
         nonlinear_hopf_bifurcation_certified::Bool,
         periodic_orbit_incidence_certified::Bool,
-        certificate_sha256::String,
     )
         version == RO_SIMPLE_SPECTRAL_HOPF_EVENT_VERSION ||
             throw(ArgumentError("spectral-Hopf event version mismatch"))
@@ -578,8 +577,7 @@ struct ROSimpleSpectralHopfEvent
             "P8s1c0 is not a nonlinear Hopf-bifurcation certificate"))
         periodic_orbit_incidence_certified && throw(ArgumentError(
             "P8s1c0 does not attach a periodic-orbit branch"))
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
-        expected = _rohsc_event_sha256(
+        certificate_sha256 = _rohsc_event_sha256(
             linear_index,
             grid_index,
             event_box,
@@ -592,8 +590,6 @@ struct ROSimpleSpectralHopfEvent
             frequency_squared_root_enclosure,
             contraction_beta,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "spectral-Hopf event hash mismatch"))
         return new(
             version,
             linear_index,
@@ -634,19 +630,6 @@ function _rohsc_make_event(
     frequency_squared_root_enclosure::ROExactInterval,
     contraction_beta::_RORSExact,
 )
-    hash = _rohsc_event_sha256(
-        linear_index,
-        grid_index,
-        event_box,
-        center,
-        preconditioner,
-        krawczyk_offset_image,
-        augmented_residual_enclosure,
-        augmented_jacobian_enclosure,
-        state_jacobian_determinant_enclosure,
-        frequency_squared_root_enclosure,
-        contraction_beta,
-    )
     return ROSimpleSpectralHopfEvent(
         _ROHSC_VALIDATED_TOKEN,
         RO_SIMPLE_SPECTRAL_HOPF_EVENT_VERSION,
@@ -670,7 +653,6 @@ function _rohsc_make_event(
         false,
         false,
         false,
-        hash,
     )
 end
 
@@ -720,7 +702,6 @@ struct ROSpectralHopfEventCensusCell
         excluding_augmented_equation_index::Int,
         augmented_residual_enclosure::Tuple,
         event_certificate_sha256::String,
-        evidence_sha256::String,
     )
         version == RO_SPECTRAL_HOPF_EVENT_CENSUS_CELL_VERSION ||
             throw(ArgumentError(
@@ -767,8 +748,7 @@ struct ROSpectralHopfEventCensusCell
                 throw(ArgumentError(
                     "the named augmented equation does not exclude zero"))
         end
-        _rors_validate_sha256(evidence_sha256, "cell evidence_sha256")
-        expected = _rohsc_cell_sha256(
+        evidence_sha256 = _rohsc_cell_sha256(
             linear_index,
             grid_index,
             event_box,
@@ -777,8 +757,6 @@ struct ROSpectralHopfEventCensusCell
             augmented_residual_enclosure,
             event_certificate_sha256,
         )
-        evidence_sha256 == expected || throw(ArgumentError(
-            "spectral-Hopf cell hash mismatch"))
         return new(
             version,
             linear_index,
@@ -802,15 +780,6 @@ function _rohsc_make_cell(
     augmented_residual_enclosure::Tuple,
     event_certificate_sha256::String,
 )
-    hash = _rohsc_cell_sha256(
-        linear_index,
-        grid_index,
-        event_box,
-        classification,
-        excluding_augmented_equation_index,
-        augmented_residual_enclosure,
-        event_certificate_sha256,
-    )
     return ROSpectralHopfEventCensusCell(
         _ROHSC_VALIDATED_TOKEN,
         RO_SPECTRAL_HOPF_EVENT_CENSUS_CELL_VERSION,
@@ -821,7 +790,6 @@ function _rohsc_make_cell(
         excluding_augmented_equation_index,
         augmented_residual_enclosure,
         event_certificate_sha256,
-        hash,
     )
 end
 
@@ -987,7 +955,6 @@ struct ROCompleteSimpleSpectralHopfEventCensus
         native_residuals_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_SIMPLE_SPECTRAL_HOPF_EVENT_CENSUS_VERSION ||
             throw(ArgumentError(
@@ -997,7 +964,6 @@ struct ROCompleteSimpleSpectralHopfEventCensus
         dynamics_binding.system_declaration_sha256 ==
             system_declaration_sha256 || throw(ArgumentError(
             "spectral-Hopf dynamics binding belongs to a different system"))
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
         evidence_scope == RO_SIMPLE_SPECTRAL_HOPF_EVENT_CENSUS_SCOPE ||
             throw(ArgumentError(
                 "simple spectral-Hopf evidence scope mismatch"))
@@ -1143,16 +1109,6 @@ struct ROCompleteSimpleSpectralHopfEventCensus
                     throw(ArgumentError(
                         "spectral-Hopf cell bounds do not match their axis"))
             end
-            cell.evidence_sha256 == _rohsc_cell_sha256(
-                cell.linear_index,
-                cell.grid_index,
-                cell.event_box,
-                cell.classification,
-                cell.excluding_augmented_equation_index,
-                cell.augmented_residual_enclosure,
-                cell.event_certificate_sha256,
-            ) || throw(ArgumentError(
-                "nested spectral-Hopf cell hash mismatch"))
             if cell.classification == :unique_simple_spectral_hopf_event
                 event_count += 1
                 event = get(event_by_grid, grid_index, nothing)
@@ -1190,20 +1146,6 @@ struct ROCompleteSimpleSpectralHopfEventCensus
                 event.preconditioner.data == preconditioner.data ||
                 throw(ArgumentError(
                 "spectral-Hopf event preconditioner does not match its seed"))
-            event.certificate_sha256 == _rohsc_event_sha256(
-                event.linear_index,
-                event.grid_index,
-                event.event_box,
-                event.center,
-                event.preconditioner,
-                event.krawczyk_offset_image,
-                event.augmented_residual_enclosure,
-                event.augmented_jacobian_enclosure,
-                event.state_jacobian_determinant_enclosure,
-                event.frequency_squared_root_enclosure,
-                event.contraction_beta,
-            ) || throw(ArgumentError(
-                "nested spectral-Hopf event hash mismatch"))
         end
         state_control_count = variable_count - 1
         projection_pair_count =
@@ -1251,7 +1193,7 @@ struct ROCompleteSimpleSpectralHopfEventCensus
             analysis_interval_operation_count,
             limits.max_interval_operations,
         )
-        expected = _rohsc_census_sha256(
+        certificate_sha256 = _rohsc_census_sha256(
             system_declaration_sha256,
             dynamics_binding.declaration_sha256,
             limits,
@@ -1270,8 +1212,6 @@ struct ROCompleteSimpleSpectralHopfEventCensus
             spectral_hopf_free_cell_count,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "simple spectral-Hopf census hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -1712,25 +1652,6 @@ function _rohsc_certify_exact(
             string("(", dynamics_binding.time_unit, ")^-2"),
         ))
         declared_event_tuple = Tuple(declared_event_box)
-        certificate_sha256 = _rohsc_census_sha256(
-            system.declaration_sha256,
-            dynamics_binding.declaration_sha256,
-            limits,
-            augmented_variable_names,
-            augmented_variable_units,
-            event_axis_breaks,
-            declared_event_tuple,
-            radius_bound,
-            frequency_squared_bound,
-            event_indices,
-            preconditioner_wrappers,
-            event_tuple,
-            cell_tuple,
-            length(cells),
-            length(events),
-            free_count,
-            analysis_operations,
-        )
         return ROCompleteSimpleSpectralHopfEventCensus(
             _ROHSC_VALIDATED_TOKEN,
             RO_SIMPLE_SPECTRAL_HOPF_EVENT_CENSUS_VERSION,
@@ -1765,7 +1686,6 @@ function _rohsc_certify_exact(
             false,
             false,
             RO_SIMPLE_SPECTRAL_HOPF_EVENT_CENSUS_SCOPE,
-            certificate_sha256,
         )
     catch err
         if err isa RORegularSheetLimitExceeded &&

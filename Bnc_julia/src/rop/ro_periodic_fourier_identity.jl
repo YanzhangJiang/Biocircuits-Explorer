@@ -1202,7 +1202,6 @@ struct ROExactPolynomialPeriodicFourierAudit
         analysis_exact_operation_count::Int,
         limits::ROPeriodicFourierLimits,
         flags::NTuple{23,Bool},
-        certificate_sha256::String,
         cancel_check=() -> nothing,
     )
         cancel_check()
@@ -1328,7 +1327,7 @@ struct ROExactPolynomialPeriodicFourierAudit
             "periodic Fourier derived flags are inconsistent"))
         all(!, flags[8:end]) || throw(ArgumentError(
             "exact identity audit cannot publish branch or stability claims"))
-        expected_hash = _ropf_audit_sha256(
+        certificate_sha256 = _ropf_audit_sha256(
             system_declaration_sha256,
             dynamics_binding_declaration_sha256,
             state_series,
@@ -1348,8 +1347,6 @@ struct ROExactPolynomialPeriodicFourierAudit
             flags,
             cancel_check,
         )
-        certificate_sha256 == expected_hash || throw(ArgumentError(
-            "periodic Fourier audit hash mismatch"))
         cancel_check()
         artifact = new(
             version,
@@ -1549,26 +1546,6 @@ function audit_ro_exact_polynomial_periodic_fourier_residual(
         false,             # global continuation
         false,             # true hysteresis
     )
-    certificate_sha256 = _ropf_audit_sha256(
-        system.declaration_sha256,
-        dynamics.declaration_sha256,
-        admitted_series,
-        admitted_controls,
-        omega,
-        cutoff,
-        nu,
-        residual_series,
-        head_tuple,
-        tail_tuple,
-        full_tuple,
-        first_omitted,
-        planned_pairs,
-        actual_pairs,
-        exact_operations,
-        limits,
-        flags,
-        cancel_check,
-    )
     cancel_check()
     artifact = ROExactPolynomialPeriodicFourierAudit(
         _ROPF_AUDIT_VALIDATED_TOKEN,
@@ -1592,7 +1569,6 @@ function audit_ro_exact_polynomial_periodic_fourier_residual(
         exact_operations,
         limits,
         flags,
-        certificate_sha256,
         cancel_check,
     )
     cancel_check()

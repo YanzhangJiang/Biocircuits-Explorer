@@ -6,6 +6,7 @@ import {
   getWorkspaceRuntimeEpoch,
 } from './state.js';
 import { api, showToast, handleNodeError, renderNodeError, escapeHtml } from './api.js';
+import { stableJson } from './stable-json.js';
 import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { plotTrajectory, convexHull2D, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
 import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
@@ -40,20 +41,6 @@ const SISO_ENDPOINT = '/api/v1/behavior_families';
 const QK_POLY_ENDPOINT = '/api/v1/siso_polyhedra';
 const SISO_LIFECYCLE_KEY = '_sisoResultLifecycle';
 const QK_POLY_LIFECYCLE_KEY = '_qkPolyResultLifecycle';
-
-function canonicalLifecycleValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalLifecycleValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  for (const key of Object.keys(value).sort()) {
-    normalized[key] = canonicalLifecycleValue(value[key]);
-  }
-  return normalized;
-}
-
-function stableLifecycleFingerprint(value) {
-  return JSON.stringify(canonicalLifecycleValue(value));
-}
 
 function upstreamConnectionIdentity(nodeId) {
   const visited = new Set();
@@ -130,7 +117,7 @@ function currentSISOResultContext(nodeId) {
   } catch {
     config = null;
   }
-  return lifecycleContext(owner, SISO_ENDPOINT, stableLifecycleFingerprint({
+  return lifecycleContext(owner, SISO_ENDPOINT, stableJson({
     connections: upstreamConnectionIdentity(nodeId),
     config,
     model: modelIdentityForNode(nodeId),
@@ -152,7 +139,7 @@ function currentQKPolyContext(nodeId) {
     })
     : null;
   const sourceRuntime = sourceLifecycle ? inspectExecutionLifecycle(sourceLifecycle) : null;
-  return lifecycleContext(owner, QK_POLY_ENDPOINT, stableLifecycleFingerprint({
+  return lifecycleContext(owner, QK_POLY_ENDPOINT, stableJson({
     connections: upstreamConnectionIdentity(nodeId),
     model: modelIdentityForNode(nodeId),
     sourceNodeId: connection?.fromNode || null,

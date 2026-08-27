@@ -178,27 +178,7 @@ function raw_census_with_cells(census, cells)
         field in fieldnames(typeof(census))]
     fields = fieldnames(typeof(census))
     raw[findfirst(==(:cells), fields)] = cells
-    raw[findfirst(==(:certificate_sha256), fields)] =
-        BindingAndCatalysis._rorc_certificate_sha256(
-            census.system_declaration_sha256,
-            census.limits,
-            census.control_box,
-            census.control_reference,
-            census.state_reference,
-            census.predictor_slope,
-            census.remainder_axis_breaks,
-            census.declared_remainder_box,
-            census.declared_state_enclosure,
-            census.patch_certificate_sha256s,
-            cells,
-            census.root_count_per_control,
-            census.regular_sheet_count,
-            census.partition_cell_count,
-            census.unique_root_cell_count,
-            census.root_free_cell_count,
-            census.source_replay_interval_operation_count,
-            census.analysis_interval_operation_count,
-        )
+    pop!(raw)
     return BindingAndCatalysis.ROCompleteRegularRootCensus(
         BindingAndCatalysis._RORC_VALIDATED_TOKEN,
         raw...,
@@ -468,6 +448,7 @@ end
         )
         forged = copy(raw)
         forged[outside_index] = true
+        pop!(forged)
         @test_throws ArgumentError BindingAndCatalysis.ROCompleteRegularRootCensus(
             BindingAndCatalysis._RORC_VALIDATED_TOKEN,
             forged...,

@@ -22,6 +22,7 @@ import {
   triggerConfigUpdate,
 } from '../nodes.js';
 import { plotParameterScan1D } from '../scan.js';
+import { stableJson } from '../stable-json.js';
 import { commitWorkspaceSnapshot } from '../workspace.js';
 import {
   connections,
@@ -55,20 +56,6 @@ const PLACER_ENDPOINTS = Object.freeze({
   level: '/api/v1/placer_level',
   curve: '/api/v1/placer_curve',
 });
-
-function canonicalFingerprintValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalFingerprintValue);
-  if (!value || typeof value !== 'object') return value;
-  const normalized = {};
-  Object.keys(value).sort().forEach(key => {
-    normalized[key] = canonicalFingerprintValue(value[key]);
-  });
-  return normalized;
-}
-
-function stableFingerprint(value) {
-  return JSON.stringify(canonicalFingerprintValue(value));
-}
 
 function upstreamConnectionSignature(nodeId) {
   const graph = executionDependencyConnections();
@@ -124,7 +111,7 @@ function placerContext(nodeId, endpoint, request) {
   return {
     owner,
     workspaceEpoch: getWorkspaceRuntimeEpoch(),
-    inputFingerprint: stableFingerprint({
+    inputFingerprint: stableJson({
       endpoint,
       request,
       upstreamConnections: upstreamConnectionSignature(nodeId),

@@ -152,7 +152,6 @@ struct RORegularRootCensusCell
         excluding_equation_index::Int,
         residual_enclosure::Tuple,
         patch_certificate_sha256::String,
-        evidence_sha256::String,
     )
         version == RO_REGULAR_ROOT_CENSUS_CELL_VERSION ||
             throw(ArgumentError("regular-root census cell version mismatch"))
@@ -197,8 +196,7 @@ struct RORegularRootCensusCell
                 throw(ArgumentError(
                     "the named root-free equation does not exclude zero"))
         end
-        _rors_validate_sha256(evidence_sha256, "cell evidence_sha256")
-        expected = _rorc_cell_sha256(
+        evidence_sha256 = _rorc_cell_sha256(
             linear_index,
             grid_index,
             remainder_box,
@@ -207,8 +205,6 @@ struct RORegularRootCensusCell
             residual_enclosure,
             patch_certificate_sha256,
         )
-        evidence_sha256 == expected || throw(ArgumentError(
-            "regular-root census cell hash mismatch"))
         return new(
             version,
             linear_index,
@@ -232,15 +228,6 @@ function _rorc_make_cell(
     residual_enclosure::Tuple,
     patch_certificate_sha256::String,
 )
-    evidence_sha256 = _rorc_cell_sha256(
-        linear_index,
-        grid_index,
-        remainder_box,
-        classification,
-        excluding_equation_index,
-        residual_enclosure,
-        patch_certificate_sha256,
-    )
     return RORegularRootCensusCell(
         _RORC_VALIDATED_TOKEN,
         RO_REGULAR_ROOT_CENSUS_CELL_VERSION,
@@ -251,7 +238,6 @@ function _rorc_make_cell(
         excluding_equation_index,
         residual_enclosure,
         patch_certificate_sha256,
-        evidence_sha256,
     )
 end
 
@@ -400,13 +386,11 @@ struct ROCompleteRegularRootCensus
         global_continuation_certified::Bool,
         true_hysteresis_certified::Bool,
         evidence_scope::Symbol,
-        certificate_sha256::String,
     )
         version == RO_COMPLETE_REGULAR_ROOT_CENSUS_VERSION ||
             throw(ArgumentError("complete regular-root census version mismatch"))
         _rors_validate_sha256(
             system_declaration_sha256, "system_declaration_sha256")
-        _rors_validate_sha256(certificate_sha256, "certificate_sha256")
         evidence_scope == RO_COMPLETE_REGULAR_ROOT_CENSUS_SCOPE ||
             throw(ArgumentError("regular-root census evidence scope mismatch"))
         root_population_complete_inside_declared_domain ||
@@ -491,18 +475,6 @@ struct ROCompleteRegularRootCensus
                     throw(ArgumentError(
                         "regular-root census cell bounds do not match their axis"))
             end
-            expected_cell_hash = _rorc_cell_sha256(
-                cell.linear_index,
-                cell.grid_index,
-                cell.remainder_box,
-                cell.classification,
-                cell.excluding_equation_index,
-                cell.residual_enclosure,
-                cell.patch_certificate_sha256,
-            )
-            cell.evidence_sha256 == expected_cell_hash ||
-                throw(ArgumentError(
-                    "regular-root census contains a forged cell"))
         end
         unique_cells = Tuple(cell for cell in cells if
             cell.classification == :unique_regular_root)
@@ -546,7 +518,7 @@ struct ROCompleteRegularRootCensus
             analysis_interval_operation_count,
             limits.max_analysis_interval_operations,
         )
-        expected = _rorc_certificate_sha256(
+        certificate_sha256 = _rorc_certificate_sha256(
             system_declaration_sha256,
             limits,
             control_box,
@@ -566,8 +538,6 @@ struct ROCompleteRegularRootCensus
             source_replay_interval_operation_count,
             analysis_interval_operation_count,
         )
-        certificate_sha256 == expected || throw(ArgumentError(
-            "complete regular-root census hash mismatch"))
         return new(
             version,
             system_declaration_sha256,
@@ -1029,26 +999,6 @@ function _rorc_certify_exact(
         state_reference_tuple = Tuple(state_reference)
         declared_remainder_tuple = Tuple(declared_remainder_box)
         declared_state_tuple = Tuple(declared_state_enclosure)
-        certificate_sha256 = _rorc_certificate_sha256(
-            system.declaration_sha256,
-            limits,
-            control_box_tuple,
-            control_reference_tuple,
-            state_reference_tuple,
-            predictor_wrapper,
-            remainder_axis_breaks,
-            declared_remainder_tuple,
-            declared_state_tuple,
-            patch_hashes,
-            cell_tuple,
-            unique_count,
-            unique_count,
-            length(cells),
-            unique_count,
-            free_count,
-            source_operations,
-            analysis_operations,
-        )
         return ROCompleteRegularRootCensus(
             _RORC_VALIDATED_TOKEN,
             RO_COMPLETE_REGULAR_ROOT_CENSUS_VERSION,
@@ -1082,7 +1032,6 @@ function _rorc_certify_exact(
             false,
             false,
             RO_COMPLETE_REGULAR_ROOT_CENSUS_SCOPE,
-            certificate_sha256,
         )
     catch err
         if err isa RORegularSheetLimitExceeded &&
