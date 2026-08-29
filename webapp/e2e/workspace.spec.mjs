@@ -32,6 +32,17 @@ const emptyBehaviorFamiliesResponse = Object.freeze({
 });
 
 async function installLocalApiMocks(page) {
+  await page.route('http://127.0.0.1:8765/health', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        service: 'biocircuits-design-chat',
+        engine: { ready: true },
+      }),
+    });
+  });
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url());
     let body;

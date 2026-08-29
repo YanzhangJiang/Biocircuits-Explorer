@@ -34,7 +34,7 @@ export default defineConfig({
     viewport: { width: 1600, height: 900 },
   },
   webServer: {
-    command: 'python3 -m http.server 4173 --directory public --bind 127.0.0.1',
+    command: 'python3 -m http.server 4173 --directory public --bind 127.0.0.1 --protocol HTTP/1.1',
     url: 'http://127.0.0.1:4173/index-node.html',
     reuseExistingServer: !isCI,
     stdout: 'ignore',
