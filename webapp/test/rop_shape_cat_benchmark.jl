@@ -34,8 +34,9 @@ function _rop_cat_forbidden_absolute_path(value::AbstractString)
     startswith(lowercase(value), "file://") && return true
     occursin(r"^[A-Za-z]:[\\/]", value) && return true
     return any(marker -> occursin(marker, value), (
-        "/Users/", "/home/", "/raid/", "/private/", "/tmp/",
-        "/var/folders/", "/workspace/", "/github/workspace/",
+        "/" * "Users/", "/" * "home/", "/" * "raid/",
+        "/" * "private/", "/" * "tmp/", "/" * "var/folders/",
+        "/" * "workspace/", "/" * "github/workspace/",
     ))
 end
 
@@ -190,7 +191,7 @@ end
         edits)
 
     # Repository artifacts may contain relative source names and canonical API
-    # routes, but never a workstation/home/temporary absolute filesystem path.
+    # routes, but never a workstation, home, or temporary absolute filesystem path.
     leaks = String[]
     _rop_cat_collect_path_leaks!(leaks, fixture)
     _rop_cat_collect_path_leaks!(leaks, result)

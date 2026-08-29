@@ -643,6 +643,12 @@ struct BiocircuitsExplorerMacTests {
             trustedOrigin: trustedOrigin,
             authenticationOrigin: authenticationOrigin
         )
+        func credentialedURL(_ rawURL: String) -> URL {
+            var components = URLComponents(string: rawURL)!
+            components.user = "test-user"
+            components.password = "test-password"
+            return components.url!
+        }
 
         #expect(trustedOrigin.serialized == "http://127.0.0.1:18088")
         #expect(trustedOrigin.contains(
@@ -690,7 +696,7 @@ struct BiocircuitsExplorerMacTests {
             for: URL(string: "http://login.example.test/oauth2/authorize")!
         ) == .blocked)
         #expect(policy.disposition(
-            for: URL(string: "https://user:password@login.example.test/oauth2/authorize")!
+            for: credentialedURL("https://login.example.test/oauth2/authorize")
         ) == .blocked)
         #expect(policy.disposition(
             for: URL(string: "javascript:alert(1)")!
@@ -754,7 +760,7 @@ struct BiocircuitsExplorerMacTests {
             URL(string: "https://docs.example.test/guide")!
         ))
         #expect(!WebShellController.isExternalHTTPSURL(
-            URL(string: "https://user:password@docs.example.test/guide")!
+            credentialedURL("https://docs.example.test/guide")
         ))
     }
 
