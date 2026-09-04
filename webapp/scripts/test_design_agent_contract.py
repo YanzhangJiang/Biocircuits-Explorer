@@ -714,6 +714,60 @@ class DesignAgentContractTests(unittest.TestCase):
         self.assertIn("design_from_behavior", [tool["function"]["name"] for tool in design_agent.OPENAI_TOOLS])
         self.assertIn("design_from_behavior", [tool["name"] for tool in design_agent.ANTHROPIC_TOOLS])
 
+    def test_architecture_discovery_reaches_the_agent_card_and_canonical_endpoint(self):
+        samples = [
+            {"totals": {"tA": 0.1, "tB": 1.0}, "target": 0.012},
+            {"totals": {"tA": 1.0, "tB": 1.0}, "target": 0.19},
+        ]
+        engine_result = {
+            "status": "ok",
+            "rules": ["A + B <-> AB"],
+            "kd": [1.2],
+            "reaction_fit": [
+                {"rule": "2A <-> AA", "active": False, "affinity": 0.002},
+                {"rule": "A + B <-> AB", "active": True, "affinity": 0.8},
+            ],
+            "predictions": [[0.01], [0.2]],
+            "targets": [[0.012], [0.19]],
+            "fit_loss": 2e-4,
+            "sparse_fit_loss": 3e-4,
+            "q_sym": ["tA", "tB"],
+            "output_exprs": ["AB"],
+        }
+        with mock.patch.object(
+                design_agent.E, "discover_architecture", return_value=engine_result) as discover:
+            result = design_agent.discover_architecture_from_data(
+                ["2A <-> AA", "A + B <-> AB"], samples, ["AB"], input_symbol="tA",
+            )
+
+        discover.assert_called_once()
+        self.assertEqual(result["selected_reactions"], ["A + B <-> AB"])
+        self.assertEqual(result["selected_kd"], [1.2])
+        card = result["_card"]
+        self.assertEqual(card["rules"], ["A + B <-> AB"])
+        self.assertEqual(card["computed_series"], [
+            {"x": -1.0, "y": -2.0},
+            {"x": 0.0, "y": design_agent.math.log10(0.2)},
+        ])
+        self.assertEqual(len(card["target_series"]), 2)
+
+        self.assertIn("discover_architecture_from_data", design_agent.TOOLS_DISPATCH)
+        self.assertIn("discover_architecture_from_data", [tool["name"] for tool in design_agent.TOOLSPEC])
+        self.assertIn("discover_architecture_from_data", [tool["function"]["name"] for tool in design_agent.OPENAI_TOOLS])
+        self.assertIn("discover_architecture_from_data", [tool["name"] for tool in design_agent.ANTHROPIC_TOOLS])
+
+        with mock.patch.object(design_agent.E, "_post", return_value={"ok": True}) as post:
+            response = design_agent.E.discover_architecture(
+                reactions=["A + B <-> AB"], samples=samples,
+                output_exprs=["AB"], timeout=123,
+            )
+        self.assertEqual(response, {"ok": True})
+        payload = post.call_args.args[1]
+        self.assertEqual(post.call_args.args[0], "/api/v1/discover_architecture")
+        self.assertEqual(post.call_args.args[2], 123)
+        self.assertEqual(payload["reactions"], ["A + B <-> AB"])
+        self.assertEqual(payload["samples"], samples)
+
     def test_rop_shape_optimizer_tool_is_exposed_and_client_uses_canonical_endpoint(self):
         self.assertIn("optimize_rop_shape", design_agent.TOOLS_DISPATCH)
         self.assertIn("optimize_rop_shape", [tool["name"] for tool in design_agent.TOOLSPEC])

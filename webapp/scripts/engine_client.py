@@ -157,6 +157,24 @@ def placer_curve(*, rules, input_sym, output_sym, kd, totals=None,
     }
     return _post("/api/v1/placer_curve", payload, timeout)
 
+def discover_architecture(*, reactions, samples, output_exprs, initial_kd=None,
+                          sparsity=1e-3, learning_rate=0.03, epochs=250,
+                          active_threshold=0.05, debias_epochs=60, timeout=900):
+    """Fit a sparse reaction subset directly to static total/output samples."""
+    payload = {
+        "reactions": list(reactions),
+        "samples": list(samples),
+        "output_exprs": list(output_exprs),
+        "lambda": float(sparsity),
+        "learning_rate": float(learning_rate),
+        "epochs": int(epochs),
+        "active_threshold": float(active_threshold),
+        "debias_epochs": int(debias_epochs),
+    }
+    if initial_kd is not None:
+        payload["initial_kd"] = [float(value) for value in initial_kd]
+    return _post("/api/v1/discover_architecture", payload, timeout)
+
 if __name__ == "__main__":   # smoke: build a 1-reaction net and sweep it (engine must be up)
     print("engine_base_url:", engine_base_url(), "ready:", engine_ready())
     m = build_model(reactions=["A + B <-> AB"], kd=[1.0])

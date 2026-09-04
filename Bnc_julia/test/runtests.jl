@@ -787,4 +787,6 @@ end
     @test model._regimes_build_complete
 end
 
+include(joinpath(@__DIR__, "architecture_discovery.jl"))
+
 end # top-level testset

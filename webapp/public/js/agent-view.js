@@ -850,7 +850,10 @@ function rxnChips(rules, networkId, kd) {
 
 function candCard(card, family) {
   let head, meta = '';
-  if (family === 'logic') {
+  if (family === 'architecture_discovery') {
+    head = `sparse data fit · ${card.n_reactions}/${card.candidate_count || '?'} reactions → ${card.output_symbol}`;
+    meta = card.fit_loss == null ? '' : `normalized fit loss ${Number(card.fit_loss).toExponential(2)}`;
+  } else if (family === 'logic') {
     head = `${card.realized_gate} gate · ${(card.inputs || []).join(',')}→${card.output}`;
     meta = `support ${card.gate_support} · margin ${card.margin_decades} dec`;
   } else if (family === 'analog_surface') {
@@ -968,11 +971,15 @@ function buildCandidateViz(card, family) {
   const cs = Array.isArray(card.computed_series)
     ? card.computed_series.map((p) => [Number(p.x), Number(p.y)]).filter((p) => isFinite(p[0]) && isFinite(p[1]))
     : [];
+  const ts = Array.isArray(card.target_series)
+    ? card.target_series.map((p) => [Number(p.x), Number(p.y)]).filter((p) => isFinite(p[0]) && isFinite(p[1]))
+    : [];
   if (cs.length < 2) {
     return el('div', { class: 'cand-viz' }, placeholder('No engine-computed curve for this candidate.'));
   }
   const W = 640, H = 320, padL = 60, padR = 18, padT = 14, padB = 50;
-  const xs = cs.map((p) => p[0]), ys = cs.map((p) => p[1]);
+  const plotted = cs.concat(ts);
+  const xs = plotted.map((p) => p[0]), ys = plotted.map((p) => p[1]);
   let xMin = Math.min(...xs), xMax = Math.max(...xs), yMin = Math.min(...ys), yMax = Math.max(...ys);
   if (xMax - xMin < 1e-9) { xMin -= 1; xMax += 1; }
   const yp = (yMax - yMin < 1e-9) ? 1 : (yMax - yMin) * 0.08; yMin -= yp; yMax += yp;
@@ -1000,6 +1007,10 @@ function buildCandidateViz(card, family) {
   // the real engine-computed curve
   let d = ''; cs.forEach((p, i) => { d += (i ? 'L' : 'M') + sx(p[0]).toFixed(1) + ' ' + sy(p[1]).toFixed(1) + ' '; });
   svg.appendChild(svgEl('path', { class: 'agent-series target', pathLength: '1', d: d.trim(), stroke: '#17c4d6', fill: 'none' }));
+  ts.forEach((p) => svg.appendChild(svgEl('circle', {
+    class: 'target-marker', cx: sx(p[0]).toFixed(1), cy: sy(p[1]).toFixed(1), r: 4,
+    stroke: '#e9a23b',
+  })));
   // axis titles (units)
   const xt = svgEl('text', { class: 'axis-title', x: (x0 + x1) / 2, y: H - 8, 'text-anchor': 'middle' });
   xt.textContent = ('log₁₀ input total ' + (card.input_symbol || '')).trim(); svg.appendChild(xt);

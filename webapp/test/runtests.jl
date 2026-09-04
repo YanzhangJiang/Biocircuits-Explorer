@@ -9,6 +9,7 @@ using Base64
 include("schema_generation_contract.jl")
 include("api_contract.jl")
 include("backend_assembly_contract.jl")
+include("architecture_discovery_api.jl")
 include("concurrency_and_budget_contract.jl")
 include("input_validation_contract.jl")
 include("static_security_contract.jl")

@@ -36,7 +36,7 @@ CONTEXTUAL_LABELS = os.path.join(ROOT, "datasets", "latent-atlas-contextual-v0",
 
 # ── DesignAgentTrace: one replayable record per turn (large arrays → artifacts/<hash>.json). ──
 TRACE_SCHEMA_VERSION = "design-agent-trace/v0.1.0"
-COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.6.0"   # v0.6.0: canonical fixed-network ROP shape optimization
+COMPILER_PROMPT_VERSION = "design-agent-prompt/v0.7.0"   # v0.7.0: sparse architecture discovery from data
 TRACE_DIR = os.environ.get("BNE_TRACE_DIR", os.path.join(ROOT, "traces"))
 
 def _trace_integer_config(name, default, minimum, maximum):
@@ -1257,6 +1257,98 @@ def simulate(reactions, kd=None, input_symbol=None, observe_species=None,
     result["evidence_tier"] = ev["label"]; result["_card"] = card
     return result
 
+def discover_architecture_from_data(reactions, samples, output_exprs, initial_kd=None,
+                                    input_symbol=None, sparsity=1e-3,
+                                    learning_rate=0.03, epochs=250,
+                                    active_threshold=0.05, debias_epochs=60, **_):
+    """Select reactions from an over-specified equilibrium network using measured data."""
+    reactions = list(reactions or [])
+    samples = list(samples or [])
+    output_exprs = ([output_exprs] if isinstance(output_exprs, str)
+                    else list(output_exprs or []))
+    if not reactions or not samples or not output_exprs:
+        return {"error": "reactions, samples, and output_exprs must all be non-empty"}
+
+    response = E.discover_architecture(
+        reactions=reactions,
+        samples=samples,
+        output_exprs=output_exprs,
+        initial_kd=initial_kd,
+        sparsity=sparsity,
+        learning_rate=learning_rate,
+        epochs=epochs,
+        active_threshold=active_threshold,
+        debias_epochs=debias_epochs,
+    )
+    if response.get("engine_offline"):
+        return {"engine_offline": True, "error": response.get("error")}
+    if response.get("error"):
+        return {"error": f"architecture discovery failed: {response.get('error')}"}
+
+    selected_rules = response.get("rules") or []
+    selected_kd = response.get("kd") or []
+    result = {
+        "family": "architecture_discovery",
+        "status": response.get("status"),
+        "candidate_count": len(response.get("reaction_fit") or []),
+        "selected_reactions": selected_rules,
+        "selected_kd": selected_kd,
+        "reaction_fit": response.get("reaction_fit") or [],
+        "fit_loss": response.get("fit_loss"),
+        "sparse_fit_loss": response.get("sparse_fit_loss"),
+        "output_exprs": response.get("output_exprs") or output_exprs,
+        "n_samples": len(samples),
+    }
+    if not selected_rules:
+        return result
+
+    q_symbols = response.get("q_sym") or []
+    axis = input_symbol
+    if axis not in q_symbols and isinstance(axis, str):
+        prefixed = axis if axis.startswith("t") else "t" + axis
+        axis = prefixed if prefixed in q_symbols else axis
+    if axis not in q_symbols:
+        varying = []
+        for symbol in q_symbols:
+            values = [sample.get("totals", {}).get(symbol) for sample in samples]
+            if all(isinstance(value, (int, float)) for value in values) and len(set(values)) > 1:
+                varying.append(symbol)
+        axis = varying[0] if varying else (q_symbols[0] if q_symbols else None)
+
+    predictions = response.get("predictions") or []
+    targets = response.get("targets") or []
+    fitted_series, target_series = [], []
+    if axis:
+        for sample, predicted, target in zip(samples, predictions, targets):
+            x = sample.get("totals", {}).get(axis)
+            py = predicted[0] if isinstance(predicted, list) and predicted else None
+            ty = target[0] if isinstance(target, list) and target else None
+            if isinstance(x, (int, float)) and x > 0 and isinstance(py, (int, float)) and py > 0:
+                fitted_series.append({"x": math.log10(x), "y": math.log10(py)})
+            if isinstance(x, (int, float)) and x > 0 and isinstance(ty, (int, float)) and ty > 0:
+                target_series.append({"x": math.log10(x), "y": math.log10(ty)})
+    fitted_series.sort(key=lambda point: point["x"])
+    target_series.sort(key=lambda point: point["x"])
+
+    fit_loss = response.get("fit_loss")
+    card = {
+        "family": "architecture_discovery",
+        "verdict": "sparse data fit",
+        "n_reactions": len(selected_rules),
+        "candidate_count": len(response.get("reaction_fit") or []),
+        "output_symbol": output_exprs[0],
+        "input_symbol": axis,
+        "rules": selected_rules,
+        "kd": selected_kd,
+        "fit_loss": fit_loss,
+        "reaction_fit": response.get("reaction_fit") or [],
+        "computed_series": fitted_series,
+        "target_series": target_series,
+        "evidence_tier": "fit to supplied equilibrium data",
+    }
+    result["_card"] = card
+    return result
+
 # (A,B) corner order (00,01,10,11), high=1 — mirrors evaluators.jl / cards.py / agent-view.js.
 _GATE_TABLES = {
     "AND": (0, 0, 0, 1), "OR": (0, 1, 1, 1), "NAND": (1, 1, 1, 0), "NOR": (1, 0, 0, 0),
@@ -2445,6 +2537,7 @@ TOOLS_DISPATCH = {"corpus_overview": corpus_overview, "retrieve_atlas_seed": ret
                   "retrieve_logic_seed": retrieve_logic_seed, "retrieve_analog_seed": retrieve_analog_seed,
                   "retrieve_multimodal_seed": retrieve_multimodal_seed, "reader_panel": reader_panel,
                   "design_from_behavior": design_from_behavior,
+                  "discover_architecture_from_data": discover_architecture_from_data,
                   "optimize_rop_shape": optimize_rop_shape,
                   "simulate": simulate, "simulate_2d": simulate_2d, "ro_behavior": ro_behavior}
 
@@ -2558,6 +2651,31 @@ _ROP_SHAPE_EDIT_INTENT_TOOL_SCHEMA = {
     ],
 }
 TOOLSPEC = [
+    {"name": "discover_architecture_from_data",
+     "description": "Infer a sparse candidate mechanism directly from static equilibrium data. Supply an over-specified reaction library, conserved totals for each experiment, observed target outputs, and linear species output expressions. The live Julia engine fits Kd values with an association-strength sparsity penalty, removes weak reactions, refits the survivors, and returns the measured-versus-fitted curve. Use this when the user provides (input totals, output) pairs or explicitly asks to infer reactions from data; it returns one candidate mechanism, not a uniqueness certificate.",
+     "parameters": {"type": "object", "properties": {
+         "reactions": {"type": "array", "minItems": 1, "items": {"type": "string"},
+                       "description": "Over-specified candidate reaction library."},
+         "samples": {"type": "array", "minItems": 1, "items": {
+             "type": "object", "properties": {
+                 "totals": {"type": "object", "additionalProperties": {"type": "number"},
+                            "description": "Every conserved total, using names such as tA and tB."},
+                 "target": {"oneOf": [
+                     {"type": "number"},
+                     {"type": "array", "minItems": 1, "items": {"type": "number"}},
+                 ]},
+             }, "required": ["totals", "target"], "additionalProperties": False}},
+         "output_exprs": {"type": "array", "minItems": 1, "items": {"type": "string"},
+                          "description": "Linear species readouts, e.g. ['AB'] or ['2*AA + AB']."},
+         "initial_kd": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}},
+         "input_symbol": {"type": "string", "description": "Total shown on the fitted-curve x axis."},
+         "sparsity": {"type": "number", "minimum": 0, "description": "Penalty on association strength 1/Kd; default 0.001."},
+         "learning_rate": {"type": "number", "exclusiveMinimum": 0},
+         "epochs": {"type": "integer", "minimum": 1},
+         "active_threshold": {"type": "number", "minimum": 0,
+                              "description": "Minimum learned association strength for keeping a reaction; default 0.05."},
+         "debias_epochs": {"type": "integer", "minimum": 0}},
+         "required": ["reactions", "samples", "output_exprs"], "additionalProperties": False}},
     {"name": "optimize_rop_shape",
      "description": "EDIT one FIXED, referenced 1-input ROP design through the canonical live Julia optimizer. Use only after a concrete network, DesignabilitySpec v1, and pinned reference design exist. Supply a full NetworkIR+expected hash, or a complete legacy network (rules/reactions plus input/output symbols; reference.kd supplies its Kd values), one allow-listed typed edit intent, explicit optimization/work/replay policies, and no precompiled matrices. The backend alone compiles witness constraints, optimizes declared cells, measures replay features, and returns evidence. A display card is admitted only for a non-truncated global optimum with complete passing replay; otherwise report the diagnostic without inventing a design.",
      "parameters": {"type": "object", "properties": {
@@ -2744,6 +2862,9 @@ binding equilibrium / ODE and phenotypes the result) is the source of truth. Eve
 present to the user MUST be backed by fresh compute from THIS session.
 
 PRIMARY INVERSE-DESIGN PATH for a 1-input curve pattern:
+- If the user supplies static (conserved totals, observed output) data or asks which reactions are
+  supported by those measurements, call `discover_architecture_from_data` with a small explicit
+  candidate reaction library. This path fits a candidate mechanism directly and does not use the atlas.
 - Translate the user's requested rises, falls, and flat regions into an ordered reaction-order
   program, then call `design_from_behavior`. Do not invent input/output molecule names: that tool
   searches networks first and binds candidate-specific I/O afterward.
@@ -2954,6 +3075,7 @@ def run_turn(state, message, llm_cfg=None, top=3):
             spec_payload_present, spec_payload = _agent_first_present_spec_payload(res)
             card = res.pop("_card", None) if name in (
                 "simulate", "simulate_2d", "design_from_behavior", "optimize_rop_shape",
+                "discover_architecture_from_data",
             ) else None
             designability_spec = _agent_designability_spec_from_payload(spec_payload, card)
             if designability_spec:

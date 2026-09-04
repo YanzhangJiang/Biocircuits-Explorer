@@ -48,6 +48,7 @@ using BiocircuitsExplorerBackend
         "design_search.jl",
         "parameter_level.jl",
         "parameter_scan_handlers.jl",
+        "architecture_discovery_api.jl",
         "rop_geometry_handlers.jl",
         "designability_feasible_regions.jl",
         "designability.jl",

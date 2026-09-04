@@ -44,6 +44,7 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
     APIRouteContract("/api/v1/fret_heatmap", "/api/fret_heatmap", ("POST",), :handle_fret_heatmap, "/api/fret_heatmap", :exact),
     APIRouteContract("/api/v1/parameter_scan_1d", "/api/parameter_scan_1d", ("POST",), :handle_parameter_scan_1d, "/api/parameter_scan_1d", :exact),
     APIRouteContract("/api/v1/parameter_scan_2d", "/api/parameter_scan_2d", ("POST",), :handle_parameter_scan_2d, "/api/parameter_scan_2d", :exact),
+    APIRouteContract("/api/v1/discover_architecture", "/api/discover_architecture", ("POST",), :handle_discover_architecture, nothing, :exact),
     APIRouteContract("/api/v1/place_parameters", "/api/place_parameters", ("POST",), :handle_place_parameters, "/api/place_parameters", :exact),
     APIRouteContract("/api/v1/placer_menu", "/api/placer_menu", ("POST",), :handle_placer_menu, "/api/placer_menu", :exact),
     APIRouteContract("/api/v1/placer_curve", "/api/placer_curve", ("POST",), :handle_placer_curve, "/api/placer_curve", :exact),
