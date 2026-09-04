@@ -477,6 +477,7 @@ html.biocircuits-native-shell #agent-view { top: 0; height: 100vh; }
 .cand-card.fam-logic { border-left-color: #9b59b6; }
 .cand-card.fam-analog_surface { border-left-color: #17a2b8; }
 .cand-card.fam-contextual_versatility { border-left-color: #e8854a; }
+.cand-card.fam-architecture_discovery { border-left-color: #46c46b; }
 .cand-card .cand-head { font-size: 12.5px; color: var(--ax-text); font-weight: 560; letter-spacing: -0.01em; }
 .cand-card .cand-meta { font-family: var(--font-mono); font-size: 11px; color: var(--ax-text-3); margin-top: 3px; }
 .agent-disambig { border-left: 3px solid #d3b53b; padding-left: 9px; color: #d3b53b; font-size: 12.5px; line-height: 1.55; }
@@ -525,4 +526,118 @@ html.biocircuits-native-shell #agent-view { top: 0; height: 100vh; }
   font-size: 13px;
   line-height: 1.5;
   text-align: center;
+}
+
+/* ---- simulation → hidden truth → architecture discovery demo ---- */
+.architecture-demo-card { padding-bottom: 16px; }
+.architecture-demo-controls {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(140px, 0.65fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px 18px 10px;
+}
+.architecture-demo-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ax-text-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.architecture-demo-controls select,
+.architecture-demo-run {
+  min-height: 34px;
+  border: 1px solid var(--ax-border);
+  border-radius: 8px;
+  background: var(--ax-input-bg);
+  color: var(--ax-text);
+  font: 12px var(--font-ui);
+}
+.architecture-demo-controls select { padding: 0 9px; }
+.architecture-demo-run {
+  padding: 0 14px;
+  background: var(--ax-accent);
+  border-color: var(--ax-accent);
+  color: #fff;
+  font-weight: 650;
+  cursor: pointer;
+}
+.architecture-demo-run:hover:not(:disabled) { filter: brightness(1.08); }
+.architecture-demo-run:disabled { opacity: 0.55; cursor: wait; }
+.architecture-demo-controls select:focus-visible,
+.architecture-demo-run:focus-visible {
+  outline: 2px solid var(--ax-accent-2);
+  outline-offset: 2px;
+}
+.architecture-demo-status {
+  margin: 0 18px;
+  color: var(--ax-text-3);
+  font: 11px/1.5 var(--font-mono);
+}
+.architecture-demo-status.running { color: #e6a23c; }
+.architecture-demo-status.success { color: #46c46b; }
+.architecture-demo-status.warning { color: #e6a23c; }
+.architecture-demo-status.error { color: #e06c6c; }
+
+.architecture-comparison { overflow-x: auto; }
+.architecture-comparison-summary {
+  border-left: 3px solid currentColor;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.architecture-comparison-summary.success { color: #46c46b; }
+.architecture-comparison-summary.warning { color: #e6a23c; }
+.architecture-comparison-note {
+  color: var(--ax-text-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.architecture-compare-grid {
+  min-width: 520px;
+  display: grid;
+  grid-template-columns: minmax(230px, 1fr) 110px 110px;
+  border: 1px solid var(--ax-border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.architecture-compare-grid > div {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--ax-border-soft);
+}
+.architecture-compare-grid > div:nth-last-child(-n + 3) { border-bottom: 0; }
+.architecture-compare-head {
+  min-height: 32px !important;
+  background: var(--ax-input-bg);
+  color: var(--ax-text-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.architecture-compare-reaction {
+  color: var(--ax-text);
+  font: 11px/1.35 var(--font-mono);
+}
+.architecture-support {
+  flex-direction: column;
+  align-items: flex-start !important;
+  justify-content: center;
+  gap: 2px;
+  color: var(--ax-text-3);
+  font: 10px var(--font-mono);
+}
+.architecture-support b { font-size: 11px; }
+.architecture-support.on b { color: #46c46b; }
+.architecture-support.mismatch { background: rgba(230, 162, 60, 0.09); }
+
+@media (max-width: 1080px) {
+  .architecture-demo-controls { grid-template-columns: 1fr 1fr; }
+  .architecture-demo-run { grid-column: 1 / -1; }
 }

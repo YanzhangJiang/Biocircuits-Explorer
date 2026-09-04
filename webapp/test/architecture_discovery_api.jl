@@ -32,6 +32,24 @@ const Backend = BiocircuitsExplorerBackend
     @test result["q_sym"] == ["tA", "tB"]
     @test result["output_exprs"] == ["2*AA + AB", "AB + 2*BB"]
 
+    simulated_payload = deepcopy(payload)
+    for sample in simulated_payload["samples"]
+        delete!(sample, "target")
+    end
+    simulated_payload["simulation_kd"] = [1e6, 0.8, 1e6]
+    simulated_payload["simulation_noise"] = 0.1
+    simulated_response = Backend.router(HTTP.Request(
+        "POST",
+        "/api/v1/discover_architecture",
+        ["Content-Type" => "application/json"],
+        JSON3.write(simulated_payload),
+    ))
+    @test simulated_response.status == 200
+    simulated = JSON3.read(simulated_response.body)
+    @test simulated["simulation"]["kd"] == [1e6, 0.8, 1e6]
+    @test simulated["simulation"]["noise_log_std"] == 0.1
+    @test all(value > 0 for row in simulated["targets"] for value in row)
+
     missing_total = deepcopy(payload)
     delete!(missing_total["samples"][1]["totals"], "tB")
     rejected = Backend.router(HTTP.Request(

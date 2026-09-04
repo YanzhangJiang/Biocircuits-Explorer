@@ -15,6 +15,12 @@
 // only carries the header view-switch markup and the stylesheet link.
 
 import { getLLMConfig } from './llm-settings.js';   // UI key panel -> per-request LLM config
+import { apiSilent } from './api.js';
+import {
+  architectureDemoCard,
+  architectureDemoOptions,
+  architectureDemoRequest,
+} from './architecture-discovery-demo.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CHATW_KEY = 'bcx-agent-chatw';
@@ -60,6 +66,7 @@ export function designChatRequestHeaders({ json = false } = {}) {
 let agentBuilt = false;
 let threadEl = null;
 let resultsRulesEl = null;   // the right-pane rules list, updated to the top candidate
+let resultsRulesTitleEl = null;
 let resultsChartEl = null;   // the right-pane chart-wrap, updated to a per-candidate viz
 let resultsChartTitleEl = null;
 let statusDotEl = null;      // backend-health pill (dot + text) at the top of the chat
@@ -86,6 +93,7 @@ function setActiveCandidate(card) {
 function clearActiveCandidateResults() {
   setActiveCandidate(null);
   if (resultsChartTitleEl) resultsChartTitleEl.textContent = 'Response curve';
+  if (resultsRulesTitleEl) resultsRulesTitleEl.textContent = 'Reaction rules';
   if (resultsRulesEl) {
     resultsRulesEl.replaceChildren(
       placeholder('Reaction rules appear here once a candidate is found.'),
@@ -726,6 +734,78 @@ function placeholder(text) {
   return el('div', { class: 'agent-placeholder', text });
 }
 
+function buildArchitectureDemoPanel() {
+  const presetSelect = el('select', { 'aria-label': 'Hidden network example' },
+    architectureDemoOptions().map(option =>
+      el('option', { value: option.id, text: option.label })));
+  const noiseSelect = el('select', { 'aria-label': 'Simulation noise' }, [
+    el('option', { value: '0', text: 'No noise' }),
+    el('option', { value: '0.05', text: '5% log noise' }),
+    el('option', { value: '0.10', text: '10% log noise' }),
+  ]);
+  const runButton = el('button', {
+    class: 'architecture-demo-run',
+    type: 'button',
+    text: 'Simulate & rediscover',
+  });
+  const status = el('div', {
+    class: 'architecture-demo-status',
+    text: 'The engine generates observations from hidden Kd values; discovery receives only those observations.',
+  });
+
+  runButton.addEventListener('click', async () => {
+    runButton.disabled = true;
+    status.className = 'architecture-demo-status running';
+    status.textContent = 'Simulating observations, hiding the truth, then fitting the candidate library…';
+    try {
+      const request = architectureDemoRequest(presetSelect.value, Number(noiseSelect.value));
+      const response = await apiSilent('discover_architecture', request);
+      const card = architectureDemoCard(presetSelect.value, response);
+      const conclusion = card.identifiable === false
+        ? 'The observations fit well, but the symmetric branches are not distinguishable.'
+        : card.exact_support_recovery
+          ? 'The hidden reaction support was recovered exactly.'
+          : 'The learned reaction support differs from the hidden simulation.';
+      const result = {
+        family: 'architecture_discovery',
+        reply: `${card.demo_label}: ${conclusion}`,
+        cards: [card],
+        info: {},
+      };
+
+      if (threadEl) {
+        threadEl.appendChild(buildReplyMessage(result));
+        convoLog.push({ role: 'agent', res: result });
+        if (convoLog.length > 60) convoLog = convoLog.slice(-60);
+        scrollThreadToBottom();
+      }
+      setActiveCandidate(card);
+      showCandidateRules(card);
+      showCandidateViz(card, card.family);
+      status.className = card.identifiable !== false && card.exact_support_recovery
+        ? 'architecture-demo-status success'
+        : 'architecture-demo-status warning';
+      status.textContent = `${conclusion} Normalized loss ${Number(card.fit_loss).toExponential(2)}.`;
+    } catch (error) {
+      status.className = 'architecture-demo-status error';
+      status.textContent = `Demo failed: ${String(error?.message || error)}`;
+    } finally {
+      runButton.disabled = false;
+    }
+  });
+
+  return el('div', { class: 'card architecture-demo-card' }, [
+    el('div', { class: 'card-head' },
+      el('span', { class: 'card-title', text: 'Architecture discovery lab' })),
+    el('div', { class: 'architecture-demo-controls' }, [
+      el('label', {}, ['Hidden truth', presetSelect]),
+      el('label', {}, ['Observations', noiseSelect]),
+      runButton,
+    ]),
+    status,
+  ]);
+}
+
 function buildResultsPanel() {
   // The right pane starts empty; showCandidateViz / showCandidateRules fill it in
   // from the top candidate of a real backend reply (no fabricated seed data).
@@ -757,12 +837,15 @@ function buildResultsPanel() {
       window.exportDesignSpecToWorkspace(spec);
     }
   });
+  resultsRulesTitleEl = el('span', { class: 'card-title', text: 'Reaction rules' });
   const rulesCard = el('div', { class: 'card rules-card' }, [
-    el('div', { class: 'card-head' }, [el('span', { class: 'card-title', text: 'Reaction rules' }), exportSpecBtnEl, exportBtnEl]),
+    el('div', { class: 'card-head' }, [resultsRulesTitleEl, exportSpecBtnEl, exportBtnEl]),
     resultsRulesEl,
   ]);
 
-  return el('div', { class: 'agent-results' }, el('div', { class: 'results-inner' }, [chartCard, rulesCard]));
+  return el('div', { class: 'agent-results' }, el('div', { class: 'results-inner' }, [
+    buildArchitectureDemoPanel(), chartCard, rulesCard,
+  ]));
 }
 
 /* ─── conversation ─── */
@@ -851,8 +934,12 @@ function rxnChips(rules, networkId, kd) {
 function candCard(card, family) {
   let head, meta = '';
   if (family === 'architecture_discovery') {
-    head = `sparse data fit · ${card.n_reactions}/${card.candidate_count || '?'} reactions → ${card.output_symbol}`;
-    meta = 'one compatible mechanism · not a uniqueness claim';
+    head = card.demo_label
+      ? `${card.demo_label} · ${card.verdict}`
+      : `sparse data fit · ${card.n_reactions}/${card.candidate_count || '?'} reactions → ${card.output_symbol}`;
+    meta = card.demo_label
+      ? `${card.n_reactions}/${card.candidate_count || '?'} reactions selected`
+      : 'one compatible mechanism · not a uniqueness claim';
     if (card.fit_loss != null) meta += ` · normalized fit loss ${Number(card.fit_loss).toExponential(2)}`;
   } else if (family === 'logic') {
     head = `${card.realized_gate} gate · ${(card.inputs || []).join(',')}→${card.output}`;
@@ -940,7 +1027,59 @@ function buildHeatmap(card) {
   const cl = svgEl('text', { class: 'axis-title', x: cbx + cbw / 2, y: padT - 5, 'text-anchor': 'middle' }); cl.textContent = 'log₁₀[' + (s.observe || 'out') + ']'; svg.appendChild(cl);
   return el('div', { class: 'cand-viz' }, [el('div', { class: 'chart' }, svg)]);
 }
+
+function formatDemoKd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  if (number >= 1e5) return 'off';
+  return `Kd ${Number(number.toPrecision(3))}`;
+}
+
+function buildArchitectureComparison(card) {
+  const candidates = Array.isArray(card.candidate_rules) ? card.candidate_rules : [];
+  const truth = Array.isArray(card.truth_active) ? card.truth_active : [];
+  const truthKd = Array.isArray(card.truth_kd) ? card.truth_kd : [];
+  const fits = Array.isArray(card.reaction_fit) ? card.reaction_fit : [];
+  const rows = [
+    el('div', { class: 'architecture-compare-head', text: 'Candidate reaction' }),
+    el('div', { class: 'architecture-compare-head', text: 'Hidden truth' }),
+    el('div', { class: 'architecture-compare-head', text: 'Learned' }),
+  ];
+  candidates.forEach((reaction, index) => {
+    const actual = truth[index] === true;
+    const learned = fits[index]?.active === true;
+    rows.push(
+      el('div', { class: 'architecture-compare-reaction', text: String(reaction).replace(/<->|<=>/g, '⇌') }),
+      el('div', { class: `architecture-support ${actual ? 'on' : 'off'}` }, [
+        el('b', { text: actual ? 'ON' : 'off' }),
+        el('span', { text: actual ? formatDemoKd(truthKd[index]) : '' }),
+      ]),
+      el('div', { class: `architecture-support ${learned ? 'on' : 'off'} ${actual === learned ? 'match' : 'mismatch'}` }, [
+        el('b', { text: learned ? 'ON' : 'off' }),
+        el('span', { text: learned ? formatDemoKd(fits[index]?.kd) : '' }),
+      ]),
+    );
+  });
+  const summary = card.identifiable === false
+    ? 'Compatible fit, but support is not unique'
+    : card.exact_support_recovery
+      ? 'Exact support recovery'
+      : 'Learned support differs from hidden truth';
+  return el('div', { class: 'cand-viz architecture-comparison' }, [
+    el('div', {
+      class: `architecture-comparison-summary ${
+        card.identifiable !== false && card.exact_support_recovery ? 'success' : 'warning'}`,
+      text: summary,
+    }),
+    el('div', { class: 'architecture-comparison-note', text: card.demo_note }),
+    el('div', { class: 'architecture-compare-grid' }, rows),
+  ]);
+}
+
 function buildCandidateViz(card, family) {
+  if (family === 'architecture_discovery' && Array.isArray(card?.truth_active)) {
+    return buildArchitectureComparison(card);
+  }
   if (card && card.surface) return buildHeatmap(card);   // engine-computed 2-input surface
   if (family === 'logic') {
     const t = gateTable(card.realized_gate) || [0, 0, 0, 0];
@@ -1023,11 +1162,14 @@ function buildCandidateViz(card, family) {
 function showCandidateViz(card, family) {
   if (!resultsChartEl || !card) return;
   resultsChartEl.replaceChildren(buildCandidateViz(card, family));
-  if (resultsChartTitleEl) resultsChartTitleEl.textContent = 'Top candidate';
+  if (resultsChartTitleEl) resultsChartTitleEl.textContent =
+    Array.isArray(card.truth_active) ? 'Hidden truth vs learned structure' : 'Top candidate';
 }
 
 function showCandidateRules(card) {
   if (!resultsRulesEl || !card) return;
+  if (resultsRulesTitleEl) resultsRulesTitleEl.textContent =
+    Array.isArray(card.truth_active) ? 'Recovered reaction rules' : 'Reaction rules';
   const rules = (card.rules && card.rules.length) ? card.rules : (card.network_id ? [card.network_id] : []);
   const kd = Array.isArray(card.kd) ? card.kd : [];
   resultsRulesEl.replaceChildren(...rules.map((r, i) =>

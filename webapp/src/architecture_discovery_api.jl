@@ -25,6 +25,15 @@ function _ad_string_list(raw, name::AbstractString)
     return values
 end
 
+function _ad_kd_list(raw, name::AbstractString, reaction_count::Int)
+    raw isa AbstractVector || throw(ArgumentError("$name must be an array"))
+    values = [_request_finite_real(value, name) for value in raw]
+    length(values) == reaction_count || throw(ArgumentError(
+        "$name must have one value per reaction"))
+    all(>(0), values) || throw(ArgumentError("$name values must be positive"))
+    return values
+end
+
 function _ad_output_expressions(body)
     raw = _raw_get(body, :output_exprs, nothing)
     raw isa AbstractString && return [_request_string(raw, "output_exprs")]
@@ -34,16 +43,20 @@ end
 function architecture_discovery_from_spec(body)
     rules = _ad_string_list(_raw_get(body, :reactions, nothing), "reactions")
     initial_kd = if _raw_haskey(body, :initial_kd)
-        raw = _raw_get(body, :initial_kd, nothing)
-        raw isa AbstractVector || throw(ArgumentError("initial_kd must be an array"))
-        values = [_request_finite_real(value, "initial_kd") for value in raw]
-        length(values) == length(rules) || throw(ArgumentError(
-            "initial_kd must have one value per reaction"))
-        all(>(0), values) || throw(ArgumentError("initial_kd values must be positive"))
-        values
+        _ad_kd_list(_raw_get(body, :initial_kd, nothing), "initial_kd", length(rules))
     else
         nothing
     end
+    simulation_kd = if _raw_haskey(body, :simulation_kd)
+        _ad_kd_list(
+            _raw_get(body, :simulation_kd, nothing), "simulation_kd", length(rules))
+    else
+        nothing
+    end
+    simulation_noise = _ad_real(
+        _raw_get(body, :simulation_noise, nothing), "simulation_noise", 0.0;
+        nonnegative=true,
+    )
 
     model_kd = isnothing(initial_kd) ? ones(Float64, length(rules)) : initial_kd
     model, species, free_species, product_species = build_model(rules, model_kd)
@@ -76,17 +89,35 @@ function architecture_discovery_from_spec(body)
             totals[sample_index, total_index] = value
         end
 
-        raw_target = _raw_get(sample, :target, nothing)
-        target_values = if raw_target isa Real && !(raw_target isa Bool)
-            [_request_finite_real(raw_target, "samples[$sample_index].target")]
-        elseif raw_target isa AbstractVector
-            [_request_finite_real(value, "samples[$sample_index].target") for value in raw_target]
-        else
-            throw(ArgumentError("samples[$sample_index].target must be a number or array"))
+        if isnothing(simulation_kd)
+            raw_target = _raw_get(sample, :target, nothing)
+            target_values = if raw_target isa Real && !(raw_target isa Bool)
+                [_request_finite_real(raw_target, "samples[$sample_index].target")]
+            elseif raw_target isa AbstractVector
+                [_request_finite_real(value, "samples[$sample_index].target") for value in raw_target]
+            else
+                throw(ArgumentError("samples[$sample_index].target must be a number or array"))
+            end
+            length(target_values) == length(output_exprs) || throw(ArgumentError(
+                "samples[$sample_index].target must have one value per output expression"))
+            targets[sample_index, :] .= target_values
         end
-        length(target_values) == length(output_exprs) || throw(ArgumentError(
-            "samples[$sample_index].target must have one value per output expression"))
-        targets[sample_index, :] .= target_values
+    end
+
+    if !isnothing(simulation_kd)
+        # Demo mode uses the hidden parameters only to create observations.
+        # discover_architecture below still starts from its ordinary defaults.
+        targets .= architecture_loss_gradient(
+            model,
+            totals,
+            targets,
+            output_matrix,
+            log10.(simulation_kd),
+        ).predictions
+        if simulation_noise > 0
+            rng = MersenneTwister(20260905)
+            targets .*= exp.(simulation_noise .* randn(rng, size(targets)))
+        end
     end
 
     fit = discover_architecture(
@@ -120,7 +151,7 @@ function architecture_discovery_from_spec(body)
         for index in eachindex(rules)
     ]
 
-    return Dict(
+    result = Dict(
         "status" => isempty(active_indices) ? "no_active_reactions" : "ok",
         "rules" => rules[active_indices],
         "kd" => fit.kd[active_indices],
@@ -138,6 +169,13 @@ function architecture_discovery_from_spec(body)
         "free_species" => string.(free_species),
         "product_species" => string.(product_species),
     )
+    if !isnothing(simulation_kd)
+        result["simulation"] = Dict(
+            "kd" => simulation_kd,
+            "noise_log_std" => simulation_noise,
+        )
+    end
+    return result
 end
 
 function handle_discover_architecture(req)
