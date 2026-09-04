@@ -42,10 +42,11 @@ function architecture_discovery_from_spec(body)
         all(>(0), values) || throw(ArgumentError("initial_kd values must be positive"))
         values
     else
-        ones(Float64, length(rules))
+        nothing
     end
 
-    model, species, free_species, product_species = build_model(rules, initial_kd)
+    model_kd = isnothing(initial_kd) ? ones(Float64, length(rules)) : initial_kd
+    model, species, free_species, product_species = build_model(rules, model_kd)
     output_exprs = _ad_output_expressions(body)
     output_matrix = zeros(Float64, length(output_exprs), model.n)
     for (index, expression) in enumerate(output_exprs)

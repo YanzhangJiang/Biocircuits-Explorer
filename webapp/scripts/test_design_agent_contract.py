@@ -745,6 +745,7 @@ class DesignAgentContractTests(unittest.TestCase):
         self.assertEqual(result["selected_kd"], [1.2])
         card = result["_card"]
         self.assertEqual(card["rules"], ["A + B <-> AB"])
+        self.assertIn("not a uniqueness claim", card["evidence_tier"])
         self.assertEqual(card["computed_series"], [
             {"x": -1.0, "y": -2.0},
             {"x": 0.0, "y": design_agent.math.log10(0.2)},

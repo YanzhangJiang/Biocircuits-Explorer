@@ -205,6 +205,9 @@ Fit an over-specified equilibrium binding network and select reactions by
 penalizing association strength `1 / Kd`. Parameters are represented as
 `log10(Kd)`, matching the rest of BindingAndCatalysis.
 
+When `initial_kd` is omitted, a tiny deterministic spread breaks exact
+parameter symmetry; explicitly supplied initial values are left unchanged.
+
 After selection, inactive reactions are placed at the weak-binding bound and
 the active affinities are refit without the sparsity penalty.
 """
@@ -224,7 +227,12 @@ function discover_architecture(
     q = Float64.(totals)
     y = Float64.(targets)
     C = Float64.(outputs)
-    kd0 = isnothing(initial_kd) ? ones(Float64, model.r) : Float64.(collect(initial_kd))
+    kd0 = if isnothing(initial_kd)
+        model.r <= 1 ? ones(Float64, model.r) :
+            exp10.(range(-0.004, 0.004; length=model.r))
+    else
+        Float64.(collect(initial_kd))
+    end
     length(kd0) == model.r || throw(DimensionMismatch(
         "initial_kd must have $(model.r) entries"))
     all(value -> isfinite(value) && value > 0, kd0) || throw(ArgumentError(

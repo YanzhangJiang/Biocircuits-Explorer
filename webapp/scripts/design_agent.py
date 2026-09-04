@@ -1344,7 +1344,7 @@ def discover_architecture_from_data(reactions, samples, output_exprs, initial_kd
         "reaction_fit": response.get("reaction_fit") or [],
         "computed_series": fitted_series,
         "target_series": target_series,
-        "evidence_tier": "fit to supplied equilibrium data",
+        "evidence_tier": "one compatible fit to supplied data; not a uniqueness claim",
     }
     result["_card"] = card
     return result
@@ -2865,6 +2865,7 @@ PRIMARY INVERSE-DESIGN PATH for a 1-input curve pattern:
 - If the user supplies static (conserved totals, observed output) data or asks which reactions are
   supported by those measurements, call `discover_architecture_from_data` with a small explicit
   candidate reaction library. This path fits a candidate mechanism directly and does not use the atlas.
+  Describe its result as one compatible sparse mechanism, never as the uniquely identified mechanism.
 - Translate the user's requested rises, falls, and flat regions into an ordered reaction-order
   program, then call `design_from_behavior`. Do not invent input/output molecule names: that tool
   searches networks first and binds candidate-specific I/O afterward.

@@ -54,4 +54,32 @@
     @test recovered.affinity[2] > 100 * recovered.affinity[1]
     @test recovered.affinity[2] > 100 * recovered.affinity[3]
     @test recovered.fit_loss < 1e-4
+
+    # Equal B/C totals and the summed AB+AC readout make the two reactions
+    # observationally interchangeable. The tiny deterministic default stagger
+    # should escape the dense symmetric stationary point and return one of them.
+    ambiguous = Bnc(
+        N=[
+            1 1 0 -1 0
+            1 0 1 0 -1
+        ],
+        x_sym=[:A, :B, :C, :AB, :AC],
+        q_sym=[:tA, :tB, :tC],
+        K_sym=[:Kd1, :Kd2],
+    )
+    ambiguous_totals = reduce(vcat, (
+        [a 1.0 1.0] for a in exp10.(range(-1.5, 1.5; length=16))))
+    summed_complexes = reshape([0.0, 0.0, 0.0, 1.0, 1.0], 1, :)
+    ambiguous_targets = architecture_loss_gradient(
+        ambiguous,
+        ambiguous_totals,
+        zeros(16, 1),
+        summed_complexes,
+        log10.([1.0, 1e12]),
+    ).predictions
+    symmetry_broken = discover_architecture(
+        ambiguous, ambiguous_totals, ambiguous_targets, summed_complexes)
+
+    @test count(symmetry_broken.active) == 1
+    @test symmetry_broken.fit_loss < 1e-5
 end

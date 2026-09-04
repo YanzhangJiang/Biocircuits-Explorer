@@ -852,7 +852,8 @@ function candCard(card, family) {
   let head, meta = '';
   if (family === 'architecture_discovery') {
     head = `sparse data fit · ${card.n_reactions}/${card.candidate_count || '?'} reactions → ${card.output_symbol}`;
-    meta = card.fit_loss == null ? '' : `normalized fit loss ${Number(card.fit_loss).toExponential(2)}`;
+    meta = 'one compatible mechanism · not a uniqueness claim';
+    if (card.fit_loss != null) meta += ` · normalized fit loss ${Number(card.fit_loss).toExponential(2)}`;
   } else if (family === 'logic') {
     head = `${card.realized_gate} gate · ${(card.inputs || []).join(',')}→${card.output}`;
     meta = `support ${card.gate_support} · margin ${card.margin_decades} dec`;
