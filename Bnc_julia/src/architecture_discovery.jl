@@ -198,6 +198,36 @@ function _architecture_adam(
     return (logkd=theta, evaluation=final, history=history)
 end
 
+function _architecture_refit(
+    model,
+    totals,
+    targets,
+    outputs,
+    logkd;
+    scales,
+    learning_rate,
+    epochs,
+    active,
+    logkd_bounds,
+)
+    theta = copy(logkd)
+    theta[.!active] .= logkd_bounds[2]
+    if any(active) && epochs > 0
+        return _architecture_adam(
+            model, totals, targets, outputs, theta;
+            scales=scales,
+            sparsity=0.0,
+            learning_rate=learning_rate,
+            epochs=epochs,
+            trainable=active,
+            logkd_bounds=logkd_bounds,
+        )
+    end
+    evaluation = architecture_loss_gradient(
+        model, totals, targets, outputs, theta; scales=scales)
+    return (logkd=theta, evaluation=evaluation, history=NamedTuple[])
+end
+
 """
     discover_architecture(model, totals, targets, outputs; kwargs...)
 
@@ -209,7 +239,9 @@ When `initial_kd` is omitted, a tiny deterministic spread breaks exact
 parameter symmetry; explicitly supplied initial values are left unchanged.
 
 After selection, inactive reactions are placed at the weak-binding bound and
-the active affinities are refit without the sparsity penalty.
+the active affinities are refit without the sparsity penalty. The support is
+read once more after debiasing; if it shrinks, the survivors receive one final
+refit.
 """
 function discover_architecture(
     model::Bnc,
@@ -268,22 +300,41 @@ function discover_architecture(
     selection_affinity = exp10.(-sparse_fit.logkd)
     active = BitVector(selection_affinity .>= threshold)
 
-    final_logkd = copy(sparse_fit.logkd)
-    final_logkd[.!active] .= bounds[2]
-    final_fit = if any(active) && refit_count > 0
-        _architecture_adam(
-            model, q, y, C, final_logkd;
+    final_fit = _architecture_refit(
+        model, q, y, C, sparse_fit.logkd;
+        scales=scales,
+        learning_rate=lr,
+        epochs=refit_count,
+        active=active,
+        logkd_bounds=bounds,
+    )
+    debias_history = copy(final_fit.history)
+
+    refined_active = BitVector(exp10.(-final_fit.logkd) .>= threshold)
+    if refined_active != active
+        active = refined_active
+        final_fit = _architecture_refit(
+            model, q, y, C, final_fit.logkd;
             scales=scales,
-            sparsity=0.0,
             learning_rate=lr,
             epochs=refit_count,
-            trainable=active,
+            active=active,
             logkd_bounds=bounds,
         )
-    else
-        evaluation = architecture_loss_gradient(
+        append!(debias_history, final_fit.history)
+
+        # Keep the returned structure and parameters consistent even if the
+        # final refit weakens one more reaction; no third optimization pass.
+        active = BitVector(exp10.(-final_fit.logkd) .>= threshold)
+        final_logkd = copy(final_fit.logkd)
+        final_logkd[.!active] .= bounds[2]
+        final_evaluation = architecture_loss_gradient(
             model, q, y, C, final_logkd; scales=scales)
-        (logkd=final_logkd, evaluation=evaluation, history=NamedTuple[])
+        final_fit = (
+            logkd=final_logkd,
+            evaluation=final_evaluation,
+            history=final_fit.history,
+        )
     end
 
     return (
@@ -298,6 +349,6 @@ function discover_architecture(
         sparse_fit_loss=sparse_fit.evaluation.data_loss,
         sparse_objective=sparse_fit.evaluation.data_loss + lambda * sum(selection_affinity),
         loss_history=sparse_fit.history,
-        debias_history=final_fit.history,
+        debias_history=debias_history,
     )
 end

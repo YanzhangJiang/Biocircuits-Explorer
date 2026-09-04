@@ -82,4 +82,68 @@
 
     @test count(symmetry_broken.active) == 1
     @test symmetry_broken.fit_loss < 1e-5
+
+    branched = Bnc(
+        N=[
+            1 1 0 -1  0  0  0  0
+            0 1 0  1 -1  0  0  0
+            0 1 0  0  1 -1  0  0
+            1 0 1  0  0  0 -1  0
+            0 0 1  0  0  0  1 -1
+        ],
+        x_sym=[:A, :B, :C, :AB, :AB2, :AB3, :AC, :AC2],
+        q_sym=[:tA, :tB, :tC],
+        K_sym=[:Kd1, :Kd2, :Kd3, :Kd4, :Kd5],
+    )
+    levels = exp10.([-0.75, -0.25, 0.25, 0.75])
+    branched_totals = reduce(vcat, (
+        [a b c] for a in levels for b in levels for c in levels))
+    branch_outputs = [
+        0.0 0.0 0.0 1.0 2.0 3.0 0.0 0.0
+        0.0 0.0 0.0 0.0 0.0 0.0 1.0 2.0
+    ]
+    branch_targets = architecture_loss_gradient(
+        branched,
+        branched_totals,
+        zeros(64, 2),
+        branch_outputs,
+        log10.([0.8, 0.35, 1e6, 1.7, 1e6]),
+    ).predictions
+    branch_fit = discover_architecture(
+        branched, branched_totals, branch_targets, branch_outputs)
+
+    @test branch_fit.active == Bool[true, true, false, true, false]
+    @test branch_fit.fit_loss < 1e-5
+
+    order_library_N = zeros(Int, 5, 7)
+    order_outputs = zeros(3, 7)
+    for order in 1:5
+        order_library_N[order, 1] = 1
+        order_library_N[order, 2] = order
+        order_library_N[order, order + 2] = -1
+        order_outputs[:, order + 2] .= (1, order, order^2)
+    end
+    order_library = Bnc(
+        N=order_library_N,
+        x_sym=[:E, :B, :EB, :EB2, :EB3, :EB4, :EB5],
+        q_sym=[:tE, :tB],
+        K_sym=[:Kd1, :Kd2, :Kd3, :Kd4, :Kd5],
+    )
+    order_totals = reduce(vcat, (
+        [e b]
+        for e in (0.3, 1.0, 3.0)
+        for b in exp10.(range(-2.0, 2.0; length=20))
+    ))
+    order_targets = architecture_loss_gradient(
+        order_library,
+        order_totals,
+        zeros(60, 3),
+        order_outputs,
+        log10.([1e6, 1e6, 1e6, 1.0, 1e6]),
+    ).predictions
+    order_fit = discover_architecture(
+        order_library, order_totals, order_targets, order_outputs)
+
+    @test order_fit.active == Bool[false, false, false, true, false]
+    @test order_fit.fit_loss < 1e-5
 end
