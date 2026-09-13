@@ -160,8 +160,8 @@ function _rofjob_inline_request(raw_request)
 
     inline_request = deepcopy(canonical_request)
     inline_request["storage"] = Dict{String,Any}("mode" => "inline")
-    bundle = build_model_bundle(network)
-    normalized = normalize_ro_field_request(inline_request, bundle)
+    bundle = build_model_bundle(network; synchronous=false)
+    normalized = normalize_ro_field_request(inline_request, bundle; synchronous=false)
     normalized.representation === :sampled_grid || error(
         "internal compute_ro_field representation mismatch")
 
@@ -200,12 +200,15 @@ end
 
 """Normalize and freeze one local asynchronous RO-field job specification."""
 function normalize_ro_field_job_spec(raw)
-    spec = _rofc_materialize(raw, "compute_ro_field spec")
-    if spec isa AbstractDict &&
-       get(spec, "schema_version", nothing) ==
-            RO_FIELD_SPARSE_JOB_SPEC_VERSION
-        return normalize_ro_field_sparse_job_spec(spec)
+    if raw isa AbstractDict &&
+       _raw_get(raw, :schema_version, nothing) == RO_FIELD_SPARSE_JOB_SPEC_VERSION
+        return normalize_ro_field_sparse_job_spec(raw)
     end
+    return first(_rofjob_prepare_job_spec(raw))
+end
+
+function _rofjob_prepare_job_spec(raw)
+    spec = _rofc_materialize(raw, "compute_ro_field spec")
     spec isa AbstractDict || throw(ArgumentError(
         "compute_ro_field spec must be an object"))
     observed = Set(String.(keys(spec)))
@@ -222,7 +225,7 @@ function normalize_ro_field_job_spec(raw)
         spec["work_unit_size"], "work_unit_size";
         minimum=_ROFJOB_MIN_WORK_UNIT_SIZE,
         maximum=_ROFJOB_MAX_WORK_UNIT_SIZE)
-    request, normalized, _ = _rofjob_inline_request(spec["request"])
+    request, normalized, bundle = _rofjob_inline_request(spec["request"])
     plan = _rofjob_plan(normalized, work_unit_size)
     if haskey(spec, "plan")
         supplied = validate_ro_field_chunk_plan!(spec["plan"])
@@ -232,13 +235,13 @@ function normalize_ro_field_job_spec(raw)
                 "caller-supplied plan does not equal the derived scientific plan"))
     end
     resume = _rofjob_resume(get(spec, "resume_from", nothing))
-    return Dict{String,Any}(
+    return (Dict{String,Any}(
         "schema_version" => RO_FIELD_JOB_SPEC_VERSION,
         "request" => request,
         "work_unit_size" => work_unit_size,
         "plan" => plan,
         "resume_from" => resume,
-    )
+    ), normalized, bundle)
 end
 
 function _rofjob_read_document(path::AbstractString;
@@ -503,10 +506,11 @@ function compute_ro_field_job(raw_spec;
                               job_context=Dict{String,Any}(),
                               cancel_check::Function=_no_cancel_check)
     cancel_check()
-    spec = normalize_ro_field_job_spec(raw_spec)
-    spec["schema_version"] == RO_FIELD_SPARSE_JOB_SPEC_VERSION &&
+    raw_spec isa AbstractDict &&
+        _raw_get(raw_spec, :schema_version, nothing) == RO_FIELD_SPARSE_JOB_SPEC_VERSION &&
         return compute_ro_field_sparse_job(
-            spec; job_context=job_context, cancel_check=cancel_check)
+            raw_spec; job_context=job_context, cancel_check=cancel_check)
+    spec, normalized, bundle = _rofjob_prepare_job_spec(raw_spec)
     plan = spec["plan"]
     job_id_raw = get(job_context, "job_id", nothing)
     job_id_raw isa AbstractString && occursin(_ROFJOB_ID_PATTERN, String(job_id_raw)) ||
@@ -516,9 +520,6 @@ function compute_ro_field_job(raw_spec;
     _rofjob_write_once!(_rofjob_plan_path(root), plan)
     cancel_check()
 
-    request, normalized, bundle = _rofjob_inline_request(spec["request"])
-    request == spec["request"] || error(
-        "prepared compute_ro_field request changed during execution")
     chunks = Dict{String,Any}[]
     payload_limit = _rofjob_payload_limit(spec)
     committed_payload_bytes = BigInt(0)

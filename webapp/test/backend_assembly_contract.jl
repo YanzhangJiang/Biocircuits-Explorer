@@ -49,6 +49,7 @@ using BiocircuitsExplorerBackend
         "parameter_level.jl",
         "parameter_scan_handlers.jl",
         "architecture_discovery_api.jl",
+        "target_design_api.jl",
         "rop_geometry_handlers.jl",
         "designability_feasible_regions.jl",
         "designability.jl",
@@ -72,7 +73,7 @@ using BiocircuitsExplorerBackend
     end
 
     @test issorted(include_positions)
-    @test length(source_lines) <= 170
+    @test length(source_lines) <= 172
     @test !occursin(r"(?m)^function\s+handle_", source)
     @test !occursin(r"(?m)^handle_[A-Za-z0-9_]*\([^\n]*\)\s*=", source)
     @test !occursin(r"(?m)^function\s+(?:_?placer|_design|design_search|design_screen)", source)

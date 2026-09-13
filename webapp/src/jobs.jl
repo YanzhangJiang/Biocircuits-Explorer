@@ -377,6 +377,7 @@ const LOCAL_JOB_KINDS = Set([
     "build_atlas",
     "build_atlas_library",
     "compute_ro_field",
+    "design_network",
     "merge_atlas_library",
     "query_atlas",
     "run_inverse_design",
@@ -1500,7 +1501,7 @@ function get_biocircuits_job_result(job_id::AbstractString; user_sub::AbstractSt
     record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
     _check_user_owns_record(record, user_sub, job_id)
     if String(get(record, "kind", "")) == "compute_ro_field"
-        verification = _verify_job_result_artifact(record)
+        verification = _verify_job_result_artifact(record; verify_nested=false)
         verification.status == :valid || throw(ArgumentError(
             "RO-field result artifacts no longer validate: " *
             verification.error))
@@ -1581,6 +1582,9 @@ function _dispatch_local_job(kind::AbstractString, spec;
     elseif kind == "compute_ro_field"
         return compute_ro_field_job(
             spec; job_context=job_context, cancel_check=cancel_check)
+    elseif kind == "design_network"
+        return target_design_from_spec(
+            spec; job_context=job_context, cancel_check=cancel_check)
     else
         throw(ArgumentError("Unsupported local job kind: $(kind)"))
     end
@@ -1651,15 +1655,10 @@ function _job_result_identity(result,
     )
 end
 
-function _job_result_manifest_payload(result,
-                                      job_id::AbstractString,
-                                      kind::AbstractString,
-                                      expected_config_hash::AbstractString,
+function _job_result_manifest_payload(identity,
                                       result_uri::AbstractString,
                                       content_length::Integer,
                                       sha256_hex::AbstractString)
-    identity = _job_result_identity(
-        result, job_id, kind, expected_config_hash)
     return Dict{String, Any}(
         "schema_version" => JOB_RESULT_PROTOCOL_VERSION,
         "job_id" => identity["job_id"],
@@ -1699,7 +1698,7 @@ function _publish_job_result_with_manifest_with_ops(
     # Validate the in-memory result before writing any externally visible
     # object. The result is serialized exactly once; its byte identity is then
     # recorded in the small manifest published last as the commit marker.
-    _job_result_identity(result, job_id, kind, expected_config_hash)
+    identity = _job_result_identity(result, job_id, kind, expected_config_hash)
     local_result = !_is_s3_uri(result_uri)
     temp_parent = local_result ?
         _ensure_job_directory_with_ops(
@@ -1718,10 +1717,7 @@ function _publish_job_result_with_manifest_with_ops(
         content_length > 0 || throw(ArgumentError("Serialized job result is empty."))
         sha256_hex = _file_sha256_hex(temp_path)
         manifest = _job_result_manifest_payload(
-            result,
-            job_id,
-            kind,
-            expected_config_hash,
+            identity,
             result_uri,
             content_length,
             sha256_hex,
@@ -1930,6 +1926,30 @@ function _run_local_job!(job_id::String, kind::String, spec,
                 "user_sub" => String(get(
                     execution_record, "user_sub", ANONYMOUS_USER_SUB)),
             )
+            if kind == "design_network"
+                last_published = Ref(0.0)
+                last_stage = Ref(("", 0, 0))
+                job_context["publish_progress"] = function (progress)
+                    cancel_check()
+                    phase = String(get(progress, "phase", "optimizing"))
+                    stage = (phase, get(progress, "restart", 0), get(progress, "prune_round", 0))
+                    now = time()
+                    # A durable status write every epoch would dominate small
+                    # optimizations. Always publish stage boundaries and the
+                    # final evaluated step; other updates are limited to 4 Hz.
+                    final_step = haskey(progress, "step") && get(progress, "step", -1) == get(progress, "epochs", -2)
+                    stage == last_stage[] && !final_step && now - last_published[] < 0.25 &&
+                        return nothing
+                    public_progress = Dict{String,Any}(_materialize(progress))
+                    public_progress["message"] = replace(phase, '_' => ' ')
+                    updated = _job_transition!(job_id, "running";
+                        expected=("running",), progress=public_progress)
+                    updated.applied || cancel_check()
+                    last_published[] = now
+                    last_stage[] = stage
+                    return nothing
+                end
+            end
             if kind == "compute_ro_field"
                 job_context["publish_checkpoint"] = function (checkpoint)
                     transition = _job_transition!(
@@ -2015,7 +2035,7 @@ function _run_local_job!(job_id::String, kind::String, spec,
                 record = _job_record(job_id)
                 record === nothing && error(
                     "Local RO-field job record disappeared before verification")
-                verification = _verify_job_result_artifact(record)
+                verification = _verify_job_result_artifact(record; verify_nested=false)
                 verification.status == :valid || error(
                     "Published local RO-field result failed manifest verification: " *
                     verification.error)
@@ -2325,7 +2345,9 @@ function _read_artifact_bytes(uri::AbstractString; max_bytes=nothing)
 end
 
 function _job_artifact_config(kind::AbstractString, spec)
-    if String(kind) == "rop_shape_optimize"
+    if String(kind) == "design_network"
+        return normalize_target_design_request(spec)
+    elseif String(kind) == "rop_shape_optimize"
         return _rop_shape_normalize_request(spec; synchronous=false).normalized
     elseif String(kind) == "compute_ro_field"
         normalized = normalize_ro_field_job_spec(spec)
@@ -2351,7 +2373,7 @@ function _prepare_job_spec_and_artifact_identity(kind::AbstractString, raw_spec)
         )
     end
     artifact_config = _job_artifact_config(kind, submitted_spec)
-    worker_spec = String(kind) == "rop_shape_optimize" ?
+    worker_spec = String(kind) in ("rop_shape_optimize", "design_network") ?
         Dict{String, Any}(_materialize(artifact_config)) : submitted_spec
     return (
         spec=worker_spec,
@@ -2694,7 +2716,7 @@ function _verify_legacy_job_result_artifact(record::AbstractDict)
     return (status=:valid, error="", verification_mode=:legacy_inline)
 end
 
-function _verify_job_result_artifact(record::AbstractDict)
+function _verify_job_result_artifact(record::AbstractDict; verify_nested::Bool=true)
     protocol = get(record, "result_protocol_version", nothing)
     protocol === nothing && return _verify_legacy_job_result_artifact(record)
     protocol isa AbstractString || return (
@@ -2709,6 +2731,9 @@ function _verify_job_result_artifact(record::AbstractDict)
     )
     verification = _verify_manifest_job_result_artifact(record)
     verification.status == :valid || return verification
+    # Reading a committed result checks its bytes and original identity. Deep
+    # engine replay belongs to publication, explicit audits, and resume.
+    verify_nested || return verification
     String(get(record, "kind", "")) == "compute_ro_field" ||
         return verification
 
@@ -3904,6 +3929,9 @@ function submit_biocircuits_job_from_spec(
     if kind == "compute_ro_field" && mode in ("aws_batch", "batch")
         throw(ArgumentError(
             "compute_ro_field is local_async-only until shared object-store chunk publication is implemented."))
+    end
+    if kind == "design_network" && mode in ("aws_batch", "batch")
+        throw(ArgumentError("design_network currently supports local_async execution only."))
     end
 
     # Parse and validate the process-local cache bound before quota consumption

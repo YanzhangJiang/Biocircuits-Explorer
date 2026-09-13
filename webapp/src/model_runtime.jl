@@ -20,6 +20,120 @@ ModelResolutionError(msg::AbstractString; status::Integer = 409, need_network::B
     ModelResolutionError(String(msg), Int(status), need_network)
 Base.showerror(io::IO, err::ModelResolutionError) = print(io, err.msg)
 
+# Loading a fitted network only constructs its equilibrium model. It does not
+# enumerate regimes; those operations retain their own interactive budgets.
+const MAX_DESIGN_MODEL_REACTIONS = 256
+const MAX_DESIGN_MODEL_MONOMERS = 7
+const MAX_DESIGN_MODEL_SPECIES = MAX_DESIGN_MODEL_REACTIONS + MAX_DESIGN_MODEL_MONOMERS
+const MAX_DESIGN_MODEL_COMPLEX_SIZE = 64
+
+function _request_model_build_mode(body)
+    mode = _raw_get(body, :build_mode, "standard")
+    mode isa AbstractString && mode in ("standard", "design_equilibrium") ||
+        throw(ArgumentError("build_mode must be 'standard' or 'design_equilibrium'"))
+    return Symbol(mode)
+end
+
+function _model_declared_free_species(network, species)
+    referenced = Set(string.(species))
+    extra = [sp for sp in network.species if !(sp.name in referenced)]
+    all(sp -> sp.role in (:free, :auto), extra) || throw(ArgumentError(
+        "A declared bound species must have a reaction that produces it"))
+    return Symbol[Symbol(sp.name) for sp in extra]
+end
+
+function _design_equilibrium_structure(network, rules)
+    1 <= length(rules) <= MAX_DESIGN_MODEL_REACTIONS || throw(ArgumentError(
+        "design_equilibrium requires 1–$(MAX_DESIGN_MODEL_REACTIONS) reactions"))
+    length(network.species) <= MAX_DESIGN_MODEL_SPECIES || throw(ArgumentError(
+        "design_equilibrium supports at most $(MAX_DESIGN_MODEL_SPECIES) species"))
+    all(rx -> rx.kind == :binding, network.reactions) || throw(ArgumentError(
+        "design_equilibrium supports reversible binding reactions only"))
+    _, referenced, free, products = parse_network_structure(rules)
+    extra = _model_declared_free_species(network, referenced)
+    free = sort!(vcat(free, extra))
+    1 <= length(free) <= MAX_DESIGN_MODEL_MONOMERS || throw(ArgumentError(
+        "design_equilibrium supports 1–$(MAX_DESIGN_MODEL_MONOMERS) free monomers"))
+    species = vcat(free, products)
+    length(species) <= MAX_DESIGN_MODEL_SPECIES || throw(ArgumentError(
+        "design_equilibrium supports at most $(MAX_DESIGN_MODEL_SPECIES) species"))
+    reactants, product_sides = parse_reactions(rules)
+    producers = Set{Symbol}()
+    for (rd, pd) in zip(reactants, product_sides)
+        # One unique bimolecular formation step per complex makes precursor
+        # closure and full reaction rank verifiable before compiling or hashing.
+        (all(c -> 1 <= c <= 2, values(rd)) && sum(values(rd)) == 2 &&
+         length(pd) == 1 && only(values(pd)) == 1) || throw(ArgumentError(
+            "design_equilibrium requires two binding precursors and one product per reaction"))
+        product = only(keys(pd))
+        product in producers && throw(ArgumentError(
+            "design_equilibrium requires one formation reaction per complex"))
+        push!(producers, product)
+    end
+    supports = Dict(sym => [i == j ? 1 : 0 for i in eachindex(free)]
+                    for (j, sym) in enumerate(free))
+    pending = collect(eachindex(rules))
+    while !isempty(pending)
+        ready = [i for i in pending if all(sym -> haskey(supports, sym), keys(reactants[i]))]
+        isempty(ready) && throw(ArgumentError(
+            "design_equilibrium reactions must preserve an acyclic precursor closure"))
+        for i in ready
+            support = zeros(Int, length(free))
+            for (sym, coefficient) in reactants[i]
+                support .+= coefficient .* supports[sym]
+            end
+            sum(support) <= MAX_DESIGN_MODEL_COMPLEX_SIZE || throw(ArgumentError(
+                "design_equilibrium complex size exceeds $(MAX_DESIGN_MODEL_COMPLEX_SIZE) monomers"))
+            supports[only(keys(product_sides[i]))] = support
+        end
+        setdiff!(pending, ready)
+    end
+    # Include isolated declared free monomers. Pruning must not erase an input
+    # or readout merely because its last binding reaction was removed.
+    index = Dict(sym => i for (i, sym) in enumerate(species))
+    full_N = zeros(Int, length(rules), length(species))
+    for i in eachindex(rules)
+        for (sym, coefficient) in reactants[i]
+            full_N[i, index[sym]] += coefficient
+        end
+        full_N[i, index[only(keys(product_sides[i]))]] -= 1
+    end
+    L = hcat((supports[sym] for sym in species)...)
+    return full_N, L, species, free, products
+end
+
+function _build_ir_model(network, rules, kd; design_structure=nothing)
+    if design_structure !== nothing
+        N, L, species, free, products = design_structure
+        model = Bnc(N=N, L=L, x_sym=species,
+                    q_sym=Symbol.("t" .* string.(free)),
+                    K_sym=Symbol.("Kd" .* string.(eachindex(rules))))
+        return model, species, free, products
+    end
+    _, species, _, _ = parse_network_structure(rules)
+    extra = _model_declared_free_species(network, species)
+    isempty(extra) && return build_model(rules, kd)
+    # The same IR must compile identically regardless of which build mode first
+    # populated its cache. Preserve declared isolated monomers for legacy loads
+    # too, while retaining all ordinary request size and work guards.
+    model, species, free, products = build_model(rules, kd)
+    all_free = sort!(vcat(free, extra))
+    all_species = vcat(all_free, products)
+    index = Dict(sym => i for (i, sym) in enumerate(all_species))
+    N = zeros(Int, model.r, length(all_species))
+    L = zeros(Int, length(all_free), length(all_species))
+    N[:, [index[sym] for sym in species]] .= Matrix(model.N)
+    L[[findfirst(==(sym), all_free) for sym in free],
+      [index[sym] for sym in species]] .= Matrix(model.L)
+    for sym in extra
+        L[findfirst(==(sym), all_free), index[sym]] = 1
+    end
+    result = Bnc(N=N, L=L, x_sym=all_species,
+                 q_sym=Symbol.("t" .* string.(all_free)),
+                 K_sym=Symbol.("Kd" .* string.(eachindex(rules))))
+    return result, all_species, all_free, products
+end
+
 # A compiled Bnc model and its lazy SISO/geometry caches are mutable. Keep the
 # lock outside the Dict it protects: acquiring a lock must not itself race with
 # a concurrent insertion into that Dict.
@@ -92,7 +206,8 @@ end
 # in the content-addressed cache and the IR side-table. Throws ArgumentError on
 # invalid kd. The returned bundle is the mutable Dict downstream handlers read
 # from (and attach SISO path caches to).
-function build_model_bundle(network::NetworkIR)
+function build_model_bundle(network::NetworkIR; synchronous::Bool=true,
+                            build_mode::Symbol=:standard)
     # The router resolves and pins one bundle for the whole handler call. Reuse
     # it before any hashing; resolving the same build-model request twice would
     # otherwise repeat factorial exact-canonicalization work.
@@ -106,25 +221,43 @@ function build_model_bundle(network::NetworkIR)
     bridge = network_ir_to_legacy_inputs(network)
     rules = collect(bridge.rules)
     kd = collect(bridge.kd)
-    enforce_sync_rule_budget(rules)
+    build_mode in (:standard, :design_equilibrium) || throw(ArgumentError("Unknown model build mode"))
+    design_structure = build_mode === :design_equilibrium ?
+        _design_equilibrium_structure(network, rules) : nothing
+    if synchronous && build_mode === :standard
+        enforce_sync_rule_budget(rules)
+        length(network.species) <= MAX_SYNC_MODEL_N ||
+            _sync_budget_exceeded("Declared model dimension exceeds the synchronous limit of $(MAX_SYNC_MODEL_N).")
+    end
     all(x -> isfinite(x) && x > 0, kd) ||
         throw(ArgumentError("All Kd values must be finite and positive (> 0)"))
 
     h = network_ir_hash(network)
+    check_budget(model) = build_mode === :design_equilibrium ? model :
+        synchronous ? enforce_sync_model_budget(model) :
+            model_candidate_bound(model; maximum=MAX_JOB_REGIME_CANDIDATES,
+                                  label="Background model")
     cached = ModelCache.get_model(h)
-    cached !== nothing && return cached
+    if cached !== nothing
+        check_budget(cached["model"])
+        return cached
+    end
 
     return _with_model_build_lock(h) do
         # Another waiter may have completed the build while this task waited.
         cached = ModelCache.get_model(h)
-        cached !== nothing && return cached
+        if cached !== nothing
+            check_budget(cached["model"])
+            return cached
+        end
 
-        model, species, free_syms, prod_syms = build_model(rules, kd)
+        model, species, free_syms, prod_syms = _build_ir_model(
+            network, rules, kd; design_structure=design_structure)
         # Reaction/species counts can be rejected before construction; the
         # regime candidate product depends on the built helper. Check it before
         # publishing either the IR or compiled bundle so an over-budget model
         # cannot survive a 422 in the content-addressed cache.
-        enforce_sync_model_budget(model)
+        check_budget(model)
         network_dict = network_ir_to_dict(network)
         bundle = ModelBundle(ReentrantLock(), Dict{String, Any}(
             "model" => model,
@@ -154,8 +287,10 @@ function resolve_model_bundle(body)
         return build_model_bundle(parse_network_ir(_raw_get(body, :network, nothing)))
     end
 
+    requested_hash = nothing
     if _raw_haskey(body, :network_ir_hash)
         h = _request_network_ir_hash(_raw_get(body, :network_ir_hash, nothing))
+        requested_hash = h
         cached = ModelCache.get_model(h)
         cached !== nothing && return cached
         ir = ModelCache.get_ir(h)
@@ -165,7 +300,8 @@ function resolve_model_bundle(body)
     if _raw_haskey(body, :session_id)
         sid = _request_session_id(_raw_get(body, :session_id, nothing))
         sess = get_session(sid)
-        if sess !== nothing
+        if sess !== nothing && (requested_hash === nothing ||
+                                get(sess, "network_ir_hash", nothing) == requested_hash)
             h = String(get(sess, "network_ir_hash", ""))
             if !isempty(h)
                 cached = ModelCache.get_model(h)
@@ -239,7 +375,8 @@ function _request_model_bundle(handler_name::Symbol, body)
         _raw_haskey(body, :session_id) &&
             _request_session_id(_raw_get(body, :session_id, nothing))
         payload = _raw_haskey(body, :network) ? _raw_get(body, :network, nothing) : body
-        return build_model_bundle(parse_network_ir(payload))
+        return build_model_bundle(parse_network_ir(payload);
+                                  build_mode=_request_model_build_mode(body))
     end
     if _raw_haskey(body, :network) || _raw_haskey(body, :network_ir_hash) ||
        _raw_haskey(body, :session_id)
@@ -268,7 +405,9 @@ function with_request_model_bundle_lock(f::Function, handler_name::Symbol, req)
     bundle === nothing && return f()
     return task_local_storage(_REQUEST_MODEL_BUNDLE_TLS_KEY, bundle) do
         with_model_bundle_lock(bundle) do
-            haskey(bundle, "model") && enforce_sync_model_budget(bundle["model"])
+            design_load = handler_name === :handle_build_model &&
+                _request_model_build_mode(body) === :design_equilibrium
+            haskey(bundle, "model") && !design_load && enforce_sync_model_budget(bundle["model"])
             f()
         end
     end

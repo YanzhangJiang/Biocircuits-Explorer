@@ -2,6 +2,18 @@ using Test
 using HTTP
 using JSON3
 
+@testset "Background models use job limits without bypassing interactive limits" begin
+    backend = BiocircuitsExplorerBackend
+    network = parse_network_ir(Dict("reactions" => [
+        i == 1 ? "A + A <-> A2" : "A + A$i <-> A$(i + 1)"
+        for i in 1:6
+    ], "kd" => ones(6)))
+    @test_throws backend.SyncBudgetExceeded backend.build_model_bundle(network)
+    bundle = backend.build_model_bundle(network; synchronous=false)
+    @test backend.build_model_bundle(network; synchronous=false) === bundle
+    @test_throws backend.SyncBudgetExceeded backend.build_model_bundle(network)
+end
+
 @testset "Shared model state has explicit ownership and single-flight" begin
     backend = BiocircuitsExplorerBackend
     MC = backend.ModelCache
@@ -50,6 +62,16 @@ using JSON3
     bundles = fetch.(tasks)
     @test all(bundle -> bundle === bundles[1], bundles)
     @test MC.model_count() == 1
+
+    # Cache eviction may recover a matching session, but an obsolete session
+    # must never substitute a different model for an explicitly requested hash.
+    SS.set_session("identity-session", bundles[1])
+    MC._clear_all!()
+    @test_throws backend.ModelResolutionError backend.resolve_model_bundle(Dict(
+        "session_id" => "identity-session", "network_ir_hash" => "f"^64))
+    @test backend.resolve_model_bundle(Dict(
+        "session_id" => "identity-session",
+        "network_ir_hash" => bundles[1]["network_ir_hash"])) === bundles[1]
 
     # A request keeps the exact bundle it locked even if cache maintenance
     # evicts that hash before the handler performs its second resolution.

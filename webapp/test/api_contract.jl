@@ -10,10 +10,10 @@ const Backend = BiocircuitsExplorerBackend
 @testset "Executable API route contract" begin
     routes = Backend.API_ROUTE_CONTRACTS
 
-    @test length(routes) == 52
-    @test length(filter(Backend._is_ordinary_post_route, routes)) == 40
+    @test length(routes) == 53
+    @test length(filter(Backend._is_ordinary_post_route, routes)) == 41
     @test count(route -> route.match_kind === :template, routes) == 5
-    @test length(Backend.API_ROUTES) == 40
+    @test length(Backend.API_ROUTES) == 41
 
     canonical_paths = getfield.(routes, :canonical_path)
     internal_paths = getfield.(routes, :internal_path)
@@ -38,7 +38,8 @@ const Backend = BiocircuitsExplorerBackend
                   (route.internal_path, false)
             if route.canonical_path in
                ("/api/v1/rop_shape_optimize", "/api/v1/ro_field",
-                "/api/v1/ro_field/differential", "/api/v1/discover_architecture")
+                "/api/v1/ro_field/differential", "/api/v1/discover_architecture",
+                "/api/v1/design_network")
                 @test route.legacy_alias === nothing
             else
                 @test route.legacy_alias !== nothing
@@ -85,8 +86,8 @@ const Backend = BiocircuitsExplorerBackend
 
     reference = JSON3.read(first_json)
     @test reference["schema_version"] == "1"
-    @test reference["route_count"] == 52
-    @test length(reference["routes"]) == 52
+    @test reference["route_count"] == 53
+    @test length(reference["routes"]) == 53
     @test reference["routes"][1]["canonical_path"] == "/api/v1"
     @test reference["routes"][1]["methods"] == ["GET", "POST"]
 end

@@ -159,6 +159,7 @@ include(joinpath(@__DIR__, "design_search.jl"))
 include(joinpath(@__DIR__, "parameter_level.jl"))
 include(joinpath(@__DIR__, "parameter_scan_handlers.jl"))
 include(joinpath(@__DIR__, "architecture_discovery_api.jl"))
+include(joinpath(@__DIR__, "target_design_api.jl"))
 include(joinpath(@__DIR__, "rop_geometry_handlers.jl"))
 
 include(joinpath(@__DIR__, "designability_feasible_regions.jl"))

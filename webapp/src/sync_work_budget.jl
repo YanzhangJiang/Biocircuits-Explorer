@@ -185,6 +185,7 @@ const SYNC_HEAVY_HANDLER_NAMES = Set{Symbol}((
     :handle_placer_realize_program,
     :handle_placer_level,
     :handle_design_search,
+    :handle_discover_architecture,
     :handle_design_screen,
     :handle_rop_shape_optimize,
     :handle_ro_field,

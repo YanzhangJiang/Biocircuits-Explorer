@@ -3,7 +3,7 @@
 # This v2 path is deliberately disjoint from the v1 Cartesian chunk schemas
 # and byte identities.  One adaptive sparse multi-index is one deterministic
 # work unit.  Every committed transition is replayable from canonical plan,
-# batch, ordered point-result chunk, and prior state artifacts.
+# batch, ordered point-result chunk, and transition journal.
 
 const RO_FIELD_SPARSE_REQUEST_VERSION =
     "bne-ro-field-sparse-request/v2.0.0"
@@ -22,7 +22,7 @@ const RO_FIELD_SPARSE_STATE_ARTIFACT_VERSION =
 const RO_FIELD_SPARSE_POINT_CHUNK_VERSION =
     "bne-ro-field-sparse-point-result-chunk/v2.0.0"
 const RO_FIELD_SPARSE_CHECKPOINT_VERSION =
-    "bne-ro-field-sparse-checkpoint/v2.0.0"
+    "bne-ro-field-sparse-checkpoint/v3.0.0"
 const RO_FIELD_SPARSE_TERMINAL_ARTIFACT_VERSION =
     "bne-ro-field-sparse-terminal-result-artifact/v2.0.0"
 const RO_FIELD_SPARSE_MANIFEST_VERSION =
@@ -380,13 +380,8 @@ function _rofsj_normalize_request(raw_request)
 
     network = parse_network_ir(request["network"])
     canonical_network = network_ir_to_dict(network)
-    bundle = build_model_bundle(network)
+    bundle = build_model_bundle(network; synchronous=false)
     model = bundle["model"]
-    model_candidate_bound(
-        model;
-        maximum=MAX_JOB_REGIME_CANDIDATES,
-        label="adaptive RO-field regime candidate population",
-    )
     source_ids = String.(string.(qK_sym(model)))
     1 <= length(source_ids) || error(
         "compiled model has no q/K source coordinates")
@@ -495,7 +490,7 @@ function _rofsj_normalize_request(raw_request)
         "work_budget" => work_budget,
         "storage" => Dict{String,Any}("mode" => "chunked"),
     )
-    network_hash = network_ir_hash(network)
+    network_hash = bundle["network_ir_hash"]
     identity = Dict{String,Any}(
         "schema_version" => RO_FIELD_SPARSE_PLAN_VERSION,
         "algorithm" => "adaptive_sparse_multi_input_ro_field",
@@ -514,8 +509,6 @@ function _rofsj_normalize_request(raw_request)
         "plan_sha256" => _rofc_sha256(identity),
         "identity" => identity,
     )
-    _canonical_hash(identity) == plan["plan_sha256"] || error(
-        "adaptive plan canonical hash implementations disagree")
     return (
         request=normalized_request,
         plan=plan,
@@ -528,7 +521,7 @@ function _rofsj_normalize_request(raw_request)
     )
 end
 
-function normalize_ro_field_sparse_job_spec(raw)
+function _rofsj_prepare_job_spec(raw)
     _rofsj_walk_json_budget(raw)
     spec = _rofc_materialize(raw, "adaptive compute_ro_field spec")
     spec isa AbstractDict || throw(ArgumentError(
@@ -549,13 +542,15 @@ function normalize_ro_field_sparse_job_spec(raw)
                 "caller-supplied adaptive plan differs from derived identity"))
     end
     resume = _rofjob_resume(get(spec, "resume_from", nothing))
-    return Dict{String,Any}(
+    return (Dict{String,Any}(
         "schema_version" => RO_FIELD_SPARSE_JOB_SPEC_VERSION,
         "request" => prepared.request,
         "plan" => prepared.plan,
         "resume_from" => resume,
-    )
+    ), prepared)
 end
+
+normalize_ro_field_sparse_job_spec(raw) = first(_rofsj_prepare_job_spec(raw))
 
 _rofsj_data_root(job_id::AbstractString) =
     joinpath(_job_dir(String(job_id)), "ro-field-sparse-v2")
@@ -774,9 +769,8 @@ function _rofsj_validate_plan(raw_plan)
 end
 
 function _rofsj_write_plan!(root, plan)
-    validated, _ = _rofsj_validate_plan(plan)
-    path = _rofsj_plan_path(root, validated["plan_sha256"])
-    _rofsj_write_canonical_once!(path, validated)
+    path = _rofsj_plan_path(root, plan["plan_sha256"])
+    _rofsj_write_canonical_once!(path, plan)
     return path
 end
 
@@ -788,14 +782,6 @@ function _rofsj_read_plan(root, expected_hash)
         "adaptive plan filename and document disagree"))
     plan, prepared = _rofsj_validate_plan(raw)
     return plan, prepared
-end
-
-function _rofsj_state_artifact(plan, state)
-    payload = BindingAndCatalysis.ro_sparse_state_v2_payload(state)
-    return _rofsj_payload_artifact(
-        RO_FIELD_SPARSE_STATE_ARTIFACT_VERSION,
-        plan["plan_sha256"], payload;
-        hash_key="state_artifact_sha256")
 end
 
 function _rofsj_batch_artifact(plan, batch)
@@ -834,10 +820,7 @@ function _rofsj_read_payload_artifact(root, category, hash, schema,
         raw, schema, plan_hash, hash_key)
 end
 
-function _rofsj_restore_state(engine_plan, artifact)
-    return BindingAndCatalysis.restore_ro_sparse_state_v2(
-        engine_plan, artifact["payload"])
-end
+
 
 function _rofsj_restore_batch(engine_plan, state, artifact;
                               validate_prior_state::Bool=true)
@@ -1127,15 +1110,7 @@ function _rofsj_chunk_receipts(chunk, batch)
     return receipts
 end
 
-function _rofsj_charge_state_shape!(meter::_ROFSJReplayMeter, payload)
-    records = _rofc_array(payload["index_records"],
-        "replayed state index_records")
-    samples = _rofc_array(payload["samples"],
-        "replayed state samples")
-    _rofsj_charge_replay!(meter, "parsed_state_records", length(records))
-    _rofsj_charge_replay!(meter, "parsed_state_samples", length(samples))
-    return meter
-end
+
 
 function _rofsj_charge_transition_compute!(
     meter::_ROFSJReplayMeter,
@@ -1214,61 +1189,52 @@ function _rofsj_charge_terminal_result!(meter::_ROFSJReplayMeter,
 end
 
 const _ROFSJ_TRANSITION_KEYS = Set((
-    "ordinal", "prior_state_sha256", "prior_state_artifact_sha256",
-    "engine_batch_sha256", "batch_artifact_sha256", "chunk_sha256",
-    "next_state_sha256", "next_state_artifact_sha256", "point_count",
-    "valid_count", "invalid_count", "transition_payload_bytes",
+    "ordinal", "plan_sha256", "previous_transition_sha256",
+    "prior_state_sha256", "engine_batch_sha256", "batch_artifact_sha256",
+    "chunk_sha256", "next_state_sha256", "point_count", "valid_count",
+    "invalid_count", "transition_payload_bytes", "transition_sha256",
 ))
 
-function _rofsj_transition_entry(state, state_artifact, batch,
-                                  batch_artifact, chunk, next_state,
-                                  next_state_artifact)
-    payload_bytes = length(_rofc_bytes(batch_artifact)) +
-        length(_rofc_bytes(chunk)) + length(_rofc_bytes(next_state_artifact))
-    return Dict{String,Any}(
+function _rofsj_transition_entry(plan, state, batch, batch_artifact, chunk,
+                                  next_state, previous_hash)
+    body = Dict{String,Any}(
         "ordinal" => batch.batch_ordinal,
+        "plan_sha256" => plan["plan_sha256"],
+        "previous_transition_sha256" => previous_hash,
         "prior_state_sha256" => state.state_sha256,
-        "prior_state_artifact_sha256" =>
-            state_artifact["state_artifact_sha256"],
         "engine_batch_sha256" => batch.batch_sha256,
-        "batch_artifact_sha256" =>
-            batch_artifact["batch_artifact_sha256"],
+        "batch_artifact_sha256" => batch_artifact["batch_artifact_sha256"],
         "chunk_sha256" => chunk["chunk_sha256"],
         "next_state_sha256" => next_state.state_sha256,
-        "next_state_artifact_sha256" =>
-            next_state_artifact["state_artifact_sha256"],
         "point_count" => chunk["point_count"],
         "valid_count" => chunk["valid_count"],
         "invalid_count" => chunk["invalid_count"],
-        "transition_payload_bytes" => payload_bytes,
+        "transition_payload_bytes" =>
+            length(_rofc_bytes(batch_artifact)) + length(_rofc_bytes(chunk)),
     )
+    return _rofsj_with_hash(body, "transition_sha256")
 end
 
-function _rofsj_checkpoint(plan, prepared, initial_state,
-                           initial_state_artifact, transitions,
-                           terminal::Bool)
-    entries = Dict{String,Any}[deepcopy(entry) for entry in transitions]
-    current_state_hash = isempty(entries) ? initial_state.state_sha256 :
-        entries[end]["next_state_sha256"]
-    current_artifact_hash = isempty(entries) ?
-        initial_state_artifact["state_artifact_sha256"] :
-        entries[end]["next_state_artifact_sha256"]
+# Checkpoints contain only a journal head and running totals. Each immutable
+# journal entry contains one batch, so checkpoint storage grows linearly.
+function _rofsj_checkpoint(plan, prepared, state;
+                           previous=nothing, entry=nothing, terminal=false)
+    prior = previous === nothing ? Dict{String,Any}() : previous
     body = Dict{String,Any}(
         "schema_version" => RO_FIELD_SPARSE_CHECKPOINT_VERSION,
         "plan_sha256" => plan["plan_sha256"],
         "engine_sampling_plan_sha256" => prepared.engine_plan.plan_sha256,
-        "initial_state_sha256" => initial_state.state_sha256,
-        "initial_state_artifact_sha256" =>
-            initial_state_artifact["state_artifact_sha256"],
-        "current_state_sha256" => current_state_hash,
-        "current_state_artifact_sha256" => current_artifact_hash,
-        "committed_work_unit_count" => length(entries),
-        "committed_point_count" => sum(
-            entry["point_count"] for entry in entries; init=0),
-        "committed_payload_bytes" => sum(
-            entry["transition_payload_bytes"] for entry in entries; init=0),
+        "initial_state_sha256" => get(prior, "initial_state_sha256", state.state_sha256),
+        "current_state_sha256" => state.state_sha256,
+        "last_transition_sha256" => entry === nothing ?
+            get(prior, "last_transition_sha256", nothing) : entry["transition_sha256"],
+        "committed_work_unit_count" => get(prior, "committed_work_unit_count", 0) +
+            (entry === nothing ? 0 : 1),
+        "committed_point_count" => get(prior, "committed_point_count", 0) +
+            (entry === nothing ? 0 : entry["point_count"]),
+        "committed_payload_bytes" => get(prior, "committed_payload_bytes", 0) +
+            (entry === nothing ? 0 : entry["transition_payload_bytes"]),
         "terminal" => terminal,
-        "committed" => entries,
     )
     return _rofsj_with_hash(body, "checkpoint_sha256")
 end
@@ -1292,171 +1258,95 @@ function _rofsj_publish_checkpoint!(root, checkpoint, context,
     return checkpoint
 end
 
-function _rofsj_read_transition_artifacts(root, entry, plan, prepared,
-                                          state, state_artifact,
+function _rofsj_read_transition_artifacts(root, entry, plan, prepared, state,
                                           cancel_check, replay_meter)
     cancel_check()
-    state_artifact["state_artifact_sha256"] ==
-        entry["prior_state_artifact_sha256"] &&
-        state.state_sha256 == entry["prior_state_sha256"] ||
-        throw(ArgumentError(
-            "adaptive checkpoint prior-state binding is inconsistent"))
-
+    state.state_sha256 == entry["prior_state_sha256"] || throw(ArgumentError(
+        "adaptive checkpoint prior-state binding is inconsistent"))
     batch_artifact = _rofsj_read_payload_artifact(
         root, "batches", entry["batch_artifact_sha256"],
         RO_FIELD_SPARSE_BATCH_ARTIFACT_VERSION, plan["plan_sha256"],
         "batch_artifact_sha256"; replay_meter=replay_meter)
-    batch = _rofsj_restore_batch(
-        prepared.engine_plan, state, batch_artifact;
+    batch = _rofsj_restore_batch(prepared.engine_plan, state, batch_artifact;
         validate_prior_state=false)
-    batch.batch_sha256 == entry["engine_batch_sha256"] ||
-        throw(ArgumentError(
-            "adaptive checkpoint engine-batch binding is inconsistent"))
-    batch.batch_ordinal == entry["ordinal"] || throw(ArgumentError(
-        "adaptive checkpoint batch ordinal is inconsistent"))
-
     chunk_hash = _rofjob_sha(entry["chunk_sha256"], "chunk_sha256")
     chunk = _rofsj_read_canonical(
-        _rofsj_artifact_path(root, "chunks", chunk_hash);
-        replay_meter=replay_meter)
+        _rofsj_artifact_path(root, "chunks", chunk_hash); replay_meter=replay_meter)
     chunk["chunk_sha256"] == chunk_hash || throw(ArgumentError(
         "adaptive point chunk filename and identity disagree"))
-    chunk = _rofsj_validate_point_chunk(
-        chunk, plan, prepared, state, batch)
+    chunk = _rofsj_validate_point_chunk(chunk, plan, prepared, state, batch)
     _rofsj_charge_transition_compute!(replay_meter, state, batch)
-    receipts = _rofsj_chunk_receipts(chunk, batch)
     next_state = BindingAndCatalysis.commit_ro_sparse_index_batch_v2(
-        prepared.engine_plan, state, batch, receipts;
+        prepared.engine_plan, state, batch, _rofsj_chunk_receipts(chunk, batch);
         cancel_check=cancel_check, validate_prior_state=false)
-    next_state.state_sha256 == entry["next_state_sha256"] ||
-        throw(ArgumentError(
-            "adaptive checkpoint next-state binding is inconsistent"))
-    next_artifact = _rofsj_read_payload_artifact(
-        root, "states", entry["next_state_artifact_sha256"],
-        RO_FIELD_SPARSE_STATE_ARTIFACT_VERSION, plan["plan_sha256"],
-        "state_artifact_sha256"; replay_meter=replay_meter)
-    _rofsj_charge_state_shape!(replay_meter, next_artifact["payload"])
-    expected_next_payload = _rofsj_portable_engine_payload(
-        BindingAndCatalysis.ro_sparse_state_v2_payload(next_state),
-        "replayed next sparse state")
-    _rofc_canonical_json(next_artifact["payload"]) ==
-        _rofc_canonical_json(expected_next_payload) ||
-        throw(ArgumentError(
-            "adaptive checkpoint stored next state differs from replay"))
-    expected_entry = _rofsj_transition_entry(
-        state, state_artifact, batch, batch_artifact, chunk,
-        next_state, next_artifact)
-    _rofc_canonical_json(entry) == _rofc_canonical_json(expected_entry) ||
-        throw(ArgumentError(
-            "adaptive checkpoint transition entry is tampered"))
-    return (
-        state=next_state,
-        state_artifact=next_artifact,
-        batch=batch,
-        batch_artifact=batch_artifact,
-        chunk=chunk,
-        entry=expected_entry,
-    )
+    expected = _rofsj_transition_entry(plan, state, batch, batch_artifact, chunk,
+        next_state, entry["previous_transition_sha256"])
+    _rofc_canonical_json(entry) == _rofc_canonical_json(expected) ||
+        throw(ArgumentError("adaptive checkpoint transition entry is tampered"))
+    return (state=next_state, batch=batch, batch_artifact=batch_artifact,
+        chunk=chunk, entry=expected)
 end
 
 function _rofsj_replay_checkpoint(root, plan, prepared, raw_checkpoint;
-                                  cancel_check=() -> nothing,
-                                  replay_meter=nothing)
-    meter = replay_meter === nothing ?
-        _rofsj_replay_meter(prepared) : replay_meter
-    replay_meter === nothing &&
-        _rofsj_charge_materialized_document!(meter, raw_checkpoint)
-    checkpoint = _rofsj_exact(
-        _rofc_materialize(raw_checkpoint), Set((
-            "schema_version", "plan_sha256",
-            "engine_sampling_plan_sha256", "initial_state_sha256",
-            "initial_state_artifact_sha256", "current_state_sha256",
-            "current_state_artifact_sha256", "committed_work_unit_count",
-            "committed_point_count", "committed_payload_bytes", "terminal",
-            "committed", "checkpoint_sha256")),
-        "adaptive checkpoint")
+                                  cancel_check=() -> nothing, replay_meter=nothing)
+    meter = replay_meter === nothing ? _rofsj_replay_meter(prepared) : replay_meter
+    replay_meter === nothing && _rofsj_charge_materialized_document!(meter, raw_checkpoint)
+    checkpoint = _rofsj_exact(_rofc_materialize(raw_checkpoint), Set((
+        "schema_version", "plan_sha256", "engine_sampling_plan_sha256",
+        "initial_state_sha256", "current_state_sha256", "last_transition_sha256",
+        "committed_work_unit_count", "committed_point_count", "committed_payload_bytes",
+        "terminal", "checkpoint_sha256")), "adaptive checkpoint")
     checkpoint["schema_version"] == RO_FIELD_SPARSE_CHECKPOINT_VERSION ||
         throw(ArgumentError("unsupported adaptive checkpoint version"))
-    checkpoint["plan_sha256"] == plan["plan_sha256"] &&
-        checkpoint["engine_sampling_plan_sha256"] ==
-            prepared.engine_plan.plan_sha256 || throw(ArgumentError(
-                "adaptive checkpoint belongs to a foreign plan"))
     checkpoint["terminal"] isa Bool || throw(ArgumentError(
         "adaptive checkpoint terminal must be Boolean"))
-    entries = _rofc_array(checkpoint["committed"],
-        "adaptive checkpoint committed")
-    entry_count = length(entries)
-    entry_count == _rofjob_int(
-        checkpoint["committed_work_unit_count"],
-        "checkpoint.committed_work_unit_count";
-        maximum=_ROFSJ_MAX_BATCHES) || throw(ArgumentError(
-            "adaptive checkpoint work-unit count mismatch"))
-    entry_count <= prepared.request["sampling_limits"][
-        "max_multi_indices"] || throw(ArgumentError(
-            "adaptive checkpoint exceeds the plan-bound work-unit limit"))
-    initial_artifact = _rofsj_read_payload_artifact(
-        root, "states", checkpoint["initial_state_artifact_sha256"],
-        RO_FIELD_SPARSE_STATE_ARTIFACT_VERSION, plan["plan_sha256"],
-        "state_artifact_sha256"; replay_meter=meter)
-    _rofsj_charge_state_shape!(meter, initial_artifact["payload"])
-    initial_state = _rofsj_restore_state(
-        prepared.engine_plan, initial_artifact)
-    initial_state.state_sha256 == checkpoint["initial_state_sha256"] ||
-        throw(ArgumentError(
-            "adaptive checkpoint initial-state binding is inconsistent"))
-    empty_state = BindingAndCatalysis.initialize_ro_sparse_state_v2(
-        prepared.engine_plan; cancel_check=cancel_check)
-    BindingAndCatalysis.ro_sparse_state_v2_payload(initial_state) ==
-        BindingAndCatalysis.ro_sparse_state_v2_payload(empty_state) ||
-        throw(ArgumentError(
-            "adaptive checkpoint initial state is not canonical"))
-
-    state = initial_state
-    state_artifact = initial_artifact
-    normalized_entries = Dict{String,Any}[]
-    for (position, raw_entry) in enumerate(entries)
+    count = _rofjob_int(checkpoint["committed_work_unit_count"],
+        "checkpoint.committed_work_unit_count"; maximum=_ROFSJ_MAX_BATCHES)
+    count <= prepared.request["sampling_limits"]["max_multi_indices"] ||
+        throw(ArgumentError("adaptive checkpoint exceeds the plan-bound work-unit limit"))
+    entries = Dict{String,Any}[]
+    head = checkpoint["last_transition_sha256"]
+    for ordinal in count:-1:1
         cancel_check()
-        entry = _rofsj_exact(raw_entry, _ROFSJ_TRANSITION_KEYS,
-            "adaptive checkpoint committed[$position]")
-        entry["ordinal"] == position || throw(ArgumentError(
-            "adaptive checkpoint transition order is not contiguous"))
-        replayed = _rofsj_read_transition_artifacts(
-            root, entry, plan, prepared, state, state_artifact,
-            cancel_check, meter)
-        state = replayed.state
-        state_artifact = replayed.state_artifact
-        push!(normalized_entries, replayed.entry)
+        hash = _rofjob_sha(head, "transition_sha256")
+        entry = _rofsj_read_canonical(
+            _rofsj_artifact_path(root, "transitions", hash); replay_meter=meter)
+        _rofsj_exact(entry, _ROFSJ_TRANSITION_KEYS, "adaptive transition")
+        _rofsj_validate_expected_content_hash(entry, "transition_sha256", hash,
+            "adaptive transition")
+        entry["ordinal"] == ordinal && entry["plan_sha256"] == plan["plan_sha256"] ||
+            throw(ArgumentError("adaptive transition order or plan is inconsistent"))
+        push!(entries, entry)
+        head = entry["previous_transition_sha256"]
     end
-    checkpoint["current_state_sha256"] == state.state_sha256 &&
-        checkpoint["current_state_artifact_sha256"] ==
-            state_artifact["state_artifact_sha256"] || throw(ArgumentError(
-                "adaptive checkpoint current-state binding is inconsistent"))
-    expected = _rofsj_checkpoint(
-        plan, prepared, initial_state, initial_artifact,
-        normalized_entries, checkpoint["terminal"])
+    head === nothing || throw(ArgumentError("adaptive journal has an uncommitted prefix"))
+    reverse!(entries)
+    initial_state = BindingAndCatalysis.initialize_ro_sparse_state_v2(
+        prepared.engine_plan; cancel_check=cancel_check)
+    state = initial_state
+    expected = _rofsj_checkpoint(plan, prepared, state)
+    for entry in entries
+        replayed = _rofsj_read_transition_artifacts(
+            root, entry, plan, prepared, state, cancel_check, meter)
+        state = replayed.state
+        expected = _rofsj_checkpoint(plan, prepared, state;
+            previous=expected, entry=entry)
+    end
+    expected = _rofsj_checkpoint(plan, prepared, state;
+        previous=expected, terminal=checkpoint["terminal"])
     _rofc_canonical_json(checkpoint) == _rofc_canonical_json(expected) ||
-        throw(ArgumentError(
-            "adaptive checkpoint counts, order, or hash are inconsistent"))
+        throw(ArgumentError("adaptive checkpoint counts, order, or hash are inconsistent"))
     if checkpoint["terminal"]
         _rofsj_charge_terminal_scheduler!(meter, state)
         BindingAndCatalysis.prepare_ro_sparse_index_batch_v2(
             prepared.engine_plan, state; cancel_check=cancel_check,
-            validate_state=false) === nothing ||
-            throw(ArgumentError(
+            validate_state=false) === nothing || throw(ArgumentError(
                 "adaptive checkpoint claims terminal state with pending work"))
     end
-    replay_summary = _rofsj_replay_summary(meter)
-    return (
-        checkpoint=expected,
-        initial_state=initial_state,
-        initial_state_artifact=initial_artifact,
-        state=state,
-        state_artifact=state_artifact,
-        entries=normalized_entries,
-        replay_work_units=replay_summary.work_units,
-        replay_work_breakdown=replay_summary.breakdown,
-        replay_meter=meter,
-    )
+    summary = _rofsj_replay_summary(meter)
+    return (checkpoint=expected, initial_state=initial_state, state=state,
+        entries=entries, replay_work_units=summary.work_units,
+        replay_work_breakdown=summary.breakdown, replay_meter=meter)
 end
 
 function _rofsj_load_checkpoint(root, plan, prepared, checkpoint_hash;
@@ -1475,7 +1365,7 @@ function _rofsj_load_checkpoint(root, plan, prepared, checkpoint_hash;
 end
 
 function _rofsj_manifest(plan, checkpoint, terminal_artifact,
-                         terminal_result)
+                         terminal_result, entries)
     body = Dict{String,Any}(
         "schema_version" => RO_FIELD_SPARSE_MANIFEST_VERSION,
         "plan_sha256" => plan["plan_sha256"],
@@ -1501,7 +1391,7 @@ function _rofsj_manifest(plan, checkpoint, terminal_artifact,
             "point_count" => entry["point_count"],
             "valid_count" => entry["valid_count"],
             "invalid_count" => entry["invalid_count"],
-        ) for entry in checkpoint["committed"]],
+        ) for entry in entries],
     )
     return _rofsj_with_hash(body, "manifest_sha256")
 end
@@ -1571,82 +1461,38 @@ function validate_ro_field_sparse_resume_parent!(spec, user_sub)
     return normalized
 end
 
-function _rofsj_copy_committed_artifacts!(destination_root, snapshot,
-                                          cancel_check)
-    source_root = snapshot.root
+function _rofsj_copy_committed_artifacts!(destination_root, snapshot, cancel_check)
     replay = snapshot.replay
     meter = replay.replay_meter
-    state_hashes = Set{String}([
-        replay.checkpoint["initial_state_artifact_sha256"],
-    ])
     for entry in replay.entries
-        push!(state_hashes, entry["prior_state_artifact_sha256"])
-        push!(state_hashes, entry["next_state_artifact_sha256"])
+        for (category, key) in (("batches", "batch_artifact_sha256"),
+                                ("chunks", "chunk_sha256"),
+                                ("transitions", "transition_sha256"))
+            cancel_check()
+            hash = entry[key]
+            _rofsj_charge_replay!(meter, "copied_artifact_documents", 1)
+            raw = _rofsj_read_canonical(
+                _rofsj_artifact_path(snapshot.root, category, hash); replay_meter=meter)
+            _rofsj_validate_expected_content_hash(raw, key, hash, "adaptive copied artifact")
+            _rofsj_write_canonical_once!(
+                _rofsj_artifact_path(destination_root, category, hash), raw)
+        end
     end
-    for hash in sort!(collect(state_hashes))
-        cancel_check()
-        _rofsj_charge_replay!(
-            meter, "copied_artifact_documents", 1)
-        raw = _rofsj_read_canonical(
-            _rofsj_artifact_path(source_root, "states", hash);
-            replay_meter=meter)
-        _rofsj_validate_expected_content_hash(
-            raw, "state_artifact_sha256", hash,
-            "adaptive copied state artifact")
-        _rofsj_write_canonical_once!(
-            _rofsj_artifact_path(destination_root, "states", hash), raw)
-    end
-    for entry in replay.entries
-        cancel_check()
-        batch_hash = entry["batch_artifact_sha256"]
-        _rofsj_charge_replay!(
-            meter, "copied_artifact_documents", 1)
-        batch = _rofsj_read_canonical(
-            _rofsj_artifact_path(source_root, "batches", batch_hash);
-            replay_meter=meter)
-        _rofsj_validate_expected_content_hash(
-            batch, "batch_artifact_sha256", batch_hash,
-            "adaptive copied batch artifact")
-        _rofsj_write_canonical_once!(
-            _rofsj_artifact_path(
-                destination_root, "batches", batch_hash), batch)
-        chunk_hash = entry["chunk_sha256"]
-        _rofsj_charge_replay!(
-            meter, "copied_artifact_documents", 1)
-        chunk = _rofsj_read_canonical(
-            _rofsj_artifact_path(source_root, "chunks", chunk_hash);
-            replay_meter=meter)
-        _rofsj_validate_expected_content_hash(
-            chunk, "chunk_sha256", chunk_hash,
-            "adaptive copied point chunk")
-        _rofsj_write_canonical_once!(
-            _rofsj_artifact_path(
-                destination_root, "chunks", chunk_hash), chunk)
-    end
-    checkpoint = replay.checkpoint
-    _rofsj_write_checkpoint!(destination_root, checkpoint)
+    _rofsj_write_checkpoint!(destination_root, replay.checkpoint)
     cancel_check()
-    replay_summary = _rofsj_replay_summary(meter)
-    return merge(replay, (
-        replay_work_units=replay_summary.work_units,
-        replay_work_breakdown=replay_summary.breakdown,
-        replay_meter=meter,
-    ))
+    summary = _rofsj_replay_summary(meter)
+    return merge(replay, (replay_work_units=summary.work_units,
+        replay_work_breakdown=summary.breakdown))
 end
 
-function _rofsj_payload_reservation(prepared, state_artifact,
-                                    batch_artifact, batch)
-    source_count = length(
-        prepared.request["chart"]["source_coordinate_ids"])
+function _rofsj_payload_reservation(prepared, batch_artifact, batch)
+    source_count = length(prepared.request["chart"]["source_coordinate_ids"])
     control_count = length(prepared.request["chart"]["control_ids"])
     output_count = length(prepared.request["outputs"]["output_order"])
-    point_count = batch.point_count
     per_point = 8_192 + 256 * source_count +
         512 * output_count * (source_count + control_count + 1)
-    next_state_bound = 32_768 + length(_rofc_bytes(state_artifact)) +
-        point_count * (4_096 + 128 * output_count * control_count)
     return BigInt(length(_rofc_bytes(batch_artifact))) +
-        BigInt(next_state_bound) + BigInt(point_count) * BigInt(per_point)
+        BigInt(batch.point_count) * BigInt(per_point)
 end
 
 function _rofsj_build_result(plan, prepared, spec, checkpoint, manifest,
@@ -1714,7 +1560,7 @@ function compute_ro_field_sparse_job(raw_spec;
                                      job_context=Dict{String,Any}(),
                                      cancel_check::Function=_no_cancel_check)
     cancel_check()
-    spec = normalize_ro_field_sparse_job_spec(raw_spec)
+    spec, prepared = _rofsj_prepare_job_spec(raw_spec)
     plan = spec["plan"]
     job_id_raw = get(job_context, "job_id", nothing)
     job_id_raw isa AbstractString &&
@@ -1724,16 +1570,12 @@ function compute_ro_field_sparse_job(raw_spec;
     job_id = String(job_id_raw)
     root = _rofsj_data_root(job_id)
     _rofsj_write_plan!(root, plan)
-    _, prepared = _rofsj_validate_plan(plan)
     payload_limit = prepared.request["work_budget"]["max_payload_bytes"]
 
-    initial_state = BindingAndCatalysis.initialize_ro_sparse_state_v2(
+    state = BindingAndCatalysis.initialize_ro_sparse_state_v2(
         prepared.engine_plan; cancel_check=cancel_check)
-    initial_artifact = _rofsj_state_artifact(plan, initial_state)
-    state = initial_state
-    state_artifact = initial_artifact
     transitions = Dict{String,Any}[]
-    resume_snapshot = nothing
+    checkpoint = _rofsj_checkpoint(plan, prepared, state)
     if spec["resume_from"] !== nothing
         user_sub = get(job_context, "user_sub", nothing)
         user_sub isa AbstractString || throw(ArgumentError(
@@ -1742,20 +1584,11 @@ function compute_ro_field_sparse_job(raw_spec;
             spec, String(user_sub); cancel_check=cancel_check)
         replay = _rofsj_copy_committed_artifacts!(
             root, resume_snapshot, cancel_check)
-        initial_state = replay.initial_state
-        initial_artifact = replay.initial_state_artifact
         state = replay.state
-        state_artifact = replay.state_artifact
-        append!(transitions, deepcopy(replay.entries))
-    else
-        _rofsj_write_payload_artifact!(
-            root, "states", initial_artifact,
-            "state_artifact_sha256")
+        append!(transitions, replay.entries)
+        checkpoint = _rofsj_checkpoint(plan, prepared, state; previous=replay.checkpoint)
     end
 
-    checkpoint = _rofsj_checkpoint(
-        plan, prepared, initial_state, initial_artifact,
-        transitions, false)
     _rofjob_check_payload!(
         checkpoint["committed_payload_bytes"], payload_limit,
         :adaptive_resume_payload)
@@ -1787,7 +1620,7 @@ function compute_ro_field_sparse_job(raw_spec;
                 "adaptive index batch exceeds the point bound"))
             batch_artifact = _rofsj_batch_artifact(plan, batch)
             reservation = _rofsj_payload_reservation(
-                prepared, state_artifact, batch_artifact, batch)
+                prepared, batch_artifact, batch)
             _rofjob_check_payload!(
                 BigInt(checkpoint["committed_payload_bytes"]) + reservation,
                 payload_limit, :adaptive_pre_evaluation_reservation)
@@ -1802,10 +1635,9 @@ function compute_ro_field_sparse_job(raw_spec;
                     prepared.engine_plan, state, batch, receipts;
                     cancel_check=cancel_check,
                     validate_prior_state=false)
-            next_artifact = _rofsj_state_artifact(plan, next_state)
             entry = _rofsj_transition_entry(
-                state, state_artifact, batch, batch_artifact, chunk,
-                next_state, next_artifact)
+                plan, state, batch, batch_artifact, chunk, next_state,
+                checkpoint["last_transition_sha256"])
             BigInt(entry["transition_payload_bytes"]) <= reservation ||
                 error("adaptive transition payload reservation was not conservative")
             exact_payload = BigInt(checkpoint["committed_payload_bytes"]) +
@@ -1820,15 +1652,12 @@ function compute_ro_field_sparse_job(raw_spec;
                 _rofsj_artifact_path(
                     root, "chunks", chunk["chunk_sha256"]), chunk)
             _rofsj_write_payload_artifact!(
-                root, "states", next_artifact,
-                "state_artifact_sha256")
+                root, "transitions", entry, "transition_sha256")
             cancel_check()
             push!(transitions, entry)
             state = next_state
-            state_artifact = next_artifact
             checkpoint = _rofsj_checkpoint(
-                plan, prepared, initial_state, initial_artifact,
-                transitions, false)
+                plan, prepared, state; previous=checkpoint, entry=entry)
             checkpoint["committed_payload_bytes"] == Int(exact_payload) ||
                 error("adaptive checkpoint payload accounting drifted")
             _rofsj_publish_checkpoint!(
@@ -1841,10 +1670,9 @@ function compute_ro_field_sparse_job(raw_spec;
         validate_state=false)
     terminal_artifact = _rofsj_terminal_artifact(plan, terminal_result)
     terminal_checkpoint = _rofsj_checkpoint(
-        plan, prepared, initial_state, initial_artifact,
-        transitions, true)
+        plan, prepared, state; previous=checkpoint, terminal=true)
     manifest = _rofsj_manifest(
-        plan, terminal_checkpoint, terminal_artifact, terminal_result)
+        plan, terminal_checkpoint, terminal_artifact, terminal_result, transitions)
     terminal_payload_bytes = BigInt(length(_rofc_bytes(terminal_artifact))) +
         BigInt(length(_rofc_bytes(terminal_checkpoint))) +
         BigInt(length(_rofc_bytes(manifest)))
@@ -1924,7 +1752,7 @@ function _rofsj_read_terminal_chain(root, plan, prepared,
         prepared.engine_plan, replay.state, terminal_artifact["payload"];
         cancel_check=cancel_check, validate_terminal_state=false)
     expected_manifest = _rofsj_manifest(
-        plan, checkpoint, terminal_artifact, terminal_result)
+        plan, checkpoint, terminal_artifact, terminal_result, replay.entries)
     _rofc_canonical_json(manifest) ==
         _rofc_canonical_json(expected_manifest) || throw(ArgumentError(
             "adaptive manifest does not equal replayed plan, chunks, and terminal state"))

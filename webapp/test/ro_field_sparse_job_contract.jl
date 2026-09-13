@@ -223,6 +223,17 @@ end
     @test normalized["request"]["chart"]["source_coordinate_ids"] ==
         ["tA", "tB", "Kd1"]
 
+    larger = _rofsj_spec()
+    larger["request"]["network"] = network_ir_to_dict(network_ir_from_legacy([
+        "A + B <-> AB", "A + AB <-> A2B", "A + A2B <-> A3B",
+        "A + A3B <-> A4B", "A + A4B <-> A5B", "A + A5B <-> A6B",
+    ], ones(6)))
+    chart = larger["request"]["chart"]
+    chart["source_coordinate_ids"] = vcat(["tA", "tB"], ["Kd$i" for i in 1:6])
+    append!(chart["jacobian"], [Any[0.0, 0.0] for _ in 1:5])
+    chart["fixed_background"] = zeros(8)
+    @test normalize_ro_field_job_spec(larger)["request"]["chart"] == chart
+
     prepared = Backend._prepare_job_spec_and_artifact_identity(
         "compute_ro_field", raw)
     @test prepared.expected_artifact_config_hash ==
@@ -327,6 +338,12 @@ end
         )
         @test replay.checkpoint["terminal"] === true
         @test length(replay.entries) == descriptor["work_unit_count"]
+        # Each batch stores only its new data and a bounded-size checkpoint.
+        @test !isdir(joinpath(root, "states"))
+        @test length(readdir(joinpath(root, "transitions"))) == length(log)
+        checkpoint_files = readdir(joinpath(root, "checkpoints"); join=true)
+        @test length(checkpoint_files) == length(log) + 2
+        @test maximum(filesize, checkpoint_files) < 1_500
         first_chunk = Backend._rofsj_read_canonical(
             Backend._rofsj_artifact_path(
                 root, "chunks", replay.entries[1]["chunk_sha256"]))
@@ -372,7 +389,7 @@ end
     end
 end
 
-@testset "resume and result reads share the explicit replay cap" begin
+@testset "resume and explicit result audits share the replay cap" begin
     _with_rofsj_store() do _
         parent_id = "3"^32
         child_id = "4"^32
@@ -634,13 +651,13 @@ end
         @test descriptor["point_count"] == 1
         @test descriptor["valid_count"] == 1
         root = Backend._rofsj_data_root(job_id)
-        checkpoint = Backend._rofsj_read_canonical(
-            Backend._rofsj_checkpoint_path(
-                root, descriptor["checkpoint_sha256"]))
+        plan, prepared = Backend._rofsj_read_plan(root, descriptor["plan_sha256"])
+        replay = Backend._rofsj_load_checkpoint(
+            root, plan, prepared, descriptor["checkpoint_sha256"])
         chunk = Backend._rofsj_read_canonical(
             Backend._rofsj_artifact_path(
                 root, "chunks",
-                checkpoint["committed"][1]["chunk_sha256"]))
+                replay.entries[1]["chunk_sha256"]))
         sample = only(chunk["samples"])
         @test sample["status"] == "valid"
         @test length(sample["source_reaction_order_matrix"]) == 1
@@ -690,7 +707,7 @@ end
         checkpoint = last_checkpoint[]
         @test checkpoint["committed_work_unit_count"] == 1
         @test length(readdir(joinpath(root, "chunks"))) == 2
-        @test length(checkpoint["committed"]) == 1
+        @test checkpoint["last_transition_sha256"] !== nothing
 
         record = _rofsj_parent_record(parent_id, spec, checkpoint)
         Backend._job_cache_publish!(parent_id, record)
@@ -708,10 +725,8 @@ end
                 normalize_ro_field_job_spec(child_spec), "alice")
             expected_batch = Engine.prepare_ro_sparse_index_batch_v2(
                 snapshot.prepared.engine_plan, snapshot.replay.state)
-            committed_parent_points = Set(String.(
-                snapshot.replay.checkpoint["committed"][1]["chunk_sha256"] ==
-                    snapshot.replay.entries[1]["chunk_sha256"] ?
-                parent_log[1]["point_ids"] : String[]))
+            @test length(snapshot.replay.entries) == 1
+            committed_parent_points = Set(String.(parent_log[1]["point_ids"]))
 
             child_log = Dict{String,Any}[]
             child = compute_ro_field_job(
@@ -749,7 +764,7 @@ end
             # Admission deliberately does not traverse the parent's chunks.
             # Corruption is detected only when the child worker replays the
             # linearly committed transition, before its evaluator runs.
-            chunk_hash = checkpoint["committed"][1]["chunk_sha256"]
+            chunk_hash = snapshot.replay.entries[1]["chunk_sha256"]
             chunk_path = Backend._rofsj_artifact_path(
                 root, "chunks", chunk_hash)
             tampered = Backend._rofsj_read_canonical(chunk_path)
@@ -774,7 +789,7 @@ end
     end
 end
 
-@testset "final reads reject every tampered adaptive layer" begin
+@testset "explicit audits reject every tampered adaptive layer" begin
     _with_rofsj_store() do _
         job_id = "e"^32
         result = compute_ro_field_job(
@@ -788,10 +803,10 @@ end
         )
         descriptor = result["ro_field_job_result"]
         root = Backend._rofsj_data_root(job_id)
-        checkpoint = Backend._rofsj_read_canonical(
-            Backend._rofsj_checkpoint_path(
-                root, descriptor["checkpoint_sha256"]))
-        entry = checkpoint["committed"][1]
+        plan, prepared = Backend._rofsj_read_plan(root, descriptor["plan_sha256"])
+        replay = Backend._rofsj_load_checkpoint(
+            root, plan, prepared, descriptor["checkpoint_sha256"])
+        entry = replay.entries[1]
         manifest = Backend._rofsj_read_canonical(
             Backend._rofsj_manifest_path(
                 root, descriptor["dataset_manifest_sha256"]))
@@ -807,8 +822,8 @@ end
                 root, "chunks", entry["chunk_sha256"]),
                 doc -> (doc["samples"][1]["output_values"][1] += 1.0)),
             (Backend._rofsj_artifact_path(
-                root, "states", entry["next_state_artifact_sha256"]),
-                doc -> (doc["payload"]["backend_work_unit_count"] = 99)),
+                root, "transitions", entry["transition_sha256"]),
+                doc -> (doc["ordinal"] = 99)),
             (Backend._rofsj_checkpoint_path(
                 root, descriptor["checkpoint_sha256"]),
                 doc -> (doc["committed_point_count"] += 1)),
@@ -904,6 +919,17 @@ end
         @test fetched["ro_field_job_result"]["point_count"] == 0
         record = Backend._job_record(job_id)
         @test Backend._verify_job_result_artifact(record).status == :valid
+        # Displaying committed results does not reconstruct the old solver
+        # environment or depend on intermediate resume files still existing.
+        plan_path = Backend._rofsj_plan_path(
+            Backend._rofsj_data_root(job_id),
+            fetched["ro_field_job_result"]["plan_sha256"])
+        plan_bytes = read(plan_path)
+        rm(plan_path)
+        @test get_biocircuits_job_result(
+            job_id; user_sub="adaptive-contract-user")["result"] == fetched
+        @test Backend._verify_job_result_artifact(record).status == :invalid
+        _restore_bytes(plan_path, plan_bytes)
         before = read(Backend._job_record_path(job_id))
         transition = Backend._job_transition!(
             job_id, "succeeded";

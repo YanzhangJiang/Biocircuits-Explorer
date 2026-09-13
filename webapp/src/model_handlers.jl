@@ -34,7 +34,7 @@ function handle_build_model(req)
     # identical IRs share a bundle. The session is just a convenience handle
     # pointing at the same bundle object.
     bundle = try
-        build_model_bundle(network)
+        build_model_bundle(network; build_mode=_request_model_build_mode(body))
     catch err
         err isa ArgumentError && return error_response(sprint(showerror, err); status = 400)
         rethrow(err)
@@ -63,6 +63,7 @@ function handle_build_model(req)
         "L" => mat2vv(Matrix(model.L)),
         "network_ir" => bundle["network_ir"],
         "network_ir_hash" => bundle["network_ir_hash"],
+        "build_mode" => string(_request_model_build_mode(body)),
         # Self-describing provenance (non-breaking sibling): which IR this model
         # was compiled from, by which algorithm/version.
         "artifact" => artifact_metadata("build_model";

@@ -10,6 +10,8 @@ include("schema_generation_contract.jl")
 include("api_contract.jl")
 include("backend_assembly_contract.jl")
 include("architecture_discovery_api.jl")
+include("target_design_api.jl")
+include("design_model_build_contract.jl")
 include("concurrency_and_budget_contract.jl")
 include("input_validation_contract.jl")
 include("static_security_contract.jl")
@@ -21,6 +23,7 @@ include("rop_shape_optimization_contract.jl")
 include("rop_shape_cat_benchmark.jl")
 include("rop_shape_api_contract.jl")
 include("rop_shape_schema_contract.jl")
+include("target_design_schema_contract.jl")
 include("ro_field_api_contract.jl")
 include("ro_field_chunks_contract.jl")
 include("ro_field_slices_contract.jl")
@@ -444,10 +447,12 @@ function stage_mock_committed_job_result(root::AbstractString,
     sha256_hex = BiocircuitsExplorerBackend._file_sha256_hex(result_path)
     write("$(result_path).bne-sha256", sha256_hex)
     manifest = BiocircuitsExplorerBackend._job_result_manifest_payload(
-        result,
-        String(record["job_id"]),
-        String(record["kind"]),
-        String(record["expected_artifact_config_hash"]),
+        BiocircuitsExplorerBackend._job_result_identity(
+            result,
+            String(record["job_id"]),
+            String(record["kind"]),
+            String(record["expected_artifact_config_hash"]),
+        ),
         String(record["result_uri"]),
         filesize(result_path),
         sha256_hex,

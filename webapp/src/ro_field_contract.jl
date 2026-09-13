@@ -617,7 +617,7 @@ is intentionally not loaded at runtime; this boundary enforces the cross-field
 rank, ordering, model-symbol, reference, fixed-background, and work-limit rules
 that structural JSON Schema cannot express on its own.
 """
-function normalize_ro_field_request(raw, bundle)
+function normalize_ro_field_request(raw, bundle; synchronous::Bool=true)
     body = _ro_field_exact_keys(
         raw, _RO_FIELD_TOP_LEVEL_KEYS, "request";
         required=Set((
@@ -637,7 +637,7 @@ function normalize_ro_field_request(raw, bundle)
             "representation must be sampled_grid or exact_cell_complex"))
     representation = Symbol(representation_text)
     model = bundle["model"]
-    enforce_sync_model_budget(model)
+    synchronous && enforce_sync_model_budget(model)
 
     work_budget = _ro_field_normalize_work_budget(
         _raw_get(body, :work_budget, nothing), representation)

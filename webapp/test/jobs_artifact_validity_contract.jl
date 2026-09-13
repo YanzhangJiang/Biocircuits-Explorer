@@ -347,10 +347,10 @@ function stage_committed_result(root::AbstractString,
     sha256_hex = Backend._file_sha256_hex(result_path)
     write("$(result_path).bne-sha256", sha256_hex)
     manifest = Backend._job_result_manifest_payload(
-        result,
-        String(record["job_id"]),
-        String(record["kind"]),
-        String(record["expected_artifact_config_hash"]),
+        Backend._job_result_identity(result,
+            String(record["job_id"]),
+            String(record["kind"]),
+            String(record["expected_artifact_config_hash"])),
         String(record["result_uri"]),
         filesize(result_path),
         sha256_hex,

@@ -31,6 +31,18 @@ const Backend = BiocircuitsExplorerBackend
     @test all(length(row) == 2 for row in result["predictions"])
     @test result["q_sym"] == ["tA", "tB"]
     @test result["output_exprs"] == ["2*AA + AB", "AB + 2*BB"]
+    @test result["prediction_basis"] == "candidate_library_with_weak_inactive_reactions"
+    @test result["optimality"] == "local_gradient_fit"
+    @test result["identifiability"] == "not_assessed"
+    @test result["artifact"]["kind"] == "discover_architecture"
+    selected = result["selected_network"]
+    @test selected["status"] == "ok"
+    @test selected["prediction_basis"] == "selected_network"
+    @test selected["evidence_tier"] == "sampled_equilibrium_replay"
+    @test selected["rules"] == result["rules"]
+    @test selected["kd"] == result["kd"]
+    selected_ir = Backend.parse_network_ir(Backend._materialize(selected["network_ir"]))
+    @test Backend.network_ir_hash(selected_ir) == selected["network_ir_hash"]
 
     simulated_payload = deepcopy(payload)
     for sample in simulated_payload["samples"]
@@ -63,6 +75,78 @@ const Backend = BiocircuitsExplorerBackend
 
     @test Backend.router(HTTP.Request(
         "POST", "/api/discover_architecture", [], JSON3.write(payload))).status == 404
+
+    @testset "Bounded synchronous discovery" begin
+        for (field, value) in (
+            ("epochs", Backend.MAX_ARCHITECTURE_EPOCHS + 1),
+            ("debias_epochs", Backend.MAX_ARCHITECTURE_DEBIAS_EPOCHS + 1),
+            ("samples", fill(first(payload["samples"]), Backend.MAX_ARCHITECTURE_SAMPLES + 1)),
+            ("output_exprs", fill("AB", Backend.MAX_SYNC_SCAN_OUTPUTS + 1)),
+            ("output_exprs", [repeat("A", Backend.MAX_SYNC_EXPRESSION_BYTES + 1)]),
+            ("reactions", fill("A + B <-> AB", Backend.MAX_SYNC_REACTIONS + 1)),
+        )
+            over_budget = merge(payload, Dict(field => value))
+            response = Backend.router(HTTP.Request(
+                "POST", "/api/v1/discover_architecture", [], JSON3.write(over_budget)))
+            @test response.status == 422
+            @test JSON3.read(response.body)["code"] == "sync_budget_exceeded"
+        end
+        cost_limited = merge(payload, Dict(
+            "samples" => fill(first(payload["samples"]), 256),
+            "epochs" => 2000, "debias_epochs" => 500,
+        ))
+        cost_response = Backend.router(HTTP.Request(
+            "POST", "/api/v1/discover_architecture", [], JSON3.write(cost_limited)))
+        @test cost_response.status == 422
+        @test occursin("work budget", String(cost_response.body))
+        @test :handle_discover_architecture in Backend.SYNC_HEAVY_HANDLER_NAMES
+    end
+end
+
+@testset "Selected network uses a fresh pruned equilibrium replay" begin
+    rules = ["2A <-> AA", "A + B <-> AB", "2B <-> BB"]
+    model, _, _, _ = Backend.build_model(rules, ones(3))
+    outputs = reduce(vcat, [transpose(Backend.parse_linear_combination(model, expression))
+                           for expression in ["2*AA + AB", "AB + 2*BB", "AA"]])
+    selected = Backend._ad_selected_network(
+        [rules[2]], [1.0], model, [1.0 1.0], zeros(1, 3), outputs)
+    # A + B <-> AB, tA=tB=Kd=1: AB=(3-sqrt(5))/2. Deleted
+    # homodimers must contribute exactly zero, not a large finite Kd.
+    expected = (3 - sqrt(5)) / 2
+    @test selected["status"] == "ok"
+    @test selected["predictions"][1] ≈ [expected, expected, 0.0]
+    @test selected["fit_loss"] ≈ expected^2 / 3
+    @test Set(selected["removed_species"]) == Set(["AA", "BB"])
+    @test selected["output_exprs"] == ["1.0*AB", "1.0*AB", "0*A"]
+    pruned_model, _, _, _ = Backend.build_model(selected["rules"], selected["kd"])
+    for (expression, coefficients) in zip(selected["output_exprs"], selected["output_coefficients"])
+        @test Backend.parse_linear_combination(pruned_model, expression) == coefficients
+    end
+    @test Backend._ad_decimal_coefficient(1e-10) == "0.00000000010"
+
+    # Removing the first reaction makes AB an independent conserved input;
+    # the original tA/tB observations cannot provide its total.
+    chain_rules = ["A + B <-> AB", "AB + B <-> AB2"]
+    chain, _, _, _ = Backend.build_model(chain_rules, ones(2))
+    chain_outputs = reshape(Backend.parse_linear_combination(chain, "AB2"), 1, :)
+    invalid = Backend._ad_selected_network(
+        [chain_rules[2]], [1.0], chain, [1.0 1.0], zeros(1, 1), chain_outputs)
+    @test invalid["status"] == "invalid"
+    @test occursin("tAB", invalid["reason"])
+    @test !haskey(invalid, "network_ir")
+    @test !haskey(invalid, "predictions")
+    independent_rules = ["A + B <-> AB", "C + D <-> CD"]
+    independent, _, _, _ = Backend.build_model(independent_rules, ones(2))
+    free_output = reshape(Backend.parse_linear_combination(independent, "A + CD"), 1, :)
+    missing_free = Backend._ad_selected_network(
+        [independent_rules[2]], [1.0], independent, [1.0 1.0 1.0 1.0], zeros(1, 1), free_output)
+    @test missing_free["status"] == "invalid"
+    @test occursin("observed free species", missing_free["reason"])
+    @test !haskey(missing_free, "predictions")
+    empty_result = Backend._ad_selected_network(
+        String[], Float64[], chain, [1.0 1.0], zeros(1, 1), chain_outputs)
+    @test empty_result["status"] == "no_active_reactions"
+    @test !haskey(empty_result, "network_ir")
 end
 
 end # module

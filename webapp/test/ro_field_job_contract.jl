@@ -188,6 +188,19 @@ end
         normalized["plan"]["plan_sha256"]
     @test prepared.spec == normalized
 
+    larger = _rofjob_spec()
+    larger["request"]["network"] = network_ir_to_dict(network_ir_from_legacy([
+        "A + B <-> AB", "A + AB <-> A2B", "A + A2B <-> A3B",
+        "A + A3B <-> A4B", "A + A4B <-> A5B", "A + A5B <-> A6B",
+    ], ones(6)))
+    background = only(larger["request"]["domain"]["fixed_background"])
+    larger["request"]["domain"]["fixed_background"] = Any[
+        merge(background, Dict("parameter_id" => "kd$i", "symbol" => "Kd$i"))
+        for i in 1:6
+    ]
+    @test normalize_ro_field_job_spec(larger)["plan"]["identity"]["point_count"] == 6
+    @test_throws ArgumentError normalize_ro_field_job_spec(nothing)
+
     resumed = normalize_ro_field_job_spec(_rofjob_spec(resume_from=Dict(
         "parent_job_id" => "a"^32,
         "checkpoint_sha256" => "b"^64,
@@ -416,8 +429,8 @@ end
         tampered_chunk["samples"][1]["output_values"][1] += 1.0
         Backend._write_job_json(first_chunk_path, tampered_chunk)
         @test Backend._verify_job_result_artifact(record).status == :invalid
-        @test_throws ArgumentError get_biocircuits_job_result(
-            job_id; user_sub="contract-user")
+        @test get_biocircuits_job_result(
+            job_id; user_sub="contract-user")["result"] == result
     end
 end
 
