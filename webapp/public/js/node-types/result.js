@@ -316,7 +316,8 @@ export const RESULT_TYPES = {
     title: 'Model Summary',
     inputs: [{ port: 'model', type: 'ModelArtifact', label: 'Model' }],
     outputs: [],
-    defaultWidth: 300,
+    defaultWidth: 380,
+    defaultHeight: 300,
     createBody(nodeId) {
       return `<div class="viewer-content" id="${nodeId}-content"><span class="text-dim">Connect to a Model Builder to see summary.</span></div>`;
     },

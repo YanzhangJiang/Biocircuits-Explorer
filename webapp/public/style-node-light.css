@@ -13,6 +13,10 @@
   --input-text-color: #1b2430;
   --input-shadow: inset 0 1px 2px rgba(99, 120, 146, 0.08);
 
+  /* --- Selection (marquee / multi-select) --- */
+  --selection-color: #3560A8;
+  --selection-bg: rgba(53, 96, 168, 0.12);
+
   /* --- Wires --- */
   --wire-color: #7f92a6;
   --wire-active: #3560A8;
@@ -92,8 +96,32 @@
   --panel-border: #d8e2ec;
   --status-ok: #2f9e44;
   --status-error: #c92a2a;
+  /* Darkened from the dark theme's #c4a346 to keep text legible on white. */
+  --status-warn: #8a6d1a;
+  /* Soft translucent companions for status chips / confidence badges. */
+  --status-ok-soft: rgba(122, 185, 119, 0.18);
+  --status-warn-soft: rgba(196, 163, 70, 0.18);
+  --status-error-soft: rgba(224, 113, 106, 0.18);
   --panel-hover-bg: #eef4fa;
   --panel-hover-border: #bccbdb;
+
+  /* --- Inset wells inside nodes (framed chart/config panels) --- */
+  --node-inset-bg: #edf2f8;
+  --node-inset-border: #d8e2ec;
+
+  /* --- Classification tags (same saturated pills as the dark theme) --- */
+  --tag-ok-bg: #51cf66;
+  --tag-ok-color: #000;
+  --tag-warn-bg: #ffd43b;
+  --tag-warn-color: #000;
+  --tag-error-bg: #ff6b6b;
+  --tag-error-color: #fff;
+  --tag-info-bg: #4ecdc4;
+  --tag-info-color: #000;
+  --tag-neutral-bg: #495057;
+  --tag-neutral-color: #fff;
+  --tag-muted-bg: #6c757d;
+  --tag-muted-color: #fff;
 
   /* --- Tables --- */
   --table-border: #dde6ef;
@@ -107,11 +135,17 @@
   --btn-bg: #e4ebf3;
   --btn-color: #243240;
   --btn-hover-bg: #d8e2ee;
+  /* Primary/remove actions keep the dark theme's tuned values by design. */
+  --btn-primary-bg: #3560A8;
   --btn-primary-color: #ffffff;
+  --btn-primary-hover-bg: #4570B8;
   --btn-run-bg: linear-gradient(180deg, #4f83d2 0%, #3560A8 100%);
   --btn-run-hover-bg: linear-gradient(180deg, #5c90df 0%, #4570B8 100%);
   --btn-run-color: #ffffff;
   --btn-run-shadow: 0 10px 20px rgba(53, 96, 168, 0.22);
+  --btn-remove-bg: #C15C5C;
+  --btn-remove-color: #fff;
+  --btn-remove-hover-bg: #D16C6C;
 
   /* --- Reaction header --- */
   --reaction-header-border: #d9e2ec;
@@ -145,6 +179,8 @@
   --tab-btn-color: #647588;
   --tab-btn-hover-bg: #e2ebf4;
   --tab-btn-hover-color: #223241;
+  /* Active tab keeps the dark theme's primary blue by design. */
+  --tab-btn-active-bg: #3560A8;
   --tab-btn-active-color: #fff;
 
   /* --- Note tabs --- */
@@ -169,6 +205,8 @@
     linear-gradient(180deg, #ffffff 0%, #f3f7fb 100%);
   --atlas-sketch-card-border: #d8e2ec;
   --atlas-sketch-axis-stroke: #8192a5;
+  --atlas-sketch-line-stroke: #e9c46a;
+  --atlas-sketch-circle-fill: #2a9d8f;
   --atlas-sketch-circle-stroke: #f7f9fc;
   --atlas-sketch-caption-color: #6b7a89;
   --atlas-sketch-empty-bg: #f6f9fc;
@@ -204,7 +242,11 @@
   --family-metric-color: #314254;
   --family-badge-color: #243240;
   --family-badge-exact-color: #8a4817;
+  --family-badge-exact-accent: #ff8c42;
+  --family-badge-exact-soft: rgba(255, 140, 66, 0.18);
   --family-badge-motif-color: #145a71;
+  --family-badge-motif-accent: #4cc9f0;
+  --family-badge-motif-soft: rgba(76, 201, 240, 0.16);
 
   /* --- Path chip --- */
   --path-chip-border: #d8e2ec;

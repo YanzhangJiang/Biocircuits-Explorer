@@ -3,6 +3,7 @@ import {
   failedOutcome,
   succeededOutcome,
 } from './execution-outcome.js';
+import { NODE_MIN_SIZES } from './node-sizes.js';
 
 export const NODE_ROLES = new Set(['source', 'config', 'compute', 'manual-gate', 'viewer']);
 
@@ -39,6 +40,9 @@ export const NODE_CONTRACTS = Object.freeze({
   'placer-result': contract('compute', 'execute', { adapter: 'boolean' }),
   'design-spec-config': contract('config', 'prepare', { adapter: 'value', outputs: { 'designability-spec': 'present' } }),
   'design-target': contract('manual-gate', 'manual', { adapter: 'structured' }),
+  'inverse-design-target': contract('config', 'prepare', { adapter: 'structured', outputs: { 'inverse-design-request': 'present' } }),
+  'gradient-design': contract('compute', 'execute', { adapter: 'structured', outputs: { 'inverse-design-result': 'present' } }),
+  'designed-network': contract('compute', 'execute', { adapter: 'structured', outputs: { reactions: 'present' } }),
   'rop-cloud-params': contract('config', 'prepare', { adapter: 'void' }),
   'rop-cloud-result': contract('compute', 'execute', { adapter: 'boolean' }),
   'rop-cloud': restoreOnly(),
@@ -129,6 +133,19 @@ export function applyNodeContracts(rawNodeTypes) {
   const contractKeys = Object.keys(NODE_CONTRACTS).sort();
   if (JSON.stringify(rawKeys) !== JSON.stringify(contractKeys)) {
     throw new Error('Node contract inventory does not match NODE_TYPES');
+  }
+  const minSizeKeys = Object.keys(NODE_MIN_SIZES).sort();
+  if (JSON.stringify(rawKeys) !== JSON.stringify(minSizeKeys)) {
+    throw new Error('Node min-size inventory does not match NODE_TYPES');
+  }
+  for (const [nodeType, definition] of Object.entries(rawNodeTypes)) {
+    const min = NODE_MIN_SIZES[nodeType];
+    if (definition.defaultWidth != null && min.width > definition.defaultWidth) {
+      throw new Error(`${nodeType} min width ${min.width} exceeds defaultWidth ${definition.defaultWidth}`);
+    }
+    if (definition.defaultHeight != null && min.height > definition.defaultHeight) {
+      throw new Error(`${nodeType} min height ${min.height} exceeds defaultHeight ${definition.defaultHeight}`);
+    }
   }
 
   const decorated = {};

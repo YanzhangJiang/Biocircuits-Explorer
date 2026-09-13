@@ -9,10 +9,9 @@ import { api, showToast, handleNodeError, renderNodeError, escapeHtml } from './
 import { stableJson } from './stable-json.js';
 import { hexToRgba, getFamilyColor, applyPlotLayoutTheme, getPlotTheme } from './theme.js';
 import { plotTrajectory, convexHull2D, formatPolyConstraint, renderPolyCoordinateTable } from './plotting.js';
-import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, findUpstreamNodeByType, ensureModelSession } from './nodes.js';
+import { setNodeLoading, setupPlotResize, setupPlotInteractionGuard, getSessionIdForNode, findUpstreamNodeByType, ensureModelSession, getModelContextForNode } from './nodes.js';
 import { triggerDownstreamNodes } from './model.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
-import { NODE_TYPES } from './node-types/index.js';
 import {
   blockedOutcome,
   failedOutcome,
@@ -315,9 +314,47 @@ export function inspectQKPolyResultLifecycle(nodeId) {
     : null;
 }
 
+export async function runSISOAnalysis(nodeId) {
+  const modelContext = getModelContextForNode(nodeId);
+  const qKSymbols = modelContext?.qK_syms || [];
+
+  // Populate the select
+  const sel = document.getElementById(`${nodeId}-siso-select`);
+  if (sel && qKSymbols.length > 0) {
+    const curVal = sel.value;
+    sel.innerHTML = '';
+    qKSymbols.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s; opt.textContent = s;
+      sel.appendChild(opt);
+    });
+    if (curVal && qKSymbols.includes(curVal)) sel.value = curVal;
+  }
+  const changeQK = sel ? sel.value : qKSymbols[0];
+  if (!changeQK) return;
+
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  setNodeLoading(nodeId, true);
+  try {
+    if (!modelContext?.sessionId) throw new Error('Build the connected model first');
+    const data = await api('siso_paths', { session_id: modelContext.sessionId, change_qK: changeQK });
+    let html = `<div style="margin-bottom:8px;"><strong>${escapeHtml(data.n_paths)}</strong> paths, <strong>${data.sources.length}</strong> sources, <strong>${data.sinks.length}</strong> sinks</div>`;
+    html += '<div class="path-list">';
+    data.paths.forEach(p => {
+      const permStr = p.perms.map(pr => `[${pr.join(',')}]`).join(' → ');
+      html += `<div class="path-item" data-idx="${escapeHtml(p.idx)}" data-qk="${escapeHtml(changeQK)}" data-node="${nodeId}" data-action="selectSISOPath">#${escapeHtml(p.idx)}: ${escapeHtml(permStr)}</div>`;
+    });
+    html += '</div>';
+    html += `<div class="plot-container" id="${nodeId}-traj-plot" style="display:none;"></div>`;
+    contentEl.innerHTML = html;
+  } catch (e) {
+    renderNodeError(contentEl, e);
+  }
+  setNodeLoading(nodeId, false);
+}
+
 export function recomputeSISO(nodeId) {
-  const typeDef = NODE_TYPES['siso-analysis'];
-  if (typeDef.execute) typeDef.execute(nodeId);
+  runSISOAnalysis(nodeId);
 }
 
 export function formatVolumeSummary(vol) {
@@ -1097,16 +1134,6 @@ export async function computeSISOResult(nodeId) {
       setNodeLoading(nodeId, false);
     }
   }
-}
-
-export function recomputeROPCloud(nodeId) {
-  const typeDef = NODE_TYPES['rop-cloud'];
-  if (typeDef.execute) typeDef.execute(nodeId);
-}
-
-export function recomputeHeatmap(nodeId) {
-  const typeDef = NODE_TYPES['fret-heatmap'];
-  if (typeDef.execute) typeDef.execute(nodeId);
 }
 
 // ===== SISO Path Selection =====

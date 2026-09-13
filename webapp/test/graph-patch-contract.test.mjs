@@ -181,6 +181,48 @@ test('multiple compatible sources fail closed with a manual-selection diagnostic
   );
 });
 
+test('a selected builder identifies its unique source among several networks', () => {
+  const before = deepFreeze(graph([
+    node('rn-a', 'reaction-network'),
+    node('designed-b', 'designed-network'),
+    node('builder-b', 'model-builder'),
+  ], [connection('designed-b', 'reactions', 'builder-b', 'reactions')]));
+  const result = planQuickAddWorkflow({
+    chainType: 'parameter-scan-1d', graph: before, selectedModelBuilderId: 'builder-b',
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.patch.metadata.reusedNodeIds, ['designed-b', 'builder-b']);
+  assert.deepEqual(result.patch.nodes.map(item => item.type), ['scan-1d-params', 'scan-1d-result']);
+
+  const ambiguous = planQuickAddWorkflow({
+    chainType: 'parameter-scan-1d', selectedModelBuilderId: 'builder-b',
+    graph: { ...before, connections: [...before.connections, connection('rn-a', 'reactions', 'builder-b', 'reactions')] },
+  });
+  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguous.diagnostic.code, 'manual-source-selection-required');
+});
+
+test('multiple builders preserve the source context for the explicit builder choice', () => {
+  const before = graph([
+    node('rn-a', 'reaction-network'),
+    node('builder-a', 'model-builder'),
+    node('builder-b', 'model-builder'),
+  ], [
+    connection('rn-a', 'reactions', 'builder-a', 'reactions'),
+    connection('rn-a', 'reactions', 'builder-b', 'reactions'),
+  ]);
+  const result = planQuickAddWorkflow({ chainType: 'siso-analysis', graph: before });
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnostic.code, 'manual-model-builder-selection-required');
+  assert.equal(result.diagnostic.sourceNodeId, 'rn-a');
+  assert.deepEqual(result.diagnostic.candidateNodeIds, ['builder-a', 'builder-b']);
+  const selected = planQuickAddWorkflow({
+    chainType: 'siso-analysis', graph: before, selectedModelBuilderId: 'builder-b',
+  });
+  assert.equal(selected.ok, true);
+  assert.deepEqual(selected.patch.metadata.reusedNodeIds, ['rn-a', 'builder-b']);
+});
+
 test('multiple compatible sources may only be bypassed by an explicit isolated source', () => {
   const before = deepFreeze(graph([
     node('rn-a', 'reaction-network', 10, 20),
@@ -238,6 +280,50 @@ test('atlas Quick Add workflows also return complete explicit graph patches', ()
     connection('node-6', 'atlas', 'node-8', 'atlas'),
     connection('node-7', 'atlas-query', 'node-8', 'atlas-query'),
   ]);
+});
+
+test('inverse design starts an independent typed workflow without triggering computation', () => {
+  const before = deepFreeze(graph([
+    node('source-a', 'reaction-network', 20, 30),
+    node('source-b', 'sbml-import', 400, 30),
+  ]));
+  const options = deepFreeze({
+    chainType: 'inverse-design',
+    graph: before,
+    nextNodeOrdinal: 20,
+    anchor: { x: 80, y: 300 },
+  });
+  const result = planQuickAddWorkflow(options);
+  assert.deepEqual(result, planQuickAddWorkflow(options));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.patch.nodes.map(item => [item.id, item.type]), [
+    ['node-20', 'inverse-design-target'],
+    ['node-21', 'gradient-design'],
+    ['node-22', 'designed-network'],
+  ]);
+  assert.deepEqual(result.patch.connections, [
+    connection('node-20', 'inverse-design-request', 'node-21', 'inverse-design-request'),
+    connection('node-21', 'inverse-design-result', 'node-22', 'inverse-design-result'),
+  ]);
+  assert.deepEqual(result.patch.effects, []);
+  assert.deepEqual(result.patch.metadata.reusedNodeIds, []);
+  assert.equal(result.patch.nodes[1].x - result.patch.nodes[0].x, 580);
+  assert.equal(result.patch.nodes[2].x - result.patch.nodes[1].x, 740);
+});
+
+test('forward analysis reuses the designed-network output as a typed reaction source', () => {
+  const result = planQuickAddWorkflow({
+    chainType: 'parameter-scan-1d',
+    graph: graph([node('designed', 'designed-network', 80, 150, 480, 440)]),
+    nextNodeOrdinal: 30,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.patch.metadata.sourceNodeId, 'designed');
+  assert.equal(result.patch.metadata.sourceWasCreated, false);
+  assert.deepEqual(result.patch.metadata.reusedNodeIds, ['designed']);
+  assert.deepEqual(result.patch.connections[0],
+    connection('designed', 'reactions', 'node-30', 'reactions'));
+  assert.equal(result.patch.nodes.some(item => item.type === 'reaction-network'), false);
 });
 
 test('Design Build & Tune planning is pure and emits one explicit active-node patch', () => {
@@ -325,7 +411,7 @@ test('Design Spec export planning is pure, stable, and emits the strict active-n
   assert.equal(unsupported.diagnostic.code, 'unsupported-design-spec-version');
 });
 
-test('Quick Add layout uses the rendered viewer minimum width', () => {
+test('Quick Add layout reserves the rendered parameter node width', () => {
   const result = planQuickAddWorkflow({
     chainType: 'siso-analysis',
     graph: graph(),
@@ -338,9 +424,9 @@ test('Quick Add layout uses the rendered viewer minimum width', () => {
   assert.ok(params);
   assert.ok(output);
   assert.equal(
-    output.x - (params.x + 380),
+    output.x - (params.x + 320),
     60,
-    'the planner must reserve CSS .node.viewer min-width plus the declared gap',
+    'the planner must reserve the parameter node defaultWidth plus the declared gap',
   );
 });
 

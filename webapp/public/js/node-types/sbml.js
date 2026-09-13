@@ -43,7 +43,7 @@ export const SBML_TYPES = {
 
   'sbml-export': {
     category: 'process',
-    headerClass: 'header-viewer',
+    headerClass: 'header-process',
     title: 'SBML Export',
     inputs: [{ port: 'reactions', type: 'NetworkIR', label: 'Reactions' }],
     outputs: [],

@@ -1,9 +1,10 @@
 // Biocircuits Explorer — Node CRUD, Discovery, Menu, Auto-Update & Observer Functions
 
-import { nodeRegistry, connections, nodeIdCounter, nextNodeId, setNodeIdCounter, plotResizeObservers, nodeResizeObservers, plotInteractionGuards } from './state.js';
+import { nodeRegistry, connections, nodeIdCounter, nextNodeId, setNodeIdCounter, plotResizeObservers, nodeResizeObservers, plotInteractionGuards, getWorkspaceRuntimeEpoch } from './state.js';
 import { showToast } from './api.js';
 import { applyThemeMode } from './theme.js';
 import { NODE_TYPES } from './node-types/index.js';
+import { nodeMinSize } from './node-sizes.js';
 import { updateConnections } from './connections.js';
 import { buildModel, getReactionsFromNode } from './model.js';
 import { commitWorkspaceSnapshot, queueWorkspaceShellSync, getNodeSerialData } from './workspace.js';
@@ -200,7 +201,7 @@ export function createNode(nodeType, x, y, opts = {}) {
   const canvas = document.getElementById('canvas');
 
   const node = document.createElement('div');
-  const isLargeNode = ['viewer', 'result', 'parameter'].includes(typeDef.category);
+  const isLargeNode = ['viewer', 'result'].includes(typeDef.category);
   node.className = `node${isLargeNode ? ' viewer' : ''}`;
   node.id = nodeId;
   node.dataset.type = typeDef.category;
@@ -209,6 +210,11 @@ export function createNode(nodeType, x, y, opts = {}) {
   node.style.top = `${y}px`;
   if (typeDef.defaultWidth) node.style.width = `${typeDef.defaultWidth}px`;
   if (typeDef.defaultHeight) node.style.height = `${typeDef.defaultHeight}px`;
+  // Per-type floor. Inline min-* beats any inline width/height, so every
+  // restore/legacy path that only sets width/height is clamped automatically.
+  const minSize = nodeMinSize(nodeType);
+  node.style.minWidth = `${minSize.width}px`;
+  node.style.minHeight = `${minSize.height}px`;
 
   // Header
   const header = document.createElement('div');
@@ -219,13 +225,16 @@ export function createNode(nodeType, x, y, opts = {}) {
   `;
   node.appendChild(header);
 
-  // Body
+  // Body. Socket rows pin to the body's top/bottom edges; only the
+  // .node-content wrapper between them scrolls.
   const body = document.createElement('div');
   body.className = 'node-body';
 
+  let bodyHTML = '';
+
   // Input sockets
   typeDef.inputs.forEach(inp => {
-    body.innerHTML += `
+    bodyHTML += `
       <div class="socket-row left">
         <div class="socket input" data-node="${nodeId}" data-port="${inp.port}"></div>
         <span class="socket-label">${inp.label}</span>
@@ -234,23 +243,23 @@ export function createNode(nodeType, x, y, opts = {}) {
   });
 
   // Custom body content
-  if (typeDef.createBody) {
-    body.innerHTML += typeDef.createBody(nodeId);
-  }
-
-  if (body.querySelector('.tab-nav')) {
-    body.classList.add('node-body-tabbed');
-  }
+  bodyHTML += `<div class="node-content">${typeDef.createBody ? typeDef.createBody(nodeId) : ''}</div>`;
 
   // Output sockets
   typeDef.outputs.forEach(out => {
-    body.innerHTML += `
+    bodyHTML += `
       <div class="socket-row right">
         <span class="socket-label">${out.label}</span>
         <div class="socket output" data-node="${nodeId}" data-port="${out.port}"></div>
       </div>
     `;
   });
+
+  body.innerHTML = bodyHTML;
+
+  if (body.querySelector('.tab-nav')) {
+    body.classList.add('node-body-tabbed');
+  }
 
   node.appendChild(body);
 
@@ -744,8 +753,86 @@ function selectedQuickAddNodeId(predicate) {
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+function quickAddChoiceDescription(nodeId) {
+  const targetId = findUpstreamNodeByType(nodeId, 'inverse-design-target');
+  const description = nodeRegistry[targetId]?.data?.inverseDescription;
+  if (description) return String(description);
+  const sourceId = findUpstreamNode(nodeId, id => isReactionSourceNodeType(nodeRegistry[id]?.type));
+  if (!sourceId) return '';
+  const rules = getReactionsFromNode(sourceId).reactions;
+  return rules.length ? rules.slice(0, 2).join('; ') : 'No reaction data yet';
+}
+
+function showQuickAddChoice(chainType, plan, options) {
+  const diagnostic = plan.diagnostic;
+  const choosingSource = diagnostic.code === 'manual-source-selection-required';
+  if (!choosingSource && diagnostic.code !== 'manual-model-builder-selection-required') return false;
+  const dialog = document.getElementById('quick-add-choice');
+  if (!dialog) return false;
+
+  const epoch = getWorkspaceRuntimeEpoch();
+  const owners = new Map(diagnostic.candidates.map(item => [item.id, nodeRegistry[item.id]]));
+  const sourceOwner = nodeRegistry[diagnostic.sourceNodeId];
+  const choose = (selection, candidateId) => {
+    dialog.close();
+    if (epoch !== getWorkspaceRuntimeEpoch() ||
+        (candidateId && nodeRegistry[candidateId] !== owners.get(candidateId)) ||
+        (sourceOwner && nodeRegistry[diagnostic.sourceNodeId] !== sourceOwner)) {
+      showToast('The workspace changed. Open Quick Add again to choose a network.');
+      return;
+    }
+    // Replan against the live graph; opening or cancelling this picker never
+    // creates nodes, consumes IDs, or adds an Undo item.
+    addQuickAddChain(chainType, { ...options, ...selection });
+  };
+
+  const workflowTitle = document.querySelector(`#legacy-nodes-menu [data-type="${chainType}"]`)?.textContent.trim() || 'workflow';
+  document.getElementById('quick-add-choice-title').textContent = `Quick Add · ${workflowTitle}`;
+  document.getElementById('quick-add-choice-description').textContent = choosingSource
+    ? 'Choose the network to use for this workflow, or start with a new Reaction Network.'
+    : 'This network has several Model Builders. Choose the one to use for this workflow.';
+  const list = document.getElementById('quick-add-choice-list');
+  list.replaceChildren();
+  for (const candidate of diagnostic.candidates) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'menu-item';
+    button.dataset.nodeId = candidate.id;
+    const color = document.createElement('span');
+    color.className = `menu-color color-${NODE_TYPES[candidate.type]?.category || 'input'}`;
+    color.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'quick-add-choice-label';
+    const title = document.createElement('strong');
+    title.textContent = `${NODE_TYPES[candidate.type]?.title || candidate.type} · ${candidate.id}`;
+    label.appendChild(title);
+    const detail = document.createElement('span');
+    detail.className = 'quick-add-choice-description';
+    detail.textContent = quickAddChoiceDescription(candidate.id);
+    label.appendChild(detail);
+    button.append(color, label);
+    button.onclick = () => choose(choosingSource ? {
+      selectedSourceId: candidate.id, selectedModelBuilderId: undefined,
+    } : {
+      selectedSourceId: diagnostic.sourceNodeId, selectedModelBuilderId: candidate.id,
+    }, candidate.id);
+    list.appendChild(button);
+  }
+  const fresh = document.getElementById('quick-add-new-source');
+  fresh.hidden = !choosingSource;
+  fresh.onclick = () => choose({
+    createIsolatedSource: true, selectedSourceId: undefined, selectedModelBuilderId: undefined,
+  });
+  document.getElementById('quick-add-choice-cancel').onclick = () => dialog.close();
+  // Keep canvas shortcuts (Delete, Undo, etc.) out of the modal interaction.
+  dialog.onkeydown = event => event.stopPropagation();
+  dialog.showModal();
+  return true;
+}
+
 export function addQuickAddChain(chainType, options = {}) {
   closeDropdown();
+  document.getElementById('quick-add-choice')?.close();
 
   const createIsolatedSource = options.createIsolatedSource === true;
   const selectedSourceId = Object.prototype.hasOwnProperty.call(options, 'selectedSourceId')
@@ -769,10 +856,7 @@ export function addQuickAddChain(chainType, options = {}) {
     createIsolatedSource,
   });
   if (!plan.ok) {
-    const hint = plan.diagnostic.code === 'manual-source-selection-required'
-      ? ' Shift-click Quick Add to create an isolated source.'
-      : '';
-    showToast(`${plan.diagnostic.message}${hint}`);
+    if (!showQuickAddChoice(chainType, plan, options)) showToast(plan.diagnostic.message);
     return plan;
   }
 

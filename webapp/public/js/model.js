@@ -21,10 +21,16 @@ import {
   releaseModelBuild,
 } from './model-lifecycle.js';
 import { executionDependencyConnections } from './execution-lifecycle.js';
+import { readCurrentDesignedNetwork } from './node-types/inverse-design.js';
+import { modelParameterDefaults } from './model-parameters.js';
+import { stableJson } from './stable-json.js';
 
 // ===== Reaction Editor =====
 export function getReactionsFromNode(nodeId) {
   const info = nodeRegistry[nodeId];
+  if (info?.type === 'designed-network') {
+    return readCurrentDesignedNetwork(nodeId) || { reactions: [], kds: [] };
+  }
   // Identity-defined reaction sources publish their rules as
   // config.resolvedDefinition.raw_rules instead of DOM reaction rows:
   //  - network-id-definition: resolved from a compressed atlas id
@@ -113,14 +119,26 @@ function captureModelBuildInput(modelBuilderNodeId, connectionResolver = executi
   const conn = dependencyConnections
     .find(c => c.toNode === modelBuilderNodeId && c.toPort === 'reactions');
   const sourceNodeId = conn?.fromNode || null;
-  const { reactions, kds } = sourceNodeId
+  const source = sourceNodeId
     ? getReactionsFromNode(sourceNodeId)
     : { reactions: [], kds: [] };
+  const { reactions, kds } = source;
+  const isDesignedNetwork = nodeRegistry[sourceNodeId]?.type === 'designed-network';
+  const totals = isDesignedNetwork && source.totals ? structuredClone(source.totals) : null;
+  const outputs = isDesignedNetwork && source.outputs ? structuredClone(source.outputs) : null;
+  const networkIr = isDesignedNetwork ? structuredClone(source.networkIr || source.network_ir || null) : null;
   return {
     sourceNodeId,
     reactions,
     kds,
-    fingerprint: JSON.stringify([sourceNodeId, reactions, kds]),
+    totals,
+    outputs,
+    networkIr,
+    // Fitted concentrations and readouts are part of the design result even
+    // when its topology and Kd are unchanged. Retire pending builds on either.
+    fingerprint: isDesignedNetwork
+      ? stableJson([sourceNodeId, reactions, kds, totals, outputs, networkIr])
+      : JSON.stringify([sourceNodeId, reactions, kds]),
   };
 }
 
@@ -182,12 +200,17 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
   try {
     if (!input.sourceNodeId) return block('Model Builder has no reaction source connected');
     const { reactions, kds } = input;
-    if (reactions.length === 0) return block('Add at least one reaction');
+    if (reactions.length === 0) return block(input.totals
+      ? 'This design contains only free species; Model Builder currently requires a reaction.'
+      : 'Add at least one reaction');
     if (kds.some(kd => kd == null || kd <= 0)) {
       return block('Model Builder requires Kd for every reaction (> 0)');
     }
 
-    const data = await api('build_model', { reactions, kd: kds }, { statusIsCurrent: requestIsCurrent });
+    const request = input.networkIr
+      ? { network: input.networkIr, build_mode: 'design_equilibrium' }
+      : { reactions, kd: kds };
+    const data = await api('build_model', request, { statusIsCurrent: requestIsCurrent });
     if (!ownsCurrentModelBuild(modelBuilderNodeId, ticket)) return false;
     const current = currentAttempt();
     if (current.input.fingerprint !== beginContext.inputFingerprint) {
@@ -206,6 +229,11 @@ export async function buildModel(modelBuilderNodeId, options = {}) {
       // this model build. Surfaced for display and as a client-side cache key.
       artifact: data.artifact || null,
       model: data,
+      // Physical fitted values remain separate from per-analysis overrides.
+      // A rebuild never writes into downstream node configuration.
+      totals: input.totals,
+      outputs: input.outputs,
+      parameterDefaults: modelParameterDefaults(data, input.totals),
       qK_syms: [...data.q_sym, ...data.K_sym],
       builtForRevision: modelInputRevision(modelBuilderNodeId),
       inputFingerprint: beginContext.inputFingerprint,

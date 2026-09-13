@@ -52,6 +52,15 @@
             <span class="menu-color color-input"></span> SBML Import
           </div>
           <div class="menu-section-title">Design</div>
+          <div class="menu-item" data-type="inverse-design-target" title="Draw, import or describe the target behavior.">
+            <span class="menu-color color-parameter"></span> Inverse Design Target
+          </div>
+          <div class="menu-item" data-type="gradient-design" title="Construct, optimize and prune a network for the target behavior.">
+            <span class="menu-color color-process"></span> Gradient Design
+          </div>
+          <div class="menu-item" data-type="designed-network" title="Inspect the selected network and pass its fitted parameters to downstream analysis.">
+            <span class="menu-color color-result"></span> Designed Network
+          </div>
           <div class="menu-item" data-type="design-spec-config">
             <span class="menu-color color-parameter"></span> Design Spec Config
           </div>
@@ -91,10 +100,10 @@
           </div>
           <div class="menu-section-title">Process</div>
           <div class="menu-item" data-type="atlas-builder">
-            <span class="menu-color color-viewer"></span> Atlas Preview Builder
+            <span class="menu-color color-process"></span> Atlas Preview Builder
           </div>
           <div class="menu-item" data-type="sbml-export">
-            <span class="menu-color color-viewer"></span> SBML Export
+            <span class="menu-color color-process"></span> SBML Export
           </div>
           <div class="menu-section-title">Results</div>
           <div class="menu-item" data-type="model-summary">
@@ -153,6 +162,9 @@
         </button>
         <div class="dropdown-menu" id="legacy-nodes-menu">
           <div class="menu-section-title">WORK FLOW</div>
+          <div class="menu-item" data-type="inverse-design" title="Create a target → gradient optimization → designed network workflow.">
+            <span class="menu-color color-viewer"></span> Inverse Design
+          </div>
           <div class="menu-item" data-type="siso-analysis">
             <span class="menu-color color-viewer"></span> SISO Analysis
           </div>
@@ -315,6 +327,16 @@
     <div class="debug-console-empty">No backend logs captured yet.</div>
   </div>
 </aside>
+
+<dialog id="quick-add-choice" class="quick-add-choice" aria-labelledby="quick-add-choice-title" aria-describedby="quick-add-choice-description">
+  <h2 id="quick-add-choice-title"></h2>
+  <p id="quick-add-choice-description" class="node-info"></p>
+  <div id="quick-add-choice-list" class="viewer-content quick-add-choice-list"></div>
+  <div class="quick-add-choice-actions">
+    <button id="quick-add-new-source" type="button" class="btn btn-secondary">New Reaction Network</button>
+    <button id="quick-add-choice-cancel" type="button" class="btn btn-secondary">Cancel</button>
+  </div>
+</dialog>
 
 <div id="toast-container"></div>
 

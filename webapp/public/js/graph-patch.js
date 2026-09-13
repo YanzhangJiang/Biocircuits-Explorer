@@ -10,6 +10,7 @@ export const QUICK_ADD_REACTION_SOURCE_TYPES = Object.freeze([
   'reaction-network',
   'network-id-definition',
   'design-target',
+  'designed-network',
   'sbml-import',
 ]);
 
@@ -64,6 +65,9 @@ const DEFAULT_NODE_SIZES = Object.freeze({
   'model-builder': Object.freeze({ width: 260, height: 200 }),
   'design-spec-config': Object.freeze({ width: 440, height: 300 }),
   'design-target': Object.freeze({ width: 460, height: 500 }),
+  'inverse-design-target': Object.freeze({ width: 520, height: 1800 }),
+  'gradient-design': Object.freeze({ width: 680, height: 750 }),
+  'designed-network': Object.freeze({ width: 480, height: 400 }),
   'placer-result': Object.freeze({ width: 480, height: 360 }),
   'model-summary': Object.freeze({ width: 380, height: 300 }),
   'vertices-table': Object.freeze({ width: 380, height: 360 }),
@@ -75,10 +79,11 @@ const DEFAULT_NODE_SIZES = Object.freeze({
   'atlas-inverse-result': Object.freeze({ width: 700, height: 620 }),
 });
 
-// nodes.js assigns every parameter/result category the `.viewer` class; keep
-// planning geometry aligned with its CSS min-width so a nominal 60px gap does
-// not collapse after the DOM applies layout constraints.
-const DEFAULT_PARAMETER_SIZE = Object.freeze({ width: 380, height: 300 });
+// nodes.js assigns the `.viewer` class to viewer/result categories and pins
+// inline per-type min sizes from node-sizes.js (result types start at 380px
+// wide); parameter nodes render at their 320px defaultWidth. Reserve the
+// rendered width either way so the nominal 60px gap survives DOM layout.
+const DEFAULT_PARAMETER_SIZE = Object.freeze({ width: 320, height: 300 });
 const DEFAULT_RESULT_SIZE = Object.freeze({ width: 420, height: 300 });
 const DEFAULT_NODE_SIZE = Object.freeze({ width: 280, height: 220 });
 
@@ -194,12 +199,13 @@ function makeDiagnostic(code, message, details = {}) {
   };
 }
 
-function manualSelectionDiagnostic(code, reason, message, candidates) {
+function manualSelectionDiagnostic(code, reason, message, candidates, details = {}) {
   const normalized = candidates.map(item => ({ id: item.id, type: item.type }));
   return makeDiagnostic(code, message, {
     kind: 'manual-selection',
     reason,
     candidates: normalized,
+    ...details,
     candidateNodeIds: normalized.map(item => item.id),
   });
 }
@@ -285,6 +291,57 @@ function planAtlasWorkflow({ workflowType, nodes, occupied, allocator, anchor })
   });
 }
 
+function planInverseDesignWorkflow({ workflowType, occupied, allocator, anchor, targetDefinition = null }) {
+  const plannedNodes = [];
+  const plannedConnections = [];
+  let x = anchor.x;
+  let y = anchor.y;
+  for (const type of ['inverse-design-target', 'gradient-design', 'designed-network']) {
+    y = resolvePlannedY(occupied, type, x, y);
+    const spec = { id: allocator.take(), type, x, y };
+    plannedNodes.push(spec);
+    occupied.push(occupiedRectangle(spec));
+    x += nodeSize(type).width + 60;
+  }
+  const [target, optimizer, output] = plannedNodes;
+  if (targetDefinition) target.initialization = {
+    kind: 'inverse-design-target',
+    definition: cloneValue(targetDefinition),
+  };
+  plannedConnections.push(
+    {
+      fromNode: target.id, fromPort: 'inverse-design-request',
+      toNode: optimizer.id, toPort: 'inverse-design-request',
+    },
+    {
+      fromNode: optimizer.id, fromPort: 'inverse-design-result',
+      toNode: output.id, toPort: 'inverse-design-result',
+    },
+  );
+  return makePatchResult(workflowType, plannedNodes, plannedConnections, {
+    reusedNodeIds: [],
+    targetNodeId: target.id,
+    nextNodeOrdinal: allocator.nextOrdinal,
+  });
+}
+
+// Agent compilation and manual target creation share the same atomic chain.
+// Initialization is part of the patch, so undo/redo restores the compiled goal.
+export function planAgentInverseDesignWorkflow(options = {}) {
+  const definition = options.definition;
+  if (definition?.target?.schema_version !== 'bne-design-target/v1.0.0') {
+    return makeDiagnostic('invalid-inverse-design-target', 'A compiled Design Target v1 is required.');
+  }
+  const graph = normalizePlannerGraph(options.graph || options.snapshot);
+  return planInverseDesignWorkflow({
+    workflowType: 'inverse-design',
+    occupied: graph.nodes.map(occupiedRectangle),
+    allocator: makeIdAllocator(graph.nodes, options.nextNodeOrdinal),
+    anchor: { x: finiteOr(options.anchor?.x, 80), y: finiteOr(options.anchor?.y, 150) },
+    targetDefinition: definition,
+  });
+}
+
 /**
  * Produce a Quick Add patch without reading or mutating editor globals.
  *
@@ -295,7 +352,7 @@ function planAtlasWorkflow({ workflowType, nodes, occupied, allocator, anchor })
 export function planQuickAddWorkflow(options = {}) {
   const workflowType = options.chainType || options.workflowType;
   const workflow = ANALYSIS_WORKFLOWS[workflowType];
-  if (!workflow && !ATLAS_WORKFLOWS.has(workflowType)) {
+  if (!workflow && !ATLAS_WORKFLOWS.has(workflowType) && workflowType !== 'inverse-design') {
     return makeDiagnostic(
       'unknown-quick-add-workflow',
       `Unknown Quick Add workflow: ${String(workflowType)}`,
@@ -315,6 +372,9 @@ export function planQuickAddWorkflow(options = {}) {
   if (ATLAS_WORKFLOWS.has(workflowType)) {
     return planAtlasWorkflow({ workflowType, nodes, occupied, allocator, anchor });
   }
+  if (workflowType === 'inverse-design') {
+    return planInverseDesignWorkflow({ workflowType, occupied, allocator, anchor });
+  }
 
   const sourceCandidates = nodes.filter(item => REACTION_SOURCE_TYPES.has(item.type));
   const createIsolatedSource = options.createIsolatedSource === true;
@@ -331,17 +391,28 @@ export function planQuickAddWorkflow(options = {}) {
     );
   }
 
+  // Selecting a builder also identifies its source when that connection is
+  // unique. Do not make the user select the same workflow context twice.
+  let selectedSourceId = options.selectedSourceId;
+  if (!createIsolatedSource && selectedSourceId == null && options.selectedModelBuilderId != null) {
+    const selectedBuilder = nodes.find(item => item.id === options.selectedModelBuilderId && item.type === 'model-builder');
+    const builderSources = selectedBuilder ? sourceCandidates.filter(item => connections.some(wire =>
+      wire.fromNode === item.id && wire.fromPort === 'reactions' &&
+      wire.toNode === selectedBuilder.id && wire.toPort === 'reactions')) : [];
+    if (builderSources.length === 1) selectedSourceId = builderSources[0].id;
+  }
+
   let source = null;
   if (createIsolatedSource) {
     // Intentionally ignore every compatible live source. The fresh source is
     // allocated below with a stable ID and remains part of the same patch.
-  } else if (options.selectedSourceId != null) {
-    source = sourceCandidates.find(item => item.id === options.selectedSourceId) || null;
+  } else if (selectedSourceId != null) {
+    source = sourceCandidates.find(item => item.id === selectedSourceId) || null;
     if (!source) {
       return manualSelectionDiagnostic(
         'invalid-source-selection',
         'selected-source-is-not-compatible',
-        `Selected node ${String(options.selectedSourceId)} is not a compatible reaction source.`,
+        `Selected node ${String(selectedSourceId)} is not a compatible reaction source.`,
         sourceCandidates,
       );
     }
@@ -397,6 +468,7 @@ export function planQuickAddWorkflow(options = {}) {
       'multiple-compatible-model-builders',
       `Quick Add found multiple model builders connected to ${source.id}; select one before creating the workflow.`,
       connectedBuilders,
+      { sourceNodeId: source.id },
     );
   } else if (connectedBuilders.length === 1) {
     [builder] = connectedBuilders;

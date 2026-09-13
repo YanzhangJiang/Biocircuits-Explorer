@@ -733,6 +733,50 @@ export async function executeROPCloudResult(nodeId) {
   }
 }
 
+export async function runROPCloud(nodeId) {
+  const nSamples = parseInt(document.getElementById(`${nodeId}-samples`)?.value || '10000');
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  const mode = document.getElementById(`${nodeId}-sampling-mode`)?.value || 'x_space';
+  updateROPCloudMode(nodeId);
+  setNodeLoading(nodeId, true);
+  try {
+    let data;
+    if (mode === 'qk') {
+      const modelConn = connections.find(c => c.toNode === nodeId && c.toPort === 'model');
+      if (!modelConn) throw new Error('qK mode requires Model input connection');
+      const sessionId = await ensureModelSession(nodeId);
+      const span = parseInt(document.getElementById(`${nodeId}-span`)?.value || '6');
+      data = await api('rop_cloud', {
+        sampling_mode: 'qk',
+        session_id: sessionId,
+        n_samples: nSamples,
+        span: span,
+      });
+    } else {
+      const rxConn = connections.find(c => c.toNode === nodeId && c.toPort === 'reactions');
+      if (!rxConn) throw new Error('x-space mode requires Reactions input connection');
+      const { reactions } = getReactionsFromNode(rxConn.fromNode);
+      if (!reactions.length) throw new Error('Add at least one reaction in the connected Reaction Network');
+      refreshROPCloudTargetOptions(nodeId, reactions);
+      const targetSpecies = document.getElementById(`${nodeId}-target-species`)?.value || '';
+      const logxMin = parseFloat(document.getElementById(`${nodeId}-logx-min`)?.value || '-6');
+      const logxMax = parseFloat(document.getElementById(`${nodeId}-logx-max`)?.value || '6');
+      data = await api('rop_cloud', {
+        sampling_mode: 'x_space',
+        reactions: reactions,
+        n_samples: nSamples,
+        logx_min: logxMin,
+        logx_max: logxMax,
+        target_species: targetSpecies,
+      });
+    }
+    renderROPCloudOutput(nodeId, contentEl, data);
+  } catch (e) {
+    renderNodeError(contentEl, e);
+  }
+  setNodeLoading(nodeId, false);
+}
+
 export function updateFRETConfig(nodeId) {
   const grid = parseInt(document.getElementById(`${nodeId}-grid`).value);
   nodeRegistry[nodeId].data.config = { n_grid: grid };
@@ -852,4 +896,29 @@ export async function executeFRETResult(nodeId) {
       setNodeLoading(nodeId, false);
     }
   }
+}
+
+export async function runFRETHeatmap(nodeId) {
+  const nGrid = parseInt(document.getElementById(`${nodeId}-grid`)?.value || '80');
+  const contentEl = document.getElementById(`${nodeId}-content`);
+  setNodeLoading(nodeId, true);
+  try {
+    const sessionId = await ensureModelSession(nodeId);
+    const data = await api('fret_heatmap', {
+      session_id: sessionId,
+      n_grid: nGrid,
+    });
+    if (nodeRegistry[nodeId]) {
+      ensureNodeData(nodeId).fretHeatmapData = data;
+    }
+    contentEl.innerHTML = `<div class="plot-container" id="${nodeId}-plot"></div>`;
+    commitWorkspaceSnapshot('fret-heatmap');
+    setTimeout(() => {
+      plotHeatmap(data, `${nodeId}-plot`);
+      setupPlotResize(nodeId, `${nodeId}-plot`);
+    }, 50);
+  } catch (e) {
+    renderNodeError(contentEl, e);
+  }
+  setNodeLoading(nodeId, false);
 }

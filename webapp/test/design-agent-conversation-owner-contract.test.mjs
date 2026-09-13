@@ -282,6 +282,7 @@ setNodeView('agent');
 
 const textarea = body.querySelector('textarea');
 const sendButton = body.querySelectorAll('button').find(button => button.textContent === 'Send');
+const compileButton = body.querySelectorAll('button').find(button => button.textContent === 'Compile target');
 const rulesPanel = () => body.querySelector('.rules-list');
 const chartPanel = () => body.querySelector('.chart-wrap');
 const exportButton = () => body.querySelectorAll('button')
@@ -473,6 +474,56 @@ await test('the next turn uses the restored workspace chat state', async () => {
   postCalls[3].resolve(reply('fresh-owner', { ...restoredState, turn: 8 }));
   await settle();
   assert.deepEqual(getDesignAgentConversation().chatState, { ...restoredState, turn: 8 });
+});
+
+const compiledTargetReply = {
+  target: {
+    schema_version: 'bne-design-target/v1.0.0', description: 'monotone increasing', source: 'agent',
+    inputs: [{ name: 'X', min: .05, max: 10, scale: 'log' }],
+    outputs: [{ name: 'response', species: 'A', transform: 'linear', offset: 0, optimize_offset: false }],
+    samples: [{ inputs: [.05], outputs: [.1], weight: 1 }],
+  },
+  interpretation: 'Compiled increasing response.',
+  warnings: ['Review the assumed output range.'],
+};
+
+await test('target compilation is single-flight and a restored workspace retires it', async () => {
+  // Preload the lazy module so the transport starts within this test's bounded tick wait.
+  await import('../public/js/design-target-agent.js');
+  setDesignAgentConversation({ convo: [], chatState: { workspace: 'target-old' } });
+  typeMessage('monotone increasing');
+  fire(compileButton, 'click');
+  await waitForPostCount(5);
+  assert.equal(compileButton.disabled, true);
+  assert.equal(sendButton.disabled, true);
+  assert.equal(JSON.parse(postCalls[4].options.body).message, 'monotone increasing');
+  setDesignAgentConversation({ convo: [], chatState: { workspace: 'target-new' } });
+  assert.equal(postCalls[4].options.signal.aborted, true);
+  postCalls[4].resolve(compiledTargetReply);
+  await settle();
+  assert.deepEqual(getDesignAgentConversation().convo, []);
+  assert.doesNotMatch(body.textContent, /Compiled increasing response/);
+});
+
+await test('compiled target is retained as editable evidence and exported only by user action', async () => {
+  const events = [];
+  window.dispatchEvent = event => events.push(event);
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  typeMessage('monotone increasing');
+  fire(compileButton, 'click');
+  await waitForPostCount(6);
+  postCalls[5].resolve(compiledTargetReply);
+  await settle();
+  const saved = getDesignAgentConversation();
+  assert.deepEqual(saved.convo.at(-1).res.target, compiledTargetReply.target);
+  assert.equal(events.length, 0, 'compilation must not asynchronously change a workspace graph');
+  const handoff = body.querySelectorAll('button').find(button => button.textContent.startsWith('Open inverse design'));
+  assert.ok(handoff);
+  fire(handoff, 'click');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'bcx:agent-target-export');
+  assert.deepEqual(events[0].detail.target, compiledTargetReply.target);
+  assert.notEqual(events[0].detail.target, saved.convo.at(-1).res.target, 'handoff is detached JSON');
 });
 
 process.off('unhandledRejection', onUnhandled);

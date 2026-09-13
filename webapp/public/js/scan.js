@@ -9,6 +9,7 @@ import {
 } from './state.js';
 import { api, showToast, handleNodeError, renderNodeError, escapeHtml, cloneSerializable } from './api.js';
 import { stableJson } from './stable-json.js';
+import { scanConfigWithModelParameters } from './model-parameters.js';
 import { applyPlotLayoutTheme, getPlotTheme, themedColorbar, prefersLightTheme } from './theme.js';
 import { setNodeLoading, setupPlotResize, getModelContextFromBuilder, triggerConfigUpdate, ensureModelSession } from './nodes.js';
 import { commitWorkspaceSnapshot, getNodeSerialData } from './workspace.js';
@@ -61,7 +62,7 @@ function syncScanValidityNotice(plotId, prepared) {
   noticeEl.textContent = message;
 }
 
-function scanModelIdentity(nodeId) {
+function scanModelContext(nodeId) {
   const dependencyConnections = executionDependencyConnections();
   const visited = new Set();
   const findBuilder = (current) => {
@@ -78,6 +79,13 @@ function scanModelIdentity(nodeId) {
   const builderNodeId = findBuilder(nodeId);
   const context = builderNodeId ? getModelContextFromBuilder(builderNodeId) : null;
   if (!builderNodeId || !context) return null;
+  return { builderNodeId, context };
+}
+
+function scanModelIdentity(nodeId) {
+  const resolved = scanModelContext(nodeId);
+  if (!resolved) return null;
+  const { builderNodeId, context } = resolved;
   return {
     builderNodeId,
     networkIrHash: context.networkIrHash || context.network_ir_hash || null,
@@ -255,7 +263,10 @@ async function executeScanRequest(nodeId, definition) {
     if (!ticket) return false;
     setNodeLoading(nodeId, true);
     const dependencyFingerprint = executionContext.inputFingerprint;
-    const request = { session_id: sessionId, ...currentConfig };
+    const request = {
+      session_id: sessionId,
+      ...scanConfigWithModelParameters(currentConfig, scanModelContext(nodeId)?.context),
+    };
     requestIsCurrent = () => {
       const liveConfig = definition.readCurrentConfig();
       const context = scanExecutionContext(nodeId, definition, liveConfig);

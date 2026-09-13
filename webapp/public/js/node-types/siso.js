@@ -1,6 +1,6 @@
 import { nodeRegistry } from '../state.js';
-import { api, escapeHtml, renderNodeError, syncSelectOptions } from '../api.js';
-import { setNodeLoading, getModelForNode, getQKSymbolsForNode, getModelContextForNode, setupAutoUpdate } from '../nodes.js';
+import { syncSelectOptions } from '../api.js';
+import { getModelForNode, getQKSymbolsForNode, setupAutoUpdate } from '../nodes.js';
 import {
   computeSISOResult,
   executeQKPolyResult,
@@ -138,44 +138,6 @@ export const SISO_TYPES = {
         <button class="btn btn-run" data-action="recomputeSISO" data-node="${nodeId}">Run</button>
         <div class="viewer-content" id="${nodeId}-content"><span class="text-dim">Waiting for model...</span></div>
       `;
-    },
-    async execute(nodeId) {
-      const modelContext = getModelContextForNode(nodeId);
-      const qKSymbols = modelContext?.qK_syms || [];
-
-      // Populate the select
-      const sel = document.getElementById(`${nodeId}-siso-select`);
-      if (sel && qKSymbols.length > 0) {
-        const curVal = sel.value;
-        sel.innerHTML = '';
-        qKSymbols.forEach(s => {
-          const opt = document.createElement('option');
-          opt.value = s; opt.textContent = s;
-          sel.appendChild(opt);
-        });
-        if (curVal && qKSymbols.includes(curVal)) sel.value = curVal;
-      }
-      const changeQK = sel ? sel.value : qKSymbols[0];
-      if (!changeQK) return;
-
-      const contentEl = document.getElementById(`${nodeId}-content`);
-      setNodeLoading(nodeId, true);
-      try {
-        if (!modelContext?.sessionId) throw new Error('Build the connected model first');
-        const data = await api('siso_paths', { session_id: modelContext.sessionId, change_qK: changeQK });
-        let html = `<div style="margin-bottom:8px;"><strong>${escapeHtml(data.n_paths)}</strong> paths, <strong>${data.sources.length}</strong> sources, <strong>${data.sinks.length}</strong> sinks</div>`;
-        html += '<div class="path-list">';
-        data.paths.forEach(p => {
-          const permStr = p.perms.map(pr => `[${pr.join(',')}]`).join(' → ');
-          html += `<div class="path-item" data-idx="${escapeHtml(p.idx)}" data-qk="${escapeHtml(changeQK)}" data-node="${nodeId}" data-action="selectSISOPath">#${escapeHtml(p.idx)}: ${escapeHtml(permStr)}</div>`;
-        });
-        html += '</div>';
-        html += `<div class="plot-container" id="${nodeId}-traj-plot" style="display:none;"></div>`;
-        contentEl.innerHTML = html;
-      } catch (e) {
-        renderNodeError(contentEl, e);
-      }
-      setNodeLoading(nodeId, false);
     },
   },
 };

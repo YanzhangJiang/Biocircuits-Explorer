@@ -1,14 +1,30 @@
 import assert from 'node:assert/strict';
-import {
+
+globalThis.window = {
+  matchMedia: () => null,
+  addEventListener() {},
+  location: { protocol: 'http:', hostname: '127.0.0.1', port: '8000' },
+  sessionStorage: { getItem() { return null; }, setItem() {} },
+};
+globalThis.document = {
+  readyState: 'loading',
+  documentElement: { dataset: {}, style: { setProperty() {} } },
+  getElementById() { return null; },
+  addEventListener() {},
+  querySelectorAll() { return []; },
+};
+globalThis.HTMLSelectElement = class HTMLSelectElement {};
+
+const {
   buildDesignScreenRequest,
   designCandidateKey,
   renderDesignScreenResults,
-} from '../public/js/design-screen-render.js';
-import {
+} = await import('../public/js/design-screen-render.js');
+const {
   formatRopShapeOptimizationResult,
   renderRopShapeOptimizationResult,
   ROP_SHAPE_RESULT_VERSION,
-} from '../public/js/rop-shape-render.js';
+} = await import('../public/js/rop-shape-render.js');
 
 let passed = 0;
 function test(name, fn) {

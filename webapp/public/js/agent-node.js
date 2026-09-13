@@ -13,7 +13,7 @@ import {
 } from './nodes.js';
 import { addReactionRow } from './model.js';
 import { nodeIdCounter, nodeRegistry } from './state.js';
-import { showToast } from './api.js';
+import { showToast, escapeHtml } from './api.js';
 import { writeClipboardText } from './native-clipboard.js';
 import { dispatch } from './commands.js';
 import { planAgentAutoSpawnWorkflow } from './graph-patch.js';
@@ -42,12 +42,6 @@ function rt(nodeId) {
 }
 
 function $$(nodeId, suffix) { return document.getElementById(`${nodeId}${suffix}`); }
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
 
 // ===== Node body markup =====
 

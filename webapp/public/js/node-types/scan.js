@@ -1,8 +1,102 @@
 import { syncSelectOptions } from '../api.js';
-import { getModelForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
+import { nodeRegistry } from '../state.js';
+import { getModelForNode, getModelContextForNode, setupAutoUpdate, triggerConfigUpdate } from '../nodes.js';
+import { resolvedModelParameters } from '../model-parameters.js';
 import {
   executeScan1DResult, executeScan2DResult, setupLegacyScanInputInvalidation,
 } from '../scan.js';
+
+function fixedParameterBody(nodeId) {
+  return `<section class="inverse-config-section scan-fixed-parameters">
+    <div class="reaction-header"><span class="reaction-header-label">Fixed concentrations &amp; Kd</span></div>
+    <div id="${nodeId}-fixed-parameters"></div>
+    <div class="node-info">Physical values. The scanned coordinates use their configured ranges.<div id="${nodeId}-design-readout"></div></div>
+  </section>`;
+}
+
+export function prepareFixedParameterControls(nodeId) {
+  const context = getModelContextForNode(nodeId);
+  const container = document.getElementById(`${nodeId}-fixed-parameters`);
+  if (!context?.model || !container) return;
+  const owner = nodeRegistry[nodeId];
+  const overrides = owner.data?.fixedParameterOverrides || {};
+  const physical = resolvedModelParameters(context, overrides);
+  const scanned = new Set(['param', 'param1', 'param2'].map(suffix =>
+    document.getElementById(`${nodeId}-${suffix}`)?.value).filter(Boolean));
+  container.replaceChildren();
+  for (const [symbol, value] of Object.entries(physical)) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.id = `${nodeId}-fixed-${encodeURIComponent(symbol)}`;
+    input.type = 'number';
+    input.min = '1e-20';
+    input.max = '1e20';
+    input.step = 'any';
+    input.value = value == null ? '' : String(value);
+    input.disabled = scanned.has(symbol);
+    label.htmlFor = input.id;
+    label.textContent = `${symbol}${input.disabled ? ' (scanned)' : ''}:`;
+    input.addEventListener('input', () => {
+      if (nodeRegistry[nodeId] !== owner) return;
+      owner.data ||= {};
+      const next = { ...owner.data.fixedParameterOverrides };
+      const parsed = input.value.trim() === '' ? null : Number(input.value);
+      const defaultValue = resolvedModelParameters(context)[symbol];
+      if (parsed === defaultValue) delete next[symbol];
+      else next[symbol] = Number.isFinite(parsed) ? parsed : null;
+      owner.data.fixedParameterOverrides = next;
+      triggerConfigUpdate(nodeId, owner.type);
+    });
+    row.append(label, input);
+    container.appendChild(row);
+  }
+  const readout = document.getElementById(`${nodeId}-design-readout`);
+  if (readout) {
+    const outputs = context.outputs || [];
+    readout.textContent = outputs.length
+      ? `Design readout: ${outputs.map(output => `${output.species} (${output.transform || 'linear'}; offset ${output.offset || 0})`).join(', ')}. This scan plots log10 of the expression entered above.`
+      : 'Scan outputs are log10 of the expression entered above.';
+  }
+}
+
+function initializeFixedParameterControls(nodeId) {
+  ['param', 'param1', 'param2'].forEach(suffix => {
+    document.getElementById(`${nodeId}-${suffix}`)?.addEventListener('change', () =>
+      prepareFixedParameterControls(nodeId));
+  });
+}
+
+function scan1DParameterBody(nodeId, autoUpdate) {
+  const auto = autoUpdate ? ' class="auto-update"' : '';
+  return `
+        <div class="param-row">
+          <label>Scan parameter:</label>
+          <select id="${nodeId}-param"${auto}></select>
+        </div>
+        <div class="param-row">
+          <label>Range min:</label>
+          <input type="number" id="${nodeId}-min" value="-6" step="0.5"${auto}>
+        </div>
+        <div class="param-row">
+          <label>Range max:</label>
+          <input type="number" id="${nodeId}-max" value="6" step="0.5"${auto}>
+        </div>
+        <div class="param-row">
+          <label>Points:</label>
+          <input type="number" id="${nodeId}-points" value="200" min="10" max="1000"${auto}>
+        </div>
+        <div class="param-row">
+          <label>Output expression:</label>
+          <div style="display:flex;gap:4px;">
+            <input type="text" id="${nodeId}-expr" placeholder="e.g., C_ES or 2*C_ES+E" style="flex:1;"${auto}>
+            <select id="${nodeId}-species-helper" data-action="insertSpecies1D" data-node="${nodeId}" style="width:80px;">
+              <option value="">Insert...</option>
+            </select>
+          </div>
+        </div>`;
+}
 
 export const SCAN_TYPES = {
   'scan-1d-params': {
@@ -13,36 +107,13 @@ export const SCAN_TYPES = {
     outputs: [{ port: 'params', type: 'Scan1DConfig', label: 'Config' }],
     defaultWidth: 320,
     createBody(nodeId) {
-      return `
-        <div class="param-row">
-          <label>Scan parameter:</label>
-          <select id="${nodeId}-param" class="auto-update"></select>
-        </div>
-        <div class="param-row">
-          <label>Range min:</label>
-          <input type="number" id="${nodeId}-min" value="-6" step="0.5" class="auto-update">
-        </div>
-        <div class="param-row">
-          <label>Range max:</label>
-          <input type="number" id="${nodeId}-max" value="6" step="0.5" class="auto-update">
-        </div>
-        <div class="param-row">
-          <label>Points:</label>
-          <input type="number" id="${nodeId}-points" value="200" min="10" max="1000" class="auto-update">
-        </div>
-        <div class="param-row">
-          <label>Output expression:</label>
-          <div style="display:flex;gap:4px;">
-            <input type="text" id="${nodeId}-expr" placeholder="e.g., C_ES or 2*C_ES+E" style="flex:1;" class="auto-update">
-            <select id="${nodeId}-species-helper" data-action="insertSpecies1D" data-node="${nodeId}" style="width:80px;">
-              <option value="">Insert...</option>
-            </select>
-          </div>
-        </div>
+      return `${scan1DParameterBody(nodeId, true)}
+        ${fixedParameterBody(nodeId)}
       `;
     },
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'scan-1d-params');
+      initializeFixedParameterControls(nodeId);
     },
     async prepare(nodeId) {
       const model = getModelForNode(nodeId);
@@ -53,6 +124,7 @@ export const SCAN_TYPES = {
       const qkSymbols = [...model.q_sym, ...model.K_sym];
       syncSelectOptions(paramSelect, qkSymbols);
       syncSelectOptions(speciesHelper, [''].concat(model.x_sym), '', 0);
+      prepareFixedParameterControls(nodeId);
       triggerConfigUpdate(nodeId, 'scan-1d-params');
     },
   },
@@ -102,10 +174,12 @@ export const SCAN_TYPES = {
             </select>
           </div>
         </div>
+        ${fixedParameterBody(nodeId)}
       `;
     },
     onInit(nodeId) {
       setupAutoUpdate(nodeId, 'scan-2d-params');
+      initializeFixedParameterControls(nodeId);
     },
     async prepare(nodeId) {
       const model = getModelForNode(nodeId);
@@ -117,6 +191,7 @@ export const SCAN_TYPES = {
       syncSelectOptions(param1Select, qkSymbols, param1Select?.value, 0);
       syncSelectOptions(param2Select, qkSymbols, param2Select?.value, 1);
       syncSelectOptions(speciesHelper, [''].concat(model.x_sym), '', 0);
+      prepareFixedParameterControls(nodeId);
       triggerConfigUpdate(nodeId, 'scan-2d-params');
     },
   },
@@ -166,32 +241,7 @@ export const SCAN_TYPES = {
     outputs: [],
     defaultWidth: 420,
     createBody(nodeId) {
-      return `
-        <div class="param-row">
-          <label>Scan parameter:</label>
-          <select id="${nodeId}-param"></select>
-        </div>
-        <div class="param-row">
-          <label>Range min:</label>
-          <input type="number" id="${nodeId}-min" value="-6" step="0.5">
-        </div>
-        <div class="param-row">
-          <label>Range max:</label>
-          <input type="number" id="${nodeId}-max" value="6" step="0.5">
-        </div>
-        <div class="param-row">
-          <label>Points:</label>
-          <input type="number" id="${nodeId}-points" value="200" min="10" max="1000">
-        </div>
-        <div class="param-row">
-          <label>Output expression:</label>
-          <div style="display:flex;gap:4px;">
-            <input type="text" id="${nodeId}-expr" placeholder="e.g., C_ES or 2*C_ES+E" style="flex:1;">
-            <select id="${nodeId}-species-helper" data-action="insertSpecies1D" data-node="${nodeId}" style="width:80px;">
-              <option value="">Insert...</option>
-            </select>
-          </div>
-        </div>
+      return `${scan1DParameterBody(nodeId, false)}
         <button class="btn btn-run" data-action="runParameterScan1D" data-node="${nodeId}">Run</button>
         <div class="viewer-content" id="${nodeId}-content">
           <span class="text-dim">Connect to model and configure scan.</span>
@@ -200,16 +250,6 @@ export const SCAN_TYPES = {
     },
     onInit(nodeId) {
       setupLegacyScanInputInvalidation(nodeId);
-    },
-    async execute(nodeId) {
-      const model = getModelForNode(nodeId);
-      if (!model) return;
-
-      const paramSelect = document.getElementById(`${nodeId}-param`);
-      const speciesHelper = document.getElementById(`${nodeId}-species-helper`);
-      const qkSymbols = [...model.q_sym, ...model.K_sym];
-      syncSelectOptions(paramSelect, qkSymbols);
-      syncSelectOptions(speciesHelper, [''].concat(model.x_sym), '', 0);
     },
   },
   'parameter-scan-2d': {
@@ -262,18 +302,6 @@ export const SCAN_TYPES = {
     },
     onInit(nodeId) {
       setupLegacyScanInputInvalidation(nodeId);
-    },
-    async execute(nodeId) {
-      const model = getModelForNode(nodeId);
-      if (!model) return;
-
-      const param1Select = document.getElementById(`${nodeId}-param1`);
-      const param2Select = document.getElementById(`${nodeId}-param2`);
-      const speciesHelper = document.getElementById(`${nodeId}-species-helper`);
-      const qkSymbols = [...model.q_sym, ...model.K_sym];
-      syncSelectOptions(param1Select, qkSymbols, param1Select?.value, 0);
-      syncSelectOptions(param2Select, qkSymbols, param2Select?.value, 1);
-      syncSelectOptions(speciesHelper, [''].concat(model.x_sym), '', 0);
     },
   },
 };

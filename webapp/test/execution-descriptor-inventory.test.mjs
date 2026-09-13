@@ -39,7 +39,7 @@ function test(name, fn) {
 }
 
 test('the node contract inventory is exhaustive and uses the five architecture roles', () => {
-  assert.equal(Object.keys(NODE_TYPES).length, 40);
+  assert.equal(Object.keys(NODE_TYPES).length, 43);
   assert.deepEqual(Object.keys(NODE_CONTRACTS).sort(), Object.keys(NODE_TYPES).sort());
   assert.deepEqual([...NODE_ROLES].sort(), ['compute', 'config', 'manual-gate', 'source', 'viewer']);
   for (const [nodeType, definition] of Object.entries(NODE_TYPES)) {

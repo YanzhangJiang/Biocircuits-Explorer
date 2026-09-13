@@ -5,8 +5,11 @@
 // which runtime-data keys to clone.  Types with complex logic still use
 // custom `serialize` / `restore` functions.
 
-import { nodeRegistry } from './state.js';
+import { getWorkspaceRuntimeEpoch, nodeRegistry } from './state.js';
 import { cloneSerializable } from './api.js';
+import { INVERSE_DESIGN_DEFAULTS } from './inverse-design-core.js';
+import { DEFAULT_TARGET } from './design-target-adapters.js';
+import { inspectExecutionLifecycle } from './execution-lifecycle-core.js';
 import {
   readCurrentModelBuildResult,
   stripSessionIdentifiers,
@@ -16,18 +19,21 @@ import {
 let _updateROPCloudMode, _updateRegimeGraphMode, _updateROPPolyDimension;
 let _restoreRopShapeResultView, _updateRopShapeIntentVisibility;
 let _restorePlacerResultView, _restoreAtlasNodeExecution;
+let _restoreInverseDesignTargetView, _restoreInverseDesignResultView, _restoreDesignedNetworkView;
 async function ensureHookImports() {
   if (_updateROPCloudMode && _updateRegimeGraphMode &&
       _updateROPPolyDimension && _restoreRopShapeResultView &&
       _updateRopShapeIntentVisibility && _restorePlacerResultView &&
-      _restoreAtlasNodeExecution) return;
-  const [ropCloud, regimeGraph, scan, ropShape, placer, executionLifecycle] = await Promise.all([
+      _restoreAtlasNodeExecution && _restoreInverseDesignTargetView && _restoreInverseDesignResultView &&
+      _restoreDesignedNetworkView) return;
+  const [ropCloud, regimeGraph, scan, ropShape, placer, executionLifecycle, inverseDesign] = await Promise.all([
     import('./rop-cloud.js'),
     import('./regime-graph.js'),
     import('./scan.js'),
     import('./node-types/rop-shape.js'),
     import('./node-types/placer.js'),
     import('./execution-lifecycle.js'),
+    import('./node-types/inverse-design.js'),
   ]);
   _updateROPCloudMode = ropCloud.updateROPCloudMode;
   _updateRegimeGraphMode = regimeGraph.updateRegimeGraphMode;
@@ -36,9 +42,30 @@ async function ensureHookImports() {
   _updateRopShapeIntentVisibility = ropShape.updateRopShapeIntentVisibility;
   _restorePlacerResultView = placer.restorePlacerResultView;
   _restoreAtlasNodeExecution = executionLifecycle.restoreAtlasNodeExecution;
+  _restoreInverseDesignTargetView = inverseDesign.restoreInverseDesignTargetView;
+  _restoreInverseDesignResultView = inverseDesign.restoreInverseDesignResultView;
+  _restoreDesignedNetworkView = inverseDesign.restoreDesignedNetworkView;
 }
 // Pre-load hooks at module init (non-blocking)
 ensureHookImports();
+
+function restoreInverseViewWhenReady(nodeId, data, resolveHook) {
+  const hook = resolveHook();
+  if (hook) return hook(nodeId, data);
+  const owner = nodeRegistry[nodeId];
+  const epoch = getWorkspaceRuntimeEpoch();
+  const lifecycle = owner?._inverseDesignLifecycle;
+  const runtime = lifecycle ? inspectExecutionLifecycle(lifecycle) : null;
+  // A deferred module load must not restore into a replaced workspace or
+  // overwrite a run that started while the restore hook was loading.
+  ensureHookImports().then(() => {
+    if (nodeRegistry[nodeId] !== owner || getWorkspaceRuntimeEpoch() !== epoch ||
+        owner?._inverseDesignLifecycle !== lifecycle) return;
+    const current = lifecycle ? inspectExecutionLifecycle(lifecycle) : null;
+    if (current?.revision !== runtime?.revision || current?.state !== runtime?.state) return;
+    resolveHook()?.(nodeId, data);
+  });
+}
 
 // ===== Field type readers / writers ================================
 
@@ -157,6 +184,59 @@ export function restoreBySchema(nodeId, schema, data) {
 
 // ===== Node Serialization Schemas ==================================
 
+// Field groups shared by the new params nodes and their legacy merged
+// counterparts, whose DOM ids are identical by design.
+const SCAN_1D_FIELDS = {
+  param_symbol:  { suffix: '-param',  type: 'string' },
+  param_min:     { suffix: '-min',    type: 'float', default: '-6' },
+  param_max:     { suffix: '-max',    type: 'float', default: '6' },
+  n_points:      { suffix: '-points', type: 'int',   default: '200' },
+  _expr:         { suffix: '-expr',   type: 'expr',  arrayKey: 'output_exprs' },
+};
+
+const ROP_CLOUD_FIELDS = {
+  mode:          { suffix: '-sampling-mode',  type: 'string', default: 'x_space' },
+  samples:       { suffix: '-samples',        type: 'int',    default: '10000' },
+  span:          { suffix: '-span',           type: 'int',    default: '6' },
+  logxMin:       { suffix: '-logx-min',       type: 'float',  default: '-6' },
+  logxMax:       { suffix: '-logx-max',       type: 'float',  default: '6' },
+  targetSpecies: { suffix: '-target-species',  type: 'string' },
+};
+
+function restoreROPCloudMode(nodeId) {
+  _updateROPCloudMode?.(nodeId);
+}
+
+const ROP_POLY_FIELDS = {
+  dimension:        { suffix: '-dimension',        type: 'int',   default: '2' },
+  add_inner_points: { suffix: '-add-inner-points', type: 'bool',  default: true },
+  npoints:          { suffix: '-npoints',          type: 'int',   default: '5000' },
+  singular_extends: { suffix: '-singular-extends', type: 'float', default: '2' },
+};
+
+function serializeROPPolyPairs(nodeId, result) {
+  const dim = result.dimension || 2;
+  const axisCount = dim === 3 ? 3 : 2;
+  result.pairs = [];
+  for (let i = 1; i <= axisCount; i++) {
+    result.pairs.push({
+      x_symbol:  document.getElementById(`${nodeId}-x${i}`)?.value || '',
+      qk_symbol: document.getElementById(`${nodeId}-qk${i}`)?.value || '',
+    });
+  }
+}
+
+function restoreROPPolyPairs(nodeId, data) {
+  (data.pairs || []).forEach((pair, idx) => {
+    const axis = idx + 1;
+    const xEl = document.getElementById(`${nodeId}-x${axis}`);
+    const qkEl = document.getElementById(`${nodeId}-qk${axis}`);
+    if (xEl && pair.x_symbol) xEl.value = pair.x_symbol;
+    if (qkEl && pair.qk_symbol) qkEl.value = pair.qk_symbol;
+  });
+  _updateROPPolyDimension?.(nodeId);
+}
+
 export const NODE_SCHEMAS = {
   'siso-params': {
     fields: {
@@ -173,13 +253,9 @@ export const NODE_SCHEMAS = {
   },
 
   'scan-1d-params': {
-    fields: {
-      param_symbol:  { suffix: '-param',  type: 'string' },
-      param_min:     { suffix: '-min',    type: 'float', default: '-6' },
-      param_max:     { suffix: '-max',    type: 'float', default: '6' },
-      n_points:      { suffix: '-points', type: 'int',   default: '200' },
-      _expr:         { suffix: '-expr',   type: 'expr',  arrayKey: 'output_exprs' },
-    },
+    data: ['fixedParameterOverrides'],
+    restoreToData: ['fixedParameterOverrides'],
+    fields: SCAN_1D_FIELDS,
   },
   'placer-params': {
     fields: {
@@ -247,6 +323,56 @@ export const NODE_SCHEMAS = {
     includeConfig: true,
   },
 
+  'inverse-design-target': {
+    fields: {
+      inverseDescription: { suffix: '-description', type: 'string', default: DEFAULT_TARGET.description },
+      inverseTargetMode: { suffix: '-target-mode', type: 'string', default: 'curve' },
+      inverseTargetJSON: { suffix: '-target-json', type: 'string', default: JSON.stringify(DEFAULT_TARGET) },
+      inverseDrawingJSON: { suffix: '-drawing-json', type: 'string', default: '' },
+      inverseTargetPoints: { suffix: '-target-points', type: 'int', default: 24 },
+      inverseImageResolution: { suffix: '-image-resolution', type: 'int', default: 12 },
+      inverseImageInvert: { suffix: '-image-invert', type: 'string', default: 'false' },
+      inverseAuxiliaryMonomers: { suffix: '-aux-monomers', type: 'int', default: INVERSE_DESIGN_DEFAULTS.chemistry.auxiliary_monomers },
+      inverseMaxComplexSize: { suffix: '-max-complex-size', type: 'int', default: INVERSE_DESIGN_DEFAULTS.chemistry.max_complex_size },
+      inverseMaxReactions: { suffix: '-max-reactions', type: 'int', default: INVERSE_DESIGN_DEFAULTS.chemistry.max_reactions },
+      inverseAllowHomomers: { suffix: '-allow-homomers', type: 'string', default: 'true' },
+      inverseChemistryJSON: { suffix: '-chemistry-json', type: 'string', default: '{}' },
+      inverseReferenceState: { suffix: '-reference-state', type: 'string', default: '' },
+    },
+    data: ['inverseDesignRequest'],
+    restoreToData: ['inverseDesignRequest'],
+    afterRestore(nodeId, data) {
+      restoreInverseViewWhenReady(nodeId, data, () => _restoreInverseDesignTargetView);
+    },
+  },
+
+  'gradient-design': {
+    fields: {
+      inverseLearningRate: { suffix: '-learning-rate', type: 'float', default: INVERSE_DESIGN_DEFAULTS.optimization.learning_rate },
+      inverseEpochs: { suffix: '-epochs', type: 'int', default: INVERSE_DESIGN_DEFAULTS.optimization.epochs },
+      inverseRestarts: { suffix: '-restarts', type: 'int', default: INVERSE_DESIGN_DEFAULTS.optimization.restarts },
+      inversePruneRounds: { suffix: '-prune-rounds', type: 'int', default: INVERSE_DESIGN_DEFAULTS.optimization.prune_rounds },
+      inversePruneFraction: { suffix: '-prune-fraction', type: 'float', default: INVERSE_DESIGN_DEFAULTS.optimization.prune_fraction },
+      inversePruneTolerance: { suffix: '-prune-tolerance', type: 'float', default: INVERSE_DESIGN_DEFAULTS.optimization.prune_tolerance },
+      inverseMaxRMSE: { suffix: '-max-rmse', type: 'float', default: INVERSE_DESIGN_DEFAULTS.optimization.max_rmse },
+      inverseOptimizeTotals: { suffix: '-optimize-totals', type: 'string', default: 'true' },
+      inverseSeed: { suffix: '-seed', type: 'int', default: INVERSE_DESIGN_DEFAULTS.optimization.seed },
+    },
+    data: ['inverseDesignRequest', 'inverseDesignResult', 'inverseDesignDrawing'],
+    restoreToData: ['inverseDesignRequest', 'inverseDesignResult', 'inverseDesignDrawing'],
+    afterRestore(nodeId, data) {
+      restoreInverseViewWhenReady(nodeId, data, () => _restoreInverseDesignResultView);
+    },
+  },
+
+  'designed-network': {
+    data: ['designedNetwork'],
+    restoreToData: ['designedNetwork'],
+    afterRestore(nodeId, data) {
+      restoreInverseViewWhenReady(nodeId, data, () => _restoreDesignedNetworkView);
+    },
+  },
+
   'rop-shape-edit-config': {
     fields: {
       ropShapeKind:            { suffix: '-rop-shape-kind',            type: 'string', default: 'broaden' },
@@ -283,6 +409,8 @@ export const NODE_SCHEMAS = {
   },
 
   'scan-2d-params': {
+    data: ['fixedParameterOverrides'],
+    restoreToData: ['fixedParameterOverrides'],
     fields: {
       param1_symbol: { suffix: '-param1', type: 'string' },
       param2_symbol: { suffix: '-param2', type: 'string' },
@@ -296,17 +424,10 @@ export const NODE_SCHEMAS = {
   },
 
   'rop-cloud-params': {
-    fields: {
-      mode:          { suffix: '-sampling-mode',  type: 'string', default: 'x_space' },
-      samples:       { suffix: '-samples',        type: 'int',    default: '10000' },
-      span:          { suffix: '-span',           type: 'int',    default: '6' },
-      logxMin:       { suffix: '-logx-min',       type: 'float',  default: '-6' },
-      logxMax:       { suffix: '-logx-max',       type: 'float',  default: '6' },
-      targetSpecies: { suffix: '-target-species',  type: 'string' },
-    },
+    fields: ROP_CLOUD_FIELDS,
     includeConfig: true,
     restoreToData: ['targetSpecies'],
-    afterRestore(nodeId) { _updateROPCloudMode?.(nodeId); },
+    afterRestore: restoreROPCloudMode,
   },
 
   'fret-params': {
@@ -319,46 +440,24 @@ export const NODE_SCHEMAS = {
   },
 
   'rop-poly-params': {
-    fields: {
-      dimension:        { suffix: '-dimension',        type: 'int',   default: '2' },
-      add_inner_points: { suffix: '-add-inner-points', type: 'bool',  default: true },
-      npoints:          { suffix: '-npoints',          type: 'int',   default: '5000' },
-      singular_extends: { suffix: '-singular-extends', type: 'float', default: '2' },
-    },
+    fields: ROP_POLY_FIELDS,
     includeConfig: true,
     // pairs handled via custom serialize/restore hooks
-    customSerialize(nodeId, result) {
-      const dim = result.dimension || 2;
-      const axisCount = dim === 3 ? 3 : 2;
-      result.pairs = [];
-      for (let i = 1; i <= axisCount; i++) {
-        result.pairs.push({
-          x_symbol:  document.getElementById(`${nodeId}-x${i}`)?.value || '',
-          qk_symbol: document.getElementById(`${nodeId}-qk${i}`)?.value || '',
-        });
-      }
-    },
-    customRestore(nodeId, data) {
-      (data.pairs || []).forEach((pair, idx) => {
-        const axis = idx + 1;
-        const xEl = document.getElementById(`${nodeId}-x${axis}`);
-        const qkEl = document.getElementById(`${nodeId}-qk${axis}`);
-        if (xEl && pair.x_symbol) xEl.value = pair.x_symbol;
-        if (qkEl && pair.qk_symbol) qkEl.value = pair.qk_symbol;
-      });
-      _updateROPPolyDimension?.(nodeId);
-    },
+    customSerialize: serializeROPPolyPairs,
+    customRestore: restoreROPPolyPairs,
   },
 
   // Legacy combined nodes (params + viewer in one node)
-  'parameter-scan-1d': {
+  'siso-analysis': {
     fields: {
-      param_symbol: { suffix: '-param',  type: 'string' },
-      param_min:    { suffix: '-min',    type: 'float', default: '-6' },
-      param_max:    { suffix: '-max',    type: 'float', default: '6' },
-      n_points:     { suffix: '-points', type: 'int',   default: '200' },
-      _expr:        { suffix: '-expr',   type: 'expr',  arrayKey: 'output_exprs' },
+      changeQK: { suffix: '-siso-select', type: 'string' },
     },
+    data: ['behaviorData', 'trajectoryData', 'overlayTrajectoryData'],
+    dataRaw: ['selectedPath', 'sisoPlotMode'],
+  },
+
+  'parameter-scan-1d': {
+    fields: SCAN_1D_FIELDS,
     data: ['scan1DResult', 'scan1DResultMeta'],
   },
 
@@ -377,18 +476,11 @@ export const NODE_SCHEMAS = {
   },
 
   'rop-cloud': {
-    fields: {
-      mode:          { suffix: '-sampling-mode',  type: 'string', default: 'x_space' },
-      samples:       { suffix: '-samples',        type: 'int',    default: '10000' },
-      span:          { suffix: '-span',           type: 'int',    default: '6' },
-      logxMin:       { suffix: '-logx-min',       type: 'float',  default: '-6' },
-      logxMax:       { suffix: '-logx-max',       type: 'float',  default: '6' },
-      targetSpecies: { suffix: '-target-species',  type: 'string' },
-    },
+    fields: ROP_CLOUD_FIELDS,
     data: ['ropCloudData', 'ropCloudRanges'],
     dataRaw: ['ropCloudPreset'],
     restoreToData: ['targetSpecies'],
-    afterRestore(nodeId) { _updateROPCloudMode?.(nodeId); },
+    afterRestore: restoreROPCloudMode,
   },
 
   'fret-heatmap': {
@@ -399,36 +491,12 @@ export const NODE_SCHEMAS = {
   },
 
   'rop-polyhedron': {
-    fields: {
-      dimension:        { suffix: '-dimension',        type: 'int',   default: '2' },
-      add_inner_points: { suffix: '-add-inner-points', type: 'bool',  default: true },
-      npoints:          { suffix: '-npoints',          type: 'int',   default: '5000' },
-      singular_extends: { suffix: '-singular-extends', type: 'float', default: '2' },
-    },
+    fields: ROP_POLY_FIELDS,
     includeConfig: true,
     data: ['ropPlotData'],
     dataRaw: ['fitInnerPoints'],
-    customSerialize(nodeId, result) {
-      const dim = result.dimension || 2;
-      const axisCount = dim === 3 ? 3 : 2;
-      result.pairs = [];
-      for (let i = 1; i <= axisCount; i++) {
-        result.pairs.push({
-          x_symbol:  document.getElementById(`${nodeId}-x${i}`)?.value || '',
-          qk_symbol: document.getElementById(`${nodeId}-qk${i}`)?.value || '',
-        });
-      }
-    },
-    customRestore(nodeId, data) {
-      (data.pairs || []).forEach((pair, idx) => {
-        const axis = idx + 1;
-        const xEl = document.getElementById(`${nodeId}-x${axis}`);
-        const qkEl = document.getElementById(`${nodeId}-qk${axis}`);
-        if (xEl && pair.x_symbol) xEl.value = pair.x_symbol;
-        if (qkEl && pair.qk_symbol) qkEl.value = pair.qk_symbol;
-      });
-      _updateROPPolyDimension?.(nodeId);
-    },
+    customSerialize: serializeROPPolyPairs,
+    customRestore: restoreROPPolyPairs,
   },
 
   'regime-graph': {

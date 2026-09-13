@@ -36,6 +36,15 @@ const MIGRATION_PORTS = Object.freeze({
     { 'designability-spec': 'DesignabilitySpec' },
     { reactions: 'NetworkIR', 'rop-shape-reference': 'ROPShapeReferenceArtifact' },
   ),
+  'inverse-design-target': ports({}, { 'inverse-design-request': 'InverseDesignRequest' }),
+  'gradient-design': ports(
+    { 'inverse-design-request': 'InverseDesignRequest' },
+    { 'inverse-design-result': 'InverseDesignResult' },
+  ),
+  'designed-network': ports(
+    { 'inverse-design-result': 'InverseDesignResult' },
+    { reactions: 'NetworkIR' },
+  ),
   'rop-cloud-params': ports(
     { reactions: 'NetworkIR', model: 'ModelArtifact' },
     { params: 'ROPCloudConfig' },
@@ -125,6 +134,8 @@ const DERIVED_DATA_KEYS = Object.freeze({
   'scan-2d-result': ['scan2DResult'],
   'placer-result': ['placerResult'],
   'design-target': ['config'],
+  'gradient-design': ['inverseDesignResult'],
+  'designed-network': ['designedNetwork'],
   'rop-cloud-result': ['ropCloudData'],
   'fret-result': ['fretHeatmapData'],
   'rop-poly-result': ['ropPlotData'],

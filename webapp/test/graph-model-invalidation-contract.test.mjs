@@ -74,6 +74,28 @@ const reactionEdge = (source, builder = 'builder') => ({
   toPort: 'reactions',
 });
 
+test('committed graph changes notify node-owned dependencies and a no-op gesture does not', () => {
+  reset();
+  addNode('source-a', 'reaction-network');
+  const builder = seedBuiltModel();
+  const edge = reactionEdge('source-a');
+  setConnections([edge]);
+  const notifications = [];
+  builder._onConnectionsChanged = (before, after, reason) => {
+    notifications.push({ before, after, reason });
+  };
+  assert.equal(finalizeInteractiveConnectionChange([edge]), false);
+  assert.equal(notifications.length, 0);
+  removeConnection(edge);
+  assert.deepEqual(notifications, [{
+    before: [edge], after: [], reason: 'connection-removed',
+  }]);
+  setConnections([edge]);
+  assert.equal(finalizeInteractiveConnectionChange([]), true);
+  assert.equal(notifications.length, 2);
+  assert.deepEqual(notifications[1].after, [edge]);
+});
+
 test('disconnecting a reaction input retires the builder context immediately', () => {
   reset();
   addNode('source-a', 'reaction-network');

@@ -1,3 +1,5 @@
+import { escapeHtml } from './api.js';
+
 const RESULT_VERSION = 'bne-rop-shape-optimization/v1.0.0';
 const REQUEST_VERSION = 'bne-rop-shape-optimize-request/v1.0.0';
 const REPLAY_VERSION = 'bne-rop-shape-replay/v1.0.0';
@@ -1381,15 +1383,6 @@ export function formatRopShapeOptimizationResult(raw) {
     finiteReplayEvidenceGrade: finiteReplayGrade,
     warnings,
   };
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function fmt(value, digits = 4) {

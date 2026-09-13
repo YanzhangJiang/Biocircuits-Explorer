@@ -1,7 +1,12 @@
+@import url("target-design.css");
+
 /* ===== Biocircuits Explorer — Base Layout & Structure =====
    This file contains ALL layout, spacing, typography, and animations.
    Color values are referenced via CSS custom properties defined in the
-   theme files (style-node.css for dark, style-node-light.css for light). */
+   theme files (style-node.css for dark, style-node-light.css for light).
+   The small :root block below holds the intentionally theme-independent
+   tokens (category identity colors, terminal-style debug console, dark
+   toast bubbles) — they are defined once here and NOT overridden per theme. */
 
 body, html {
   margin: 0; padding: 0; width: 100%; height: 100%;
@@ -10,6 +15,66 @@ body, html {
 }
 :root {
   --app-header-offset: 50px;
+
+  /* --- Theme-independent tokens (defined once on purpose) ---
+     Category identity colors (ports, sockets, node-type headers) and the
+     terminal-style debug console / dark toast bubble look identical in the
+     dark and light themes, so the theme files intentionally do NOT override
+     them. Override here only if a token should ever diverge per theme. */
+
+  /* --- Port colors --- */
+  --port-reactions: #E8854A;
+  --port-model: #6C8CFF;
+  --port-params: #9B59B6;
+  --port-result: #17A2B8;
+
+  /* --- Port hover / glow --- */
+  --port-reactions-hover: #f0a070;
+  --port-reactions-glow: rgba(232, 133, 74, 0.8);
+  --port-model-hover: #9ab0ff;
+  --port-model-glow: rgba(108, 140, 255, 0.8);
+  --port-params-hover: #b77dd6;
+  --port-params-glow: rgba(155, 89, 182, 0.8);
+  --port-result-hover: #3bc4db;
+  --port-result-glow: rgba(23, 162, 184, 0.8);
+
+  /* --- Sockets --- */
+  --socket-bg: #d3b53b;
+  --socket-default-glow: rgba(211, 181, 59, 0.8);
+
+  /* --- Node header types (Blender-inspired category colors) --- */
+  --header-input-bg: #C15C5C;
+  --header-process-bg: #3560A8;
+  --header-parameter-bg: #9B59B6;
+  --header-result-bg: #17A2B8;
+  --header-output-bg: #404040;
+  --header-note-bg: #F39C12;
+  --header-viewer-bg: #5C8A5C;
+  --header-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --node-header-color: #f8fbff;
+
+  /* --- Debug Console (terminal stays dark in both themes) --- */
+  --debug-panel-width: min(440px, 92vw);
+  --debug-bg: #000;
+  --debug-border: #151515;
+  --debug-open-shadow: rgba(0, 0, 0, 0.35);
+  --debug-header-border: #101010;
+  --debug-title-color: #d4d4d4;
+  --debug-subtitle-color: #7a7a7a;
+  --debug-toolbar-border: #0d0d0d;
+  --debug-counter-color: #6c6c6c;
+  --debug-text-color: #3cff7a;
+  --debug-scrollbar-thumb: #2f2f2f;
+  --debug-empty-color: #6a6a6a;
+
+  /* --- Debug indicator --- */
+  --debug-indicator-bg: #ff8c42;
+  --debug-indicator-glow: rgba(255, 140, 66, 0.7);
+
+  /* --- Toast (dark bubble in both themes) --- */
+  --toast-bg: #333;
+  --toast-color: #eee;
+  --toast-shadow: rgba(0, 0, 0, 0.5);
 }
 body {
   -webkit-user-select: none;
@@ -279,13 +344,16 @@ body.debug-console-open #editor {
   min-width: 240px; min-height: 100px;
   display: flex; flex-direction: column; z-index: 10;
   transition: box-shadow 0.2s;
-  resize: both; overflow: hidden;
+  overflow: hidden;
 }
 .node:hover { box-shadow: var(--node-hover-shadow); }
-.node.viewer { min-width: 380px; min-height: 300px; }
+/* Viewer/result nodes keep the .viewer class for styling hooks, but their
+   size floor is per-type: createNode pins inline min-width/min-height from
+   js/node-sizes.js, so no blanket CSS minimum is declared here. */
 
-/* Multi-select highlight + rubber-band marquee. --selection-color falls back
-   to a port-model blue so it tracks the theme; override per theme if needed. */
+/* Multi-select highlight + rubber-band marquee. --selection-color and
+   --selection-bg are defined per theme; the fallbacks below only apply
+   when no theme stylesheet is loaded. */
 .node.selected {
   outline: 2px solid var(--selection-color, #4cc9f0);
   outline-offset: 2px;
@@ -293,7 +361,7 @@ body.debug-console-open #editor {
 .marquee {
   position: absolute;
   border: 1px solid var(--selection-color, #4cc9f0);
-  background: rgba(76, 201, 240, 0.12);
+  background: var(--selection-bg, rgba(76, 201, 240, 0.12));
   pointer-events: none;
   z-index: 30;
 }
@@ -336,7 +404,7 @@ body.debug-console-open #editor {
   position: fixed; inset: 0;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
+  z-index: 2500;
 }
 .cheatsheet-overlay.hidden { display: none; }
 .cheatsheet-panel {
@@ -371,7 +439,7 @@ body.debug-console-open #editor {
 .sbml-warnings {
   margin-top: 8px; padding: 6px 8px;
   border: 1px solid var(--node-border, #555);
-  border-left: 3px solid #f9c74f;
+  border-left: 3px solid var(--status-warn);
   border-radius: 4px;
   font-size: 11px; max-height: 140px; overflow: auto;
 }
@@ -418,15 +486,28 @@ body.debug-console-open #editor {
 
 .node-body {
   padding: 12px; font-size: 12px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
-.node-body::-webkit-scrollbar { width: 6px; }
-.node-body::-webkit-scrollbar-track { background: var(--scrollbar-track); }
-.node-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+.node-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+/* Direct children keep their natural height: when the node is too short the
+   excess scrolls here instead of crushing content. Flexible regions (e.g.
+   .inverse-design-viewer) opt back into shrinking via their own flex shorthand. */
+.node-content > * { flex-shrink: 0; }
+.node-content::-webkit-scrollbar { width: 6px; }
+.node-content::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+.node-content::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
 .viewer-content::-webkit-scrollbar,
 .path-list::-webkit-scrollbar,
 .node-info::-webkit-scrollbar,
@@ -606,13 +687,20 @@ body.debug-console-open #editor {
   --socket-port-glow: var(--port-model-glow);
 }
 .socket[data-port="params"],
+.socket[data-port="inverse-design-request"],
 .socket[data-port="atlas-spec"],
-.socket[data-port="atlas-query"] {
+.socket[data-port="atlas-query"],
+.socket[data-port="atlas-network"],
+.socket[data-port="rop-shape-reference"],
+.socket[data-port="rop-shape-request"],
+.socket[data-port="designability-spec"] {
   --socket-port-color: var(--port-params);
   --socket-port-hover-color: var(--port-params-hover);
   --socket-port-glow: var(--port-params-glow);
 }
-.socket[data-port="result"] {
+.socket[data-port="result"],
+.socket[data-port="inverse-design-result"],
+.socket[data-port="rop-shape-result"] {
   --socket-port-color: var(--port-result);
   --socket-port-hover-color: var(--port-result-hover);
   --socket-port-glow: var(--port-result-glow);
@@ -654,7 +742,10 @@ textarea {
 .btn {
   background: var(--btn-bg); border: none; color: var(--btn-color); padding: 7px 10px;
   width: 100%; border-radius: 4px; cursor: pointer; margin-top: 8px;
-  font-size: 12px; font-weight: 500; transition: all 0.2s;
+  /* Workspace restoration stages hidden ancestors. Do not animate inherited
+     visibility: WebKit can leave restored buttons invisible after reveal. */
+  font-size: 12px; font-weight: 500;
+  transition: background-color 0.2s, color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 .btn:hover { background: var(--btn-hover-bg); }
 .btn:active { transform: scale(0.98); }
@@ -700,6 +791,7 @@ textarea {
   background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 3px;
   padding: 8px; margin: 8px 0; font-size: 11px;
   max-height: 150px; overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .node-info pre {
   margin: 0; white-space: pre-wrap; word-wrap: break-word;
@@ -731,19 +823,102 @@ textarea {
 }
 .viewer-content td { color: var(--table-cell-color); }
 
+/* ===== Node Panels (inset framed sections inside node content) ===== */
+.node-panel {
+  margin: 6px 0;
+  border: 1px solid var(--node-inset-border);
+  border-radius: 8px;
+  background: var(--node-inset-bg);
+  min-width: 0;
+}
+.node-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px 10px; flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--node-inset-border);
+}
+.node-panel-title {
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.node-panel-header .btn { width: auto; margin-top: 0; flex: 0 0 auto; }
+.node-panel-header .inverse-note { margin: 0; }
+.node-panel-body { padding: 8px 10px; min-width: 0; }
+.node-panel--chart > .node-panel-body { padding: 6px; }
+.node-panel > .node-panel-body--flush { padding: 0; }
+.node-panel > .node-panel-body--flush > .inverse-table-scroll { border-radius: 0 0 7px 7px; }
+.inverse-fit-panel > .node-panel-body { display: grid; gap: 10px; }
+.inverse-live-preview > .node-panel-body { display: grid; gap: 8px; }
+
+/* Inverse design follows the shared node controls and theme tokens. */
+.inverse-design-form { min-width: 0; font-size: 11px; flex: 0 0 auto; }
+.inverse-design-form .btn { font-family: inherit; }
+.inverse-design-form .text-dim { font-style: normal; color: var(--text-dim); }
+.inverse-field-label { display: block; margin: 10px 0 5px; color: var(--text-dim); font-size: 11px; }
+.inverse-description { font-family: inherit; }
+.inverse-design-form .param-row { gap: 12px; }
+.inverse-design-form .param-row select { width: 60%; }
+.inverse-parameter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 8px 20px; }
+.inverse-config-section { min-width: 0; margin-top: 10px; }
+.inverse-config-section .reaction-header-label { color: var(--text-dim); }
+.inverse-result-section { min-width: 0; flex-shrink: 0; }
+.inverse-design-viewer { flex: 1 0 200px; }
+.inverse-design-viewer > * { flex-shrink: 0; }
+.inverse-design-form .node-info { line-height: 1.5; }
+.inverse-note { margin: 5px 0; line-height: 1.5; font-size: 11px; overflow-wrap: anywhere; }
+.inverse-result-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.inverse-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.inverse-metrics > div { border: 1px solid var(--panel-border); border-radius: 4px; padding: 8px; min-width: 0; }
+.inverse-metrics span { display: block; color: var(--text-dim); margin-bottom: 5px; }
+.inverse-metrics strong { display: block; color: var(--text-color); font-size: inherit; font-weight: 600; overflow-wrap: anywhere; }
+.inverse-learning-status { color: var(--text-color); font-weight: 600; margin-bottom: 8px; line-height: 1.5; }
+.inverse-learning.is-learning .inverse-learning-status::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--header-process-bg); animation: inverse-learning-pulse 1.2s ease-in-out infinite; }
+.inverse-learning-metrics > div { padding: 6px; }
+.inverse-learning-bar { display: block; width: 100%; height: 6px; margin-top: 8px; accent-color: var(--header-process-bg); }
+.inverse-learning .inverse-note { margin-bottom: 0; }
+@keyframes inverse-learning-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .inverse-learning.is-learning .inverse-learning-status::before { animation: none; } }
+.inverse-fit-figure { margin: 0; min-width: 0; }
+.inverse-fit-figure figcaption { color: var(--text-dim); font-size: 11px; }
+.inverse-fit-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.inverse-fit-chart text { fill: var(--text-dim); font-family: inherit; font-size: 10px; }
+.inverse-chart-axis { fill: none; stroke: var(--panel-border); stroke-width: 0.75; }
+.inverse-target-point { fill: var(--panel-bg); stroke: var(--status-warn); stroke-width: 1.5; }
+.inverse-fit-point { fill: var(--port-result); }
+.inverse-target-curve, .inverse-fit-curve { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.inverse-target-curve { stroke: var(--status-warn); }
+.inverse-fit-curve { stroke: var(--port-result); }
+.inverse-target-legend, .inverse-fit-legend { color: var(--text-dim); }
+.inverse-target-legend::before, .inverse-fit-legend::before { content: ''; display: inline-block; width: 16px; margin-right: 5px; vertical-align: middle; border-top: 2px solid transparent; border-radius: 2px; }
+.inverse-target-legend::before { border-top-color: var(--status-warn); }
+.inverse-fit-legend::before { border-top-color: var(--port-result); }
+.inverse-learning-curve { margin-top: 10px; min-width: 0; }
+.inverse-learning-curve-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-dim); }
+.inverse-learning-curve-heading strong { color: var(--text-color); font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.inverse-learning-curve-chart { width: 100%; height: auto; display: block; overflow: visible; background: transparent; }
+.inverse-learning-curve-chart text { fill: var(--text-dim); font-family: inherit; font-size: 10px; }
+.inverse-learning-axis { fill: none; stroke: var(--panel-border); stroke-width: 0.75; }
+.inverse-learning-rmse { fill: none; stroke: var(--status-warn); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.inverse-learning-rmse-latest { fill: var(--status-warn); }
+.inverse-learning-event { fill: none; stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.65; }
+.inverse-table-scroll { overflow: auto; max-height: 240px; }
+.inverse-design-viewer:focus-visible, .inverse-table-scroll:focus-visible { outline: 2px solid var(--selection-color, var(--port-model)); outline-offset: 2px; }
+.inverse-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
 .tag {
   display: inline-block; padding: 2px 6px; border-radius: 3px;
   font-size: 10px; font-weight: 500; margin-right: 4px;
 }
-.tag-asym { background: #51cf66; color: #000; }
-.tag-nonasym { background: #ffd43b; color: #000; }
-.tag-singular { background: #ff6b6b; color: #fff; }
-.tag-invertible { background: #4ecdc4; color: #000; }
-.tag-atlas-ok { background: #51cf66; color: #000; }
-.tag-atlas-failed { background: #ff6b6b; color: #fff; }
-.tag-atlas-excluded { background: #ffd43b; color: #000; }
-.tag-atlas-neutral { background: #495057; color: #fff; }
-.tag-atlas-muted { background: #6c757d; color: #fff; }
+.tag-asym { background: var(--tag-ok-bg); color: var(--tag-ok-color); }
+.tag-nonasym { background: var(--tag-warn-bg); color: var(--tag-warn-color); }
+.tag-singular { background: var(--tag-error-bg); color: var(--tag-error-color); }
+.tag-invertible { background: var(--tag-info-bg); color: var(--tag-info-color); }
+.tag-atlas-ok { background: var(--tag-ok-bg); color: var(--tag-ok-color); }
+.tag-atlas-failed { background: var(--tag-error-bg); color: var(--tag-error-color); }
+.tag-atlas-excluded { background: var(--tag-warn-bg); color: var(--tag-warn-color); }
+.tag-atlas-neutral { background: var(--tag-neutral-bg); color: var(--tag-neutral-color); }
+.tag-atlas-muted { background: var(--tag-muted-bg); color: var(--tag-muted-color); }
 
 /* === Plot Container ===== */
 .plot-container {
@@ -786,7 +961,7 @@ textarea {
   font-family: var(--font-sans, system-ui, sans-serif);
 }
 .design-metric-chip { padding: 2px 5px; font-size: 10px; }
-.design-net-failures { color: var(--error-color); font-size: 10px; margin-top: 4px; }
+.design-net-failures { color: var(--status-error); font-size: 10px; margin-top: 4px; }
 .design-net-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .design-screen-group { margin-top: 8px; }
 .design-cert-section { padding-left: 8px; border-left: 2px solid var(--panel-border); }
@@ -965,7 +1140,7 @@ textarea {
 }
 
 /* Keep tab panes in the flex layout so output sockets stay aligned to node height. */
-.node-body.node-body-tabbed {
+.node-body-tabbed .node-content {
   overflow: hidden;
 }
 
@@ -1116,14 +1291,14 @@ textarea {
 
 .atlas-sketch-line {
   fill: none;
-  stroke: #e9c46a;
+  stroke: var(--atlas-sketch-line-stroke);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 3;
 }
 
 .atlas-sketch-card circle {
-  fill: #2a9d8f;
+  fill: var(--atlas-sketch-circle-fill);
   stroke: var(--atlas-sketch-circle-stroke);
   stroke-width: 1.2;
 }
@@ -1524,14 +1699,14 @@ textarea {
 }
 
 .family-badge-exact {
-  --badge-accent: #ff8c42;
-  --badge-soft: rgba(255, 140, 66, 0.18);
+  --badge-accent: var(--family-badge-exact-accent);
+  --badge-soft: var(--family-badge-exact-soft);
   color: var(--family-badge-exact-color);
 }
 
 .family-badge-motif {
-  --badge-accent: #4cc9f0;
-  --badge-soft: rgba(76, 201, 240, 0.16);
+  --badge-accent: var(--family-badge-motif-accent);
+  --badge-soft: var(--family-badge-motif-soft);
   color: var(--family-badge-motif-color);
 }
 
@@ -1744,14 +1919,48 @@ textarea {
   background: var(--menu-item-selected-bg);
   color: var(--menu-item-selected-color);
 }
+.quick-add-choice {
+  width: min(420px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  padding: 14px;
+  color: var(--text-color);
+  background: var(--dropdown-bg);
+  border: 1px solid var(--dropdown-border);
+  border-radius: 14px;
+  box-shadow: var(--dropdown-shadow);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  font: inherit;
+}
+.quick-add-choice::backdrop { background: rgb(0 0 0 / 35%); }
+.quick-add-choice h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.quick-add-choice .node-info { line-height: 1.5; }
+.quick-add-choice-list { max-height: 45vh; margin-top: 0; gap: 4px; }
+.quick-add-choice .menu-item {
+  width: 100%; margin: 0; border: 0; background: transparent;
+  text-align: left; font-family: inherit; flex: 0 0 auto;
+}
+.quick-add-choice .menu-item:hover,
+.quick-add-choice .menu-item:focus-visible { background: var(--menu-item-hover-bg); }
+.quick-add-choice button:focus-visible { outline: 2px solid var(--port-result); outline-offset: -2px; }
+.quick-add-choice-label { min-width: 0; }
+.quick-add-choice-label strong { display: block; font-size: 12px; font-weight: 600; }
+.quick-add-choice-description {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+  margin-top: 4px; color: var(--text-dim); font-size: 11px; line-height: 1.4;
+}
+.quick-add-choice-actions { display: flex; gap: 8px; margin-top: 8px; }
+.quick-add-choice-actions .btn { flex: 1; margin-top: 0; }
 .menu-color {
   display: inline-block; width: 8px; height: 8px;
   border-radius: 50%; flex-shrink: 0;
 }
-.menu-color.color-input { background: #C15C5C; }
-.menu-color.color-parameter { background: #9B59B6; }
-.menu-color.color-result { background: #17A2B8; }
-.menu-color.color-viewer { background: #5C8A5C; }
+.menu-color.color-input { background: var(--header-input-bg); }
+.menu-color.color-parameter { background: var(--header-parameter-bg); }
+.menu-color.color-process { background: var(--header-process-bg); }
+.menu-color.color-result { background: var(--header-result-bg); }
+.menu-color.color-viewer { background: var(--header-viewer-bg); }
 
 /* ===== Viewer Header ===== */
 .header-viewer { background: var(--header-viewer-bg); text-shadow: var(--header-text-shadow); }
@@ -1760,10 +1969,14 @@ textarea {
 .node.loading .node-body {
   pointer-events: none; opacity: 0.7;
 }
+/* The learning status and Stop control must remain usable during a design job. */
+.node.loading[data-node-type="gradient-design"] .node-body {
+  pointer-events: auto; opacity: 1;
+}
 .node.loading .node-header::after {
   content: ''; position: absolute; bottom: 0; left: 0;
   width: 100%; height: 4px;
-  background: linear-gradient(90deg, transparent, #6c8cff, transparent);
+  background: linear-gradient(90deg, transparent, var(--port-model), transparent);
   animation: loading-bar 1.2s ease-in-out infinite;
 }
 .node.loading .node-header { position: relative; overflow: hidden; }
@@ -1807,9 +2020,9 @@ textarea {
 
 /* ===== Node Error ===== */
 .node-error {
-  background: rgba(255, 107, 107, 0.15); border: 1px solid #ff6b6b;
+  background: var(--status-error-soft); border: 1px solid var(--status-error);
   border-radius: 3px; padding: 8px; margin: 4px 0;
-  color: #ff6b6b; font-size: 11px; word-break: break-word;
+  color: var(--status-error); font-size: 11px; word-break: break-word;
 }
 
 /* ===== Connected Socket ===== */
@@ -1965,7 +2178,7 @@ textarea {
   text-decoration: underline;
 }
 
-.menu-color.color-note { background: #F39C12; }
+.menu-color.color-note { background: var(--header-note-bg); }
 
 /* ===== AI Import node ===== */
 .agent-node {
@@ -2069,7 +2282,7 @@ textarea {
   padding: 0 4px;
   line-height: 1;
 }
-.agent-node-files-remove:hover { color: #e0716a; }
+.agent-node-files-remove:hover { color: var(--status-error); }
 .agent-node-files-empty,
 .agent-node-files-total {
   font-size: 10px;
@@ -2101,10 +2314,10 @@ textarea {
   white-space: pre-wrap;
   min-height: 14px;
 }
-.agent-node-status[data-kind="error"] { color: #e0716a; }
-.agent-node-status[data-kind="ok"] { color: #7ab977; }
-.agent-node-status[data-kind="warn"] { color: #c4a346; }
-.agent-node-status[data-kind="busy"] { color: #c4a346; }
+.agent-node-status[data-kind="error"] { color: var(--status-error); }
+.agent-node-status[data-kind="ok"] { color: var(--status-ok); }
+.agent-node-status[data-kind="warn"] { color: var(--status-warn); }
+.agent-node-status[data-kind="busy"] { color: var(--status-warn); }
 
 .agent-node-result.hidden { display: none; }
 .agent-node-summary {
@@ -2155,7 +2368,7 @@ textarea {
 .agent-node-warnings {
   margin-top: 8px;
   font-size: 11px;
-  color: #c4a346;
+  color: var(--status-warn);
 }
 .agent-node-warnings ul {
   margin: 4px 0 0;
@@ -2189,9 +2402,9 @@ textarea {
   letter-spacing: 0.04em;
   margin-left: 4px;
 }
-.agent-conf-high { background: rgba(122, 185, 119, 0.18); color: #7ab977; }
-.agent-conf-medium { background: rgba(196, 163, 70, 0.18); color: #c4a346; }
-.agent-conf-low { background: rgba(224, 113, 106, 0.18); color: #e0716a; }
+.agent-conf-high { background: var(--status-ok-soft); color: var(--status-ok); }
+.agent-conf-medium { background: var(--status-warn-soft); color: var(--status-warn); }
+.agent-conf-low { background: var(--status-error-soft); color: var(--status-error); }
 
 /* ===== Marquee "thinking" border (Apple-Intelligence style) ===== */
 @property --agent-thinking-angle {

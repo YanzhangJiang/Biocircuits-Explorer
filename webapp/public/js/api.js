@@ -123,43 +123,65 @@ function findModelContextForSession(sessionId) {
   return null;
 }
 
-export function enrichModelRequestPayload(data) {
+export function enrichModelRequestPayload(data, { recover = false } = {}) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
-  if (!data.session_id || data.network || data.network_ir_hash) return data;
+  if (!data.session_id || data.network || (data.network_ir_hash && !recover)) return data;
   const ctx = findModelContextForSession(data.session_id);
   if (!ctx) return data;
 
   const networkIrHash = ctx.networkIrHash || ctx.network_ir_hash || null;
   const networkIr = ctx.networkIr || ctx.network_ir || null;
+  if (data.network_ir_hash && data.network_ir_hash !== networkIrHash) return data;
   if (!networkIrHash && !networkIr) return data;
 
   const enriched = { ...data };
   if (networkIrHash) enriched.network_ir_hash = networkIrHash;
-  if (networkIr) enriched.network = networkIr;
+  if (networkIr && (recover || !networkIrHash)) enriched.network = networkIr;
   return enriched;
 }
 
-export async function apiSilent(endpoint, data, { signal = null } = {}) {
+async function requestModelJson(endpoint, data, signal, statusIsCurrent) {
   const payload = enrichModelRequestPayload(data || {});
-  const resp = await fetch(canonicalApiUrl(endpoint), {
+  // Capture recovery input now: a later workspace edit must not change the
+  // network used by an already-running request.
+  const recoveryPayload = enrichModelRequestPayload(payload, { recover: true });
+  const recoveryBody = recoveryPayload.network ? JSON.stringify(recoveryPayload) : null;
+  const requestSignal = withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS);
+  const send = body => fetch(canonicalApiUrl(endpoint), {
     method: 'POST',
     headers: apiHeaders(),
-    body: JSON.stringify(payload),
-    signal: withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS),
+    body,
+    signal: requestSignal,
   });
+  let resp = await send(JSON.stringify(payload));
+  let json = await readApiJson(resp);
+  if (resp.status === 409 && json?.need_network === true &&
+      !payload.network && recoveryBody && statusPredicatePasses(statusIsCurrent)) {
+    resp = await send(recoveryBody);
+    json = await readApiJson(resp);
+  }
+  const message = responseErrorMessage(
+    json, resp.ok === false ? `Backend request failed (${resp.status})` : null,
+  );
+  if (resp.ok === false || message) {
+    const error = new Error(message || `Backend request failed (${resp.status})`);
+    error.status = resp.status;
+    if (json?.need_network) error.needNetwork = true;
+    throw error;
+  }
+  return json;
+}
+
+async function readApiJson(resp) {
   const contentType = resp.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
     throw new Error('Backend server not responding');
   }
-  const json = await resp.json();
-  const errorMessage = responseErrorMessage(
-    json,
-    resp.ok === false ? `Backend request failed (${resp.status})` : null,
-  );
-  if (resp.ok === false || errorMessage) {
-    throw new Error(errorMessage || `Backend request failed (${resp.status})`);
-  }
-  return json;
+  return resp.json();
+}
+
+export async function apiSilent(endpoint, data, { signal = null } = {}) {
+  return requestModelJson(endpoint, data, signal);
 }
 
 export async function api(endpoint, data, { statusIsCurrent = null, signal = null } = {}) {
@@ -167,32 +189,7 @@ export async function api(endpoint, data, { statusIsCurrent = null, signal = nul
   setStatus('working', activeApiRequests > 1 ? `Computing... (${activeApiRequests})` : 'Computing...');
   const requestStatusRevision = statusRevision;
   try {
-    const payload = enrichModelRequestPayload(data || {});
-    const resp = await fetch(canonicalApiUrl(endpoint), {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify(payload),
-      signal: withTimeout(signal, SYNC_REQUEST_TIMEOUT_MS),
-    });
-
-    const contentType = resp.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      throw new Error('Backend server not responding. Please ensure Julia server is running.');
-    }
-
-    const json = await resp.json();
-    const errorMessage = responseErrorMessage(
-      json,
-      resp.ok === false ? `Backend request failed (${resp.status})` : null,
-    );
-    if (resp.ok === false || errorMessage) {
-      // The backend asks for the NetworkIR to be resent when it can no longer
-      // resolve a model from session_id/hash alone (e.g. after a restart).
-      const apiError = new Error(errorMessage || `Backend request failed (${resp.status})`);
-      if (json.need_network) apiError.needNetwork = true;
-      apiError.status = resp.status;
-      throw apiError;
-    }
+    const json = await requestModelJson(endpoint, data, signal, statusIsCurrent);
     settleApiActivity(requestStatusRevision, statusIsCurrent);
     return json;
   } catch (e) {

@@ -203,6 +203,7 @@ export function replaceConnectionsWithModelInvalidation(nextConnections, reason 
   const invalidatedBuilders = invalidateBuildersForConnectionChange(before, after, reason);
   const invalidatedScanExecutions = invalidateScanExecutionsForConnectionChange(before, after, reason);
   const invalidatedAtlasExecutions = invalidateAtlasExecutionsForConnectionChange(before, after, reason);
+  notifyNodeConnectionChanges(before, after, reason);
   return {
     before,
     after,
@@ -210,6 +211,17 @@ export function replaceConnectionsWithModelInvalidation(nextConnections, reason 
     invalidatedScanExecutions,
     invalidatedAtlasExecutions,
   };
+}
+
+// Node-owned derived artifacts may have dependencies beyond a direct model
+// input. Notify them synchronously at the same committed graph boundary used
+// by wiring, GraphPatch, Undo and Redo, without importing feature UI here.
+export function notifyNodeConnectionChanges(before, after, reason = 'graph-changed') {
+  for (const info of Object.values(nodeRegistry)) {
+    if (typeof info?._onConnectionsChanged === 'function') {
+      info._onConnectionsChanged(before, after, reason);
+    }
+  }
 }
 
 export function invalidateModelBuildersForReactionSource(sourceNodeId, reason = 'reaction-source-changed') {

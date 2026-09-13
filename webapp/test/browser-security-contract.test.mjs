@@ -130,7 +130,7 @@ globalThis.document = {
   getElementById() { return null; },
 };
 
-const llmModule = await import(`../public/js/llm-settings.js?security=${Date.now()}`);
+const llmModule = await import(`../public/js/llm-config.js?security=${Date.now()}`);
 assert.equal(llmModule.getLLMConfig().apiKey, 'legacy-llm-secret');
 assert.deepEqual(JSON.parse(localStorage.getItem('bcx-llm-cfg')), {
   provider: 'anthropic',
@@ -150,7 +150,7 @@ assert.equal(llmModule.getLLMConfig().apiKey, 'runtime-only-secret');
 assert.equal(localStorage.getItem('bcx-llm-cfg').includes('runtime-only-secret'), false);
 assert.equal([...sessionStorage.values.values()].includes('runtime-only-secret'), false);
 
-const reloadedLlmModule = await import(`../public/js/llm-settings.js?reload=${Date.now()}`);
+const reloadedLlmModule = await import(`../public/js/llm-config.js?reload=${Date.now()}`);
 assert.equal(reloadedLlmModule.getLLMConfig().apiKey, '', 'reload must retire the in-memory LLM key');
 assert.equal(reloadedLlmModule.getLLMConfig().model, 'model-test');
 
@@ -159,7 +159,7 @@ const writeFailingStorage = new MemoryStorage({
 });
 writeFailingStorage.setItem = () => { throw new Error('quota exceeded'); };
 globalThis.localStorage = writeFailingStorage;
-const writeFailingLlmModule = await import(`../public/js/llm-settings.js?quota=${Date.now()}`);
+const writeFailingLlmModule = await import(`../public/js/llm-config.js?quota=${Date.now()}`);
 assert.equal(writeFailingLlmModule.getLLMConfig().apiKey, 'quota-secret');
 assert.equal(writeFailingStorage.getItem('bcx-llm-cfg'), null,
   'failed preference rewrite must still delete the legacy persistent key');

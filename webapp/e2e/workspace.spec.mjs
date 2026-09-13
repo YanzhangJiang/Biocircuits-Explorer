@@ -146,6 +146,132 @@ test('Quick Add is atomic and one Undo/Redo preserves node IDs', async ({ page }
   expectNoBrowserErrors(page);
 });
 
+test('Quick Add offers existing networks with keyboard access and atomic Undo/Redo', async ({ page }) => {
+  await openWorkspace(page);
+  const before = await page.evaluate(() => {
+    window.addNodeFromMenu('reaction-network');
+    window.addNodeFromMenu('designed-network');
+    return JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+  });
+  const [source, designed] = before.nodes;
+  const openPicker = async () => {
+    await page.getByRole('button', { name: 'Quick Add', exact: true }).click();
+    await page.locator('#legacy-nodes-menu [data-type="parameter-scan-1d"]').click();
+  };
+  await openPicker();
+  const picker = page.getByRole('dialog', { name: 'Quick Add · Parameter Scan (1D)', exact: true });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole('button', { name: `Reaction Network · ${source.id}` })).toBeVisible();
+  await expect(picker.getByRole('button', { name: `Designed Network · ${designed.id}` })).toBeVisible();
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  await expect(page.locator('#toast-container')).not.toContainText('multiple compatible reaction sources');
+
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(async mode => (await import('/js/theme.js')).applyThemeMode(mode), theme);
+    const accessibility = await new AxeBuilder({ page }).include('#quick-add-choice').analyze();
+    expect(accessibility.violations.filter(item => ['serious', 'critical'].includes(item.impact))).toEqual([]);
+    if (process.env.QUICK_ADD_SCREENSHOTS) {
+      await picker.screenshot({ path: `/private/tmp/quick-add-choice-${theme}.png` });
+    }
+  }
+  // Undo/Delete inside the modal must not change the selected background graph.
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Delete');
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+  expect(topology(await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace())))).toEqual(topology(before));
+
+  await openPicker();
+  const choice = picker.getByRole('button', { name: `Reaction Network · ${source.id}` });
+  await choice.focus();
+  await page.keyboard.press('Enter');
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#canvas > .node')).toHaveCount(5);
+  const applied = await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace()));
+  const builder = applied.nodes.find(item => item.type === 'model-builder');
+  expect(applied.connections).toContainEqual({ fromNode: source.id, fromPort: 'reactions', toNode: builder.id, toPort: 'reactions' });
+  expect(applied.connections.some(item => item.fromNode === designed.id)).toBe(false);
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  expect(topology(await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace())))).toEqual(topology(before));
+  await page.keyboard.press('Control+Shift+z');
+  await expect(page.locator('#canvas > .node')).toHaveCount(5);
+  expect(topology(await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace())))).toEqual(topology(applied));
+  expectNoBrowserErrors(page);
+});
+
+test('native Quick Add entrypoint exposes a new network without modifier keys', async ({ page }) => {
+  await openWorkspace(page);
+  const before = await page.evaluate(() => {
+    window.addNodeFromMenu('reaction-network');
+    window.addNodeFromMenu('designed-network');
+    const snapshot = JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+    window.addQuickAddChain('parameter-scan-1d');
+    return snapshot;
+  });
+  await page.getByRole('dialog').getByRole('button', { name: 'New Reaction Network', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.locator('#canvas > .node')).toHaveCount(6);
+  const applied = await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace()));
+  const oldIds = before.nodes.map(item => item.id);
+  expect(applied.connections).toHaveLength(3);
+  expect(applied.connections.every(item => !oldIds.includes(item.fromNode) && !oldIds.includes(item.toNode))).toBe(true);
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  expect(topology(await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace())))).toEqual(topology(before));
+  expectNoBrowserErrors(page);
+});
+
+test('Quick Add resolves multiple builders and respects a selected builder source', async ({ page }) => {
+  await openWorkspace(page);
+  const graph = await page.evaluate(() => {
+    for (const type of ['reaction-network', 'model-builder', 'model-builder', 'designed-network']) window.addNodeFromMenu(type);
+    const snapshot = JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+    const [source, first, second] = snapshot.nodes;
+    snapshot.connections = [first, second].map(builder => ({ fromNode: source.id, fromPort: 'reactions', toNode: builder.id, toPort: 'reactions' }));
+    window.BiocircuitsExplorerWorkspaceShell.applyWorkspaceFromJSONString(JSON.stringify(snapshot));
+    return JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+  });
+  const [source, , builder] = graph.nodes;
+  await page.evaluate(id => window.addQuickAddChain('parameter-scan-1d', { selectedSourceId: id }), source.id);
+  const picker = page.getByRole('dialog');
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText('several Model Builders');
+  await expect(picker.getByRole('button', { name: 'New Reaction Network', exact: true })).toBeHidden();
+  await picker.getByRole('button', { name: `Model Builder · ${builder.id}` }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#canvas > .node')).toHaveCount(6);
+  const added = await page.evaluate(() => JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace()));
+  const params = added.nodes.find(item => item.type === 'scan-1d-params');
+  expect(added.connections).toContainEqual({ fromNode: builder.id, fromPort: 'model', toNode: params.id, toPort: 'model' });
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('#canvas > .node')).toHaveCount(4);
+  await page.evaluate(async id => (await import('/js/selection.js')).selectOnly(id), builder.id);
+  await page.evaluate(() => window.addQuickAddChain('parameter-scan-1d'));
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#canvas > .node')).toHaveCount(6);
+  expectNoBrowserErrors(page);
+});
+
+test('replacing a workspace cancels pending Quick Add choices', async ({ page }) => {
+  await openWorkspace(page);
+  const replacement = await page.evaluate(() => {
+    window.addNodeFromMenu('reaction-network');
+    window.addNodeFromMenu('designed-network');
+    const snapshot = JSON.parse(window.BiocircuitsExplorerWorkspaceShell.serializeWorkspace());
+    window.addQuickAddChain('parameter-scan-1d');
+    return snapshot;
+  });
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.evaluate(snapshot => window.BiocircuitsExplorerWorkspaceShell.applyWorkspaceFromJSONString(JSON.stringify(snapshot)), replacement);
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('#canvas > .node')).toHaveCount(2);
+  expectNoBrowserErrors(page);
+});
+
 test('connected workflow entrypoints return structured reports', async ({ page }) => {
   await openWorkspace(page);
   await quickAddSiso(page);
@@ -396,6 +522,46 @@ test('Quick Add topology matches the deterministic visual baseline', async ({ pa
     // topology/geometry change still affects far more than two percent.
     maxDiffPixelRatio: 0.02,
     threshold: 0.2,
+  });
+  expectNoBrowserErrors(page);
+});
+
+test('node resize clamps to the per-type minimum size', async ({ page }) => {
+  await openWorkspace(page);
+  await page.evaluate(() => window.addNodeFromMenu('markdown-note'));
+  const node = page.locator('.node[data-node-type="markdown-note"]');
+  await expect(node).toHaveCount(1);
+
+  // createNode pins the per-type floor inline (js/node-sizes.js): 280x220
+  // for markdown-note, below its 400x300 default size.
+  const inlineMin = await node.evaluate((el) => ({
+    minWidth: el.style.minWidth,
+    minHeight: el.style.minHeight,
+  }));
+  expect(inlineMin).toEqual({ minWidth: '280px', minHeight: '220px' });
+
+  // Drag the resize handle far up-left: the gesture must stop at 280x220 —
+  // the per-type floor, not the old blanket 240x100 — and never below it.
+  const box = await node.locator('.node-resize').boundingBox();
+  expect(box).not.toBeNull();
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(Math.max(5, startX - 600), Math.max(5, startY - 600), { steps: 12 });
+  await page.mouse.up();
+
+  const size = await node.evaluate((el) => ({
+    styleWidth: el.style.width,
+    styleHeight: el.style.height,
+    offsetWidth: el.offsetWidth,
+    offsetHeight: el.offsetHeight,
+  }));
+  expect(size).toEqual({
+    styleWidth: '280px',
+    styleHeight: '220px',
+    offsetWidth: 280,
+    offsetHeight: 220,
   });
   expectNoBrowserErrors(page);
 });

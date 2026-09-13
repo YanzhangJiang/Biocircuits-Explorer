@@ -6,6 +6,7 @@ import { hasModelContextForNode } from './nodes.js';
 import { getReactionsFromNode } from './model.js';
 import {
   invalidateBuildersForConnectionChange,
+  notifyNodeConnectionChanges,
   replaceConnectionsWithModelInvalidation,
 } from './model-lifecycle.js';
 import {
@@ -27,6 +28,9 @@ const CONFIG_PORT_TYPES = new Set([
   PORT_TYPES.FRETConfig,
   PORT_TYPES.ROPPolyhedronConfig,
   PORT_TYPES.ParameterPlacerConfig,
+  PORT_TYPES.DesignabilitySpec,
+  PORT_TYPES.InverseDesignRequest,
+  PORT_TYPES.ROPShapeReferenceArtifact,
 ]);
 
 // ===== Connection mutators (command performers) =====
@@ -77,6 +81,7 @@ export function finalizeInteractiveConnectionChange(before) {
   invalidateBuildersForConnectionChange(before, connections, 'interactive-connection-gesture');
   invalidateScanExecutionsForConnectionChange(before, connections, 'interactive-connection-gesture');
   invalidateAtlasExecutionsForConnectionChange(before, connections, 'interactive-connection-gesture');
+  notifyNodeConnectionChanges(before, connections, 'interactive-connection-gesture');
   return true;
 }
 

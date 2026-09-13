@@ -28,6 +28,8 @@ export const PORT_TYPES = Object.freeze({
   AtlasQuery:    'AtlasQuery',     // an atlas query / inverse-design config
   AtlasNetwork:  'AtlasNetwork',   // a network feeding an atlas spec
   DesignabilitySpec: 'DesignabilitySpec', // an explicit behavior/constraint target
+  InverseDesignRequest: 'InverseDesignRequest', // target samples, candidates, and optimizer budget
+  InverseDesignResult: 'InverseDesignResult', // sparse gradient fit and selected-network replay
   ROPShapeReferenceArtifact: 'ROPShapeReferenceArtifact', // pinned fixed-topology reference
   ROPShapeRequestArtifact:   'ROPShapeRequestArtifact',   // canonical typed edit request
   ROPShapeResultArtifact:    'ROPShapeResultArtifact',    // optimizer result + replay evidence
@@ -43,6 +45,8 @@ export const PORT_TYPE_OF = Object.freeze({
   'atlas-query':   PORT_TYPES.AtlasQuery,
   'atlas-network': PORT_TYPES.AtlasNetwork,
   'designability-spec': PORT_TYPES.DesignabilitySpec,
+  'inverse-design-request': PORT_TYPES.InverseDesignRequest,
+  'inverse-design-result': PORT_TYPES.InverseDesignResult,
   'rop-shape-reference': PORT_TYPES.ROPShapeReferenceArtifact,
   'rop-shape-request':   PORT_TYPES.ROPShapeRequestArtifact,
   'rop-shape-result':    PORT_TYPES.ROPShapeResultArtifact,

@@ -19,6 +19,7 @@ const GLOBALLY_TYPED_PORT_IDS = [
   'reactions', 'model', 'result',
   'atlas-spec', 'atlas', 'atlas-query', 'atlas-network',
   'designability-spec',
+  'inverse-design-request', 'inverse-design-result',
   'rop-shape-reference', 'rop-shape-request', 'rop-shape-result',
 ];
 

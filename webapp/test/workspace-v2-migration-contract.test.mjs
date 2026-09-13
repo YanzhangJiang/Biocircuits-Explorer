@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { designedNetworkFromResult, normalizeInverseDesignResult } from '../public/js/inverse-design-core.js';
 
 import {
   LEGACY_WORKSPACE_NODE_MIGRATIONS,
@@ -84,6 +85,122 @@ test('v2 restore normalization is deterministic and idempotent', () => {
   assert.deepEqual(once.document, expected);
   assert.deepEqual(twice.document, expected);
   assert.deepEqual(once, twice);
+});
+
+test('the legacy inverse-design workflow restores exactly as history without becoming a target-driven result', () => {
+  const source = fixture('inverse-design-v2.json');
+  const before = clone(source);
+  const expected = fixture('inverse-design-v2.expected-restored.json');
+  const first = migrateWorkspaceDocument(source);
+  const repeated = migrateWorkspaceDocument(source);
+
+  assert.deepEqual(source, before);
+  assert.deepEqual(first, repeated);
+  assert.deepEqual(first.document, expected);
+  assert.deepEqual(validateWorkspaceV2Document(first.document), expected);
+  assert.deepEqual(migrateWorkspaceDocument(expected).document, expected);
+  assert.equal(containsRuntimeSessionField(first.document), false);
+  assert.ok(first.diagnostics.some(entry => entry.code === 'runtime-fields-stripped'));
+  assert.equal(first.diagnostics.some(entry => entry.code.startsWith('connection-dropped')), false);
+
+  const target = first.document.nodes.find(node => node.id === 'target');
+  const gradient = first.document.nodes.find(node => node.id === 'gradient');
+  const output = first.document.nodes.find(node => node.id === 'output');
+  const model = first.document.nodes.find(node => node.id === 'model');
+  assert.equal(target.data.lifecycle, undefined);
+  assert.equal(target.data.inverseDesignResult, undefined);
+  assert.equal(model.data.lifecycle, undefined);
+  for (const node of [gradient, output]) {
+    assert.deepEqual(node.data.lifecycle, {
+      state: 'historical', freshness: 'historical', evidence: { grade: 'sampled' },
+    });
+    assert.deepEqual(node.data.evidence, { grade: 'sampled' });
+  }
+  assert.deepEqual(gradient.data.inverseDesignResult.rules, output.data.designedNetwork.reactions);
+  assert.deepEqual(gradient.data.inverseDesignResult.kd, output.data.designedNetwork.kds);
+  assert.throws(() => normalizeInverseDesignResult(gradient.data.inverseDesignResult, gradient.data.inverseDesignRequest));
+  assert.equal(designedNetworkFromResult(gradient.data.inverseDesignResult), null);
+  assert.equal(gradient.data.inverseDesignResult.selection_scope, 'provided_candidate_reactions');
+  assert.equal(target.data.inverseCandidateReactions, 'A + B <-> AB');
+});
+
+test('the shared multidimensional target-design fixture preserves physical evidence and restores historical freshness', () => {
+  const source = fixture('target-design-multidimensional-v2.json');
+  const expected = fixture('target-design-multidimensional-v2.expected-restored.json');
+  const before = clone(source);
+  const first = migrateWorkspaceDocument(source);
+  assert.deepEqual(source, before);
+  assert.deepEqual(first.document, expected);
+  assert.deepEqual(migrateWorkspaceDocument(source), first);
+  assert.deepEqual(migrateWorkspaceDocument(expected).document, expected);
+  assert.deepEqual(validateWorkspaceV2Document(expected), expected);
+  assert.equal(containsRuntimeSessionField(first.document), false);
+  assert.ok(first.diagnostics.some(entry => entry.code === 'runtime-fields-stripped'));
+  assert.equal(first.diagnostics.some(entry => entry.code.startsWith('connection-dropped')), false);
+  const targetNode = first.document.nodes.find(node => node.id === 'target');
+  const gradientNode = first.document.nodes.find(node => node.id === 'gradient');
+  const outputNode = first.document.nodes.find(node => node.id === 'output');
+  const request = gradientNode.data.inverseDesignRequest;
+  const target = request.target;
+  assert.equal(target.inputs.length, 2);
+  assert.equal(target.outputs.length, 2);
+  assert.equal(target.validation_samples.length, 2);
+  assert.deepEqual(JSON.parse(targetNode.data.inverseTargetJSON), target);
+  assert.deepEqual(request.chemistry.max_copies, { X: 1, Y: 1, A: 1, B: 1 });
+  assert.ok(request.chemistry.binding_gates.length > 0);
+  assert.ok(request.chemistry.forbidden_complexes.length > 0);
+  assert.notEqual(target.samples[0].weight, target.samples[1].weight);
+  for (const node of [gradientNode, outputNode]) {
+    assert.equal(node.data.lifecycle.state, 'historical');
+    assert.equal(node.data.lifecycle.freshness, 'historical');
+  }
+  const result = normalizeInverseDesignResult(gradientNode.data.inverseDesignResult, request);
+  const network = designedNetworkFromResult(result);
+  assert.deepEqual(network, outputNode.data.designedNetwork);
+  assert.deepEqual(network.totals, { A: 1.1001449211221617, B: 0.48476325826803995 });
+  assert.equal(network.outputs[0].transform, 'log10');
+  assert.equal(network.outputs[0].offset, 0.24430986707351177);
+  assert.equal(network.outputs[1].offset, -0.1);
+  assert.equal(network.physical_audit.cold_replay, true);
+  assert.equal(network.physical_audit.validation_samples, 2);
+});
+
+test('inverse-design results become historical even when persisted lifecycle records are absent', () => {
+  const source = fixture('inverse-design-v2.json');
+  for (const node of source.nodes) delete node.data.lifecycle;
+  const restored = migrateWorkspaceDocument(source).document;
+  assert.deepEqual(restored, fixture('inverse-design-v2.expected-restored.json'));
+});
+
+test('inverse-design requests and empty outputs do not acquire a computed lifecycle', () => {
+  const source = fixture('inverse-design-v2.json');
+  for (const node of source.nodes) delete node.data.lifecycle;
+  delete source.nodes.find(node => node.id === 'gradient').data.inverseDesignResult;
+  delete source.nodes.find(node => node.id === 'output').data.designedNetwork;
+  const restored = migrateWorkspaceDocument(source).document;
+
+  for (const node of restored.nodes) assert.equal(node.data.lifecycle, undefined);
+  assert.ok(restored.nodes.find(node => node.id === 'gradient').data.inverseDesignRequest);
+});
+
+test('inverse-design request and result ports remain distinct during restore', () => {
+  const source = fixture('inverse-design-v2.json');
+  const expectedConnections = clone(source.connections);
+  source.nodes.push({ id: 'gradient-2', type: 'gradient-design', x: 500, y: 500, data: {} });
+  source.connections.push(
+    { fromNode: 'target', fromPort: 'inverse-design-request', toNode: 'output', toPort: 'inverse-design-result' },
+    { fromNode: 'gradient', fromPort: 'inverse-design-result', toNode: 'gradient-2', toPort: 'inverse-design-request' },
+    { fromNode: 'output', fromPort: 'reactions', toNode: 'gradient-2', toPort: 'inverse-design-request' },
+  );
+  const { document, diagnostics } = migrateWorkspaceDocument(source);
+  assert.deepEqual(document.connections, expectedConnections);
+  const rejected = diagnostics.filter(entry => entry.code === 'connection-dropped-incompatible-port-types');
+  assert.equal(rejected.length, 3);
+  assert.deepEqual(rejected.map(entry => [entry.details.outputType, entry.details.inputType]), [
+    ['InverseDesignRequest', 'InverseDesignResult'],
+    ['InverseDesignResult', 'InverseDesignRequest'],
+    ['NetworkIR', 'InverseDesignRequest'],
+  ]);
 });
 
 test('all persisted freshness axes become historical without changing evidence grades', () => {

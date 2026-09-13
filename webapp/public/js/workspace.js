@@ -517,6 +517,7 @@ export function applyState(data) {
   // Staging succeeded: the remaining operations commit the prepared document.
   // Advance before replacing owners so every delayed completion from the old
   // graph fails its workspace-epoch check.
+  document.getElementById('quick-add-choice')?.close();
   advanceWorkspaceRuntimeEpoch();
   for (const id of existingNodeIds) removeNode(id);
   setConnections(restoredConnections);
@@ -794,6 +795,7 @@ export function restoreCachedNodeRuntime(nodeId, type, data) {
       }, 50);
       break;
     }
+    case 'siso-analysis':
     case 'siso-result': {
       info.data.selectedPath = data.selectedPath || null;
       info.data.behaviorData = data.behaviorData || null;

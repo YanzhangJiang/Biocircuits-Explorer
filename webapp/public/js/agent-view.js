@@ -14,8 +14,9 @@
 // As with editor-ui.js, all DOM is created programmatically — index-node.html
 // only carries the header view-switch markup and the stylesheet link.
 
-import { getLLMConfig } from './llm-settings.js';   // UI key panel -> per-request LLM config
+import { getLLMConfig } from './llm-config.js';   // UI key panel -> per-request LLM config
 import { apiSilent } from './api.js';
+import { validateDesignTarget } from './design-target-adapters.js';
 import {
   architectureDemoCard,
   architectureDemoOptions,
@@ -25,43 +26,18 @@ import {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CHATW_KEY = 'bcx-agent-chatw';
 const VIEW_KEY = 'bcx-node-view';
-const CHAT_API_KEY = 'bcx-chat-api';
 const DEFAULT_CHATW = 440;
-const DEFAULT_CHAT_API = 'http://127.0.0.1:8765/design-chat';
 const DESIGNABILITY_SPEC_VERSION = 'bne-designability/v1.0.0';
-let chatBearerToken = '';
+// Shared transport state is UI-independent so node imports never mount this view.
+import { chatApiUrl, healthUrl, designChatRequestHeaders, setDesignChatEndpoint as setTransportEndpoint } from './design-chat-client.js';
+export { designChatRequestHeaders, designTargetCompileUrl } from './design-chat-client.js';
 
-// Backend chat endpoint (webapp/scripts/chat_api.py), resolved lazily each call so
-// the native macOS shell can pin the real port after the page has loaded:
-//   window.__BCX_CHAT_API__ (set by setDesignChatEndpoint) > localStorage > default.
-function chatApiUrl() {
-  if (typeof window !== 'undefined' && window.__BCX_CHAT_API__) return window.__BCX_CHAT_API__;
-  try { return localStorage.getItem(CHAT_API_KEY) || DEFAULT_CHAT_API; }
-  catch { return DEFAULT_CHAT_API; }
-}
-function healthUrl() {
-  try { return new URL('/health', chatApiUrl()).toString(); }
-  catch { return DEFAULT_CHAT_API.replace('/design-chat', '/health'); }
-}
-
-// Let the native shell (or the dev console) point the agent at a specific backend.
-// The per-launch native token is intentionally memory-only: persisting it in
-// localStorage would leave a stale secret behind after the helper exits.
 export function setDesignChatEndpoint(url, bearerToken = '') {
   if (!url) return;
-  window.__BCX_CHAT_API__ = String(url);
-  chatBearerToken = bearerToken ? String(bearerToken) : '';
-  try { localStorage.setItem(CHAT_API_KEY, String(url)); } catch { /* ignore */ }
-  refreshBackendStatus();   // re-probe so the status pill reflects the new target
+  setTransportEndpoint(url, bearerToken);
+  refreshBackendStatus();
 }
 if (typeof window !== 'undefined') window.setDesignChatEndpoint = setDesignChatEndpoint;
-
-export function designChatRequestHeaders({ json = false } = {}) {
-  const headers = {};
-  if (json) headers['Content-Type'] = 'application/json';
-  if (chatBearerToken) headers.Authorization = `Bearer ${chatBearerToken}`;
-  return headers;
-}
 
 let agentBuilt = false;
 let threadEl = null;
@@ -83,6 +59,7 @@ let nextTurnId = 0;
 let pendingTurn = null;      // exactly one in-flight turn, owned by its conversation epoch
 let composerTextareaEl = null;
 let composerSendBtnEl = null;
+let composerCompileBtnEl = null;
 
 function setActiveCandidate(card) {
   activeCandidate = card || null;
@@ -855,7 +832,7 @@ function welcomeMessage() {
   return {
     role: 'agent',
     text: 'I’m the Biocircuits design agent. Describe the <b>behavior</b> you want from a binding network and I’ll compile it to a behavior spec, search the verified atlas, and return candidate reaction networks with their evidence.',
-    closing: 'Try: <i>“a bandpass response with a gentle rise, sharp fall and a wide plateau, at most 4 reactions”</i> · <i>“an AND gate on inputs A and B”</i> · <i>“a ratio sensor for A versus B”</i>. Add an LLM key in the ⚙ panel for free-form phrasing — optional, keyword parsing works without it.',
+    closing: 'Use <b>Compile target</b> to turn your description into an editable target for network generation, parameter fitting and pruning in the Workspace. Try <i>“单调上升，输入范围 0.05 到 10”</i> or <i>“a circular trajectory”</i>. <b>Send</b> searches the existing atlas. Add an LLM key in the ⚙ panel for free-form target descriptions; named curve and trajectory shapes also work without a key.',
   };
 }
 
@@ -1194,6 +1171,24 @@ function buildReplyMessage(res) {
   // The agent's natural-language reply IS the content (kind: agent / chat / need_key / error).
   // No "Compiled → …" prefix and no fabricated notes — the LLM wrote this, grounded in tool results.
   if (res.reply) parts.push(el('div', { class: 'agent-text', text: res.reply }));
+  let compiledTarget = null;
+  if (res.kind === 'compiled_target') {
+    try { compiledTarget = validateDesignTarget(res.target); }
+    catch { parts.push(el('div', { class: 'agent-text', text: 'This saved target is invalid. Compile the description again before exporting it.' })); }
+  }
+  if (compiledTarget) {
+    const target = compiledTarget;
+    const axes = `${target.inputs.map(axis => axis.name).join(', ')} → ${target.outputs.map(axis => `${axis.name} [${axis.species}]`).join(', ')}`;
+    parts.push(el('div', { class: 'agent-text', text: `${axes} · ${target.samples.length} target samples. Review and edit ranges, readouts and samples in the Workspace before running.` }));
+    for (const warning of Array.isArray(res.warnings) ? res.warnings : []) parts.push(el('div', { class: 'agent-text', text: warning }));
+    const handoff = el('button', { class: 'export-ws-btn', type: 'button', text: 'Open inverse design in Workspace ↗' });
+    handoff.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('bcx:agent-target-export', {
+        detail: JSON.parse(JSON.stringify({ target, chemistry: res.chemistry, interpretation: res.reply, warnings: res.warnings || [] })),
+      }));
+    });
+    parts.push(handoff);
+  }
   const info = res.info || {};
   if (info.engine_offline) {
     parts.push(el('div', { class: 'agent-abstain', text: '⚠ Compute engine offline — no verified design produced. Start the node Workspace server, then retry.' }));
@@ -1240,6 +1235,7 @@ function syncComposerAvailability() {
   if (composerSendBtnEl) {
     composerSendBtnEl.disabled = busy || !composerTextareaEl?.value.trim();
   }
+  if (composerCompileBtnEl) composerCompileBtnEl.disabled = busy || !composerTextareaEl?.value.trim();
 }
 
 function retirePendingTurn() {
@@ -1275,6 +1271,8 @@ function buildComposer() {
     placeholder: 'Describe the behavior you want, or your available parts…',
   });
   const sendBtn = el('button', { class: 'send-btn', disabled: '', text: 'Send' });
+  const compileBtn = el('button', { class: 'export-ws-btn', type: 'button', disabled: '', text: 'Compile target',
+    title: 'Interpret this description as an editable inverse-design target' });
 
   const grow = () => {
     ta.style.height = 'auto';
@@ -1329,12 +1327,42 @@ function buildComposer() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
   });
   sendBtn.addEventListener('click', submit);
+  compileBtn.addEventListener('click', async () => {
+    if (pendingTurn !== null) return;
+    const text = ta.value.trim();
+    if (!text) return;
+    appendMessage({ role: 'user', text });
+    convoLog.push({ role: 'user', text });
+    ta.value = ''; ta.style.height = 'auto';
+    const pending = buildMessage({ role: 'agent', text: 'Compiling an editable design target…' });
+    threadEl.appendChild(pending); scrollThreadToBottom();
+    const turn = beginPendingTurn(pending);
+    try {
+      const { compileDesignTarget } = await import('./design-target-agent.js');
+      if (!pendingTurnIsOwned(turn)) return;
+      const compiled = await compileDesignTarget(text, { signal: turn.controller.signal });
+      if (!pendingTurnIsOwned(turn)) return;
+      const res = { kind: 'compiled_target', reply: compiled.interpretation, target: compiled.target,
+        chemistry: compiled.chemistry, warnings: compiled.warnings, cards: [] };
+      threadEl.replaceChild(buildReplyMessage(res), pending);
+      convoLog.push({ role: 'agent', res });
+      if (convoLog.length > 60) convoLog = convoLog.slice(-60);
+    } catch (error) {
+      if (!pendingTurnIsOwned(turn)) return;
+      const res = { kind: 'target_compile_error', reply: String(error?.message || error), cards: [] };
+      threadEl.replaceChild(buildReplyMessage(res), pending);
+      convoLog.push({ role: 'agent', res });
+    } finally {
+      if (finishPendingTurn(turn)) scrollThreadToBottom();
+    }
+  });
 
   composerTextareaEl = ta;
   composerSendBtnEl = sendBtn;
+  composerCompileBtnEl = compileBtn;
   syncComposerAvailability();
 
-  return el('div', { class: 'agent-composer' }, el('div', { class: 'composer-box' }, [ta, sendBtn]));
+  return el('div', { class: 'agent-composer' }, [el('div', { class: 'composer-box' }, [ta, sendBtn]), compileBtn]);
 }
 
 /* ─── splitter ─── */

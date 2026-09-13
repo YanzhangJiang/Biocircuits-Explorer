@@ -158,6 +158,9 @@ export const PORT_COLOR_GROUPS = {
   'rop-shape-reference': 'params',
   'rop-shape-request': 'params',
   'rop-shape-result': 'result',
+  'inverse-design-request': 'params',
+  'inverse-design-result': 'result',
+  'designability-spec': 'params',
 };
 
 export function getPortColor(port) {

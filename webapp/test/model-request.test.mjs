@@ -40,7 +40,7 @@ function jsonResponse(json, { status = 200, ok = status >= 200 && status < 300 }
   };
 }
 
-test('model requests include NetworkIR recovery data for matching node context', () => {
+test('model requests use the cached hash and retain NetworkIR for recovery', () => {
   Object.keys(nodeRegistry).forEach((key) => delete nodeRegistry[key]);
   state.model = null;
   nodeRegistry.builder = {
@@ -59,7 +59,9 @@ test('model requests include NetworkIR recovery data for matching node context',
   assert.notEqual(enriched, original);
   assert.equal(enriched.session_id, 'stale-session');
   assert.equal(enriched.network_ir_hash, 'hash-1');
-  assert.deepEqual(enriched.network, { reactions: [{ formula: 'A + B <-> AB', kd: 1 }] });
+  assert.equal(enriched.network, undefined);
+  assert.deepEqual(enrichModelRequestPayload(enriched, { recover: true }).network,
+    { reactions: [{ formula: 'A + B <-> AB', kd: 1 }] });
   assert.equal(original.network, undefined, 'must not mutate caller payload');
 });
 
@@ -67,6 +69,60 @@ test('model requests keep explicit network payloads untouched', () => {
   const payload = { session_id: 'stale-session', network: { label: 'explicit' } };
   assert.equal(enrichModelRequestPayload(payload), payload);
 });
+
+test('recovery never substitutes a different explicit model identity', () => {
+  const payload = { session_id: 'stale-session', network_ir_hash: 'other-model' };
+  assert.equal(enrichModelRequestPayload(payload, { recover: true }), payload);
+});
+
+test('recovery requires a matching identity in the saved model context', () => {
+  const ctx = nodeRegistry.builder.data.modelContext;
+  const hash = ctx.networkIrHash;
+  delete ctx.networkIrHash;
+  const payload = { session_id: 'stale-session', network_ir_hash: 'hash-1' };
+  assert.equal(enrichModelRequestPayload(payload, { recover: true }), payload);
+  ctx.networkIrHash = hash;
+});
+
+for (const call of [api, apiSilent]) {
+  const previousFetch = globalThis.fetch;
+  const requests = [];
+  try {
+    globalThis.fetch = async (_url, options) => {
+      requests.push({ body: JSON.parse(options.body), signal: options.signal });
+      if (requests.length === 1) {
+        nodeRegistry.builder.data.modelContext.networkIr = { label: 'edited-during-request' };
+        return jsonResponse({ error: 'Model evicted', need_network: true }, { status: 409 });
+      }
+      return jsonResponse({ recovered: true });
+    };
+    nodeRegistry.builder.data.modelContext.networkIr = { label: 'original-network' };
+    assert.deepEqual(await call('parameter_scan_1d', { session_id: 'stale-session' }),
+      { recovered: true });
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].body.network, undefined);
+    assert.deepEqual(requests[1].body.network, { label: 'original-network' });
+    assert.equal(requests[0].signal, requests[1].signal, 'recovery shares the original deadline');
+
+    let attempts = 0;
+    globalThis.fetch = async () => {
+      attempts += 1;
+      return jsonResponse({ error: 'Still missing', need_network: true }, { status: 409 });
+    };
+    await assert.rejects(() => call('parameter_scan_1d', { session_id: 'stale-session' }), /Still missing/);
+    assert.equal(attempts, 2, 'recovery is attempted only once');
+    attempts = 0;
+    globalThis.fetch = async () => {
+      attempts += 1;
+      return jsonResponse({ error: 'Capacity full' }, { status: 429 });
+    };
+    await assert.rejects(() => call('parameter_scan_1d', { session_id: 'stale-session' }), /Capacity full/);
+    assert.equal(attempts, 1, 'ordinary failures do not rebuild models');
+    passed += 1;
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
 
 {
   const priorFetch = globalThis.fetch;

@@ -5,6 +5,7 @@ import { SISO_TYPES } from './siso.js';
 import { SCAN_TYPES } from './scan.js';
 import { PLACER_TYPES } from './placer.js';
 import { DESIGN_TARGET_TYPES } from './design-target.js';
+import { INVERSE_DESIGN_TYPES } from './inverse-design.js';
 import { ROP_CLOUD_TYPES } from './rop-cloud.js';
 import { ROP_POLY_TYPES } from './rop-poly.js';
 import { ROP_SHAPE_TYPES } from './rop-shape.js';
@@ -21,6 +22,7 @@ const RAW_NODE_TYPES = {
   ...SCAN_TYPES,
   ...PLACER_TYPES,
   ...DESIGN_TARGET_TYPES,
+  ...INVERSE_DESIGN_TYPES,
   ...ROP_CLOUD_TYPES,
   ...ROP_POLY_TYPES,
   ...ROP_SHAPE_TYPES,

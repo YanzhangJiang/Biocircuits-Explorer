@@ -24,7 +24,7 @@ import {
   createNode, moveNode, deleteNodeWithHistory, setNodeAttr, initAttrHistory,
 } from './nodes.js';
 import { dispatch, registerPerformers, initUndoKeyboard } from './commands.js';
-import { planDesignSpecExportWorkflow } from './graph-patch.js';
+import { planDesignSpecExportWorkflow, planAgentInverseDesignWorkflow } from './graph-patch.js';
 import { initEditorUI } from './editor-ui.js';
 import { addReactionRow, triggerDownstreamNodes } from './model.js';
 import {
@@ -33,13 +33,14 @@ import {
   snapshotNode, restoreNode,
 } from './workspace.js';
 import {
-  recomputeSISO, recomputeROPCloud, recomputeHeatmap,
+  recomputeSISO,
   plotSISOPath, selectSISOPath, toggleSISOPathCondition, updateSISOPlotMode, refreshSISOPlot,
   expandSISOPaths,
 } from './siso.js';
 import {
   updateROPCloudMode, refreshROPCloudPlot, applyROPCloudFOVPreset,
 } from './rop-cloud.js';
+import { recomputeROPCloud, recomputeHeatmap } from './node-types/rop-cloud.js';
 import { updateRegimeGraphMode } from './regime-graph.js';
 import {
   runParameterScan1D, runParameterScan2D,
@@ -47,6 +48,10 @@ import {
   refreshROPPolyhedronPlot, runROPPolyhedron,
 } from './scan.js';
 import { addAtlasBuilderRow } from './atlas.js';
+import {
+  applyInverseDesignPreset, compileInverseDesignTarget, refreshInverseDesignTarget,
+  clearInverseDesignDrawing, populateInverseDesignTarget, cancelGradientDesign, reviewInverseDesignBudget,
+} from './node-types/inverse-design.js';
 import { executePlacerResult, loadPlacerMenu } from './node-types/placer.js';
 import {
   updateRopShapeIntentVisibility,
@@ -103,6 +108,15 @@ const ACTION_HANDLERS = {
   updateRopShapeIntentVisibility: (el) => updateRopShapeIntentVisibility(el.dataset.node),
   prepareRopShapeRequest: (el) => runNodeOperation(el, 'prepare'),
   executeRopShapeResult: (el) => runNodeOperation(el),
+  prepareInverseDesignRequest: (el) => runNodeOperation(el, 'prepare'),
+  applyInverseDesignPreset: (el) => applyInverseDesignPreset(el.dataset.node),
+  compileInverseDesignTarget: (el) => compileInverseDesignTarget(el.dataset.node),
+  refreshInverseDesignTarget: (el) => refreshInverseDesignTarget(el.dataset.node),
+  clearInverseDesignDrawing: (el) => clearInverseDesignDrawing(el.dataset.node),
+  executeGradientDesign: (el) => runNodeOperation(el),
+  cancelGradientDesign: (el) => cancelGradientDesign(el.dataset.node),
+  reviewInverseDesignBudget: (el) => reviewInverseDesignBudget(el.closest('.node')?.id),
+  executeDesignedNetwork: (el) => runNodeOperation(el),
   // ROP Polyhedron
   runROPPolyhedron: (el) => runROPPolyhedron(el.dataset.node),
   executeROPPolyResult: (el) => runNodeOperation(el),
@@ -305,6 +319,36 @@ function exportDesignSpecToWorkspace(spec) {
   }
 }
 window.exportDesignSpecToWorkspace = exportDesignSpecToWorkspace;
+
+function exportInverseDesignTargetToWorkspace(definition) {
+  const plan = planAgentInverseDesignWorkflow({
+    graph: captureEditorGraphPlanningGraph(), nextNodeOrdinal: nodeIdCounter + 1,
+    definition, anchor: { x: 80, y: 150 },
+  });
+  if (!plan.ok) { showToast(plan.diagnostic.message); return plan; }
+  try {
+    const command = createEditorGraphPatchCommand(plan, {
+      initializeNode(spec, { nodeId }) {
+        if (!spec.initialization) return;
+        if (spec.initialization.kind !== 'inverse-design-target' ||
+            !populateInverseDesignTarget(nodeId, spec.initialization.definition)) {
+          throw new Error('Could not initialize the compiled design target.');
+        }
+      },
+    });
+    dispatch(command);
+    setNodeView('workspace');
+    showToast('Added editable design target, optimization and network output.');
+    return { ...plan, command };
+  } catch (error) {
+    showToast(`Target export failed: ${error.message}`);
+    return { ok: false, diagnostic: { code: 'target-export-failed', message: error.message } };
+  }
+}
+window.exportInverseDesignTargetToWorkspace = exportInverseDesignTargetToWorkspace;
+window.addEventListener('bcx:agent-target-export', event => {
+  exportInverseDesignTargetToWorkspace(event.detail);
+});
 
 async function boot() {
   initWorkspaceShell();

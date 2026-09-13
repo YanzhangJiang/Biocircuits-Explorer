@@ -2,6 +2,7 @@
 import { canvasState, dragState, resizeState, wiringState, scale, setScale, MIN_SCALE, MAX_SCALE, MAX_CANVAS_PAN, ZOOM_SENSITIVITY } from './state.js';
 import { updateConnections, scheduleUpdateConnections, getSocketCenter, bezierPath } from './connections.js';
 import { record, MoveNodeCommand } from './commands.js';
+import { nodeMinSize } from './node-sizes.js';
 import {
   normalizeRect, nodeIdsInRect, collectNodeWorldBounds,
   clearSelection, setSelection, addToSelection, selectOnly, toggleSelection,
@@ -353,8 +354,9 @@ export function initCanvasEvents() {
     if (resizeState.isResizing && resizeState.resizeNode) {
       const dw = (e.clientX - resizeState.resizeStartX) / scale;
       const dh = (e.clientY - resizeState.resizeStartY) / scale;
-      resizeState.resizeNode.style.width = Math.max(240, resizeState.resizeStartW + dw) + 'px';
-      resizeState.resizeNode.style.height = Math.max(100, resizeState.resizeStartH + dh) + 'px';
+      const minSize = nodeMinSize(resizeState.resizeNode.dataset.nodeType);
+      resizeState.resizeNode.style.width = Math.max(minSize.width, resizeState.resizeStartW + dw) + 'px';
+      resizeState.resizeNode.style.height = Math.max(minSize.height, resizeState.resizeStartH + dh) + 'px';
       const plotEl = resizeState.resizeNode.querySelector('.plot-container');
       if (plotEl) Plotly.Plots.resize(plotEl);
       scheduleUpdateConnections();
@@ -427,13 +429,35 @@ export function initCanvasEvents() {
 
   editor.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  // ===== Node Dragging (via headers) =====
+  // ===== Node Dragging (via headers or inert body areas) =====
+  // A left-drag started on a node's header, or on body space that is not a
+  // control, scroller, plot or drawing surface, moves the node.
+  const NODE_BODY_DRAG_EXCLUDE = 'input, textarea, select, button, a, label, [contenteditable], [data-action], .node-resize, .socket, .plot-container, .js-plotly-plot, .plotly, .modebar, .design-target-plot-panel, .inverse-table-scroll, .viewer-content, .node-info, .path-list';
+
+  function bodyDragNode(target, event) {
+    if (!(target instanceof Element)) return null;
+    if (target.closest('.node-header')) return null;
+    const node = target.closest('.node');
+    if (!node || target.closest(NODE_BODY_DRAG_EXCLUDE)) return null;
+    // A press on a scrollable element's own scrollbar belongs to that scroller.
+    const style = window.getComputedStyle(target);
+    const canScrollY = ['auto', 'scroll'].includes(style.overflowY) && target.scrollHeight > target.clientHeight + 1;
+    const canScrollX = ['auto', 'scroll'].includes(style.overflowX) && target.scrollWidth > target.clientWidth + 1;
+    if (canScrollY || canScrollX) {
+      const rect = target.getBoundingClientRect();
+      if (canScrollY && event.clientX >= rect.left + target.clientWidth) return null;
+      if (canScrollX && event.clientY >= rect.top + target.clientHeight) return null;
+    }
+    return node;
+  }
+
   document.addEventListener('mousedown', (e) => {
     // While Space is held the gesture is a canvas pan, not a node drag.
     if (spaceHeld) return;
+    if (e.button !== 0) return;
     const header = e.target.closest('.node-header');
-    if (!header || e.button !== 0) return;
-    const node = header.closest('.node');
+    const node = header ? header.closest('.node') : bodyDragNode(e.target, e);
+    if (!node) return;
 
     // Selection rules: Shift toggles this node; a plain click on an
     // unselected node selects it alone; clicking an already-selected node
