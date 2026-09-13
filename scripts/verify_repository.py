@@ -78,6 +78,19 @@ FORBIDDEN_RESEARCH_ROOTS = {
     "confidential",
     "submissions",
 }
+# Manuscript and bibliography file types are rejected wherever they are tracked, so a
+# force-add of a paper draft or a published PDF cannot slip past the directory rules.
+# Product media (images, video, fonts) is unaffected; keep it in the product tree.
+FORBIDDEN_RESEARCH_SUFFIXES = {
+    ".tex",
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".bib",
+    ".ris",
+    ".nbib",
+    ".enw",
+}
 REQUIRED_PRIVACY_IGNORES = (
     "/paper_rop_periodic_table/",
     "/webapp/scripts/rop_periodic_table/",
@@ -215,6 +228,8 @@ def public_repository_path_violation(relative: Path) -> str | None:
     parts = relative.parts
     if parts and (parts[0] in FORBIDDEN_RESEARCH_ROOTS or parts[0].startswith("paper_")):
         return "forbidden manuscript or private-research root"
+    if relative.suffix.lower() in FORBIDDEN_RESEARCH_SUFFIXES:
+        return f"forbidden manuscript or bibliography suffix {relative.suffix}"
     stem = relative.stem.lower()
     if "rebuttal" in stem or ("reviewer" in stem and ("response" in stem or "reply" in stem)):
         return "forbidden peer-review response filename"

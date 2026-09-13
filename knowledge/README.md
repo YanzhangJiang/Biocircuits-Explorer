@@ -81,11 +81,13 @@ Dates alone do not make prose current. A verified revision and evidence path do.
   artifact identity and an explicit claim owner.
 
 The repository check detects credential-bearing URLs, private-key headers,
-common token shapes, and files in explicitly private directories. Public SSH
-repository URLs, example paths, published PDFs, and bibliography files are
-allowed. Generated schemas and references are checked for drift; unrelated
-worktree edits do not invalidate a check. Runtime compatibility is tested by
-the owning code's behavior, without requiring a particular source formatting.
+common token shapes, files in explicitly private directories, and manuscript
+or bibliography file types (`.tex`, `.doc`, `.docx`, `.pdf`, `.bib`, `.ris`,
+`.nbib`, `.enw`) even when a force-add bypasses `.gitignore`. Public SSH
+repository URLs and example paths are allowed. Generated schemas and
+references are checked for drift; unrelated worktree edits do not invalidate a
+check. Runtime compatibility is tested by the owning code's behavior, without
+requiring a particular source formatting.
 
 The legacy `doc/`, `wiki/`, and incident-specific agent notes can still explain
 why something was attempted. Unless a current page explicitly promotes a file

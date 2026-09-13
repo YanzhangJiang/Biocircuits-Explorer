@@ -151,9 +151,18 @@ class PathAndMarkdownTests(unittest.TestCase):
         self.assertIsNotNone(violation(Path("manuscripts/draft.tex")))
         self.assertIsNotNone(violation(Path("notes/reviewer_response.docx")))
 
-    def test_public_documents_and_path_examples_are_allowed(self):
-        for path in ("docs/guide.pdf", "references.bib", "papers/published-example.md"):
-            self.assertIsNone(verify_repository.public_repository_path_violation(Path(path)))
+    def test_manuscript_file_types_are_rejected_even_when_force_added(self):
+        violation = verify_repository.public_repository_path_violation
+        for path in (
+            "docs/guide.pdf",
+            "notes/derivation.tex",
+            "references.bib",
+            "submissions/paper.docx",
+            "webapp/public/media/附录.pdf",
+        ):
+            self.assertIsNotNone(violation(Path(path)), path)
+        for path in ("webapp/public/media/main.png", "notebooks/example.ipynb", "README.md"):
+            self.assertIsNone(violation(Path(path)), path)
         self.assertEqual(verify_repository.find_private_markers(
             "git clone git@github.com:public/example.git; use /tmp/example or file://example"
         ), [])
