@@ -1,0 +1,134 @@
+{
+  "version": 2,
+  "schema_version": "bne-workspace/v2.0.0",
+  "timestamp": "2026-09-12T01:02:03.000Z",
+  "canvas": { "panX": 12, "panY": -8, "scale": 0.9 },
+  "nodes": [
+    {
+      "id": "target",
+      "type": "inverse-design-target",
+      "x": 0,
+      "y": 40,
+      "data": {
+        "inverseDescription": "Fit a saturating binding response.",
+        "inverseCandidateReactions": "A + B <-> AB",
+        "inverseOutputExprs": "AB",
+        "inverseTargetSamples": "[{\"totals\":{\"tA\":1,\"tB\":1},\"target\":[0.5]}]",
+        "inverseDesignRequest": {
+          "description": "Fit a saturating binding response.",
+          "reactions": ["A + B <-> AB"],
+          "output_exprs": ["AB"],
+          "samples": [{ "totals": { "tA": 1, "tB": 1 }, "target": [0.5] }],
+          "requestToken": "transient-target-request"
+        }
+      }
+    },
+    {
+      "id": "gradient",
+      "type": "gradient-design",
+      "x": 720,
+      "y": 40,
+      "data": {
+        "inverseLambda": 0.001,
+        "inverseLearningRate": 0.03,
+        "inverseEpochs": 250,
+        "inverseDebiasEpochs": 60,
+        "inverseActiveThreshold": 0.05,
+        "inverseDesignRequest": {
+          "description": "Fit a saturating binding response.",
+          "reactions": ["A + B <-> AB"],
+          "output_exprs": ["AB"],
+          "samples": [{ "totals": { "tA": 1, "tB": 1 }, "target": [0.5] }],
+          "lambda": 0.001,
+          "learning_rate": 0.03,
+          "epochs": 250,
+          "debias_epochs": 60,
+          "active_threshold": 0.05,
+          "requestToken": "transient-gradient-request"
+        },
+        "inverseDesignResult": {
+          "status": "ok",
+          "rules": ["A + B <-> AB"],
+          "kd": [0.5],
+          "reaction_fit": [{ "rule": "A + B <-> AB", "active": true, "affinity": 2, "selection_kd": 0.5, "kd": 0.5 }],
+          "predictions": [[0.5]],
+          "targets": [[0.5]],
+          "fit_loss": 0,
+          "sparse_fit_loss": 0,
+          "sparse_objective": 0.002,
+          "loss_history": [
+            { "epoch": 1, "data_loss": 0.1, "objective": 0.102 },
+            { "epoch": 250, "data_loss": 0, "objective": 0.002 }
+          ],
+          "q_sym": ["tA", "tB"],
+          "x_sym": ["A", "B", "AB"],
+          "output_exprs": ["AB"],
+          "species": ["A", "B", "AB"],
+          "free_species": ["A", "B"],
+          "product_species": ["AB"],
+          "prediction_basis": "candidate_library_with_weak_inactive_reactions",
+          "evidence_tier": "sampled_equilibrium_fit",
+          "selection_scope": "provided_candidate_reactions",
+          "optimality": "local_gradient_fit",
+          "identifiability": "not_assessed",
+          "selected_network": {
+            "status": "ok",
+            "rules": ["A + B <-> AB"],
+            "kd": [0.5],
+            "network_ir": {
+              "ir_schema_version": "bne-ir/v1.0.0",
+              "label": "inverse-design-workspace-fixture",
+              "species": [
+                { "name": "A", "role": "free" },
+                { "name": "B", "role": "free" },
+                { "name": "AB", "role": "bound" }
+              ],
+              "reactions": [{ "formula": "A + B <-> AB", "kd": 0.5, "kind": "binding", "reversible": true }],
+              "observables": [],
+              "parameter_distributions": [],
+              "compartments": [],
+              "provenance": { "source": "contract-fixture" },
+              "extensions": {}
+            },
+            "network_ir_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "predictions": [[0.5]],
+            "targets": [[0.5]],
+            "fit_loss": 0,
+            "output_exprs": ["1.0*AB"],
+            "output_coefficients": [[0, 0, 1]],
+            "q_sym": ["tA", "tB"],
+            "x_sym": ["A", "B", "AB"],
+            "removed_species": [],
+            "prediction_basis": "selected_network",
+            "evidence_tier": "sampled_equilibrium_replay"
+          },
+          "executionToken": "transient-gradient-execution"
+        },
+        "evidence": { "grade": "sampled" },
+        "lifecycle": { "state": "current", "freshness": "current", "evidence": { "grade": "sampled" } },
+        "sessionId": "transient-gradient-session"
+      }
+    },
+    {
+      "id": "output",
+      "type": "designed-network",
+      "x": 1440,
+      "y": 40,
+      "data": {
+        "designedNetwork": {
+          "reactions": ["A + B <-> AB"],
+          "kds": [0.5],
+          "session_id": "transient-output-session"
+        },
+        "evidence": { "grade": "sampled" },
+        "lifecycle": { "state": "current", "freshness": "current", "evidence": { "grade": "sampled" } }
+      }
+    },
+    { "id": "model", "type": "model-builder", "x": 2160, "y": 40, "data": {} }
+  ],
+  "connections": [
+    { "fromNode": "target", "fromPort": "inverse-design-request", "toNode": "gradient", "toPort": "inverse-design-request" },
+    { "fromNode": "gradient", "fromPort": "inverse-design-result", "toNode": "output", "toPort": "inverse-design-result" },
+    { "fromNode": "output", "fromPort": "reactions", "toNode": "model", "toPort": "reactions" }
+  ]
+}

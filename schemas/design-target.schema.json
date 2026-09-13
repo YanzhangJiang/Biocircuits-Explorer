@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://biocircuits-explorer.com/schemas/design-target.schema.json",
+  "title": "Biocircuits Explorer sampled design target",
+  "description": "Editable target shared by curve, image, trajectory, numerical data, and Design Agent inputs. Coordinates are positive physical conserved-total concentrations; output values are transform(species concentration) + offset. Julia additionally checks ordered ranges, unique input and output names, generated chemistry readout identities, combined training and validation sample count <=4096, and the reduced equilibrium work budget before a job is admitted. Evidence applies to supplied finite samples only.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "description",
+    "source",
+    "inputs",
+    "outputs",
+    "samples"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "bne-design-target/v1.0.0"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 16000
+    },
+    "source": {
+      "enum": [
+        "curve",
+        "image",
+        "trajectory",
+        "data",
+        "agent"
+      ]
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "min",
+          "max",
+          "scale"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/identifier"
+          },
+          "min": {
+            "type": "number",
+            "minimum": 1e-08,
+            "maximum": 100000000.0
+          },
+          "max": {
+            "type": "number",
+            "minimum": 1e-08,
+            "maximum": 100000000.0
+          },
+          "scale": {
+            "enum": [
+              "linear",
+              "log"
+            ]
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "species",
+          "transform",
+          "offset",
+          "optimize_offset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "species": {
+            "$ref": "#/$defs/identifier"
+          },
+          "transform": {
+            "enum": [
+              "linear",
+              "log10"
+            ]
+          },
+          "offset": {
+            "type": "number",
+            "minimum": -8,
+            "maximum": 8
+          },
+          "optimize_offset": {
+            "type": "boolean"
+          },
+          "min": {
+            "type": "number",
+            "minimum": -100000000.0,
+            "maximum": 100000000.0,
+            "description": "Editable drawing viewport bound; not a physical clipping or optimization constraint."
+          },
+          "max": {
+            "type": "number",
+            "minimum": -100000000.0,
+            "maximum": 100000000.0,
+            "description": "Editable drawing viewport bound; not a physical clipping or optimization constraint."
+          }
+        }
+      }
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/sample"
+      }
+    },
+    "validation_samples": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/sample"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "inputs": {
+            "minItems": 1,
+            "maxItems": 1
+          }
+        },
+        "required": [
+          "inputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "inputs": {
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "inputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "inputs": {
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "inputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "inputs": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outputs": {
+            "minItems": 1,
+            "maxItems": 1
+          }
+        },
+        "required": [
+          "outputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outputs": {
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "outputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outputs": {
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "outputs"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              }
+            }
+          },
+          "validation_samples": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "outputs": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"
+    },
+    "sample": {
+      "type": "object",
+      "required": [
+        "inputs",
+        "outputs",
+        "weight"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": 1e-08,
+            "maximum": 100000000.0
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -100000000.0,
+            "maximum": 100000000.0
+          }
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 1e-12,
+          "maximum": 1000000000000.0
+        }
+      }
+    },
+    "chemistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary_monomers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "default": 2
+        },
+        "max_complex_size": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 8,
+          "default": 3
+        },
+        "max_reactions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256,
+          "default": 48
+        },
+        "allow_homomers": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_copies": {
+          "type": "object",
+          "maxProperties": 7,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          }
+        },
+        "forbidden_complexes": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "binding_gates": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "required": [
+              "monomer",
+              "requires"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "monomer": {
+                "$ref": "#/$defs/identifier"
+              },
+              "requires": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 7,
+                "propertyNames": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                }
+              },
+              "unless_core_count_at_least": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              }
+            }
+          }
+        }
+      }
+    },
+    "optimization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "epochs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000,
+          "default": 150
+        },
+        "learning_rate": {
+          "type": "number",
+          "maximum": 0.5,
+          "default": 0.03,
+          "minimum": 1e-05
+        },
+        "restarts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 2
+        },
+        "prune_rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12,
+          "default": 3
+        },
+        "prune_fraction": {
+          "type": "number",
+          "maximum": 1,
+          "default": 0.2,
+          "minimum": 0.01
+        },
+        "prune_tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.02,
+          "maximum": 1
+        },
+        "max_rmse": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.05,
+          "maximum": 100000000.0
+        },
+        "optimize_totals": {
+          "type": "boolean",
+          "default": true
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "default": 1
+        }
+      }
+    }
+  }
+}
