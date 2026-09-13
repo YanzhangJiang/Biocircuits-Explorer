@@ -32,6 +32,9 @@ override wins in either mode.
 - Request resolution pins the selected bundle in task-local storage for the
   handler call. Model handlers named by `model_runtime.jl` execute under the
   bundle lock, so a request cannot lock one bundle and later resolve another.
+- Browser model requests send the known model hash. A cache miss with
+  `need_network=true` retries once with the captured NetworkIR, within the same
+  timeout; cache hits do not repeat topology canonicalization.
 - Model-cache and session-alias access times live in separate locked tables.
   Their LRU/TTL policies are independent; sessions remain convenience aliases,
   and a full session table evicts its least-recently-used alias instead of
@@ -58,6 +61,8 @@ override wins in either mode.
   `retryable=false`. JSON request bodies have a 1 MiB application limit; Nginx
   applies the matching hard pre-proxy cap and both paths return a machine-readable
   HTTP 413 contract.
+- Background RO-field compilation uses the job candidate limit, independent
+  of the five-reaction interactive limit. Cache hits enforce the caller's limit.
 - Synchronous Web SISO/change-path construction is capped at 2,000 paths and
   200,000 materialized path nodes. Parallel atlas network workers explicitly
   propagate the synchronous context and typed budget errors. ROP-shape and
@@ -75,6 +80,84 @@ override wins in either mode.
   through their executable sunset metadata, and actual alias requests increment
   the bounded `bcx_http_legacy_requests_total` counter by method, canonicalized
   route, and status. Canonical v1, unknown, and v1-only paths do not increment it.
+
+## Working-tree target-driven network design
+
+The corrected target-driven path was verified locally on 2026-09-12 with 137
+mathematical assertions, 73 API checks, 22 schema checks, 42 bounded model-build
+checks, and existing cancellation/budget regressions. Real HTTP curve, trajectory,
+and image-field jobs passed the production JS boundary and Model Builder.
+The executable owners are
+[`target_design.jl`](../../Bnc_julia/src/target_design.jl),
+[`target_design_api.jl`](../../webapp/src/target_design_api.jl), and the existing
+local job runner. `POST /api/v1/design_network` accepts only `target`,
+`chemistry`, and `optimization`, validates before admission, and returns HTTP
+202 for a cancellable `local_async` job. It has no synchronous or remote-job
+substitute. Work reservation combines samples, epochs, restarts, pruning
+rounds, generated reactions, and monomers; checkpoint cancellation also enforces
+a 600-second computation deadline.
+
+The target schema is `bne-design-target/v1.0.0`, owned by
+[`design-target.schema.json`](../../schemas/design-target.schema.json). It
+contains one to three ordered input total-concentration axes, one to three
+named molecular readouts, weighted target samples, and optional validation
+samples. At most 4,096 combined samples are admitted; input concentrations must
+be finite, positive, and inside the declared ranges. Readouts are a species
+concentration or its `log10`, plus an explicit additive offset. Logical output
+names and chemical species references remain separate. The description is
+provenance for a compiled or manually authored numerical target, not an
+uninterpreted text loss.
+
+The engine creates chemistry from auxiliary monomer count, maximum complex
+size, repeated-monomer policy, and reaction cap. Optional `max_copies`,
+`forbidden_complexes`, and `binding_gates` restrict the assembly grammar. A gate
+constrains the monomer being added, requiring declared composition counts;
+`unless_core_count_at_least` provides an explicit auxiliary-count exception.
+Every retained complex has one declared precursor path. A reaction cap selects
+a reproducible, precursor-closed subset and reports truncation; it cannot
+discard required output closure silently. Missing or forbidden readout species
+fail validation. Generation uses permitted chemistry, not target image geometry.
+
+For free monomer log-concentrations `h`, composition matrix `C`, path matrix
+`P`, and stepwise `theta_K = log10(Kd)`, the model is
+`a = exp(h)`, `z = exp(C*h - ln(10)*P*theta_K)`, and
+`t = a + C' * z`. Safeguarded reduced Newton solves the conservation equations;
+implicit sensitivities use `diag(a) + C' * diag(z) * C`, including the stepwise
+path chain. Bounded local Adam optimizes stepwise `log10(Kd)` in `[-8,8]`,
+optionally noninput `log10` totals in `[-4,4]`, and only explicitly opted-in
+additive readout offsets in `[-8,8]`. Without total optimization the current
+noninput total is one. The objective is half the weighted mean squared
+residual across outputs; no affinity sparsity penalty, learned image decoder,
+or response clipping is used.
+
+Pruning ranks terminal complexes by sampled occupancy, protects every input
+and output and all retained precursor paths, removes unused auxiliary monomers
+and parameters, then refits and cold-replays the smaller network. The error
+ceiling is fixed from the pre-pruning result plus `prune_tolerance`; attaining
+`max_rmse` tightens the ceiling so later pruning cannot lose that attainment.
+Acceptance and `target_met` use the worst per-output RMSE across training and
+supplied validation samples. The latter never enter gradients but do participate
+in selection. Among successful sampled targets the engine prefers fewer
+reactions, then fewer monomers; otherwise it returns the lowest error and marks
+the target unmet. Failed equilibrium is not a valid zero or a successful design.
+
+The selected result contains rules, Kd, noninput totals, input/readout mappings,
+training and validation predictions, per-output errors, pruning attempts,
+optimizer history, and cold conservation/stepwise mass-action residual audits.
+Its `sampled_equilibrium_replay` evidence and `prediction_basis=selected_network`
+refer to that actual returned topology. API handoff adds a round-tripped
+`NetworkIR` with fitted totals and readout metadata. A valid reaction-free design
+is inspectable but declares Model Builder handoff unavailable. The dedicated
+`design_equilibrium` model path does not promise the full exact-regime/ROP
+feature set for these generated networks.
+
+This ports the shared physical mathematics and a bounded structural loop from
+the recent research into the product. It does not port the whole Logo optimizer
+comparison, expand topology across parameter restarts, prove global minimality,
+or establish unique or biological realization. The separate legacy
+`POST /api/v1/discover_architecture` API remains available for given-reaction
+mechanism fitting; its Kd-only affinity-sparsity objective is not the new target
+workflow's algorithm.
 
 ## Working-tree bounded RO-field endpoint
 
@@ -128,9 +211,11 @@ but is deliberately `local_async` only. A resume request creates a new child
 job; it may name only the same owner's terminal failed/cancelled parent, the
 same frozen scientific plan, and that parent's linearized checkpoint. Verified
 committed chunks are reused and only missing deterministic work units are
-evaluated. Result publication and later result reads revalidate the plan,
+evaluated. Result publication and explicit audits revalidate the plan,
 checkpoint, manifest, every addressed chunk, cumulative payload accounting,
-and submitted resume lineage. AWS/Batch submission fails closed until a shared
+and submitted resume lineage. Ordinary result reads check the outer committed
+file's digest and identity, without rebuilding the solver environment or
+replaying intermediate files. AWS/Batch submission fails closed until a shared
 object-store chunk protocol exists.
 
 A disjoint sparse-v2 branch keeps the same `compute_ro_field` Job kind but uses
@@ -139,11 +224,15 @@ A disjoint sparse-v2 branch keeps the same `compute_ro_field` Job kind but uses
 plus a bounded one-to-four-control affine chart, evaluates the complete source
 q/K Jacobian, and stores the output-major/input-minor chart pullback without
 inventing Cartesian axis coordinates. One adaptive multi-index batch is one
-work unit. Plan, prepared batch, ordered point chunk, prior/next state, terminal
-result, checkpoint, and manifest documents are separate write-once content
-addresses. A checkpoint binds every transition as
-prior-state/batch/chunk/next-state, so a cancellation may leave an unreferenced
-CAS object but cannot make it committed evidence.
+work unit. Each batch appends its prepared batch, ordered point chunk, and a
+small transition entry. Checkpoint v3 stores the journal head and running
+totals, without cumulative state snapshots or copies of the entire history.
+Storage for the journal and checkpoints grows linearly with batch count.
+A transition binds prior-state/batch/chunk/next-state; cancellation may leave
+unreferenced files but cannot commit them. Completed results using earlier
+checkpoint formats remain readable through their outer result manifest. The
+v3 journal does not migrate unfinished v2 checkpoints; those runs need their
+original runtime to resume, or a fresh submission.
 
 The plan includes a server-derived numerical execution policy rather than only
 nominal solver labels. It binds the sparse algorithm, plan/state/checkpoint
@@ -158,7 +247,7 @@ Sparse-v2 submission performs only bounded ownership/status/identity and
 control-artifact admission checks. A resumed child then performs one metered
 authoritative forward replay of the parent's linearized checkpoint before
 copying or extending it; it never trusts an uncommitted object or reevaluates a
-committed batch. Final publication and every result read replay the plan and all
+committed batch. Final publication and explicit audits replay the plan and all
 addressed transitions once, reconstruct the terminal state, and invoke the
 engine's plan-and-terminal-state result validator. Shallow engine validation is
 reserved for current-process or already-authoritatively-replayed state. Terminal
@@ -288,8 +377,8 @@ behind their hashes and never assert external execution.
 - Atomic local job records/results or S3-backed Batch artifacts.
 - For `compute_ro_field`, either the unchanged Cartesian-v1 local
   plan/checkpoint/chunk/manifest tree or the disjoint sparse-v2
-  plan/batch/chunk/state/terminal/checkpoint/manifest tree, with a result
-  descriptor that binds and replays its complete nested content identity.
+  plan/batch/chunk/transition/terminal/checkpoint/manifest tree. Publication
+  validates the complete dataset; ordinary reads verify the committed result.
 - Exact-index/no-interpolation two-dimensional slice artifacts over verified
   Cartesian source datasets.
 - Prepared campaign manifests, local-demo shard results, metadata-only corpus
@@ -515,8 +604,8 @@ stack or a real AWS worker.
   outer job-result commit marker validate.
 - The sparse-v2 namespace is disjoint from Cartesian v1. Its linearized
   checkpoint binds each prior state, prepared batch, ordered point chunk, and
-  next state; final reads must replay every transition and re-finalize the
-  terminal engine result. CAS files not named by that checkpoint are not
+  next state; resume and explicit audits replay transitions and validate the
+  terminal engine result. Files not named by that checkpoint are not
   committed evidence.
 - A strict RO-field slice is a two-free-axis selection from source Cartesian
   points. `value_origin=reused_exact` and `interpolation=none` are enforced, and
@@ -604,7 +693,8 @@ stack or a real AWS worker.
    or application versions when semantics, not merely implementation, change.
 9. For RO-field job changes, preserve Cartesian-v1 identity and sparse-v2
    plan/batch/chunk/state transition identity, child-only resume lineage,
-   complete replay-based result validation, and cancellation checkpoints.
+   replay-based publication/audit validation, digest-checked result reads, and
+   cancellation checkpoints.
    Adding a remote executor requires a separate shared-storage, recovery, and
    garbage-collection contract.
 10. For campaign changes, keep preparation separate from authority and state
@@ -624,7 +714,7 @@ See [runtime topology](../architecture/runtime.md) and
   request metrics; focused Julia/JavaScript/Python tests; and both CI workflows.
 - Working-tree extension inspected on 2026-07-17: content-addressed RO-field
   plans/chunks/checkpoints/manifests, local six-state job integration and resume
-  lineage, the disjoint sparse-v2 plan/batch/chunk/state/terminal replay path,
+  lineage, the disjoint sparse-v2 plan/batch/chunk/transition/terminal replay path,
   exact-index/no-interpolation Cartesian source slices, campaign
   preparation/merge/QC source, and their focused contracts. This does not
   advance the committed revision above or claim that the complete campaign ran.

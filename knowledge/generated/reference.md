@@ -19,8 +19,10 @@ version owners, and CI configuration. Regenerate with
 | `/api/v1/build_model` | POST | `handle_build_model` | /api/build_model | exact |
 | `/api/v1/debug_logs` | POST | `handle_debug_logs` | /api/debug_logs | exact |
 | `/api/v1/design_labels` | POST | `handle_design_labels` | /api/design_labels | exact |
+| `/api/v1/design_network` | POST | `handle_design_network` | none | exact |
 | `/api/v1/design_screen` | POST | `handle_design_screen` | /api/design_screen | exact |
 | `/api/v1/design_search` | POST | `handle_design_search` | /api/design_search | exact |
+| `/api/v1/discover_architecture` | POST | `handle_discover_architecture` | none | exact |
 | `/api/v1/export/sbml` | POST | `handle_export_sbml` | /api/export/sbml | exact |
 | `/api/v1/find_vertices` | POST | `handle_find_vertices` | /api/find_vertices | exact |
 | `/api/v1/fret_heatmap` | POST | `handle_fret_heatmap` | /api/fret_heatmap | exact |
@@ -71,6 +73,7 @@ owned by handlers and schemas; this table documents paths and methods only.
 | `schemas/behavior-spec.schema.json` | `https://biocircuits-explorer/schemas/behavior-spec.schema.json` | `schema_version` | `bne-behavior/v0.1.0` | `behavior-spec` / `designability` | tracked-instances |
 | `schemas/design-agent-trace.schema.json` | `https://biocircuits-explorer.com/schemas/design-agent-trace.schema.json` | `trace_schema_version` | `design-agent-trace/v0.1.0` | `design-agent-trace` / `design-agent` | workflow-partial-schema |
 | `schemas/design-spec.schema.json` | `https://biocircuits-explorer.com/schemas/design-spec.schema.json` | `ir_schema_version` | `bne-design/v1.0.0` | `design-spec` / `backend-runtime` | generated-drift-and-runtime |
+| `schemas/design-target.schema.json` | `https://biocircuits-explorer.com/schemas/design-target.schema.json` | `schema_version` | `bne-design-target/v1.0.0` | `target-driven-network-design` / `backend-runtime` | locally-verified-implicit-gradients-native-replay-real-http-browser-and-native-integration |
 | `schemas/designability-screen.schema.json` | `bne-design-screen` | `schema_version` | `bne-design-screen/v0.3.0` | `designability-screen` / `designability` | direct |
 | `schemas/designability-spec.schema.json` | `bne-designability-spec` | `schema_version` | `bne-designability/v1.0.0` | `designability-spec` / `designability` | direct |
 | `schemas/job-result-manifest.schema.json` | `https://biocircuits-explorer.com/schemas/job-result-manifest.schema.json` | `schema_version` | `bne-job-result-manifest/v1.0.0` | `job-result-manifest` / `batch-hpc` | strict-runtime-validator-mocked-object-store-and-schema-version |

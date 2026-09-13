@@ -67,6 +67,7 @@ artifacts:
     paths:
       - "schemas/behavior-spec.schema.json"
       - "schemas/design-agent-trace.schema.json"
+      - "schemas/design-target.schema.json"
       - "schemas/designability-screen.schema.json"
       - "schemas/designability-spec.schema.json"
       - "schemas/latent-atlas-manifest.schema.json"

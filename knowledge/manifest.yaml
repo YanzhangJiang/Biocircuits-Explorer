@@ -144,6 +144,11 @@ documents:
     kind: "contract"
     owner: "web-workspace"
     status: "active"
+  - id: "contract-frontend-design-consistency"
+    path: "knowledge/contracts/frontend-design.md"
+    kind: "contract"
+    owner: "web-workspace"
+    status: "active"
 
   - id: "runbook-release-candidate-external-verification"
     path: "knowledge/runbooks/release-candidate-external-verification.md"

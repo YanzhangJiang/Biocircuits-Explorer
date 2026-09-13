@@ -11,6 +11,7 @@ modules:
     doc: "knowledge/modules/engine-rop.md"
     owner_paths:
       - "Bnc_julia/src"
+      - "Bnc_julia/src/target_design.jl"
       - "Bnc_julia/src/rop/ro_field.jl"
       - "Bnc_julia/src/rop/ro_cell_complex.jl"
       - "Bnc_julia/src/rop/ro_coordinate_chart.jl"
@@ -39,6 +40,7 @@ modules:
       - "Bnc_julia/src/BindingAndCatalysis.jl"
     tests:
       - "Bnc_julia/test/runtests.jl"
+      - "Bnc_julia/test/target_design.jl"
       - "Bnc_julia/test/multi_input_ro_field_contract.jl"
       - "Bnc_julia/test/ro_cell_complex_contract.jl"
       - "Bnc_julia/test/ro_coordinate_chart_contract.jl"
@@ -66,6 +68,7 @@ modules:
     depends_on: []
     provides:
       - "equilibrium-model"
+      - "target-driven-implicit-gradient-prune-refit"
       - "rop-regimes-and-paths"
       - "multi-input-ro-fields"
       - "exact-2d-ro-cell-complexes"
@@ -99,6 +102,7 @@ modules:
     doc: "knowledge/modules/backend-runtime.md"
     owner_paths:
       - "webapp/src"
+      - "webapp/src/target_design_api.jl"
       - "webapp/src/runtime_lifecycle.jl"
       - "webapp/src/request_support.jl"
       - "webapp/src/sync_work_budget.jl"
@@ -125,6 +129,7 @@ modules:
       - "webapp/src/routing.jl"
     tests:
       - "webapp/test/runtests.jl"
+      - "webapp/test/target_design_api.jl"
       - "webapp/test/backend_assembly_contract.jl"
       - "webapp/test/concurrency_and_budget_contract.jl"
       - "webapp/test/jobs_cache_concurrency_contract.jl"
@@ -145,6 +150,7 @@ modules:
       - "rop-shape-optimization"
     provides:
       - "http-api-v1"
+      - "local-async-target-driven-network-design"
       - "network-ir-runtime"
       - "job-runtime"
       - "application-readiness"
@@ -239,6 +245,9 @@ modules:
     doc: "knowledge/modules/design-agent.md"
     owner_paths:
       - "webapp/scripts/design_agent.py"
+      - "webapp/scripts/design_target_compile.py"
+      - "webapp/public/js/design-target-agent.js"
+      - "schemas/design-target.schema.json"
       - "webapp/scripts/chat_api.py"
       - "webapp/scripts/engine_client.py"
       - "webapp/scripts/reader"
@@ -248,6 +257,8 @@ modules:
     tests:
       - "webapp/scripts/test_chat_api.py"
       - "webapp/scripts/test_design_agent_contract.py"
+      - "webapp/scripts/test_design_target_compile.py"
+      - "webapp/test/design-target-agent.test.mjs"
       - "webapp/scripts/reader/test_reader_nofabrication.py"
     depends_on:
       - "backend-runtime"
@@ -256,6 +267,7 @@ modules:
       - "atlas"
     provides:
       - "design-chat"
+      - "editable-numerical-target-compilation"
       - "reader-priors"
       - "design-agent-traces"
     maturity: "active"
@@ -319,6 +331,12 @@ modules:
       - "webapp/public/js/workflow-execution.js"
       - "webapp/public/js/execution-lifecycle-core.js"
       - "webapp/public/js/graph-patch.js"
+      - "webapp/public/js/node-types/inverse-design.js"
+      - "webapp/public/js/inverse-design-core.js"
+      - "webapp/public/js/inverse-design-render.js"
+      - "webapp/public/js/design-target-editor.js"
+      - "webapp/public/js/design-target-adapters.js"
+      - "webapp/public/js/design-target-agent.js"
       - "webapp/public/js/plot-validity.js"
       - "webapp/public/js/atlas-sqlite-policy.js"
       - "webapp/public/ro-field-demo.html"
@@ -350,6 +368,12 @@ modules:
       - "webapp/test/design-target-rop-shape-reference.test.mjs"
       - "webapp/test/rop-shape-node-contract.test.mjs"
       - "webapp/e2e/workspace.spec.mjs"
+      - "webapp/test/design-target-adapters.test.mjs"
+      - "webapp/test/design-target-agent.test.mjs"
+      - "webapp/test/inverse-design-core.test.mjs"
+      - "webapp/test/inverse-design-render.test.mjs"
+      - "webapp/test/inverse-design-lifecycle.test.mjs"
+      - "webapp/e2e/inverse-design.spec.mjs"
     depends_on:
       - "backend-runtime"
       - "design-agent"
@@ -358,6 +382,7 @@ modules:
     provides:
       - "node-workspace-ui"
       - "typed-workflow-execution"
+      - "target-driven-multimodal-inverse-design-workflow"
       - "workspace-v2-document"
       - "atomic-graph-patches"
       - "browser-api-client"

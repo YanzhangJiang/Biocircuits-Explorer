@@ -10,7 +10,9 @@ scoped tools, sends proposed networks to the live Julia backend, and returns
 renderable candidate cards plus an optional rerunnable `DesignabilitySpec`.
 For a pinned exact finite-window design, it can also pass one typed shape edit
 to the canonical fixed-topology optimizer; Python does not lower or solve the
-geometry itself.
+geometry itself. The target-driven workflow also offers a separate optional
+compiler: it turns a description into an editable numerical target before
+Julia generates, fits, and prunes a network.
 
 ## Non-goals
 
@@ -31,6 +33,9 @@ geometry itself.
   `webapp/scripts/cards.py`
 - Browser surface: `webapp/public/js/agent-view.js`,
   `webapp/public/js/llm-settings.js`, `webapp/public/js/agent-node.js`
+- Target-only compiler: `webapp/scripts/design_target_compile.py`,
+  `webapp/public/js/design-target-agent.js`, and
+  `schemas/design-target.schema.json`
 - Persisted trace shape: `schemas/design-agent-trace.schema.json`
 
 ## Inputs
@@ -78,6 +83,50 @@ available independently.
   with truncation, and replay is complete evidence from exactly
   `POST /api/v1/placer_curve`. Otherwise the tool returns withheld evidence
   rather than a plausible card.
+
+## Working-tree numerical-target compilation
+
+This additive path passed local compiler, HTTP, authentication, cancellation,
+conversation ownership, and browser export checks on 2026-09-12. External LLM
+provider calls were mocked. The existing
+conversational card and fixed-topology designability workflows retain their
+contracts. The target node's explicit Compile with Design Agent action calls
+`POST /compile-target` on the existing chat helper with `message`, optional
+current `target`, and the existing LLM configuration. It uses the same
+loopback/origin/token authentication and bounded turn admission. Credentials
+are transport settings, not persisted target fields or error-message content.
+
+`design_target_compile.py` validates provider output against the numerical
+target shape and returns an editable `bne-design-target/v1.0.0`, interpretation,
+assumptions/warnings, and optional allowed-chemistry settings. The compiler
+creates a specification, not a verified network. Descriptions unsupported by
+its static equilibrium model must fail clearly instead of producing an
+unrelated preset or claiming a physical result.
+
+Without a configured key, the bounded local phrase compiler recognizes
+monotone increase/decrease, threshold switches, bandpass responses, and
+circular/elliptic one-input/two-output trajectories. It exposes its assumed
+ranges, point counts, and shape parameters; its trajectory interpretation states
+the traversal order. Ambiguous or unsupported phrases require a more explicit
+target or configured provider. This local compiler is not general natural-
+language understanding. Arbitrary multidimensional targets remain available
+through drawing, locally tracing an uploaded pattern into an ordered
+trajectory, image-field input, or explicit sample editing without Agent
+access. An image field and a parameterized trajectory have different I/O roles;
+compilation cannot silently exchange them.
+
+The browser transport honours cancellation; the node additionally checks
+workspace epoch, owner, and input revision before applying the reply as an
+undoable edit. All compiled roles, readouts, and samples remain editable. Only
+a subsequent `design_network` job performs automatic chemistry generation,
+stepwise Kd/noninput-total fitting, opted-in additive readout-offset fitting,
+and pruning/refitting. The source readout convention is
+`transform(concentration) + offset`; no learned decoder is introduced.
+
+Focused owners are `webapp/scripts/test_design_target_compile.py`,
+`webapp/test/design-target-agent.test.mjs`, the helper HTTP contracts, and the
+inverse-design node lifecycle tests. Mocked provider contracts do not establish
+live provider availability or faithful interpretation of arbitrary prose.
 
 ## Contract sources
 

@@ -39,6 +39,57 @@ files. It was not intended to change behavior. Revision `1177a3d` then added the
 concurrency, work-boundary, validation, and numerical-result changes to those
 owners.
 
+## Working-tree target-driven inverse design correction
+
+The correction implemented and locally verified on 2026-09-12 replaces the previously added
+candidate-list frontend flow with an explicit numerical target workflow:
+`inverse-design-target` → `gradient-design` → `designed-network`. The target can
+come from optional Design Agent compilation, a drawn response curve, a sampled
+image field, an ordered one-input/two-output trajectory (including tracing
+an uploaded pattern), or configurable data.
+All entrances share `bne-design-target/v1.0.0` and editable input/output roles;
+a reaction candidate list is no longer a required user input.
+
+The follow-up correction reuses input-red, process-blue, and result-cyan headers
+and shared node/control typography. Preserving the displayed stroke alone was
+insufficient: training now includes every original vertex, and numerical
+refinement only adds evaluations along its segments. It no longer discards
+peaks, overwrites repeated x values, or extends unwritten endpoints. Older
+saved geometry also supplies full-stroke training on a fresh run; sample-only
+targets cannot recover discarded original geometry. Network results and fit
+status are primary, with response overlays in collapsed inspection details.
+Original target values remained unchanged through real local HTTP optimization
+and pruning checks for a narrow-peak curve and a closed trajectory. Those small
+budget checks did not meet the target tolerance and were correctly labeled.
+
+`POST /api/v1/design_network` submits bounded cancellable `local_async` work.
+The engine generates allowed precursor-closed chemistry, optimizes stepwise
+log Kd plus optional noninput log totals and explicitly opted-in additive
+readout offsets, then prunes low-occupancy leaves and refits. Optional copy
+limits, forbidden complexes, and conditional binding gates constrain generation.
+Pruning uses a fixed error ceiling and protects attained target compliance;
+per-output training and supplied validation errors determine `target_met`.
+Validation samples guide selection but never gradients. Selected results carry
+cold conservation/mass-action replay evidence and fitted parameters/readouts
+through the network handoff. Reaction-free designs and generated-network
+exact-regime/ROP limitations remain explicit.
+
+This is a product port of the physical mathematics and structural loop with
+local Adam; it is not the entire Logo optimizer comparison or a global-minimum
+claim. The separate legacy architecture-discovery API remains available for
+its original mechanism-fitting task. Corrected-engine verification includes
+137 mathematical assertions and independent native equilibrium replay. Real
+HTTP curve/trajectory/image jobs passed production JS validation and bounded
+Model Builder; compiler, browser, shared document, and 64 native unit tests
+passed. In the installed macOS app, Run Connected completed the default target
+with 16 to 7 reactions and RMSE 0.0066126. A 4096-sample image-field engine run
+completed in 37.29 seconds with 30 to 15 reactions and RMSE 0.00311.
+No new remote deployment or live LLM-provider result is asserted. Executable
+owners and verification boundaries are documented in
+[backend runtime](../modules/backend-runtime.md#working-tree-target-driven-network-design),
+[Web workspace](../modules/web-workspace.md#working-tree-target-driven-inverse-design-workflow),
+and [Design Agent](../modules/design-agent.md#working-tree-numerical-target-compilation).
+
 ## Integrated browser workflow and Workspace v2
 
 The node canvas now has one exhaustive architecture inventory for its 40 node
@@ -780,7 +831,8 @@ particular remote run passed.
 
 The generated reference and unified drift checker cover routes, schema
 identities, version owners, configured toolchains, links, catalog paths,
-public-safety rules, and declared artifact fixtures. The check snapshots the
-Git-visible tree and fails on validator side effects. Keep unresolved paper,
+public-safety rules, and declared artifact fixtures. Read-only generated-file
+checks detect drift without hashing the whole worktree or rejecting unrelated
+edits. Runtime compatibility belongs to semantic owner tests. Keep unresolved paper,
 release, and external-deployment claims explicitly unknown until recorded
 evidence exists.

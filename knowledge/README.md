@@ -80,12 +80,12 @@ Dates alone do not make prose current. A verified revision and evidence path do.
 - Do not copy a research number into product or manuscript prose without an
   artifact identity and an explicit claim owner.
 
-The unified gate applies a conservative lexical safety check to maintained
-public-facing files. Workstation roots such as `/home` and `/tmp`, SSH-style
-repository addresses, credential-bearing URLs, private-key headers, and common
-token shapes are rejected even when an example might be harmless. This bounded
-guard is not a full secret scanner; release workflows still need their normal
-repository and hosting checks.
+The repository check detects credential-bearing URLs, private-key headers,
+common token shapes, and files in explicitly private directories. Public SSH
+repository URLs, example paths, published PDFs, and bibliography files are
+allowed. Generated schemas and references are checked for drift; unrelated
+worktree edits do not invalidate a check. Runtime compatibility is tested by
+the owning code's behavior, without requiring a particular source formatting.
 
 The legacy `doc/`, `wiki/`, and incident-specific agent notes can still explain
 why something was attempted. Unless a current page explicitly promotes a file

@@ -37,6 +37,13 @@ and expose a stable bridge to the native macOS host.
 - Feature UI: `webapp/public/js/node-types/`, `webapp/public/js/atlas.js`,
   `webapp/public/js/design-screen-render.js`, `webapp/public/js/plot-validity.js`,
   `webapp/public/js/atlas-sqlite-policy.js`, `webapp/public/js/sbml-io.js`
+- Target-driven inverse-design workflow:
+  `webapp/public/js/node-types/inverse-design.js`,
+  `webapp/public/js/design-target-editor.js`,
+  `webapp/public/js/design-target-drawing.js`,
+  `webapp/public/js/design-target-adapters.js`, and
+  `webapp/public/js/design-target-agent.js`, with the network-source handoff
+  in `webapp/public/js/model.js`
 - Standalone experimental RO-field viewer: `webapp/public/ro-field-demo.html`,
   `webapp/public/js/ro-field-demo.js`, and
   `webapp/public/js/ro-field-render.js`
@@ -55,7 +62,8 @@ and expose a stable bridge to the native macOS host.
 ## Outputs
 
 - Backend requests for model construction, scans, ROP, atlas, designability,
-  fixed-topology ROP shape optimization, jobs, and import/export operations.
+  fixed-topology ROP shape optimization, target-driven network design,
+  jobs, and import/export operations.
 - Versioned workspace JSON containing canvas, nodes, typed connections, and the
   optional Design Agent conversation.
 - Rendered plots, tables, evidence groups, SBML downloads, and user diagnostics.
@@ -74,6 +82,8 @@ and expose a stable bridge to the native macOS host.
   freshness, and atomic graph construction:
   `knowledge/contracts/workflow-execution.md` and its JavaScript owners listed
   above
+- Stylesheet layering, design tokens, node geometry, node-type conventions,
+  and figure-export page rules: `knowledge/contracts/frontend-design.md`
 - Canonical artifact shapes: `schemas/network-ir.schema.json`,
   `schemas/designability-spec.schema.json`, and
   `schemas/result-artifact.schema.json`
@@ -134,6 +144,9 @@ development and shipped pages load the source ES modules directly.
   DesignabilitySpec export publish one validated GraphPatch or restore the
   complete pre-command graph, node ordinal, workspace snapshot, and Undo depth.
   One successful patch is one Undo item and Redo preserves its planned IDs.
+- Ambiguous Quick Add sources/builders open a shared chooser, including a
+  visible New Reaction Network action. Existing node selection is respected;
+  cancelling or replacing the workspace cannot publish a pending choice.
 - A connection survives creation, restore, paste, or Redo only when both ports
   are declared and their exact artifact types match. The former broad
   `ParamsConfig` type does not exist; the seven configuration families do not
@@ -210,6 +223,122 @@ development and shipped pages load the source ES modules directly.
   for deployed and rollback clients through the declared sunset.
 - The RO-field page is not integrated into the typed Workspace/native menus and
   has no browser-side chunk loader or interactive high-dimensional slicer.
+
+## Working-tree target-driven inverse-design workflow
+
+The corrected workflow was verified locally on 2026-09-12 through engine
+gradient/native-solver checks, real HTTP jobs and model handoff, browser
+interaction tests, shared document fixtures, and 64 native unit tests. The
+installed macOS app's native Run Connected executed the full chain: the default
+24-sample target retained 7 of 16 reactions with replay RMSE 0.0066126. These
+checks apply to the corrected implementation; no remote deployment is asserted.
+Native reload also exposed a WebKit issue where `transition: all` animated
+inherited button visibility during hidden workspace staging. Buttons now
+animate only explicit visual properties; native reload and a successful
+Validate action verified the fix. Browser regressions include restored button
+access, uploaded-pattern tracing, both-theme parity with existing node styles,
+and preservation of authored curves through resampling, undo, and reload.
+
+Quick Add → Inverse Design creates one atomic chain:
+`inverse-design-target` → `gradient-design` → `designed-network`. The two
+internal wires remain distinct `InverseDesignRequest` and
+`InverseDesignResult` artifacts. The target node prepares the versioned
+`bne-design-target/v1.0.0` description, explicit input/output roles, weighted
+numerical samples, optional validation samples, and allowed chemistry.
+Users do not supply a candidate reaction list.
+
+Visual categories follow the existing node palette: the target uses
+`input/header-input` (red), optimization uses `process/header-process` (blue),
+and the designed network uses `result/header-result` (cyan). These categories
+describe the interface and are distinct from execution roles. Header, form,
+and result typography inherit the shared node styles; inverse design must not
+introduce collapsible parameter or result sections. Parameters are exposed as
+shared `param-row` controls, while explanations/status and plots/results use
+the existing `node-info` and `viewer-content` frames respectively. These frames
+follow the active theme, including the inset dark panels in dark mode. Long
+tables and result panels remain scrollable by keyboard. The inverse-design
+handoff's fixed scan parameters follow the same direct-display rule. It must not
+introduce its own control font, larger metric numerals, or a parallel palette.
+
+Natural language uses the optional Design Agent's `/compile-target` action;
+its interpretation becomes the same editable target as a drawn response,
+image field, ordered trajectory, or numerical data. Drawing and image decoding
+run locally. A response curve means one input and one output; an image field
+maps two input concentrations to brightness; an ordered trajectory maps one
+input to two output coordinates. In Pattern / trajectory mode an uploaded
+image is a local tracing reference: one ordered stroke defines the two output
+coordinates, and cumulative path length defines the input parameter. A new
+reference cannot run until traced; that pending state survives save/reload.
+The original ordered stroke and numerical trace are persisted, while the
+reference bitmap remains local to the current session. These meanings are explicit, and the data
+editor supports one to three inputs and outputs with adjustable ranges,
+scales, chemical readouts, and sample weights. Image/curve coordinates are
+mapped into the declared physical ranges. An input is a total concentration;
+a readout is `concentration + offset` or `log10(concentration) + offset`, with
+offset fitting enabled only explicitly.
+
+Drawn targets remain continuous lines after pointer release. Original stroke
+geometry is stored separately from the numerical target, bound to its input,
+output, and sample fingerprint. Every distinct original vertex participates in
+training. Minimum resolution only adds evaluations along the authored segments;
+it must not remove narrow peaks, overwrite repeated x coordinates, sort a
+stroke, or extend unwritten endpoints. Exceeding the evaluation limit fails
+explicitly rather than simplifying the target. Fresh runs of older workspaces
+with retained geometry rebuild training samples from the full stroke. Manual
+numerical edits invalidate the geometry fingerprint and take precedence.
+Undo/redo and save/reload preserve the stroke. Legacy targets that saved only
+samples cannot recover the original stroke.
+
+The primary result is the designed network, fitted parameters, pruning outcome,
+and whether its fitting tolerance was met. Actual evaluated responses appear
+live during fitting and in the directly visible "Fit against the target"
+section after completion; "Replayed network"
+is not a product label. Inspection connects actual network evaluation values
+and never substitutes them for the authored target. Numerical evaluation still
+approximates curve error; neither preserving vertices nor connecting evaluated
+values establishes a continuous-domain fit. Original geometry remains workspace
+data, with its derived full-stroke samples using the existing optimizer contract.
+
+The compute node submits `POST /api/v1/design_network` as a cancellable
+`local_async` job. Julia constructs legal chemistry, optimizes stepwise Kd and
+optionally noninput totals and opted-in readout offsets, then removes
+low-occupancy terminal branches and refits. Every accepted smaller network
+must pass cold physical replay and a fixed error ceiling. Per-output training
+and supplied validation errors determine whether the target is met; the
+reported aggregate loss alone is insufficient. Validation samples are excluded
+from gradients but participate in selection, so they are not an independent
+post-selection test. Scientific predictions and scoring are not clipped to
+the drawing's display range.
+
+Unmet searches explicitly report exhausted search budgets and any numerical
+updates that ended fits early, with actual evaluated iteration counts. They
+do not present budget exhaustion as convergence or successful learning. The
+result links to the existing budget controls. A necessary weighted RMSD lower
+bound for conflicting outputs at exactly identical input tuples appears before
+and after fitting, separately for training and validation. This diagnostic
+preserves every target sample and the original stroke; it neither blocks
+approximation nor claims that targets above the bound are feasible.
+
+The output preserves the selected topology, fitted Kd, optimized noninput
+totals, input ranges, and readout configuration in its `NetworkIR` handoff.
+An equilibrium-valid result can still say `target_met=false`; it is not shown
+as a satisfied target. A valid reaction-free result remains inspectable but
+cannot supply the current Model Builder, which requires at least one reaction.
+The dedicated design-equilibrium model path supports forward equilibrium
+analysis without claiming exact-regime or ROP support for arbitrary generated
+networks. A finite local Adam and prune/refit search does not establish a
+global minimum, unique identification, biological validity, or full coverage of
+the research Logo optimizer suite.
+
+The chain uses the shared execution lifecycle, structured outcomes, workspace
+persistence, and theme styles. Editing a target or changing a semantic wire
+retires downstream output. Drawing, import, and Agent interpretation use
+undoable target edits; delayed image/Agent replies must still own the current
+node, input revision, and workspace epoch. Restored results are historical
+until rerun. Forward-analysis Quick Add can reuse a Designed Network output;
+topology, fitted Kd, totals, readouts, and network identity belong in its model
+input fingerprint. Both the Web workspace and native macOS menu expose the
+same nodes and chain; the native shell continues to load the shared Web UI.
 
 ## Change protocol
 
