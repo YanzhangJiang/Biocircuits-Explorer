@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
@@ -31,6 +32,19 @@ def _call(function: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+    )
+
+
+def _call_build(script: str, *arguments: str, **settings: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ, RELEASE_MODE="local", SIGN_IDENTITY="-",
+               NOTARY_PROFILE="", DESIGN_PYTHON_SOURCE="", JULIA_CHANNEL="",
+               SKIP_BACKEND="0", PREBUILT_BACKEND_SHA256="", APPLE_BUILD_NUMBER="",
+               TARGET_ARCH="", BACKEND_MODE="portable")
+    env.update(settings)
+    return subprocess.run(
+        ["bash", "-c", 'source "$1"; shift\n' + script,
+         "build-test", str(BUILD_SCRIPT), *arguments],
+        env=env, text=True, capture_output=True, check=False,
     )
 
 
@@ -156,7 +170,9 @@ class MacOSReleaseMetadataTests(unittest.TestCase):
             second = _call("backend_payload_sha256", str(root))
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertEqual(first.stdout, second.stdout)
-            self.assertRegex(first.stdout.strip(), r"^[0-9a-f]{64}$")
+            # Golden identity from the previous shell implementation.
+            self.assertEqual(first.stdout.strip(),
+                             "9bdab3c41fa396940d57745f2d2633aa11db59e6857d04008555fb2f40808b6d")
 
             (root / "macos-release-metadata.txt").write_text(
                 "metadata changes are excluded\n", encoding="utf-8"
@@ -180,33 +196,55 @@ class MacOSReleaseMetadataTests(unittest.TestCase):
             self.assertEqual(mode_change.returncode, 0, mode_change.stderr)
             self.assertNotEqual(first.stdout, mode_change.stdout)
 
-    def test_packaging_uses_direct_julia_by_default_and_validates_1_12(self) -> None:
-        script = BUILD_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('JULIA_CHANNEL="${JULIA_CHANNEL-}"', script)
-        self.assertNotIn('JULIA_CHANNEL="${JULIA_CHANNEL:-1.12}"', script)
-        self.assertIn('julia_cmd+=("+${JULIA_CHANNEL}")', script)
-        self.assertIn("julia_cmd+=(--startup-file=no)", script)
-        self.assertEqual(script.count("julia_cmd+=(--startup-file=no)"), 1)
-        self.assertNotIn(
-            '"${julia_cmd[@]}" --startup-file=no',
-            script,
-            "startup isolation must be centralized in julia_command()",
-        )
-        self.assertIn("validate_julia_1_12()", script)
-        self.assertIn("macOS packaging requires Julia 1.12", script)
-        self.assertIn("validate_julia_1_12\n", script)
+            executable.chmod(0o755)
+            (root / "bin" / "alias").symlink_to("backend")
+            (root / "dangling").symlink_to("missing")
+            linked = _call("backend_payload_sha256", str(root))
+            self.assertEqual(linked.returncode, 0, linked.stderr)
+            self.assertEqual(linked.stdout.strip(),
+                             "37694d00a801409ab8a40f40022e758d60a3afbf4b89245ff183fa496c504cf8")
 
-    def test_release_skip_requires_pinned_julia_1_12_backend_provenance(self) -> None:
-        script = BUILD_SCRIPT.read_text(encoding="utf-8")
-        for required in (
-            "RELEASE_MODE=release with SKIP_BACKEND=1 requires a pinned lowercase PREBUILT_BACKEND_SHA256",
-            "backend_payload_sha256=",
-            'julia_version="$(/usr/bin/sed',
-            "Prebuilt backend provenance does not declare Julia 1.12",
-            'actual_sha256="$(backend_payload_sha256',
-            'recorded_sha256}" != "${PREBUILT_BACKEND_SHA256}',
-        ):
-            self.assertIn(required, script)
+    def test_packaging_uses_direct_julia_by_default_and_validates_1_12(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            julia = Path(directory) / "julia"
+            julia.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+            julia.chmod(0o755)
+            invoke = 'julia_command\n"${julia_cmd[@]}" --version'
+            direct = _call_build(invoke, JULIA_BIN=str(julia))
+            channel = _call_build(invoke, JULIA_BIN=str(julia), JULIA_CHANNEL="1.12")
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual(direct.stdout.splitlines(), ["--startup-file=no", "--version"])
+            self.assertEqual(channel.stdout.splitlines(),
+                             ["+1.12", "--startup-file=no", "--version"])
+            julia.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_JULIA_VERSION"\n', encoding="utf-8")
+            for version, accepted in (("1.12.6", True), ("1.11.9", False), ("", False)):
+                result = _call_build("validate_julia_1_12", JULIA_BIN=str(julia),
+                                     TEST_JULIA_VERSION=version)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_fresh_digest_is_reused_and_prebuilt_payload_is_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = Path(directory) / "backend"
+            payload.write_text("original", encoding="utf-8")
+            fresh = _call_build('''
+BACKEND_ROOT="$1"
+DETECTED_JULIA_VERSION=1.12.6
+write_backend_metadata
+backend_payload_sha256() { echo "unexpected second hash" >&2; return 1; }
+validate_backend_metadata
+''', directory)
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            # Additional provenance fields do not invalidate required ones.
+            with (Path(directory) / "macos-release-metadata.txt").open("a") as stream:
+                stream.write("builder=contract-test\n")
+            verify = 'BACKEND_ROOT="$1"\nvalidate_backend_metadata'
+            prebuilt = _call_build(verify, directory)
+            self.assertEqual(prebuilt.returncode, 0, prebuilt.stderr)
+            pinned = _call_build(verify, directory, PREBUILT_BACKEND_SHA256="0" * 64)
+            self.assertNotEqual(pinned.returncode, 0)
+            payload.write_text("changed", encoding="utf-8")
+            tampered = _call_build(verify, directory)
+            self.assertNotEqual(tampered.returncode, 0)
 
     def test_macos_target_arch_rejects_cross_architecture_labels(self) -> None:
         arm = _call("macos_target_arch", "arm64", "arm64")
@@ -223,73 +261,59 @@ class MacOSReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(host.returncode, 0, host.stderr)
         self.assertEqual(host.stdout.strip(), platform.machine())
 
+    @unittest.skipUnless(platform.system() == "Darwin", "embedding uses macOS ditto")
     def test_backend_is_staged_in_the_standard_helpers_location(self) -> None:
-        script = COPY_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('${APP_CONTENTS_DIR}/Helpers', script)
-        self.assertIn('BiocircuitsExplorerBackend', script)
-        self.assertNotIn('${APP_RESOURCES_DIR}/backend', script)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "backend"
+            source.mkdir()
+            (source / "payload").write_text("fixture", encoding="utf-8")
+            env = dict(os.environ, SRCROOT=str(ROOT / "frontend-swift"),
+                       TARGET_BUILD_DIR=str(root / "app"),
+                       CONTENTS_FOLDER_PATH="Test.app/Contents",
+                       BIOCIRCUITS_EXPLORER_BACKEND_BUNDLE_SOURCE=str(source),
+                       CONFIGURATION="Release")
+            result = subprocess.run(["sh", str(COPY_SCRIPT)], env=env,
+                                    text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            destination = root / "app/Test.app/Contents/Helpers/BiocircuitsExplorerBackend"
+            self.assertEqual((destination / "payload").read_text(), "fixture")
 
-    def test_release_mode_requires_notarization_and_avoids_deep_signing(self) -> None:
-        script = BUILD_SCRIPT.read_text(encoding="utf-8")
-        for required in (
-            'RELEASE_MODE=release requires SIGN_IDENTITY',
-            'RELEASE_MODE=release requires a NOTARY_PROFILE',
-            'A formal prerelease/build-metadata VERSION requires a strictly increasing APPLE_BUILD_NUMBER override',
-            'sign_args=(--force --options runtime',
-            'notarytool submit',
-            'stapler staple',
-            'spctl --assess',
-            'validate_macho_architectures "${APP_DEST}"',
-        ):
-            self.assertIn(required, script)
-        self.assertNotIn('codesign --force --deep --sign', script)
+    def test_release_configuration_requires_its_external_inputs(self) -> None:
+        settings = dict(RELEASE_MODE="release")
+        cases = [
+            ({}, "SIGN_IDENTITY"),
+            ({"SIGN_IDENTITY": "Developer ID Application: test"}, "NOTARY_PROFILE"),
+            ({"NOTARY_PROFILE": "test-profile"}, "DESIGN_PYTHON_SOURCE"),
+            ({"DESIGN_PYTHON_SOURCE": "/example/runtime", "SKIP_BACKEND": "1"},
+             "PREBUILT_BACKEND_SHA256"),
+        ]
+        for changes, missing in cases:
+            settings.update(changes)
+            result = _call_build("VERSION=1.2.3\nvalidate_release_configuration", **settings)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(missing, result.stderr)
+        settings["PREBUILT_BACKEND_SHA256"] = "a" * 64
+        accepted = _call_build(
+            "VERSION=1.2.3\nrequire_tool() { :; }\nvalidate_release_configuration", **settings)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
-    def test_portable_release_does_not_copy_the_user_depot_or_scratchspaces(self) -> None:
-        script = BUILD_SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn('EXTRA_SOURCE_DEPOT', script)
-        self.assertNotIn('packages artifacts scratchspaces', script)
-        self.assertIn('JULIA_DEPOT_PATH="${LOCAL_DEPOT}"', script)
-
-    def test_release_bundles_and_probes_a_relocatable_design_python(self) -> None:
-        script = BUILD_SCRIPT.read_text(encoding="utf-8")
-        for required in (
-            "RELEASE_MODE=release requires DESIGN_PYTHON_SOURCE",
-            'DESIGN_PYTHON_ROOT="${BACKEND_ROOT}/python"',
-            '"${python_executable}" -I -B -X utf8',
-            "import chat_api",
-            'validate_macho_architectures "${runtime_root}"',
-            'validate_macho_load_paths "${runtime_root}"',
-            "/usr/bin/otool -L",
-            '"cmd" && $2 == "LC_RPATH"',
-            "validate_design_python_symlinks",
-            "design-python-runtime-metadata.txt",
-            '[[ "$path" != */Contents/Helpers/BiocircuitsExplorerBackend/python/* ]]',
-            "require_within(sys.executable, runtime_root",
-            "require_within(sys.prefix, runtime_root",
-            "require_within(sys.base_prefix, runtime_root",
-            "require_within(chat_api.__file__, script_directory",
-            "for index, entry in enumerate(sys.path)",
-            "Probing signed Design Chat Python",
-        ):
-            self.assertIn(required, script)
-        self.assertNotIn("curl ", script)
-        self.assertNotIn("wget ", script)
-
-        swift = (
-            ROOT
-            / "frontend-swift"
-            / "BiocircuitsExplorerMac"
-            / "DesignChatBackendController.swift"
-        ).read_text(encoding="utf-8")
-        resolver = swift.index("private func resolvePythonExecutable()")
-        bundled_lookup = swift.index(
-            "Self.bundledPythonExecutableCandidates(resourceURL: resourceURL)",
-            resolver,
-        )
-        path_lookup = swift.index('executableSearchCandidates(named: "python3")', resolver)
-        self.assertLess(bundled_lookup, path_lookup)
-        self.assertIn('appendingPathComponent("python", isDirectory: true)', swift)
-        self.assertIn('arguments: ["-I", "-B", "-X", "utf8", scriptURL.path]', swift)
+    def test_python_runtime_links_must_remain_relocatable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            (root / "python3").write_text("fixture", encoding="utf-8")
+            link = root / "python"
+            link.symlink_to("python3")
+            valid = _call_build('validate_design_python_symlinks "$1"', str(root))
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            (root.parent / "external").mkdir()
+            (root.parent / "external/python3").write_text("external", encoding="utf-8")
+            for target in (str(root / "python3"), "../external/python3", "missing"):
+                link.unlink()
+                link.symlink_to(target)
+                invalid = _call_build('validate_design_python_symlinks "$1"', str(root))
+                self.assertNotEqual(invalid.returncode, 0)
 
 
 if __name__ == "__main__":

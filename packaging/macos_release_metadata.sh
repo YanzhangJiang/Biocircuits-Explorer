@@ -87,54 +87,50 @@ apple_bundle_build_version() {
 }
 
 backend_payload_sha256() {
-  local root="$1"
+  # Preserve the existing tree identity in one process; stream file contents.
+  python3 - "$1" <<'PYTHON'
+import hashlib
+import os
+from pathlib import Path
+import sys
 
-  if [ ! -d "${root}" ]; then
-    echo "Backend payload root is not a directory: ${root}" >&2
-    return 2
-  fi
+root = Path(sys.argv[1])
+if not root.is_dir():
+    sys.exit(f"Backend payload root is not a directory: {root}")
+excluded = {"macos-release-metadata.txt", "design-python-runtime-metadata.txt", "python"}
+paths = []
+def walk_error(error):
+    raise error
 
-  (
-    cd "${root}"
-    while IFS= read -r -d '' path; do
-      local relative executable digest target
-      relative="${path#./}"
-      case "${relative}" in
-        .|macos-release-metadata.txt|design-python-runtime-metadata.txt|python|python/*)
-          continue
-          ;;
-      esac
-      case "${relative}" in
-        *$'\n'*|*$'\t'*)
-          echo "Backend payload path contains an unsupported tab or newline: ${relative}" >&2
-          return 2
-          ;;
-      esac
+for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+    if Path(directory) == root:
+        dirs[:] = [name for name in dirs if name not in excluded]
+        files = [name for name in files if name not in excluded]
+    paths.extend(Path(directory) / name for name in dirs + files)
 
-      if [ -L "${path}" ]; then
-        target="$(/usr/bin/readlink "${path}")"
-        case "${target}" in
-          *$'\n'*|*$'\t'*)
-            echo "Backend payload symlink contains an unsupported tab or newline: ${relative}" >&2
-            return 2
-            ;;
-        esac
-        printf 'link\t%s\t%s\n' "${relative}" "${target}"
-      elif [ -f "${path}" ]; then
-        executable=0
-        [ -x "${path}" ] && executable=1
-        digest="$(/usr/bin/shasum -a 256 "${path}" | /usr/bin/awk '{print $1}')"
-        printf 'file\t%s\t%s\t%s\n' "${relative}" "${executable}" "${digest}"
-      elif [ -d "${path}" ]; then
-        executable=0
-        [ -x "${path}" ] && executable=1
-        printf 'directory\t%s\t%s\n' "${relative}" "${executable}"
-      else
-        echo "Backend payload contains an unsupported filesystem entry: ${relative}" >&2
-        return 2
-      fi
-    done < <(/usr/bin/find . -print0 | LC_ALL=C /usr/bin/sort -z)
-  ) | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+tree = hashlib.sha256()
+for path in sorted(paths, key=lambda path: os.fsencode(path.relative_to(root))):
+    relative = str(path.relative_to(root))
+    if "\n" in relative or "\t" in relative:
+        sys.exit(f"Backend payload path contains an unsupported tab or newline: {relative}")
+    if path.is_symlink():
+        target = os.readlink(path)
+        if "\n" in target or "\t" in target:
+            sys.exit(f"Backend payload symlink contains an unsupported tab or newline: {relative}")
+        record = f"link\t{relative}\t{target}\n"
+    elif path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        record = f"file\t{relative}\t{int(os.access(path, os.X_OK))}\t{digest.hexdigest()}\n"
+    elif path.is_dir():
+        record = f"directory\t{relative}\t{int(os.access(path, os.X_OK))}\n"
+    else:
+        sys.exit(f"Backend payload contains an unsupported filesystem entry: {relative}")
+    tree.update(os.fsencode(record))
+print(tree.hexdigest())
+PYTHON
 }
 
 macos_target_arch() {

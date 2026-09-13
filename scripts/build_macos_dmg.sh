@@ -10,7 +10,6 @@ SCHEME="${SCHEME:-BiocircuitsExplorerMac}"
 CONFIGURATION="${CONFIGURATION:-Release}"
 MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-14.0}"
 VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
-"${REPO_ROOT}/scripts/set_version.sh" --dry-run "${VERSION}"
 source "${REPO_ROOT}/packaging/macos_release_metadata.sh"
 APPLE_MARKETING_VERSION="$(apple_marketing_version "${VERSION}")"
 APPLE_BUILD_NUMBER_OVERRIDE="${APPLE_BUILD_NUMBER:-}"
@@ -24,6 +23,7 @@ BACKEND_MODE="${BACKEND_MODE:-portable}"
 LOCAL_DEPOT="${REPO_ROOT}/.julia_packaging_depot"
 INCLUDE_COMPILED_DEPOT="${INCLUDE_COMPILED_DEPOT:-0}"
 DETECTED_JULIA_VERSION=""
+BUILT_BACKEND_SHA256=""
 
 PROJECT_PATH="${REPO_ROOT}/frontend-swift/BiocircuitsExplorerMac.xcodeproj"
 PACKAGING_SCRIPT="${REPO_ROOT}/packaging/build_backend_app.jl"
@@ -584,6 +584,7 @@ write_backend_metadata() {
       ;;
   esac
   payload_sha256="$(backend_payload_sha256 "${BACKEND_ROOT}")"
+  BUILT_BACKEND_SHA256="${payload_sha256}"
   /usr/bin/printf 'version=%s\narch=%s\nmode=%s\njulia_version=%s\nbackend_payload_sha256=%s\n' \
     "${VERSION}" "${TARGET_ARCH}" "${BACKEND_MODE}" \
     "${DETECTED_JULIA_VERSION}" "${payload_sha256}" \
@@ -592,14 +593,9 @@ write_backend_metadata() {
 
 validate_backend_metadata() {
   local metadata="${BACKEND_ROOT}/macos-release-metadata.txt"
-  local line_count julia_version recorded_sha256 actual_sha256
+  local julia_version recorded_sha256 actual_sha256
 
   test -f "${metadata}"
-  line_count="$(/usr/bin/wc -l < "${metadata}" | /usr/bin/tr -d '[:space:]')"
-  if [ "${line_count}" != "5" ]; then
-    echo "Backend provenance must contain exactly five canonical fields: ${metadata}" >&2
-    return 1
-  fi
   /usr/bin/grep -Fxq "version=${VERSION}" "${metadata}"
   /usr/bin/grep -Fxq "arch=${TARGET_ARCH}" "${metadata}"
   /usr/bin/grep -Fxq "mode=${BACKEND_MODE}" "${metadata}"
@@ -616,7 +612,12 @@ validate_backend_metadata() {
     echo "Prebuilt backend provenance has an invalid payload hash: ${recorded_sha256:-missing}" >&2
     return 1
   fi
-  actual_sha256="$(backend_payload_sha256 "${BACKEND_ROOT}")"
+  # A backend built in this invocation was just hashed before metadata was
+  # written. Reused backends must be checked against their recorded digest.
+  actual_sha256="${BUILT_BACKEND_SHA256}"
+  if [ -z "${actual_sha256}" ]; then
+    actual_sha256="$(backend_payload_sha256 "${BACKEND_ROOT}")"
+  fi
   if [ "${recorded_sha256}" != "${actual_sha256}" ]; then
     echo "Prebuilt backend payload hash mismatch: recorded ${recorded_sha256}, actual ${actual_sha256}" >&2
     return 1
@@ -628,12 +629,19 @@ validate_backend_metadata() {
   fi
 }
 
+# Helpers can be exercised without building or signing an application.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return
+fi
+
+"${REPO_ROOT}/scripts/set_version.sh" --dry-run "${VERSION}"
 require_tool xcodebuild
 require_tool hdiutil
 require_tool codesign
 require_tool lipo
 require_tool otool
 require_tool shasum
+require_tool python3
 validate_release_configuration
 
 log "Preparing build directories"

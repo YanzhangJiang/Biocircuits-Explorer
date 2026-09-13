@@ -6,6 +6,7 @@ webapp/scripts/design_agent.py
 webapp/scripts/design_search.py
 webapp/scripts/cards.py
 webapp/scripts/llm_compile.py
+webapp/scripts/design_target_compile.py
 webapp/scripts/engine_client.py
 webapp/scripts/validate_artifacts.py
 webapp/scripts/reader
