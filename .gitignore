@@ -48,12 +48,11 @@ design/
 traces/
 # Superpowers SDD dev-process scaffolding (task briefs/reports + progress ledger).
 .superpowers/
-# Atlas-derived slice dumps (regenerable; large). Ignore the scratch/duplicate dumps,
-# but TRACK the paper's bundled reduced dataset (the notebooks read it offline; the full
-# atlas is not bundled, so this 14 MB extract is the paper's reproducibility input).
+# Atlas-derived slice dumps (regenerable; large) stay local everywhere. The paper-side
+# reduced extract is private research material, so there is deliberately no negation here
+# that could re-admit a dataset from a forbidden directory.
 webapp/data/
 **/slices.jsonl.gz
-!paper_rop_periodic_table/data/slices.jsonl.gz
 
 # Local docs, reports, and TeX drafts.
 doc/
@@ -213,3 +212,11 @@ deps/build.log
 
 # Local, disposable task handoffs (never a source of project truth)
 .agent/handoffs/
+
+# Local working trees for research material, render output, and QC captures. They hold
+# third-party documents, extracted paper text, and generated diagram renders; none of it
+# is repository content.
+.agent/tmp/
+/tmp/
+/output/
+/diagrams/_qc/
