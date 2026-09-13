@@ -109,6 +109,7 @@ struct WebShellOriginPolicy: Equatable {
 struct WebShellBridgeLifecycle {
     private(set) var generation: String
     private(set) var appliedGeneration: String?
+    private(set) var hasPresentedWorkspace = false
 
     init(generation: String = UUID().uuidString) {
         self.generation = generation
@@ -123,6 +124,17 @@ struct WebShellBridgeLifecycle {
 
     func accepts(_ generation: String) -> Bool {
         generation == self.generation
+    }
+
+    @discardableResult
+    mutating func markWorkspaceReady(for generation: String) -> Bool {
+        guard accepts(generation) else {
+            return false
+        }
+        // Never clear this on navigation: a failed reload must not be mistaken
+        // for a first launch that has never exposed an editable workspace.
+        hasPresentedWorkspace = true
+        return true
     }
 
     @discardableResult
@@ -303,6 +315,50 @@ extension WebShellNavigationQueue {
         }
 
         return true
+    }
+}
+
+@MainActor
+enum WebShellJavaScriptCommand {
+    enum Failure: LocalizedError {
+        case rejected(String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .rejected(message): return message
+            }
+        }
+    }
+
+    static func evaluate(
+        _ expression: String,
+        in webView: WKWebView,
+        completion: @escaping (Any?, Error?) -> Void
+    ) {
+        // Toolbar commands may return Promises, DOM nodes, or workflow reports.
+        // Await their effects but never marshal those values back to Swift.
+        // A serializable failure envelope preserves asynchronous reject reasons.
+        let body = """
+        try {
+          await (\(expression));
+          return null;
+        } catch (error) {
+          return { commandError: String(error?.message ?? error) };
+        }
+        """
+        webView.callAsyncJavaScript(body, arguments: [:], in: nil, in: .page) { result in
+            switch result {
+            case let .success(value):
+                if let payload = value as? [String: Any],
+                   let message = payload["commandError"] as? String {
+                    completion(nil, Failure.rejected(message))
+                } else {
+                    completion(nil, nil)
+                }
+            case let .failure(error):
+                completion(nil, error)
+            }
+        }
     }
 }
 
@@ -547,6 +603,23 @@ final class WebShellController: NSObject, ObservableObject {
             projectIDs: projectIDs,
             retainWorkspaceLockOnSuccess: false
         )
+    }
+
+    func captureCurrentProjectForTermination(
+        projectIDs: Set<String>
+    ) async throws -> WebShellProjectSnapshot? {
+        // During an initial backend failure, the pending project is only a
+        // document already loaded from disk. No web editor has accepted edits,
+        // so waiting for that project to enter a broken shell prevents Quit
+        // without protecting any unsaved work. Once the shell has been ready,
+        // always retain the normal capture and persistence requirements.
+        if !bridgeLifecycle.hasPresentedWorkspace,
+           !isLoadingProject,
+           !isCapturingSnapshot,
+           !isProjectIdentityChangeInProgress {
+            return nil
+        }
+        return try await captureCurrentProjectForFileOperation(projectIDs: projectIDs)
     }
 
     func captureCurrentProjectForIdentityChange(
@@ -977,7 +1050,7 @@ final class WebShellController: NSObject, ObservableObject {
     func addNode(ofType nodeType: String) {
         do {
             let argument = try javaScriptStringLiteral(for: nodeType)
-            evaluateNativeShellScript("typeof window.addNodeFromMenu === 'function' && window.addNodeFromMenu(\(argument));")
+            evaluateNativeShellCommand("typeof window.addNodeFromMenu === 'function' && window.addNodeFromMenu(\(argument))")
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -986,35 +1059,35 @@ final class WebShellController: NSObject, ObservableObject {
     func addQuickAddWorkflow(_ chainType: String) {
         do {
             let argument = try javaScriptStringLiteral(for: chainType)
-            evaluateNativeShellScript("typeof window.addQuickAddChain === 'function' && window.addQuickAddChain(\(argument));")
+            evaluateNativeShellCommand("typeof window.addQuickAddChain === 'function' && window.addQuickAddChain(\(argument))")
         } catch {
             lastErrorMessage = error.localizedDescription
         }
     }
 
     func saveWorkspace() {
-        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.saveWorkspace?.();")
+        evaluateNativeShellCommand("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.saveWorkspace?.()")
     }
 
     func loadWorkspace() {
-        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.loadWorkspace?.();")
+        evaluateNativeShellCommand("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.loadWorkspace?.()")
     }
 
     func resetWorkspaceView() {
-        evaluateNativeShellScript("typeof window.resetView === 'function' && window.resetView();")
+        evaluateNativeShellCommand("typeof window.resetView === 'function' && window.resetView()")
     }
 
     func toggleDebugConsole() {
-        evaluateNativeShellScript("typeof window.toggleDebugConsole === 'function' && window.toggleDebugConsole();")
+        evaluateNativeShellCommand("typeof window.toggleDebugConsole === 'function' && window.toggleDebugConsole()")
     }
 
     func setCloudComputeEnabled(_ enabled: Bool) {
-        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setCloudComputeEnabled?.(\(enabled ? "true" : "false"));")
+        evaluateNativeShellCommand("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setCloudComputeEnabled?.(\(enabled ? "true" : "false"))")
     }
 
     func setSurface(_ surface: String) {
         let normalized = (surface == "agent") ? "agent" : "workspace"
-        evaluateNativeShellScript("typeof window.setNodeView === 'function' && window.setNodeView('\(normalized)');")
+        evaluateNativeShellCommand("typeof window.setNodeView === 'function' && window.setNodeView('\(normalized)')")
     }
 
     /// Point the embedded Design Agent at the locally-spawned design-chat backend
@@ -1024,9 +1097,9 @@ final class WebShellController: NSObject, ObservableObject {
         do {
             let urlArgument = try javaScriptStringLiteral(for: urlString)
             let tokenArgument = try javaScriptStringLiteral(for: bearerToken)
-            evaluateNativeShellScript(
+            evaluateNativeShellCommand(
                 "typeof window.setDesignChatEndpoint === 'function' && " +
-                "window.setDesignChatEndpoint(\(urlArgument), \(tokenArgument));"
+                "window.setDesignChatEndpoint(\(urlArgument), \(tokenArgument))"
             )
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -1043,8 +1116,8 @@ final class WebShellController: NSObject, ObservableObject {
             } else {
                 effectiveArgument = "null"
             }
-            evaluateNativeShellScript(
-                "(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setThemeMode?.(\(argument), \(effectiveArgument));",
+            evaluateNativeShellCommand(
+                "(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setThemeMode?.(\(argument), \(effectiveArgument))",
                 completeIfStale: true
             ) { _, _ in
                 completion?()
@@ -1056,7 +1129,7 @@ final class WebShellController: NSObject, ObservableObject {
     }
 
     func runConnectedWorkspace() {
-        evaluateNativeShellScript("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.runConnectedWorkspace?.();")
+        evaluateNativeShellCommand("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.runConnectedWorkspace?.()")
     }
 
     private func pushPendingProject() {
@@ -1159,6 +1232,9 @@ final class WebShellController: NSObject, ObservableObject {
 
         switch type {
         case "ready":
+            guard bridgeLifecycle.markWorkspaceReady(for: generation) else {
+                return
+            }
             isReady = true
             pushPendingProject()
 
@@ -1406,8 +1482,22 @@ final class WebShellController: NSObject, ObservableObject {
         capture.resolve(result)
     }
 
+    private func evaluateNativeShellCommand(
+        _ expression: String,
+        completeIfStale: Bool = false,
+        completion: ((Any?, Error?) -> Void)? = nil
+    ) {
+        evaluateNativeShellScript(
+            expression,
+            isCommand: true,
+            completeIfStale: completeIfStale,
+            completion: completion
+        )
+    }
+
     private func evaluateNativeShellScript(
         _ script: String,
+        isCommand: Bool = false,
         completeIfStale: Bool = false,
         completion: ((Any?, Error?) -> Void)? = nil
     ) {
@@ -1417,7 +1507,7 @@ final class WebShellController: NSObject, ObservableObject {
         }
 
         let generation = bridgeLifecycle.generation
-        webView.evaluateJavaScript(script) { [weak self] result, error in
+        let finished: (Any?, Error?) -> Void = { [weak self] result, error in
             guard let self else {
                 return
             }
@@ -1431,6 +1521,11 @@ final class WebShellController: NSObject, ObservableObject {
                 self.lastErrorMessage = error.localizedDescription
             }
             completion?(result, error)
+        }
+        if isCommand {
+            WebShellJavaScriptCommand.evaluate(script, in: webView, completion: finished)
+        } else {
+            webView.evaluateJavaScript(script, completionHandler: finished)
         }
     }
 

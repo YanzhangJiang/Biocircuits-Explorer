@@ -16,9 +16,12 @@ nonisolated struct WorkspaceDocument: Codable, Equatable, Sendable {
         "atlas-spec",
         "design-spec-config",
         "design-target",
+        "designed-network",
         "fret-heatmap",
         "fret-params",
         "fret-result",
+        "gradient-design",
+        "inverse-design-target",
         "markdown-note",
         "model-builder",
         "model-summary",
@@ -102,7 +105,7 @@ nonisolated struct WorkspaceDocument: Codable, Equatable, Sendable {
         ),
     ]
 
-    private static let activeV2NodeTypes = supportedNodeTypes.subtracting(
+    static let activeV2NodeTypes = supportedNodeTypes.subtracting(
         legacyNodeMigrations.keys
     )
 
@@ -119,6 +122,8 @@ nonisolated struct WorkspaceDocument: Codable, Equatable, Sendable {
         "scan-2d-result": ["scan2DResult"],
         "placer-result": ["placerResult"],
         "design-target": ["config"],
+        "gradient-design": ["inverseDesignResult"],
+        "designed-network": ["designedNetwork"],
         "rop-cloud-result": ["ropCloudData"],
         "fret-result": ["fretHeatmapData"],
         "rop-poly-result": ["ropPlotData"],
@@ -182,6 +187,17 @@ nonisolated struct WorkspaceDocument: Codable, Equatable, Sendable {
                 "reactions": "NetworkIR",
                 "rop-shape-reference": "ROPShapeReferenceArtifact",
             ]
+        ),
+        "inverse-design-target": PortContract(outputs: [
+            "inverse-design-request": "InverseDesignRequest",
+        ]),
+        "gradient-design": PortContract(
+            inputs: ["inverse-design-request": "InverseDesignRequest"],
+            outputs: ["inverse-design-result": "InverseDesignResult"]
+        ),
+        "designed-network": PortContract(
+            inputs: ["inverse-design-result": "InverseDesignResult"],
+            outputs: ["reactions": "NetworkIR"]
         ),
         "rop-cloud-params": PortContract(
             inputs: ["reactions": "NetworkIR", "model": "ModelArtifact"],

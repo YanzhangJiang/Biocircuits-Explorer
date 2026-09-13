@@ -13,6 +13,205 @@ import WebKit
 
 struct BiocircuitsExplorerMacTests {
 
+    @MainActor
+    private final class CommandTestNavigation: NSObject, WKNavigationDelegate {
+        var completion: ((Error?) -> Void)?
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            completion?(nil)
+            completion = nil
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            completion?(error)
+            completion = nil
+        }
+    }
+
+    @MainActor
+    private func commandTestWebView() async throws -> WKWebView {
+        let webView = WKWebView()
+        let navigation = CommandTestNavigation()
+        webView.navigationDelegate = navigation
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            navigation.completion = { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+            webView.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
+        }
+        webView.navigationDelegate = nil
+        return webView
+    }
+
+    @MainActor
+    private func evaluateCommand(_ expression: String, in webView: WKWebView) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            WebShellJavaScriptCommand.evaluate(expression, in: webView) { result, error in
+                #expect(result == nil)
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
+    }
+
+    @MainActor
+    @Test(.timeLimit(.minutes(1)))
+    func nativeCommandWaitsForAsyncWorkflowWithoutMarshallingItsReport() async throws {
+        let webView = try await commandTestWebView()
+        _ = try await webView.evaluateJavaScript("""
+        window.commandFinished = false;
+        window.BiocircuitsExplorerWorkspaceShell = {
+          async runConnectedWorkspace() {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            window.commandFinished = true;
+            return { result: document.body, callback: () => {} };
+          }
+        };
+        true;
+        """)
+        try await evaluateCommand(
+            "window.BiocircuitsExplorerWorkspaceShell.runConnectedWorkspace()",
+            in: webView
+        )
+        let finished = try await webView.evaluateJavaScript("window.commandFinished")
+        #expect(finished as? Bool == true)
+    }
+
+    @MainActor
+    @Test(.timeLimit(.minutes(1)))
+    func nativeCommandSurfacesAsyncRejectionsAndSynchronousExceptions() async throws {
+        let webView = try await commandTestWebView()
+        for expression in [
+            "new Promise((_, reject) => setTimeout(() => reject(new Error('workflow failed')), 10))",
+            "Promise.reject('workflow failed')",
+            "(() => { throw new Error('workflow failed'); })()",
+        ] {
+            do {
+                try await evaluateCommand(expression, in: webView)
+                Issue.record("A rejected native command must surface its failure")
+            } catch {
+                #expect(error.localizedDescription == "workflow failed")
+            }
+        }
+    }
+
+    @MainActor
+    @Test(.timeLimit(.minutes(1)))
+    func nativeCommandSafelyDiscardsSynchronousDomAndCyclicResults() async throws {
+        let webView = try await commandTestWebView()
+        try await evaluateCommand("document.body.appendChild(document.createElement('div'))", in: webView)
+        try await evaluateCommand("(() => { const result = {}; result.self = result; return result; })()", in: webView)
+        let count = try await webView.evaluateJavaScript("document.body.children.length")
+        #expect(count as? Int == 1)
+    }
+
+    private final class MissingExecutablesFileManager: FileManager, @unchecked Sendable {
+        override func isExecutableFile(atPath path: String) -> Bool {
+            false
+        }
+    }
+
+    @MainActor
+    @Test func backendDiscoveryFailureLeavesAVisibleFailureStateAndCanRetry() async throws {
+        let controller = BiocircuitsBackendController(
+            fileManager: MissingExecutablesFileManager(),
+            environment: ["BIOCIRCUITS_EXPLORER_PREFER_SOURCE_BACKEND": "true"]
+        )
+        for _ in 0..<2 {
+            do {
+                try await controller.startIfNeeded()
+                Issue.record("A missing Julia executable must fail startup")
+            } catch {
+                #expect(controller.lastErrorMessage == error.localizedDescription)
+                #expect(controller.statusMessage == "Backend failed to start")
+                #expect(!controller.isReady)
+                #expect(!controller.isStarting)
+            }
+        }
+    }
+
+    @MainActor
+    @Test func backendProcessLaunchFailureLeavesAVisibleFailureState() async throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("biocircuits-invalid-executable-\(UUID().uuidString)")
+        try Data("This file is intentionally not an executable image.\n".utf8)
+            .write(to: executable)
+        defer { try? FileManager.default.removeItem(at: executable) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: executable.path
+        )
+        let controller = BiocircuitsBackendController(environment: [
+            "BIOCIRCUITS_EXPLORER_PREFER_SOURCE_BACKEND": "true",
+            "JULIA_EXECUTABLE": executable.path,
+        ])
+        do {
+            try await controller.startIfNeeded()
+            Issue.record("An invalid executable must fail Process.run")
+        } catch {
+            #expect(controller.lastErrorMessage == error.localizedDescription)
+            #expect(controller.statusMessage == "Backend failed to start")
+            #expect(!controller.isReady)
+            #expect(!controller.isStarting)
+        }
+        await controller.stopAndWait()
+    }
+
+    @MainActor
+    @Test func initialPendingProjectAllowsQuitButStillBlocksFileOperations() async throws {
+        let controller = WebShellController()
+        let document = try JSONDecoder().decode(
+            WorkspaceDocument.self, from: Data(#"{"nodes":[]}"#.utf8)
+        )
+        controller.showProject(id: "existing-project", document: document)
+        var persisted = false
+        controller.onProjectChange = { _, _ in persisted = true }
+
+        let snapshot = try await controller.captureCurrentProjectForTermination(
+            projectIDs: ["existing-project"]
+        )
+        #expect(snapshot == nil)
+        #expect(!persisted)
+        do {
+            _ = try await controller.captureCurrentProjectForFileOperation(
+                projectIDs: ["existing-project"]
+            )
+            Issue.record("An initial pending load must still block rename or other file operations")
+        } catch WebShellFileOperationError.workspaceBusy {
+            // Only the quit path may bypass an initial, never-editable project.
+        }
+    }
+
+    @Test func aWorkspaceThatWasReadyKeepsQuitProtectionAcrossFailedReloads() {
+        var lifecycle = WebShellBridgeLifecycle(generation: "initial")
+        #expect(!lifecycle.hasPresentedWorkspace)
+        let staleReadyAccepted = lifecycle.markWorkspaceReady(for: "stale")
+        #expect(!staleReadyAccepted)
+        #expect(!lifecycle.hasPresentedWorkspace)
+        let initialReadyAccepted = lifecycle.markWorkspaceReady(for: "initial")
+        #expect(initialReadyAccepted)
+        #expect(lifecycle.hasPresentedWorkspace)
+        let initialProjectApplied = lifecycle.markProjectApplied(for: "initial")
+        #expect(initialProjectApplied)
+        lifecycle.beginNavigation(generation: "failed-reload")
+        #expect(!lifecycle.currentProjectIsApplied)
+        #expect(lifecycle.hasPresentedWorkspace)
+    }
+
+    @Test func workspaceNodeTypesMatchThePortableSchema() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let data = try Data(contentsOf: repositoryRoot
+            .appendingPathComponent("schemas/workspace.schema.json"))
+        let schema = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let definitions = try #require(schema["$defs"] as? [String: Any])
+        let nodeType = try #require(definitions["nodeType"] as? [String: Any])
+        let types = try #require(nodeType["enum"] as? [String])
+        #expect(WorkspaceDocument.activeV2NodeTypes == Set(types))
+    }
+
     private func workspaceFixtureData(named name: String) throws -> Data {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -415,6 +614,137 @@ struct BiocircuitsExplorerMacTests {
         #expect(modelData["modelContext"]?.objectValue?["sessionId"] == nil)
         #expect(modelData["modelContext"]?.objectValue?["executionTicket"] == nil)
         #expect(modelData["modelContext"]?.objectValue?["ownerToken"] == nil)
+    }
+
+    @Test func inverseDesignWorkspaceRestoreMatchesTheSharedBrowserFixture() throws {
+        let source = try workspaceFixtureData(named: "inverse-design-v2.json")
+        let expectedData = try workspaceFixtureData(named: "inverse-design-v2.expected-restored.json")
+        let expected = try JSONDecoder().decode([String: JSONValue].self, from: expectedData)
+        let restored = try JSONDecoder().decode(WorkspaceDocument.self, from: source)
+
+        #expect(restored.rawObject == expected)
+        let encoded = try JSONEncoder().encode(restored)
+        let secondRestore = try JSONDecoder().decode(WorkspaceDocument.self, from: encoded)
+        #expect(secondRestore.rawObject == expected)
+
+        let nodes = try #require(restored.rawObject["nodes"]?.arrayValue)
+        for nodeID in ["gradient", "output"] {
+            let node = try #require(nodes.first { $0.objectValue?["id"] == .string(nodeID) }?.objectValue)
+            let data = try #require(node["data"]?.objectValue)
+            let lifecycle = try #require(data["lifecycle"]?.objectValue)
+            #expect(lifecycle["state"] == .string("historical"))
+            #expect(lifecycle["freshness"] == .string("historical"))
+            #expect(lifecycle["evidence"] == data["evidence"])
+        }
+        #expect(restored.rawObject["connections"]?.arrayValue?.count == 3)
+    }
+
+    @Test func multidimensionalTargetDesignRestorePreservesChemistryAndPhysicalReadouts() throws {
+        let source = try workspaceFixtureData(named: "target-design-multidimensional-v2.json")
+        let expectedData = try workspaceFixtureData(named: "target-design-multidimensional-v2.expected-restored.json")
+        let expected = try JSONDecoder().decode([String: JSONValue].self, from: expectedData)
+        let restored = try JSONDecoder().decode(WorkspaceDocument.self, from: source)
+        #expect(restored.rawObject == expected)
+        let secondRestore = try JSONDecoder().decode(
+            WorkspaceDocument.self, from: try JSONEncoder().encode(restored)
+        )
+        #expect(secondRestore.rawObject == expected)
+
+        let nodes = try #require(restored.rawObject["nodes"]?.arrayValue)
+        let target = try #require(nodes.first { $0.objectValue?["id"] == .string("target") }?.objectValue?["data"]?.objectValue)
+        guard case let .string(targetJSON)? = target["inverseTargetJSON"],
+              case let .string(chemistryJSON)? = target["inverseChemistryJSON"] else {
+            Issue.record("Expected editable target and chemistry JSON text")
+            return
+        }
+        let targetSpec = try JSONDecoder().decode([String: JSONValue].self, from: Data(targetJSON.utf8))
+        #expect(targetSpec == target["inverseDesignRequest"]?.objectValue?["target"]?.objectValue)
+        #expect(targetSpec["inputs"]?.arrayValue?.count == 2)
+        #expect(targetSpec["outputs"]?.arrayValue?.count == 2)
+        #expect(targetSpec["samples"]?.arrayValue?.count == 3)
+        #expect(targetSpec["validation_samples"]?.arrayValue?.count == 2)
+        #expect(target["inverseDesignRequest"]?.objectValue?["requestToken"] == nil)
+
+        let chemistry = try JSONDecoder().decode([String: JSONValue].self, from: Data(chemistryJSON.utf8))
+        #expect(chemistry["max_copies"]?.objectValue?["Y"] == .number(1))
+        #expect(chemistry["forbidden_complexes"] == .array([.string("A_B")]))
+        #expect(chemistry["binding_gates"]?.arrayValue?.first?.objectValue?["requires"] == .object(["X": .number(1)]))
+
+        for nodeID in ["gradient", "output"] {
+            let data = try #require(nodes.first { $0.objectValue?["id"] == .string(nodeID) }?.objectValue?["data"]?.objectValue)
+            #expect(data["lifecycle"]?.objectValue?["freshness"] == .string("historical"))
+            #expect(data["lifecycle"]?.objectValue?["evidence"] == data["evidence"])
+            #expect(data["sessionId"] == nil)
+        }
+        let gradient = try #require(nodes.first { $0.objectValue?["id"] == .string("gradient") }?.objectValue?["data"]?.objectValue)
+        #expect(gradient["inverseDesignResult"]?.objectValue?["executionToken"] == nil)
+        let output = try #require(nodes.first { $0.objectValue?["id"] == .string("output") }?.objectValue?["data"]?.objectValue?["designedNetwork"]?.objectValue)
+        #expect(output["totals"]?.objectValue?["A"] == .number(1.1001449211221617))
+        #expect(output["totals"]?.objectValue?["B"] == .number(0.48476325826803995))
+        #expect(output["outputs"]?.arrayValue?.first?.objectValue?["transform"] == .string("log10"))
+        #expect(output["outputs"]?.arrayValue?.first?.objectValue?["offset"] == .number(0.24430986707351177))
+        #expect(output["outputs"]?.arrayValue?.last?.objectValue?["offset"] == .number(-0.1))
+        #expect(output["physical_audit"]?.objectValue?["cold_replay"] == .bool(true))
+        #expect(output["session_id"] == nil)
+        #expect(restored.rawObject["connections"]?.arrayValue?.count == 3)
+    }
+
+    @Test func multidimensionalTargetDesignResultsStayHistoricalWhenLifecycleWasOmitted() throws {
+        let source = try workspaceFixtureData(named: "target-design-multidimensional-v2.json")
+        var raw = try JSONDecoder().decode([String: JSONValue].self, from: source)
+        let nodes = try #require(raw["nodes"]?.arrayValue)
+        raw["nodes"] = .array(nodes.map { value in
+            guard var node = value.objectValue,
+                  var data = node["data"]?.objectValue else { return value }
+            data.removeValue(forKey: "lifecycle")
+            node["data"] = .object(data)
+            return .object(node)
+        })
+        let restored = try JSONDecoder().decode(WorkspaceDocument.self, from: try JSONEncoder().encode(raw))
+        let expectedData = try workspaceFixtureData(named: "target-design-multidimensional-v2.expected-restored.json")
+        let expected = try JSONDecoder().decode([String: JSONValue].self, from: expectedData)
+        #expect(restored.rawObject == expected)
+    }
+
+    @Test func inverseDesignStoredResultsBecomeHistoricalWithoutALifecycleRecord() throws {
+        let source = try workspaceFixtureData(named: "inverse-design-v2.json")
+        var raw = try JSONDecoder().decode([String: JSONValue].self, from: source)
+        let nodes = try #require(raw["nodes"]?.arrayValue)
+        raw["nodes"] = .array(nodes.map { value in
+            guard var node = value.objectValue,
+                  var data = node["data"]?.objectValue else { return value }
+            data.removeValue(forKey: "lifecycle")
+            node["data"] = .object(data)
+            return .object(node)
+        })
+        let restored = try JSONDecoder().decode(
+            WorkspaceDocument.self, from: try JSONEncoder().encode(raw)
+        )
+        let restoredNodes = try #require(restored.rawObject["nodes"]?.arrayValue)
+        for nodeID in ["gradient", "output"] {
+            let node = try #require(restoredNodes.first { $0.objectValue?["id"] == .string(nodeID) }?.objectValue)
+            let data = try #require(node["data"]?.objectValue)
+            #expect(data["lifecycle"]?.objectValue?["freshness"] == .string("historical"))
+            #expect(data["lifecycle"]?.objectValue?["evidence"] == data["evidence"])
+        }
+    }
+
+    @Test func inverseDesignWorkspaceRejectsRequestResultAndNetworkCrossConnections() throws {
+        let source = try workspaceFixtureData(named: "inverse-design-v2.json")
+        let original = try JSONDecoder().decode([String: JSONValue].self, from: source)
+        let incompatibleConnections = [
+            ["fromNode": "target", "fromPort": "inverse-design-request", "toNode": "output", "toPort": "inverse-design-result"],
+            ["fromNode": "gradient", "fromPort": "inverse-design-result", "toNode": "model", "toPort": "reactions"],
+            ["fromNode": "output", "fromPort": "reactions", "toNode": "gradient", "toPort": "inverse-design-request"],
+        ]
+        for connection in incompatibleConnections {
+            var invalid = original
+            invalid["connections"] = .array([.object(connection.mapValues(JSONValue.string))])
+            let encoded = try JSONEncoder().encode(invalid)
+            #expect(throws: WorkspaceDocument.WorkspaceDocumentError.self) {
+                _ = try JSONDecoder().decode(WorkspaceDocument.self, from: encoded)
+            }
+        }
     }
 
     @Test func workspaceV1StrictConfigMatrixKeepsOnlySevenSameFamilyConnections() throws {

@@ -225,13 +225,17 @@ final class BiocircuitsBackendController: ObservableObject {
             }
         }
 
-        try launchLifecycle.requireCurrent(generation)
-        let nextInstanceNonce = LocalLoopbackService.makeNonce()
-        let launchSpec = try resolveLaunchSpec(instanceNonce: nextInstanceNonce)
-        instanceNonce = nextInstanceNonce
-        try launchBackend(using: launchSpec, generation: generation)
-
         do {
+            // Discovery and Process.run can fail before readiness polling starts.
+            // Keep those failures in the same published error state as a backend
+            // that exits during startup, so dismissing the alert does not leave
+            // the window showing an endless startup spinner.
+            try launchLifecycle.requireCurrent(generation)
+            let nextInstanceNonce = LocalLoopbackService.makeNonce()
+            let launchSpec = try resolveLaunchSpec(instanceNonce: nextInstanceNonce)
+            instanceNonce = nextInstanceNonce
+            try launchBackend(using: launchSpec, generation: generation)
+
             try await waitUntilReady(
                 timeout: launchSpec.startupTimeout,
                 generation: generation,

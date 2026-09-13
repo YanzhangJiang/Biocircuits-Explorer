@@ -96,7 +96,10 @@ struct ContentView: View {
             title: "Design",
             items: [
                 NodeMenuItem(id: "design-spec-config", title: "Design Spec Config", systemImage: "slider.horizontal.3"),
-                NodeMenuItem(id: "design-target", title: "Design Target", systemImage: "target")
+                NodeMenuItem(id: "design-target", title: "Design Target", systemImage: "target"),
+                NodeMenuItem(id: "inverse-design-target", title: "Inverse Design Target", systemImage: "target"),
+                NodeMenuItem(id: "gradient-design", title: "Gradient Design", systemImage: "chart.line.downtrend.xyaxis"),
+                NodeMenuItem(id: "designed-network", title: "Designed Network", systemImage: "network")
             ]
         ),
         NodeMenuSection(
@@ -145,6 +148,7 @@ struct ContentView: View {
     ]
 
     private static let quickAddItems: [NodeMenuItem] = [
+        NodeMenuItem(id: "inverse-design", title: "Inverse Design", systemImage: "target"),
         NodeMenuItem(id: "siso-analysis", title: "SISO Analysis", systemImage: "waveform.path.ecg"),
         NodeMenuItem(id: "rop-cloud", title: "ROP Point Cloud", systemImage: "cloud"),
         NodeMenuItem(id: "fret-heatmap", title: "FRET Heatmap", systemImage: "camera.filters"),
@@ -555,7 +559,7 @@ struct ContentView: View {
         ) {
             do {
                 let projectIDs = Set(store.projects.map(\.id))
-                _ = try await webController.captureCurrentProjectForFileOperation(
+                _ = try await webController.captureCurrentProjectForTermination(
                     projectIDs: projectIDs
                 )
                 await backendController.stopAndWait()
