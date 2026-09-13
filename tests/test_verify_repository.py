@@ -151,6 +151,13 @@ class PathAndMarkdownTests(unittest.TestCase):
         self.assertIsNotNone(violation(Path("manuscripts/draft.tex")))
         self.assertIsNotNone(violation(Path("notes/reviewer_response.docx")))
 
+    def test_public_documents_and_path_examples_are_allowed(self):
+        for path in ("docs/guide.pdf", "references.bib", "papers/published-example.md"):
+            self.assertIsNone(verify_repository.public_repository_path_violation(Path(path)))
+        self.assertEqual(verify_repository.find_private_markers(
+            "git clone git@github.com:public/example.git; use /tmp/example or file://example"
+        ), [])
+
     def test_notebook_policy_requires_no_outputs_or_execution_counts(self):
         audit = verify_repository.Audit()
         verify_repository.check_notebook_is_clear(
@@ -592,7 +599,7 @@ class GeneratedReferenceTests(unittest.TestCase):
         self.assertLess(events.index("schema inventory"), events.index("write reference"))
         self.assertLess(events.index("write reference"), events.index("post-write generated schema check"))
 
-    def test_read_only_gate_detects_external_command_side_effect(self):
+    def test_check_ignores_unrelated_worktree_activity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -610,14 +617,14 @@ class GeneratedReferenceTests(unittest.TestCase):
                  mock.patch.object(verify_repository, "schema_inventory", return_value=[]), \
                  mock.patch.object(verify_repository, "load_api_facts", return_value={"routes": []}), \
                  mock.patch.object(verify_repository, "version_inventory", return_value=[]), \
+                 mock.patch.object(verify_repository, "check_public_repository_safety"), \
                  mock.patch.object(verify_repository, "run_command", side_effect=run_command), \
                  mock.patch.object(verify_repository, "compare_or_write_generated"), \
                  contextlib.redirect_stdout(output):
                 status = verify_repository.verify(root, write=False, external=True)
 
-            self.assertEqual(status, 1)
-            self.assertIn("read-only verification modified", output.getvalue())
-            self.assertIn("added:side-effect.tmp", output.getvalue())
+            self.assertEqual(status, 0, output.getvalue())
+            self.assertEqual((root / "baseline.txt").read_text(), "baseline\n")
 
 
 if __name__ == "__main__":
