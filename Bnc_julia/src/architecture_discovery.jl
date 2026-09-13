@@ -151,6 +151,8 @@ function _architecture_adam(
     epochs::Int,
     trainable::BitVector,
     logkd_bounds::Tuple{Float64, Float64},
+    callback=nothing,
+    phase::Symbol=:penalized,
 )
     theta = copy(initial_logkd)
     first_moment = zeros(Float64, model.r)
@@ -169,6 +171,10 @@ function _architecture_adam(
         objective = evaluation.data_loss + sparsity * sum(affinity)
         gradient = evaluation.gradient .- sparsity * log(10.0) .* affinity
         all(isfinite, gradient) || error("architecture gradient became non-finite")
+        if callback !== nothing
+            callback((phase=phase, step=epoch - 1, logkd=copy(theta),
+                      data_loss=evaluation.data_loss, objective=objective))
+        end
 
         first_moment .= beta1 .* first_moment .+ (1 - beta1) .* gradient
         second_moment .= beta2 .* second_moment .+ (1 - beta2) .* gradient .^ 2
@@ -195,6 +201,11 @@ function _architecture_adam(
         model, totals, targets, outputs, theta;
         scales=scales, warm_starts=starts,
     )
+    if callback !== nothing
+        callback((phase=phase, step=epochs, logkd=copy(theta),
+                  data_loss=final.data_loss,
+                  objective=final.data_loss + sparsity * sum(exp10.(-theta))))
+    end
     return (logkd=theta, evaluation=final, history=history)
 end
 
@@ -209,6 +220,8 @@ function _architecture_refit(
     epochs,
     active,
     logkd_bounds,
+    callback=nothing,
+    phase::Symbol=:refit,
 )
     theta = copy(logkd)
     theta[.!active] .= logkd_bounds[2]
@@ -221,10 +234,16 @@ function _architecture_refit(
             epochs=epochs,
             trainable=active,
             logkd_bounds=logkd_bounds,
+            callback=callback,
+            phase=phase,
         )
     end
     evaluation = architecture_loss_gradient(
         model, totals, targets, outputs, theta; scales=scales)
+    if callback !== nothing
+        callback((phase=phase, step=0, logkd=copy(theta),
+                  data_loss=evaluation.data_loss, objective=evaluation.data_loss))
+    end
     return (logkd=theta, evaluation=evaluation, history=NamedTuple[])
 end
 
@@ -242,6 +261,10 @@ After selection, inactive reactions are placed at the weak-binding bound and
 the active affinities are refit without the sparsity penalty. The support is
 read once more after debiasing; if it shrinks, the survivors receive one final
 refit.
+
+An optional `callback(state)` receives the phase, number of completed updates,
+a copy of `logkd`, data loss, and objective before each update and at the end of
+each pass. Recording a trajectory does not change the optimisation or its output.
 """
 function discover_architecture(
     model::Bnc,
@@ -255,6 +278,7 @@ function discover_architecture(
     active_threshold::Real=0.05,
     debias_epochs::Integer=60,
     logkd_bounds=(-12.0, 12.0),
+    callback=nothing,
 )
     q = Float64.(totals)
     y = Float64.(targets)
@@ -296,6 +320,7 @@ function discover_architecture(
         epochs=epoch_count,
         trainable=trues(model.r),
         logkd_bounds=bounds,
+        callback=callback,
     )
     selection_affinity = exp10.(-sparse_fit.logkd)
     active = BitVector(selection_affinity .>= threshold)
@@ -307,6 +332,7 @@ function discover_architecture(
         epochs=refit_count,
         active=active,
         logkd_bounds=bounds,
+        callback=callback,
     )
     debias_history = copy(final_fit.history)
 
@@ -320,6 +346,8 @@ function discover_architecture(
             epochs=refit_count,
             active=active,
             logkd_bounds=bounds,
+            callback=callback,
+            phase=:refit2,
         )
         append!(debias_history, final_fit.history)
 

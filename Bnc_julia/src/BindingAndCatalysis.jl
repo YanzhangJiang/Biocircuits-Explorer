@@ -637,6 +637,7 @@ include(joinpath(@__DIR__,"qK_x_mapping.jl"))
 include(joinpath(@__DIR__,"volume_calc.jl"))
 include(joinpath(@__DIR__,"numeric.jl"))
 include(joinpath(@__DIR__,"architecture_discovery.jl"))
+include(joinpath(@__DIR__,"target_design.jl"))
 
 include(joinpath(@__DIR__,"regimes.jl"))
 include(joinpath(@__DIR__,"Catalysis_regime.jl"))

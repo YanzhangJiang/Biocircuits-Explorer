@@ -788,5 +788,6 @@ end
 end
 
 include(joinpath(@__DIR__, "architecture_discovery.jl"))
+include(joinpath(@__DIR__, "target_design.jl"))
 
 end # top-level testset
