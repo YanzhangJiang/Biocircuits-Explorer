@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import design_agent as agent
 import engine_client as engine
+import design_target_compile as target_compiler
 
 HOST = os.environ.get("BNE_CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BNE_CHAT_PORT", "8765"))
@@ -186,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
     def do_OPTIONS(self):
         path = self.path.split("?")[0]
-        expected_method = {"/health": "GET", "/design-chat": "POST"}.get(path)
+        expected_method = {"/health": "GET", "/design-chat": "POST", "/compile-target": "POST"}.get(path)
         if not self._origin_is_allowed():
             return self._json(403, {"error": "origin forbidden"})
         requested_method = (self.headers.get("Access-Control-Request-Method") or "").upper()
@@ -227,11 +228,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorize():
             return
-        if self.path.split("?")[0] != "/design-chat":
+        path = self.path.split("?")[0]
+        if path not in ("/design-chat", "/compile-target"):
             return self._json(404, {"error": "not found"}, cors=self._origin_is_allowed())
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
+            if n < 0 or n > 2 * 1024 * 1024:
+                return self._json(413, {"error": "request body too large"}, cors=self._origin_is_allowed())
             req = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(req, dict):
+                raise ValueError("expected a JSON object")
+            if req.get("llm") is not None and not isinstance(req["llm"], dict):
+                raise ValueError("llm must be an object")
+            if not isinstance(req.get("message", ""), str):
+                raise ValueError("message must be text")
         except Exception as e:
             return self._json(400, {"error": f"bad request: {e}"}, cors=self._origin_is_allowed())
         msg = (req.get("message") or "").strip()
@@ -254,9 +264,16 @@ class Handler(BaseHTTPRequestHandler):
                 extra_headers=(("Retry-After", "1"),),
             )
         try:
+            if path == "/compile-target":
+                res = target_compiler.compile_target(msg, _norm_llm(req.get("llm")), req.get("target"))
+                return self._json(200, res, cors=self._origin_is_allowed())
             res = agent.run_turn(req.get("state") or {}, msg, _norm_llm(req.get("llm")), int(req.get("top", 3)))
             return self._json(200, res, cors=self._origin_is_allowed())
+        except target_compiler.TargetCompileError as e:
+            return self._json(422, {"error": str(e), "code": e.code}, cors=self._origin_is_allowed())
         except Exception as e:
+            if path == "/compile-target":
+                return self._json(500, {"error": "Target compilation failed.", "code": "target_compile_failed"}, cors=self._origin_is_allowed())
             return self._json(500, {"error": f"chat failed: {e}"}, cors=self._origin_is_allowed())
         finally:
             CHAT_TURN_SEMAPHORE.release()
