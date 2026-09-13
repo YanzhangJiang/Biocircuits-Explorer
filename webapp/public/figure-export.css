@@ -1,0 +1,113 @@
+/* ===== Biocircuits Explorer — Figure Export Pages =====
+   Shared styles for the four figure-export-*.html capture pages used by the
+   out-of-repo screenshot pipeline. The light panel pages use literal values;
+   the dark node-card page resolves colors from the dark theme tokens in
+   style-node.css, which that page links alongside this file. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+.wrap {
+  display: grid;
+  grid-template-columns: 720px 720px;
+  gap: 24px;
+}
+
+#status {
+  grid-column: 1 / -1;
+  font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* --- Light panel pages (light / multiswitch / pulse) --- */
+
+.export-light {
+  background: #ffffff;
+  color: #1f2933;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Tahoma, sans-serif;
+}
+
+.export-light .wrap {
+  width: 1520px;
+  padding: 20px;
+}
+
+.export-light .plot {
+  width: 720px;
+  height: 520px;
+  border: 1px solid #d7e1eb;
+  background: #ffffff;
+}
+
+.export-light #status {
+  color: #52616f;
+}
+
+/* --- Dark node-card page (node-plots) ---
+   Colors come from the style-node.css tokens. --header-result-bg and
+   --node-header-color are theme-independent tokens defined only in
+   style-node-base.css (the app layout file, not linkable here); the
+   fallbacks mirror those definitions so this page can link just the
+   pure-variable theme file. */
+
+.export-dark {
+  background: #111;
+  color: var(--text-color);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Tahoma, sans-serif;
+}
+
+.export-dark .wrap {
+  width: 1500px;
+  padding: 24px;
+}
+
+.export-node-card {
+  background: var(--node-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 0 0 1px var(--node-border) inset;
+}
+
+.export-node-head {
+  background: var(--header-result-bg, #17A2B8);
+  color: var(--node-header-color, #f8fbff);
+  font-size: 22px;
+  font-weight: 750;
+  padding: 16px 20px;
+}
+
+.export-node-body {
+  padding: 18px 18px 20px;
+}
+
+.export-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.export-chip {
+  background: var(--chip-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  color: var(--chip-color);
+  padding: 7px 10px;
+  font-weight: 650;
+  font-size: 15px;
+}
+
+.export-dark .plot-container {
+  width: 100%;
+  height: 480px;
+  background: var(--plot-bg);
+  border: 1px solid var(--panel-border);
+}
+
+.export-dark #trajectoryPlot {
+  height: 430px;
+}
+
+.export-dark #status {
+  color: var(--text-dim);
+}
