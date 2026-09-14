@@ -210,9 +210,7 @@ installation.
   discovery are not exercised end to end.
 - P2 — No checked-in lane produces a Developer ID-signed and notarized DMG,
   verifies Gatekeeper on a clean macOS 14 host, or distributes updates. The
-  release script's default signature is ad hoc. The prepared external release
-  evidence schema, template, and runbook define this lane but have not executed
-  it.
+  release script's default signature is ad hoc.
 - P2 — The complete packaged app has not been launched and probed in CI. The
   release script now validates an operator-supplied Python runtime before
   signing, but no specific runtime artifact is supplied by this repository, and

@@ -180,27 +180,6 @@ Schema validity does not make a restored result current. The separate workflow
 lifecycle contract controls whether a result may flow downstream; see
 [`workflow-execution.md`](workflow-execution.md).
 
-## Release-candidate external evidence
-
-`bne-release-candidate-evidence/v1.0.0` is an operator-completed record for one
-immutable candidate across Registry, Compose/TLS, AWS, Slurm, and macOS. The
-tracked JSON is deliberately a `not_run` template. It is not an execution log
-and does not establish any external result.
-
-A lane can be `passed` only with a named authorized environment, at least one
-timestamped command observation whose redacted output is SHA-256-addressed, and
-a completed rollback observation or a non-empty reason why rollback is not
-applicable. `overall_status=passed` additionally requires a clean 40-character
-source commit, configuration hash, OCI digest, macOS artifact hash, and all five
-lanes passed. These structural checks prevent accidental promotion of a local
-or mocked check; an operator must still review whether each observation proves
-the lane named in the runbook.
-
-See the prepared-but-not-executed
-[`release-candidate-external-verification`](../runbooks/release-candidate-external-verification.md)
-runbook. Evidence files remain outside the tracked template and must be
-redacted before hashing.
-
 ## Current Design Screen contract
 
 The current response identity is `bne-design-screen/v0.3.0`. Version 0.3 makes
@@ -356,10 +335,9 @@ or instances the script did not load.
 
 ## Verified against
 
-- Workspace v2 and release-candidate evidence contracts: implementation
+- Workspace v2 contracts: implementation
   revision `b91cf41`; JavaScript/Swift shared-fixture checks, Draft 2020-12
-  instance tests, and the local repository gate passed on 2026-07-15. The
-  release-candidate template remains `not_run` external evidence.
+  instance tests, and the local repository gate passed on 2026-07-15.
 - Shape-optimization schema extension: committed integration revision
   `f2ca13c`; official Draft 2020-12 instance checks and the repository gate
   passed locally on 2026-07-15.

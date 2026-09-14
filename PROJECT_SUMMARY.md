@@ -235,9 +235,7 @@ feedback, and paper-side data are deliberately kept outside it.
 
 ## What remains unverified
 
-The release-candidate evidence Schema, untracked-run template, and operator
-runbook are prepared, but none of their external lanes has been executed. The
-current checkout therefore does not establish live registry publication/pull,
+The current checkout does not establish live registry publication/pull,
 SBOM/signature verification, live AWS services, live Slurm execution, a signed
 and notarized DMG, or the full Compose/Nginx/TLS stack. It also does not resolve
 the recorded periodic-table population and producer-lineage conflicts. Scripts

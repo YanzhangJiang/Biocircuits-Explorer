@@ -347,23 +347,6 @@ contracts:
     compatibility: "The target-driven route is additive; legacy discover_architecture remains given-reaction mechanism fitting. All target entrances produce editable explicit I/O samples. Readouts use transform(concentration) plus an opt-in additive offset. Cold selected-network replay, per-output target compliance, and result freshness are separate; fitted Kd, totals, input maps and readout metadata survive handoff. Bounded local Adam plus precursor-safe prune/refit does not assert global minimality or full Logo optimizer-suite coverage. Earlier candidate-list results remain historical until a corrected target is rerun."
     coverage: "locally-verified-implicit-gradients-native-replay-real-http-browser-and-native-integration"
 
-  - id: "release-candidate-evidence"
-    version_source: "schema-const"
-    schemas:
-      - "schemas/release-candidate-evidence.schema.json"
-    kind: "schema-and-external-verification-record"
-    owner: "cross-release"
-    docs:
-      - "knowledge/contracts/schemas.md"
-      - "knowledge/runbooks/release-candidate-external-verification.md"
-    sources:
-      - "schemas/release-candidate-evidence.schema.json"
-      - "operations/evidence/release-candidate.template.json"
-    tests:
-      - "tests/test_release_candidate_evidence.py"
-    compatibility: "A passed lane requires a named authorized environment, hashed observation, and completed or justified-not-applicable rollback. Overall passed additionally requires a clean frozen commit/configuration/image/macOS identity and all five lanes passed. The template is not proof that any external operation ran."
-    coverage: "draft-2020-12-template-and-negative-instance"
-
   - id: "job-result-manifest"
     version_source: "schema-const"
     schemas:

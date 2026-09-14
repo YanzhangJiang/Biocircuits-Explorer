@@ -422,16 +422,13 @@ modules:
 
   - id: "deployment"
     name: "Packaging and deployment"
-    purpose: "Build and operate the containerized backend/static app, optional proxy, version metadata, cloud bootstrap helpers, and the external release-candidate evidence procedure."
+    purpose: "Build and operate the containerized backend/static app, optional proxy, version metadata, and cloud bootstrap helpers."
     doc: "knowledge/modules/deployment.md"
     owner_paths:
       - "deploy"
       - "packaging"
       - "VERSION"
       - "scripts/set_version.sh"
-      - "schemas/release-candidate-evidence.schema.json"
-      - "operations/evidence/release-candidate.template.json"
-      - "knowledge/runbooks/release-candidate-external-verification.md"
     entrypoints:
       - "deploy/Dockerfile"
       - "deploy/docker-compose.yml"
@@ -446,7 +443,6 @@ modules:
       - "tests/test_build_image.py"
       - "tests/test_deployment_contract.py"
       - "tests/test_macos_release_metadata.py"
-      - "tests/test_release_candidate_evidence.py"
       - "tests/test_rewrite_rollback_config.py"
       - "tests/test_set_version.py"
       - "tests/test_setup_aws_batch.py"
@@ -461,9 +457,8 @@ modules:
       - "deployment-configuration"
       - "application-release-identity"
       - "immutable-image-reference-policy"
-      - "release-candidate-evidence-pack"
     maturity: "active"
-    evidence_boundary: "The Docker workflow is configured to build one image and probe readiness, liveness, version, static assets, and job-store writes. The release-candidate schema/template/runbook is prepared but unexecuted; local contracts do not prove registry/SBOM/signing, full Compose/TLS, live AWS/Slurm, or macOS signing/notarization."
+    evidence_boundary: "The Docker workflow is configured to build one image and probe readiness, liveness, version, static assets, and job-store writes; local contracts do not prove registry/SBOM/signing, full Compose/TLS, live AWS/Slurm, or macOS signing/notarization."
 
   - id: "batch-hpc"
     name: "Batch and HPC execution"
