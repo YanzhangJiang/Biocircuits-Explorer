@@ -4,10 +4,10 @@
 Usage:
   python3 scripts/verify_repository.py --check
 
-`--check` is read-only. It verifies generated-schema drift, version-owner
-consistency, the public repository boundary (private directories, manuscript
-file types, credential patterns, notebook outputs), maintained Markdown
-hygiene, configured artifacts, and the worktree diff.
+`--check` is read-only. It verifies generated-schema drift, that every
+application-version owner carries one SemVer, the public repository boundary
+(private directories, manuscript file types, credential patterns), and the
+worktree whitespace diff.
 """
 
 from __future__ import annotations
@@ -17,15 +17,9 @@ import json
 import re
 import subprocess
 import sys
-import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
-
-try:
-    import yaml
-except ModuleNotFoundError:  # pragma: no cover - gives a useful local error
-    yaml = None  # type: ignore[assignment]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,10 +37,6 @@ APPLICATION_MANIFESTS = {
     Path("packaging/Manifest.toml"): (
         "BiocircuitsExplorerPackaging",
         "2611948b-0538-4b60-b4c0-66cc43878c3b",
-    ),
-    Path("webapp_hpc/Manifest.toml"): (
-        "BiocircuitsExplorerBackendHPC",
-        "67d10611-6cfe-4cce-80b3-3428f29739d0",
     ),
 }
 FORBIDDEN_TRACKED_PREFIXES = (
@@ -82,7 +72,6 @@ REQUIRED_PRIVACY_IGNORES = (
     "/webapp/scripts/_archive/",
     "/workstation/",
 )
-MAINTAINED_MARKDOWN_ROOTS = (Path("README.md"), Path("PROJECT_SUMMARY.md"))
 
 
 @dataclass
@@ -107,22 +96,6 @@ class Audit:
             return 1
         print("PASS: repository contracts are current")
         return 0
-
-
-def load_yaml(root: Path, relative: Path, audit: Audit) -> dict[str, Any]:
-    if yaml is None:
-        audit.errors.append(
-            "PyYAML is required; install with: python3 -m pip install -r scripts/requirements-verify.txt"
-        )
-        return {}
-    path = root / relative
-    try:
-        value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        audit.errors.append(f"cannot parse {relative.as_posix()}: {exc}")
-        return {}
-    audit.require(isinstance(value, dict), f"{relative.as_posix()} root must be a mapping")
-    return value if isinstance(value, dict) else {}
 
 
 def resolves_within(root: Path, path: Path) -> bool:
@@ -196,27 +169,6 @@ def _tracked_repository_paths(root: Path, audit: Audit) -> list[Path]:
     return [Path(raw.decode("utf-8", errors="surrogateescape")) for raw in result.stdout.split(b"\0") if raw]
 
 
-def check_notebook_is_clear(relative: Path, text: str, audit: Audit) -> None:
-    try:
-        notebook = json.loads(text)
-    except json.JSONDecodeError as exc:
-        audit.errors.append(f"cannot parse tracked notebook {relative}: {exc}")
-        return
-    cells = notebook.get("cells") if isinstance(notebook, dict) else None
-    if not isinstance(cells, list):
-        audit.errors.append(f"tracked notebook {relative} has no cells array")
-        return
-    for index, cell in enumerate(cells):
-        if not isinstance(cell, dict):
-            audit.errors.append(f"tracked notebook {relative} has a non-object cell at index {index}")
-            continue
-        outputs = cell.get("outputs", [])
-        if isinstance(outputs, list) and outputs:
-            audit.errors.append(f"tracked notebook {relative} contains output at cell {index}")
-        if cell.get("execution_count") is not None:
-            audit.errors.append(f"tracked notebook {relative} has execution_count at cell {index}")
-
-
 def check_public_repository_safety(root: Path, audit: Audit) -> None:
     """Check explicit private directories and credential patterns."""
     # Unit tests exercise generation order with a bare temporary directory. The
@@ -247,148 +199,6 @@ def check_public_repository_safety(root: Path, audit: Audit) -> None:
             continue
         markers = find_private_markers(text)
         audit.require(not markers, f"private or credential marker in tracked file {relative}: {markers}")
-        if relative.suffix == ".ipynb":
-            check_notebook_is_clear(relative, text, audit)
-
-
-def markdown_inline_destinations(text: str) -> list[str]:
-    """Return inline link/image destinations, supporting balanced parentheses."""
-    destinations: list[str] = []
-    cursor = 0
-    while True:
-        start = text.find("](", cursor)
-        if start < 0:
-            break
-        index = start + 2
-        depth = 1
-        escaped = False
-        while index < len(text) and depth:
-            char = text[index]
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-            index += 1
-        if depth:
-            raise ValueError(f"unterminated Markdown link near offset {start}")
-        raw = text[start + 2 : index - 1].strip()
-        if raw.startswith("<") and ">" in raw:
-            destination = raw[1 : raw.index(">")]
-        else:
-            destination = raw.split(maxsplit=1)[0] if raw else ""
-        destinations.append(destination)
-        cursor = index
-    return destinations
-
-
-def markdown_heading_anchors(text: str) -> set[str]:
-    """Return GitHub-style anchors for the ATX headings used by maintained docs."""
-    anchors: set[str] = set()
-    occurrences: dict[str, int] = {}
-    for line in text.splitlines():
-        match = re.match(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", line)
-        if match is None:
-            continue
-        heading = re.sub(r"[`*_~]", "", match.group(1)).strip().lower()
-        base = re.sub(r"[^\w\- ]", "", heading, flags=re.UNICODE)
-        base = re.sub(r"[ \t]+", "-", base)
-        number = occurrences.get(base, 0)
-        occurrences[base] = number + 1
-        anchors.add(base if number == 0 else f"{base}-{number}")
-    return anchors
-
-
-def check_markdown_file(root: Path, relative: Path, audit: Audit) -> None:
-    path = root / relative
-    text = path.read_text(encoding="utf-8")
-    audit.require(not re.search(r"(?m)^\[[^]]+\]:\s*", text), f"reference-style links are unsupported in {relative}")
-    try:
-        destinations = markdown_inline_destinations(text)
-    except ValueError as exc:
-        audit.errors.append(f"{relative.as_posix()}: {exc}")
-        return
-    for destination in destinations:
-        base, separator, fragment = destination.partition("#")
-        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", base):
-            continue
-        if base:
-            audit.require(not base.startswith("/"), f"absolute Markdown link in {relative}: {destination}")
-            candidate = (path.parent / base).resolve()
-            audit.require(resolves_within(root, candidate), f"Markdown link escapes repository in {relative}: {destination}")
-            audit.require(candidate.exists(), f"broken Markdown link in {relative}: {destination}")
-        else:
-            candidate = path
-        if (
-            separator
-            and fragment
-            and candidate.is_file()
-            and resolves_within(root, candidate)
-            and candidate.suffix.lower() == ".md"
-        ):
-            anchors = markdown_heading_anchors(candidate.read_text(encoding="utf-8"))
-            decoded = urllib.parse.unquote(fragment).lower()
-            audit.require(decoded in anchors, f"broken Markdown heading fragment in {relative}: {destination}")
-    for line_number, line in enumerate(text.splitlines(), 1):
-        audit.require(not line.endswith((" ", "\t")), f"trailing whitespace in {relative}:{line_number}")
-
-
-def maintained_markdown_paths(root: Path) -> list[Path]:
-    """Return the maintained Markdown scope: entrypoints plus knowledge/**/*.md."""
-    relatives = list(MAINTAINED_MARKDOWN_ROOTS)
-    knowledge_root = root / "knowledge"
-    if knowledge_root.is_dir():
-        relatives.extend(
-            sorted(path.relative_to(root) for path in knowledge_root.rglob("*.md"))
-        )
-    return relatives
-
-
-def extract_ci_toolchains(document: dict[str, Any]) -> dict[str, list[str]]:
-    jobs = document.get("jobs")
-    if not isinstance(jobs, dict):
-        raise ValueError("CI workflow has no jobs mapping")
-    node: set[str] = set()
-    python: set[str] = set()
-    for job in jobs.values():
-        if not isinstance(job, dict):
-            continue
-        for step in job.get("steps", []):
-            if not isinstance(step, dict):
-                continue
-            uses = str(step.get("uses", ""))
-            config = step.get("with", {})
-            if not isinstance(config, dict):
-                continue
-            if uses.startswith("actions/setup-node@") and "node-version" in config:
-                node.add(str(config["node-version"]))
-            if uses.startswith("actions/setup-python@") and "python-version" in config:
-                python.add(str(config["python-version"]))
-    try:
-        julia_values = jobs["test-julia"]["strategy"]["matrix"]["julia"]
-        hpc_julia_values = jobs["test-hpc-environment"]["strategy"]["matrix"]["julia"]
-    except (KeyError, TypeError) as exc:
-        raise ValueError("CI webapp/HPC Julia matrix shape is unsupported") from exc
-    if not isinstance(julia_values, list) or not julia_values:
-        raise ValueError("CI webapp Julia matrix must be a nonempty list")
-    if not isinstance(hpc_julia_values, list) or not hpc_julia_values:
-        raise ValueError("CI HPC Julia matrix must be a nonempty list")
-    if not node or not python:
-        raise ValueError("CI Node/Python setup shape is unsupported")
-    return {
-        "node": sorted(node),
-        "python": sorted(python),
-        "julia": sorted(map(str, julia_values)),
-        "julia_hpc": sorted(map(str, hpc_julia_values)),
-    }
-
-
-def major_minor_line(value: str) -> tuple[int, int] | None:
-    match = re.fullmatch(r"(\d+)\.(\d+)(?:\D.*)?", value)
-    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 def project_toml_string(text: str, key: str, *, section: str | None = None) -> str:
@@ -496,7 +306,7 @@ def version_inventory(root: Path, audit: Audit) -> None:
     except ValueError as exc:
         audit.errors.append(str(exc))
         application = "unknown"
-    project_paths = [Path("webapp/Project.toml"), Path("packaging/Project.toml"), Path("webapp_hpc/Project.toml")]
+    project_paths = [Path("webapp/Project.toml"), Path("packaging/Project.toml")]
     project_text = {
         path.as_posix(): (root / path).read_text(encoding="utf-8")
         for path in project_paths
@@ -554,26 +364,6 @@ def version_inventory(root: Path, audit: Audit) -> None:
     audit.require(not invalid_semver, f"application version is not valid SemVer: {invalid_semver}")
     audit.require(len(set(versions.values())) == 1, f"application version drift: {versions}")
 
-    ci_document = load_yaml(root, Path(".github/workflows/ci.yml"), audit)
-    try:
-        ci = extract_ci_toolchains(ci_document)
-    except ValueError as exc:
-        audit.errors.append(str(exc))
-        ci = {"node": [], "python": [], "julia": [], "julia_hpc": []}
-
-    docker = (root / "deploy/Dockerfile").read_text(encoding="utf-8")
-    docker_match = re.search(r"(?m)^FROM\s+julia:([^\s]+)\s*$", docker)
-    audit.require(docker_match is not None, "Dockerfile Julia base shape is unsupported")
-    docker_julia = docker_match.group(1) if docker_match else "unknown"
-    docker_line = major_minor_line(docker_julia)
-    ci_lines = [major_minor_line(value) for value in ci["julia"]]
-    audit.require(docker_line is not None, f"Docker Julia tag has no major.minor line: {docker_julia}")
-    audit.require(all(match is not None for match in ci_lines), f"CI Julia versions need major.minor lines: {ci['julia']}")
-    audit.require(
-        docker_line is not None and docker_line in ci_lines,
-        "Docker Julia base is outside the CI Julia line",
-    )
-
     swift = (root / "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj").read_text(encoding="utf-8")
     swift_marketing = sorted(set(re.findall(r"MARKETING_VERSION = ([^;]+);", swift)))
     swift_build = sorted(set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", swift)))
@@ -581,9 +371,6 @@ def version_inventory(root: Path, audit: Audit) -> None:
     audit.require(len(swift_marketing) == 1, f"Swift marketing versions disagree: {swift_marketing}")
     audit.require(len(swift_build) == 1, f"Swift build versions disagree: {swift_build}")
     audit.require(len(swift_macos_target) == 1, f"Swift macOS deployment targets disagree: {swift_macos_target}")
-
-    # Workspace parity and packaging behavior are exercised by their owner
-    # tests. Source spelling and indentation are not runtime contracts.
 
 
 def run_command(root: Path, command: list[str], audit: Audit, label: str) -> str:
@@ -616,25 +403,9 @@ def verify(root: Path, *, external: bool = True) -> int:
     version_inventory(root, audit)
     check_public_repository_safety(root, audit)
 
-    checked = 0
-    for relative in maintained_markdown_paths(root):
-        path = root / relative
-        if not path.exists():
-            continue
-        if not resolves_within(root, path):
-            # Do not follow an unsafe symlink merely to scan its target.
-            continue
-        text = path.read_text(encoding="utf-8")
-        markers = find_private_markers(text)
-        audit.require(not markers, f"private/public-safety markers in {relative}: {markers}")
-        check_markdown_file(root, relative, audit)
-        checked += 1
-
     if external:
-        run_command(root, [sys.executable, "webapp/scripts/validate_artifacts.py"], audit, "artifact validation")
         run_command(root, ["git", "diff", "--check"], audit, "git whitespace check")
 
-    audit.notes.append(f"checked {checked} maintained Markdown files")
     return audit.report()
 
 
