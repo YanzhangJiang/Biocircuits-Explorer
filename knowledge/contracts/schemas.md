@@ -255,19 +255,17 @@ then reports worker success. The manifest records the job and result kind,
 algorithm/config identity, exact byte length, JSON media type, top-level payload
 count, and SHA-256 of the serialized result.
 
-For new AWS job records, the broker downloads only the manifest (bounded to 64
-KiB) and compares it with the canonical record plus `HeadObject` length, content
-type, and worker-written SHA-256 object metadata. It does not download or
+For new job records, the reader loads only the manifest (bounded to 64
+KiB) and compares it with the canonical record plus the result file's length
+and SHA-256. It does not download or
 materialize the potentially large Atlas result during status polling. Only
 records created before the protocol field existed use the legacy inline result
-validator. A broker that reads a persisted unknown future protocol keeps it
+validator. A reader that holds a persisted unknown future protocol keeps it
 retryable because that version mismatch is not evidence that the result itself
 is invalid. A worker asked to execute an unsupported protocol instead fails the
-worker job. Rolling deployments therefore update the worker image/job definition
-before enabling a broker that submits the new protocol.
+worker job.
 
-This contract proves the mocked local publication/verification protocol, not a
-live S3 transfer or AWS Batch run.
+This contract proves the local publication/verification protocol.
 
 ## Numerical validity fields
 

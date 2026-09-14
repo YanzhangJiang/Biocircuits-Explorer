@@ -46,15 +46,15 @@ override wins in either mode.
   default at most `min(Threads.nthreads(), 2)` jobs compute concurrently and at
   most 64 jobs may be admitted across running and queued work. Strict positive
   integer environment settings can adjust those limits within hard bounds of
-  64 concurrent and 4,096 admitted jobs. A full queue fails before quota
-  consumption or durable writes with HTTP 429,
+  64 concurrent and 4,096 admitted jobs. A full queue fails before durable
+  writes with HTTP 429,
   `code=local_job_capacity_exhausted`, `Retry-After: 1`, and `retryable=true`.
 - Canonical job state is serialized by 128 stable job-ID stripes, so JSON
   reads/parsing, atomic rename/fsync, projection repair, and snapshots for one
   job do not hold the process-wide registry lock or block an unrelated stripe.
   The in-memory `JOBS` table is a true LRU cache with a strict default capacity
   of 1,024 records and a validated hard maximum of 65,536; `record.json`
-  remains authoritative, and queued/running local or AWS records may be
+  remains authoritative, and queued/running local records may be
   evicted and cold-loaded safely.
 - A structurally valid request above a declared synchronous limit fails before
   the expensive allocation with HTTP 422, `code=sync_budget_exceeded`, and
@@ -213,8 +213,7 @@ evaluated. Result publication and explicit audits revalidate the plan,
 checkpoint, manifest, every addressed chunk, cumulative payload accounting,
 and submitted resume lineage. Ordinary result reads check the outer committed
 file's digest and identity, without rebuilding the solver environment or
-replaying intermediate files. AWS/Batch submission fails closed until a shared
-object-store chunk protocol exists.
+replaying intermediate files. The job executes `local_async` only.
 
 A disjoint sparse-v2 branch keeps the same `compute_ro_field` Job kind but uses
 `bne-ro-field-job-spec/v2.0.0`, an independent scientific plan identity, and the
@@ -251,7 +250,7 @@ engine's plan-and-terminal-state result validator. Shallow engine validation is
 reserved for current-process or already-authoritatively-replayed state. Terminal
 result, checkpoint, and manifest bytes are charged before first publication;
 plan, initial/superseded checkpoints, and orphan objects are not a complete disk
-quota. This branch is also `local_async` only and fails closed for AWS/Batch.
+quota. This branch is also `local_async` only.
 The replay meter starts after bounded plan parsing and model/runtime
 reconstruction, so it is not an end-to-end worker CPU or wall-clock budget.
 It is a runtime protocol parallel to the Cartesian v1 job, not a new
@@ -286,8 +285,8 @@ behind their hashes and never assert external execution.
   processes or replicas.
 - Providing a fair queue, request deadlines, or cancellation for synchronous
   handlers; those callers receive fail-fast capacity/budget responses.
-- Treating a prepared campaign manifest as authorization to run a large local,
-  cloud, or cluster population.
+- Treating a prepared campaign manifest as authorization to run a large local
+  or cluster population.
 - Authenticating a caller-supplied chunk-manifest root without a trusted
   job/store record that pins that root.
 - Treating solver convergence as analytic or biological proof.
@@ -351,9 +350,9 @@ behind their hashes and never assert external execution.
 - Versioned IR/designability payloads, supported legacy network requests, SBML,
   atlas/job specifications, and local image paths.
 - Environment settings for bind host/port, parent supervision, public assets,
-  job storage, job-cache capacity, local-job concurrency/admission, local-image
-  exposure, AWS, Cognito, and quotas.
-- Local files or S3 URIs for batch input/status/result artifacts.
+  job storage, job-cache capacity, local-job concurrency/admission, and
+  local-image exposure.
+- Local files for job input/status/result artifacts.
 - Bounded Cartesian-v1 and adaptive sparse-v2 RO-field job specifications,
   content-addressed local chunk/transition trees, and exact two-free-axis
   Cartesian slice specifications.
@@ -371,7 +370,7 @@ behind their hashes and never assert external execution.
 - Static web assets, liveness/readiness payloads, Prometheus metrics, and
   application/API version discovery.
 - Process-local sessions and model caches.
-- Atomic local job records/results or S3-backed Batch artifacts.
+- Atomic local job records and results.
 - For `compute_ro_field`, either the unchanged Cartesian-v1 local
   plan/checkpoint/chunk/manifest tree or the disjoint sparse-v2
   plan/batch/chunk/transition/terminal/checkpoint/manifest tree. Publication
@@ -387,13 +386,11 @@ behind their hashes and never assert external execution.
 - Bind selection, parent watchdog, and readiness checks:
   [`runtime_lifecycle.jl`](../../webapp/src/runtime_lifecycle.jl) and
   [`routing.jl`](../../webapp/src/routing.jl)
-- Host, parent, local-image, and AWS opt-in settings:
+- Host, parent, and local-image settings:
   [`config.jl`](../../webapp/src/config.jl)
 - Same-origin and loopback local-image rules:
   [`static_assets.jl`](../../webapp/src/static_assets.jl)
-- AWS trusted runtime settings versus request overrides:
-  [`jobs.jl`](../../webapp/src/jobs.jl)
-- Route table, method rules, v1 mapping, and deprecation metadata:
+- Route table, method rules, and v1 mapping:
   [`api_contract.jl`](../../webapp/src/api_contract.jl) and
   [`routing.jl`](../../webapp/src/routing.jl)
 - Runtime/build version and bundle lookup:
@@ -431,15 +428,14 @@ behind their hashes and never assert external execution.
 
 - [`webapp/test/runtests.jl`](../../webapp/test/runtests.jl) covers bind defaults
   and override validation; liveness/readiness checks; same-origin, wrong-port,
-  DNS-rebinding, loopback, public-bind, and explicit local-image cases; AWS
-  request override opt-in; routing, bounded legacy-alias metrics, auth/quota,
-  jobs, SBML/IR, handlers, and serialization.
+  DNS-rebinding, loopback, public-bind, and explicit local-image cases;
+  routing, jobs, SBML/IR, handlers, and serialization.
 - [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl)
   covers local cancellation, finish, submit, and restart-settlement races.
 - [`webapp/test/jobs_cache_concurrency_contract.jl`](../../webapp/test/jobs_cache_concurrency_contract.jl)
   covers cross-job progress during blocked persistence, same-job serialization,
   cold-load single-flight, wrong-directory identity rejection, hard LRU
-  eviction/reload, active local/AWS ownership across eviction, projection
+  eviction/reload, active local ownership across eviction, projection
   repair, and cache stress/invariants.
 - [`webapp/test/cooperative_cancel_checkpoints_contract.jl`](../../webapp/test/cooperative_cancel_checkpoints_contract.jl)
   covers cancellation propagation through long workflows.
@@ -488,7 +484,7 @@ checks, and the installed-layout version-resource test.
 configured to build and start one backend image, wait for `/ready`, probe
 `/health` and `/api/v1/version`, fetch `/index.html`, and write the job store.
 No external workflow run is claimed; it does not start the Nginx/TLS Compose
-stack or a real AWS worker.
+stack.
 
 ## Invariants
 
@@ -505,15 +501,10 @@ stack or a real AWS worker.
 - A public/non-supervised bind does not serve local images unless
   `BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES` is explicitly enabled. Cross-origin
   browser reads remain rejected when an Origin is present.
-- Request payloads cannot replace operator-owned AWS queue, job definition,
-  artifact prefix, job-name prefix, container environment, vCPU, or memory
-  settings unless `BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG` is true.
-- `/api/v1` is canonical. Known bare `/api` aliases reach the same handler and
-  carry deprecation metadata; probes and static assets are not legacy API calls.
-  Tracked first-party clients use only the canonical surface. The bounded legacy
-  counter measures declared aliases, collapses variable job paths, and excludes
-  canonical, unknown, and v1-only routes; removal additionally requires an
-  inventory of deployed and rollback clients.
+- `/api/v1` is canonical. Known bare `/api` aliases reach the same handler;
+  probes and static assets are not legacy API calls.
+  Tracked first-party clients use only the canonical surface, and the aliases
+  are permanent.
 - Application version and build revision remain distinct from API protocol
   identity. Bundle builders copy `VERSION` to
   `share/biocircuits-explorer/VERSION`, and runtime lookup supports that
@@ -548,33 +539,23 @@ stack or a real AWS worker.
 - Exact relabel canonicalization is bounded at seven free species. Beyond that,
   the deterministic positional content hash is accepted with weaker identity
   semantics rather than starting factorial work.
-- `JOBS_LOCK` owns only short cache, task/token/admission, describe, and
-  submission-owner metadata sections. Canonical state changes acquire the
+- `JOBS_LOCK` owns only short cache and task/token/admission metadata
+  sections. Canonical state changes acquire the
   stable job stripe first; JSON parsing, deepcopy, file publication, projection
-  inspection/repair, long computation, and external AWS/S3 calls never hold
+  inspection/repair, and long computation never hold
   `JOBS_LOCK`. Same-job state remains serialized, terminal state is monotonic,
   and unrelated stripes can progress while one job's disk I/O is blocked.
 - `JOBS` is a bounded process-local LRU, not an authority or active-job pin.
   Its capacity uses `BIOCIRCUITS_EXPLORER_JOB_CACHE_CAPACITY` (default 1,024,
   hard maximum 65,536). Cold misses are single-flight under the job stripe and
   must load a canonical record whose `job_id` matches its directory. Local
-  worker/token/admission ownership and initial AWS submission ownership live
+  worker/token/admission ownership lives
   outside the cache, so eviction cannot trigger false restart recovery.
-- AWS submission identity is canonical state, not transient request context.
-  New records persist the resolved job name, queue, definition, Batch region,
-  optional account ID, tag, exact worker command, and artifact URIs before
-  remote I/O. `dispatch_started` authorizes SubmitJob only after its exact
-  parent-directory fsync is confirmed; a committed-but-unconfirmed boundary
-  performs no submit and remains reconciliation-only. Once the boundary
-  commits, the broker never issues another SubmitJob for that job ID.
-  Reconciliation requires complete one-for-one DescribeJobs coverage of every
-  ListJobs ID before applying zero/one/many candidate semantics, and full ARNs
-  never degrade to resource-name matching.
-- `record.json` is canonical restart state. A remote success without the
-  expected result artifact is failed rather than promoted to success. In the
-  working tree, new AWS jobs additionally require a result manifest published
-  after `result.json`; status polling validates that bounded marker and object
-  metadata without downloading the potentially large result payload.
+- `record.json` is canonical restart state. A job result is readable only when
+  its committed result artifact is present and identity-valid. New jobs
+  additionally require a result manifest published after `result.json`; result
+  reads validate that bounded marker without reparsing the potentially large
+  result payload.
 - Canonical job publication on macOS/Linux writes and fsyncs a same-directory
   temporary file, performs one no-fallback atomic rename, and fsyncs the parent
   directory. Rename is the logical commit point: a later directory-fsync
@@ -614,14 +595,13 @@ stack or a real AWS worker.
 - P2 — Local-image opt-in on a public bind allows same-origin callers and
   non-browser clients to request supported files by path; operators must not
   enable it for an untrusted deployment.
-- P2 — Docker CI covers one local image, not the full Compose/TLS stack, native
-  shell, live AWS Batch/S3/Cognito/quota path, or broker/worker lifecycle.
+- P2 — Docker CI covers one local image, not the full Compose/TLS stack or
+  native shell.
 - P2 — The bundle version/resource contract does not build and launch a complete
   macOS bundle in CI.
 - P2 — Tracked first-party clients are canonical, but this checkout cannot
   inventory every deployed or rollback client and has no production traffic
-  sample. The measured compatibility aliases therefore remain until their
-  declared sunset and an operator-reviewed removal decision.
+  sample. The compatibility aliases are permanent.
 - P2 — Result-envelope adoption remains additive rather than uniform across all
   synchronous historical handlers.
 - P2 — Admission, build locks, bundle locks, and LRU tables are process-local;
@@ -638,11 +618,11 @@ stack or a real AWS worker.
 - P2 — Direct/offline and job path enumeration is not restricted by the two Web
   path-materialization counters. Local-job task count is now bounded, but a
   single admitted job can still request large work and therefore requires
-  explicit partitioning, quota, and cooperative cancellation.
+  explicit partitioning, admission limits, and cooperative cancellation.
 - P2 — Both Cartesian-v1 and adaptive sparse-v2 `compute_ro_field` remain
   local-only, single-process Job paths bounded to one-to-four controls and at
-  most 4,096 evaluated points. They have no shared object-store publication,
-  multi-process work stealing, Slurm/AWS executor, cluster-wide recovery, or
+  most 4,096 evaluated points. They have no multi-process work stealing,
+  cluster-wide recovery, or
   content-addressed artifact garbage-collection contract.
 - P2 — Strict slices expose exactly two free axes and require Cartesian source
   samples. They do not create arbitrary-rank projected artifacts, interpolate
@@ -669,11 +649,8 @@ stack or a real AWS worker.
    start-script, Docker, and Compose alignment at the evidence level claimed.
 3. Keep local-image access fail-closed for public binds and exact-origin for
    browsers; add adversarial origin/host/port tests for every rule change.
-4. Keep AWS request overrides disabled by default and test both disabled and
-   explicitly enabled paths when adding an override.
-5. Preserve v1/legacy response parity until compatibility clients migrate; add
-   race tests before changing jobs and never put network/cloud I/O under
-   `JOBS_LOCK`.
+4. Preserve v1/legacy response parity; add race tests before changing jobs and
+   never hold `JOBS_LOCK` during disk or network I/O.
 6. For concurrency changes, prove same-hash single-flight, same-bundle
    serialization, cross-bundle progress, exception cleanup, and typed 422/429
    mapping. Explicitly propagate synchronous context through any new spawned

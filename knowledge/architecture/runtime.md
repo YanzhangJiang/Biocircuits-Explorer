@@ -15,7 +15,7 @@ Different processes still do not share locks, cache entries, or admission
 state.
 
 The normal path is one web client talking to one Julia HTTP process. Heavy work
-may instead run in a local Julia job or an AWS Batch worker, and the
+may instead run in a local Julia job, and the
 conversational design surface may add a Python sibling process. Those paths
 share wire and artifact contracts, but they deliberately do not share all
 in-memory policy.
@@ -110,25 +110,13 @@ locations.
 - Cancellation is cooperative through `cancel_check` checkpoints; it does not
   interrupt a task with `Base.throwto`.
 - State changes and atomic local record writes are serialized under `JOBS_LOCK`;
-  long computation and external AWS/S3 calls occur outside that lock.
+  long computation and file I/O occur outside that lock.
 - Terminal states are immutable. A late completion cannot overwrite a terminal
   cancellation or failure.
 - `record.json` is committed atomically before the in-memory view is published;
   `status.json` is a public projection.
 
-### AWS Batch execution
-
-The broker writes or uploads the request, submits a worker, polls Batch, and
-reads the result from S3. Long AWS calls are performed without the global job
-lock. A cancellation first publishes intent, then uses the remote cancel or
-terminate operation appropriate to the observed lifecycle; ambiguous races
-remain pending until remote state resolves. A Batch `SUCCEEDED` status is
-downgraded to failure when the expected result artifact is missing.
-
-A durable per-job dispatch claim admits only one concurrent remote cancel or
-terminate call. A successful dispatch records its completion; a failed dispatch
-clears the claim so a later request can retry, and an abandoned claim has a
-bounded expiry. Preserve this claim protocol when changing cancellation.
+### Local job execution
 
 Jobs resolve every request to the single anonymous local owner. Ownership
 checks deliberately return an unknown-job error for a mismatched identifier.

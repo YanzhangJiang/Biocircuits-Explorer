@@ -63,9 +63,8 @@ of a stale secret or use of a different port is not enough.
 - A per-chat-process bearer secret and an exact origin
   `http://127.0.0.1:<actual Julia port>` supplied to both the helper and the web
   shell.
-- An optional embedded authentication page only for the exact HTTPS Cognito
-  origin returned by `/api/v1/auth/config`; unrelated HTTPS navigation is sent
-  to the user's default browser instead of being trusted inside the WebView.
+- Unrelated HTTPS navigation is sent to the user's default browser instead of
+  being trusted inside the WebView.
 - A macOS 14 app/DMG build path containing the backend, public assets, version
   file, allowlisted Design Agent runtime files, and—when packaging a release—a
   self-contained Python runtime under the standard Helpers backend tree.
@@ -155,9 +154,8 @@ installation.
   identity, node-type, port, and shape rules. The repository verifier keeps the
   native supported-node set equal to the Web `NODE_TYPES` registry; Swift,
   JavaScript, Schema, and shared fixture versions advance together.
-- Only the exact configured HTTPS Cognito origin may remain in the embedded
-  authentication context. A merely HTTPS URL, subdomain, lookalike, path, or
-  malformed/disabled authentication configuration does not gain that trust.
+- Only the exact `/index-node.html` path on the trusted loopback origin is
+  embedded. Any other URL is blocked or handed to the system browser.
 - The Xcode project and release helper target macOS 14.0. The packaged Design
   Agent surface is limited to `packaging/design-runtime-files.txt`; optional
   Reader host dependencies are not implied by that list.
@@ -215,8 +213,6 @@ installation.
 - P2 — Focused Swift and JavaScript tests exercise lifecycle state machines but
   do not drive rapid real pointer input through `WKWebView` or launch two app
   processes against the same project directory.
-- P2 — Exact Cognito-origin policy is covered with native unit contracts, but a
-  real Cognito/federated-provider sign-in and callback has not been exercised.
 - P2 — The resource allowlist proves which tracked files are staged; it does not
   bundle or validate every optional dataset and third-party Python dependency.
 

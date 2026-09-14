@@ -43,9 +43,9 @@ material, job data, or cloud resources.
 
 - The tracked source tree, Julia lock files, local `Bnc_julia`, and `VERSION`.
 - Version, revision, and build time for image labels and runtime discovery.
-- Runtime settings for ports, assets, job storage, AWS, Cognito, quotas, and an
+- Runtime settings for ports, assets, job storage, and an
   optional release image reference.
-- For host rollout, readable TLS certificate/key files and any cloud
+- For host rollout, readable TLS certificate/key files and any registry
   credentials supplied outside Git.
 - For a native bundle, the packaging Julia environment and either the portable
   or PackageCompiler build path.
@@ -135,14 +135,11 @@ bundle.
 
 - P2 — The complete Compose/Nginx/TLS path has not been run in CI or in this
   audit; source checks and `docker compose config` are not an integration test.
-- P2 — `julia:1.12` and `nginx:alpine` are mutable base references, and the
-  image installs `awscli` without a pinned Python package version.
+- P2 — `julia:1.12` and `nginx:alpine` are mutable base references.
 - P2 — No checked-in lane publishes to a registry, signs an image, emits an
   SBOM, verifies provenance, or performs a production rollout.
-- P2 — Rollback cannot restore external environment/TLS changes, job data, or
-  cloud-side mutations; those need separate backup and infrastructure plans.
-- P2 — AWS/Cognito setup is tested with mocks and source contracts only; no live
-  account, Batch worker, S3 transfer, quota table, or identity flow is verified.
+- P2 — Rollback cannot restore external environment/TLS changes or job data;
+  those need separate backup and infrastructure plans.
 - P2 — Bundle resource lookup and staging have contracts, but CI does not build,
   relocate, launch, and probe the complete macOS backend bundle.
 

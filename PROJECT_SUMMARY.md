@@ -236,7 +236,7 @@ feedback, and paper-side data are deliberately kept outside it.
 ## What remains unverified
 
 The current checkout does not establish live registry publication/pull,
-SBOM/signature verification, live AWS services, live Slurm execution, a signed
+SBOM/signature verification, live Slurm execution, a signed
 and notarized DMG, or the full Compose/Nginx/TLS stack. It also does not resolve
 the recorded periodic-table population and producer-lineage conflicts. Scripts
 and local contracts do not upgrade an external result from unknown to verified.

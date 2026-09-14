@@ -113,9 +113,9 @@ a wire back to its original socket remains a semantic no-op.
 `design-agent-conversation-owner-contract.test.mjs` applies the same owner rule
 to saved Design Agent conversations: turns are single-flight, restore aborts
 the previous pending turn, and delayed replies cannot cross workspace epochs.
-`model-request.test.mjs` covers Cloud job owner retirement, stale nonterminal
-cancellation, terminal no-cancel behavior, bounded polling retries, and fresh
-pre-signed URL retry without broker-result fallback.
+`model-request.test.mjs` covers request payload enrichment and recovery,
+canonical v1 routing, stale-status ownership, and fail-closed HTTP error
+handling.
 
 `ro-field-render.test.mjs` covers non-symmetric last-axis-fastest tensor layout,
 invalid null gaps, exact cells with multiple labels, facets and singular strata,
@@ -194,17 +194,9 @@ development and shipped pages load the source ES modules directly.
   DOM, clears the previous active candidate/results, and reconstructs the right
   pane only from the latest restored agent response; a latest response without
   a valid card keeps the pane cleared.
-- Cloud jobs remain bound to the request owner through submission, polling, and
-  result download; an owner predicate exception retires the request. Losing the
-  owner after obtaining a nonterminal job ID settles activity and makes one
-  best-effort cancellation call, while a known terminal job is never cancelled.
-  Retryable poll errors use a bounded consecutive budget that resets after each
-  successful poll.
-- After a cloud job succeeds, the browser obtains a pre-signed result URL and
-  performs a plain direct GET. It requires an `application/json` response,
-  preserves latest-request ownership across URL lookup and download, and does
-  not fall back to relaying the large object through the broker. One retryable
-  failure may refresh the pre-signed URL and repeat the direct GET once.
+- A long request remains bound to its owner predicate; an owner predicate
+  exception retires the request, and a stale owner's failure cannot overwrite
+  a newer request's status.
 
 ## Known gaps
 
