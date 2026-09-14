@@ -18,17 +18,14 @@ REQUIRED_FILES = (
     "webapp/Manifest.toml",
     "packaging/Project.toml",
     "packaging/Manifest.toml",
-    "webapp_hpc/Project.toml",
-    "webapp_hpc/Manifest.toml",
     "webapp/package.json",
     "webapp/package-lock.json",
 )
 MANIFEST_TARGETS = {
     "webapp/Manifest.toml": "BiocircuitsExplorerBackend",
     "packaging/Manifest.toml": "BiocircuitsExplorerPackaging",
-    "webapp_hpc/Manifest.toml": "BiocircuitsExplorerBackendHPC",
 }
-NON_OWNED_MANIFEST = "webapp/Manifest-v1.10.toml"
+NON_OWNED_MANIFEST = "Bnc_julia/Manifest.toml"
 
 
 class SetVersionTests(unittest.TestCase):
@@ -40,6 +37,7 @@ class SetVersionTests(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO_ROOT / relative, destination)
         legacy_manifest = self.root / NON_OWNED_MANIFEST
+        legacy_manifest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / NON_OWNED_MANIFEST, legacy_manifest)
 
     def tearDown(self):
@@ -73,7 +71,6 @@ class SetVersionTests(unittest.TestCase):
         for relative in (
             "webapp/Project.toml",
             "packaging/Project.toml",
-            "webapp_hpc/Project.toml",
         ):
             text = (self.root / relative).read_text(encoding="utf-8")
             match = re.search(r'(?m)^version[ \t]*=[ \t]*["\']([^"\']+)["\']', text)
@@ -153,7 +150,7 @@ class SetVersionTests(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
 
     def test_missing_required_file_causes_no_partial_update(self):
-        missing = "webapp_hpc/Project.toml"
+        missing = "packaging/Project.toml"
         (self.root / missing).unlink()
         remaining = tuple(relative for relative in REQUIRED_FILES if relative != missing)
         before = self.snapshot(remaining)
@@ -178,12 +175,12 @@ class SetVersionTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     def test_malformed_self_manifest_causes_no_partial_update(self):
-        manifest_path = self.root / "webapp_hpc/Manifest.toml"
+        manifest_path = self.root / "packaging/Manifest.toml"
         manifest = manifest_path.read_text(encoding="utf-8")
         manifest_path.write_text(
             manifest.replace(
-                '[[deps.BiocircuitsExplorerBackendHPC]]',
-                '[[deps.BiocircuitsExplorerBackendHPC_BROKEN]]',
+                '[[deps.BiocircuitsExplorerPackaging]]',
+                '[[deps.BiocircuitsExplorerPackaging_BROKEN]]',
                 1,
             ),
             encoding="utf-8",
@@ -193,7 +190,7 @@ class SetVersionTests(unittest.TestCase):
         result = self.run_script("2.0.0")
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("BiocircuitsExplorerBackendHPC", result.stderr)
+        self.assertIn("BiocircuitsExplorerPackaging", result.stderr)
         self.assertEqual(self.snapshot(), before)
 
     def test_duplicate_self_manifest_entry_causes_no_partial_update(self):

@@ -10,7 +10,6 @@ end
 Base.showerror(io::IO, err::RequestBodyTooLarge) =
     print(io, "JSON request body is $(err.size) bytes; limit is $(err.limit) bytes")
 
-# Keep the application boundary aligned with deploy/nginx.conf.
 const MAX_JSON_REQUEST_BYTES = 1024 * 1024
 const MAX_JSON_NESTING_DEPTH = 64
 const MAX_JSON_VALUE_NODES = 100_000

@@ -61,8 +61,6 @@ REQUIRED_FILES = (
     "webapp/Manifest.toml",
     "packaging/Project.toml",
     "packaging/Manifest.toml",
-    "webapp_hpc/Project.toml",
-    "webapp_hpc/Manifest.toml",
     "webapp/package.json",
     "webapp/package-lock.json",
 )
@@ -150,10 +148,6 @@ MANIFEST_TARGETS = {
     "packaging/Manifest.toml": (
         "BiocircuitsExplorerPackaging",
         "2611948b-0538-4b60-b4c0-66cc43878c3b",
-    ),
-    "webapp_hpc/Manifest.toml": (
-        "BiocircuitsExplorerBackendHPC",
-        "67d10611-6cfe-4cce-80b3-3428f29739d0",
     ),
 }
 MANIFEST_SECTION = re.compile(
@@ -277,8 +271,6 @@ UPDATERS = {
     "webapp/Manifest.toml": update_manifest_toml,
     "packaging/Project.toml": update_project_toml,
     "packaging/Manifest.toml": update_manifest_toml,
-    "webapp_hpc/Project.toml": update_project_toml,
-    "webapp_hpc/Manifest.toml": update_manifest_toml,
     "webapp/package.json": update_package_json,
     "webapp/package-lock.json": update_package_lock,
 }
