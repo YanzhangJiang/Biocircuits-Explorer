@@ -7,9 +7,6 @@ const JOB_LOCK_STRIPE_COUNT = 128
 const JOB_LOCK_STRIPES = [ReentrantLock() for _ in 1:JOB_LOCK_STRIPE_COUNT]
 const JOB_TASKS = Dict{String, Task}()
 const LOCAL_JOB_CANCEL_TOKENS = Dict{String, LocalJobCancelToken}()
-const JOB_DESCRIBE_LAST_AT = Dict{String, Float64}()
-const JOB_DESCRIBE_IN_FLIGHT = Set{String}()
-const AWS_BATCH_INITIAL_SUBMISSIONS = Set{String}()
 const LOCAL_JOB_STORE_DIR = Ref{Union{Nothing, String}}(nothing)
 const LOCAL_JOB_ADMISSIONS = Set{String}()
 const LOCAL_JOB_LIMITS = Ref{Union{Nothing, Tuple{Int, Int}}}(nothing)
@@ -159,81 +156,6 @@ function _clear_job_projection_dirty!(job_id::AbstractString)
     return nothing
 end
 
-const JOB_DESCRIBE_CACHE_MAX_ENTRIES = 4096
-const JOB_DESCRIBE_CACHE_MIN_TTL_SECONDS = 300.0
-
-function _aws_batch_describe_min_interval()
-    raw = Config.aws_batch_describe_min_interval_raw()
-    isempty(raw) && return 3.0
-    parsed = tryparse(Float64, raw)
-    return parsed === nothing || !isfinite(parsed) ? 3.0 : max(parsed, 0.0)
-end
-
-_monotonic_seconds() = Float64(time_ns()) / 1.0e9
-
-function _job_describe_cache_ttl_seconds()
-    return max(
-        JOB_DESCRIBE_CACHE_MIN_TTL_SECONDS,
-        2 * _aws_batch_describe_min_interval(),
-    )
-end
-
-function _prune_job_describe_cache_unlocked!(now_seconds::Real;
-                                               ttl_seconds::Real=_job_describe_cache_ttl_seconds(),
-                                               max_entries::Integer=JOB_DESCRIBE_CACHE_MAX_ENTRIES)
-    ttl_seconds > 0 || throw(ArgumentError("Describe cache TTL must be positive."))
-    max_entries > 0 || throw(ArgumentError("Describe cache capacity must be positive."))
-    now_value = Float64(now_seconds)
-
-    for (job_id, last_at) in collect(JOB_DESCRIBE_LAST_AT)
-        if !isfinite(last_at) || last_at > now_value || now_value - last_at >= ttl_seconds
-            delete!(JOB_DESCRIBE_LAST_AT, job_id)
-        end
-    end
-
-    while length(JOB_DESCRIBE_LAST_AT) > max_entries
-        oldest_job_id = nothing
-        oldest_at = Inf
-        for (job_id, last_at) in JOB_DESCRIBE_LAST_AT
-            if last_at < oldest_at
-                oldest_job_id = job_id
-                oldest_at = last_at
-            end
-        end
-        oldest_job_id === nothing && break
-        delete!(JOB_DESCRIBE_LAST_AT, oldest_job_id)
-    end
-    return nothing
-end
-
-function _remember_job_describe_unlocked!(job_id::AbstractString,
-                                           now_seconds::Real=_monotonic_seconds();
-                                           ttl_seconds::Real=_job_describe_cache_ttl_seconds(),
-                                           max_entries::Integer=JOB_DESCRIBE_CACHE_MAX_ENTRIES)
-    id = String(job_id)
-    _prune_job_describe_cache_unlocked!(
-        now_seconds;
-        ttl_seconds=ttl_seconds,
-        max_entries=max_entries,
-    )
-    if !haskey(JOB_DESCRIBE_LAST_AT, id)
-        while length(JOB_DESCRIBE_LAST_AT) >= max_entries
-            oldest_job_id = nothing
-            oldest_at = Inf
-            for (candidate_id, last_at) in JOB_DESCRIBE_LAST_AT
-                if last_at < oldest_at
-                    oldest_job_id = candidate_id
-                    oldest_at = last_at
-                end
-            end
-            oldest_job_id === nothing && break
-            delete!(JOB_DESCRIBE_LAST_AT, oldest_job_id)
-        end
-    end
-    JOB_DESCRIBE_LAST_AT[id] = Float64(now_seconds)
-    return nothing
-end
-
 function _configured_local_job_limits()
     concurrency = Config.local_job_max_concurrency()
     admission_limit = Config.local_job_admission_limit()
@@ -301,50 +223,6 @@ const JOB_RESULT_MANIFEST_MAX_BYTES = 64 * 1024
 const JOB_RESULT_MEDIA_TYPE = "application/json"
 const JOB_RESULT_SHA256_METADATA_KEY = "bne-result-sha256"
 
-const AWS_BATCH_SUBMISSION_PROTOCOL_VERSION =
-    "bne-aws-batch-submission/v1.1.0"
-const AWS_BATCH_SUBMISSION_STATES = Set([
-    "prepared",
-    "dispatch_started",
-    "accepted",
-    "reconciling",
-    "unknown",
-    "conflict",
-    "legacy_submission_unknown",
-    "cancelled_before_dispatch",
-    "interrupted_before_dispatch",
-    "failed_before_dispatch",
-])
-const AWS_BATCH_JOB_NAME_MAX_LENGTH = 128
-const AWS_BATCH_JOB_ID_TAG = "BneJobId"
-const AWS_BATCH_LIST_PAGE_SIZE = 100
-const AWS_BATCH_LIST_MAX_PAGES = 100
-const AWS_BATCH_RECONCILE_MAX_CANDIDATES =
-    AWS_BATCH_LIST_PAGE_SIZE * AWS_BATCH_LIST_MAX_PAGES
-const AWS_BATCH_RECONCILE_UNKNOWN_AFTER_ATTEMPTS = 3
-
-mutable struct _AwsBatchDispatchAuthorization
-    record::Dict{String, Any}
-    consumed::Bool
-    lock::ReentrantLock
-end
-
-_AwsBatchDispatchAuthorization(record::Dict{String, Any}) =
-    _AwsBatchDispatchAuthorization(record, false, ReentrantLock())
-
-function _consume_aws_batch_dispatch_authorization!(
-    authorization::_AwsBatchDispatchAuthorization,
-)
-    return lock(authorization.lock) do
-        authorization.consumed && throw(ArgumentError(
-            "AWS Batch dispatch authorization has already been consumed."))
-        # Consume before remote I/O. An ambiguous or failed response must never
-        # make the same authorization reusable.
-        authorization.consumed = true
-        authorization.record
-    end
-end
-
 _job_result_manifest_timestamp() =
     Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SSZ")
 
@@ -384,13 +262,6 @@ const LOCAL_JOB_KINDS = Set([
     "rop_shape_optimize",
 ])
 
-const CANCEL_DISPATCH_CLAIM_TTL_SECONDS = 60.0
-
-struct QuotaExceeded <: Exception
-    msg::String
-end
-Base.showerror(io::IO, e::QuotaExceeded) = print(io, "QuotaExceeded: ", e.msg)
-
 struct LocalJobCapacityExceeded <: Exception
     limit::Int
 end
@@ -402,9 +273,8 @@ Base.showerror(io::IO, e::LocalJobCapacityExceeded) = print(
 )
 
 const ANONYMOUS_USER_SUB = "anonymous"
-# Cognito subs are UUIDs but we keep the allow set generous so other IdPs
-# (Auth0, internal admin tokens, "anonymous") also pass cleanly. We reject any
-# character that could let a hostile principal escape the S3 prefix.
+# Job ownership is single-tenant: every request resolves to the anonymous
+# owner. The allow set stays as input validation for persisted records.
 const _USER_SUB_ALLOWED = r"^[A-Za-z0-9_\-.:@]{1,128}$"
 
 function _sanitize_user_sub(raw)
@@ -413,73 +283,6 @@ function _sanitize_user_sub(raw)
     isempty(text) && return ANONYMOUS_USER_SUB
     occursin(_USER_SUB_ALLOWED, text) || throw(ArgumentError("Invalid user_sub: must match $(_USER_SUB_ALLOWED.pattern)"))
     return text
-end
-
-# Tags propagated to AWS Batch jobs / S3 objects must be limited to the
-# Cost Allocation tag character set: letters, digits, spaces, and _.:/=+-@
-_sanitize_tag_value(raw) = replace(String(raw), r"[^A-Za-z0-9_.:/=+\-@]" => "_")
-
-# DynamoDB-backed per-user submission quota. Off by default; activate by
-# setting BIOCIRCUITS_EXPLORER_QUOTA_TABLE to the table name. The table must
-# have HASH key `user_sub` (String) and RANGE key `window` (String). On each
-# submit we conditionally bump a counter for (sub, today). If the counter
-# would exceed BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT (default 50) we reject.
-function _quota_table_name()
-    return Config.quota_table()
-end
-
-function _quota_daily_limit()
-    raw = Config.quota_daily_limit_raw()
-    isempty(raw) && return 50
-    parsed = tryparse(Int, raw)
-    return parsed === nothing ? 50 : max(parsed, 0)
-end
-
-function _quota_today_window(now_epoch::Real=time())
-    return Dates.format(Dates.unix2datetime(Float64(now_epoch)), dateformat"yyyymmdd")
-end
-
-function _quota_expires_at(now_epoch::Real=time())
-    # Window TTL: 48h after the start of the day. DynamoDB TTL expects epoch
-    # seconds in a Number attribute. We don't trim sub-second precision since
-    # DynamoDB tolerates that.
-    return Int(floor(Float64(now_epoch))) + 2 * 24 * 3600
-end
-
-# Returns true if quota accepted, false if rejected. Any AWS CLI error
-# propagates as a thrown ArgumentError so submit fails closed.
-function _check_and_consume_quota!(user_sub::AbstractString;
-                                   table::AbstractString=_quota_table_name(),
-                                   daily_limit::Integer=_quota_daily_limit(),
-                                   now_epoch::Real=time())
-    isempty(table) && return true  # quota disabled
-    user_sub == ANONYMOUS_USER_SUB && return true  # don't account for unauth dev traffic
-    window = _quota_today_window(now_epoch)
-    expires_at = string(_quota_expires_at(now_epoch))
-    expression_values = Dict(
-        ":one" => Dict("N" => "1"),
-        ":limit" => Dict("N" => string(daily_limit)),
-        ":exp" => Dict("N" => expires_at),
-    )
-    try
-        run(pipeline(
-            Cmd([
-                _aws_cli(), "dynamodb", "update-item",
-                "--table-name", String(table),
-                "--key", JSON3.write(Dict(
-                    "user_sub" => Dict("S" => String(user_sub)),
-                    "window" => Dict("S" => window),
-                )),
-                "--update-expression", "ADD submitted :one SET expires_at = if_not_exists(expires_at, :exp)",
-                "--condition-expression", "attribute_not_exists(submitted) OR submitted < :limit",
-                "--expression-attribute-values", JSON3.write(expression_values),
-            ]);
-            stdout=devnull, stderr=devnull,
-        ))
-        return true
-    catch
-        return false
-    end
 end
 
 function local_job_store_dir()
@@ -516,10 +319,8 @@ function _job_result_manifest_path(job_id::AbstractString)
     return joinpath(_job_dir(job_id), "result-manifest.json")
 end
 
-_is_s3_uri(uri::AbstractString) = startswith(lowercase(String(uri)), "s3://")
 _is_file_uri(uri::AbstractString) = startswith(lowercase(String(uri)), "file://")
 _uri_local_path(uri::AbstractString) = _is_file_uri(uri) ? String(uri)[8:end] : String(uri)
-_aws_cli() = Config.aws_cli_binary()
 
 struct _JobPersistenceOps{F, R, D}
     fsync_file!::F
@@ -823,27 +624,11 @@ end
 function _write_json_uri_with_ops(uri::AbstractString,
                                   payload,
                                   ops::_JobPersistenceOps)
-    if _is_s3_uri(uri)
-        temp_path, temp_io = mktemp()
-        close(temp_io)
-        try
-            # This local file is only staging for the S3 upload. Its contents
-            # must be fsynced before `aws s3 cp` reads them, but the temporary
-            # directory entry is not an application artifact and must not add
-            # an unrelated directory to the job-store durability retry set.
-            _write_job_staging_json_with_ops(temp_path, payload, ops)
-            run(Cmd([_aws_cli(), "s3", "cp", temp_path, String(uri)]))
-        finally
-            isfile(temp_path) && rm(temp_path; force=true)
-        end
-        return String(uri)
-    else
-        return _write_durable_job_artifact_json_with_ops(
-            _uri_local_path(uri),
-            payload,
-            ops,
-        )
-    end
+    return _write_durable_job_artifact_json_with_ops(
+        _uri_local_path(uri),
+        payload,
+        ops,
+    )
 end
 
 _write_json_uri(uri::AbstractString, payload) =
@@ -859,15 +644,6 @@ function _upload_job_result_file_with_ops(uri::AbstractString,
                                           source_path::AbstractString,
                                           sha256_hex::AbstractString,
                                           ops::_JobPersistenceOps)
-    if _is_s3_uri(uri)
-        run(Cmd([
-            _aws_cli(), "s3", "cp", String(source_path), String(uri),
-            "--content-type", JOB_RESULT_MEDIA_TYPE,
-            "--metadata", "$(JOB_RESULT_SHA256_METADATA_KEY)=$(sha256_hex)",
-        ]))
-        return String(uri)
-    end
-
     result = _upload_local_job_result_file_with_ops(
         _uri_local_path(uri),
         source_path,
@@ -919,18 +695,7 @@ function _upload_local_job_result_file_with_ops(destination_path::AbstractString
 end
 
 function _read_json_uri(uri::AbstractString)
-    if _is_s3_uri(uri)
-        temp_path, temp_io = mktemp()
-        close(temp_io)
-        try
-            run(Cmd([_aws_cli(), "s3", "cp", String(uri), temp_path]))
-            return _read_job_json(temp_path)
-        finally
-            isfile(temp_path) && rm(temp_path; force=true)
-        end
-    else
-        return _read_job_json(_uri_local_path(uri))
-    end
+    return _read_job_json(_uri_local_path(uri))
 end
 
 function _job_state_revision(record::AbstractDict)
@@ -972,59 +737,6 @@ function _job_public_record(record::AbstractDict)
         "result_available" => Bool(get(record, "result_available", false)),
         "artifacts" => Dict{String, Any}(),
     )
-
-    haskey(record, "batch_job_id") && (out["external_job_id"] = record["batch_job_id"])
-    haskey(record, "log_stream_name") && (out["log_stream_name"] = record["log_stream_name"])
-
-    if String(get(record, "executor", "")) == "aws_batch"
-        legacy_default_state = isempty(String(get(record, "batch_job_id", ""))) ?
-            "legacy_submission_unknown" : "accepted"
-        out["submission_state"] = String(get(
-            record,
-            "submission_state",
-            legacy_default_state,
-        ))
-        haskey(record, "submission_protocol_version") &&
-            (out["submission_protocol_version"] =
-                String(record["submission_protocol_version"]))
-
-        submission = Dict{String, Any}(
-            "state" => out["submission_state"],
-            "reconcile_attempts" => Int(get(
-                record,
-                "submission_reconcile_attempts",
-                0,
-            )),
-        )
-        raw_plan = get(record, "submission_plan", nothing)
-        plan = _aws_batch_submission_plan(record)
-        if plan !== nothing
-            submission["identity_source"] = "persisted_submission_plan"
-            for key in (
-                "job_name",
-                "job_queue",
-                "job_definition",
-                "region",
-                "account_id",
-            )
-                haskey(plan, key) && (submission[key] = deepcopy(plan[key]))
-            end
-        elseif raw_plan isa AbstractDict
-            submission["identity_source"] =
-                "unsupported_persisted_submission_plan"
-        else
-            submission["identity_source"] = "legacy_runtime_region"
-        end
-        for key in (
-            "submission_dispatch_started_at",
-            "submission_last_reconcile_at",
-            "submission_last_error",
-            "submission_conflict_job_ids",
-        )
-            haskey(record, key) && (submission[key] = deepcopy(record[key]))
-        end
-        out["submission"] = submission
-    end
 
     for key in ("started_at", "finished_at", "progress", "error", "error_code", "cancel_requested_at")
         haskey(record, key) && (out[key] = deepcopy(record[key]))
@@ -1098,15 +810,9 @@ function _persist_job_status_unlocked_with_ops(record::AbstractDict,
                                                ops::_JobPersistenceOps)
     status = _job_public_record(record)
     result = _write_job_json_with_ops(String(record["status_path"]), status, ops)
-    # For AWS Batch jobs the worker container is the sole writer of the
-    # remote status.json artifact, so the host backend never publishes to
-    # the S3 status URI — this avoids a last-writer-wins race between the
-    # describe-jobs poller and the worker's progress updates.
-    if String(get(record, "executor", "")) != "aws_batch"
-        status_uri = get(record, "status_uri", record["status_path"])
-        if String(status_uri) != String(record["status_path"])
-            _write_json_uri(String(status_uri), status)
-        end
+    status_uri = get(record, "status_uri", record["status_path"])
+    if String(status_uri) != String(record["status_path"])
+        _write_json_uri(String(status_uri), status)
     end
     return result
 end
@@ -1205,7 +911,7 @@ function _job_record_locked(job_id::AbstractString;
                 "Invalid canonical job record for $(id): job_id does not match its directory."))
         _job_state_revision(record)
         _recover_interrupted_local_job_unlocked!(record)
-        _recover_interrupted_aws_submission_unlocked!(record)
+        _recover_retired_executor_unlocked!(record)
         _job_cache_publish!(id, record)
         loaded_from_disk = true
     end
@@ -1218,31 +924,25 @@ function _job_record_locked(job_id::AbstractString;
     return record
 end
 
-function _recover_interrupted_aws_submission_unlocked!(record::AbstractDict)
-    String(get(record, "executor", "")) == "aws_batch" || return false
-    String(get(record, "status", "")) == "queued" || return false
-    isempty(String(get(record, "batch_job_id", ""))) || return false
-    String(get(record, "submission_state", "")) == "prepared" || return false
-    _aws_batch_submission_plan(record) === nothing && return false
-    job_id = String(get(record, "job_id", ""))
-    active_submission = lock(JOBS_LOCK) do
-        job_id in AWS_BATCH_INITIAL_SUBMISSIONS
-    end
-    active_submission && return false
+# Records written by a retired executor (e.g. the removed AWS Batch lane)
+# cannot make progress in this build. Settle a nonterminal one exactly once
+# through the ordinary durable transition path instead of leaving it queued
+# forever; terminal records are historical and stay untouched.
+function _recover_retired_executor_unlocked!(record::AbstractDict)
+    executor = String(get(record, "executor", ""))
+    executor in ("local", "local_async") && return false
+    status = String(get(record, "status", ""))
+    status in ("queued", "running", "cancel_requested") || return false
 
     return _transition_job_record_unlocked!(
         record,
         "failed";
-        expected=("queued",),
-        submission_state="interrupted_before_dispatch",
+        expected=(status,),
         finished_at=_now_iso_timestamp(),
         result_available=false,
-        error_code="aws_submission_interrupted_before_dispatch",
-        error="AWS Batch submission was interrupted before the durable dispatch boundary; no SubmitJob attempt was issued.",
-        progress=Dict(
-            "message" => "AWS Batch submission interrupted before dispatch",
-            "aws_status" => "NOT_SUBMITTED",
-        ),
+        error_code="executor_retired",
+        error="Job executor $(executor) was retired; the record cannot make progress in this build.",
+        progress=Dict("message" => "Job executor retired"),
     )
 end
 
@@ -1412,38 +1112,6 @@ function _transition_job_record_unlocked!(record::AbstractDict,
     return transition.applied
 end
 
-function _cancel_dispatch_claim_active(record::AbstractDict; now_epoch::Real=time())
-    haskey(record, "cancel_dispatch_claim") || return false
-    claimed_at = try
-        Float64(get(record, "cancel_dispatch_claimed_at_epoch", 0.0))
-    catch
-        0.0
-    end
-    return claimed_at > 0 && Float64(now_epoch) - claimed_at < CANCEL_DISPATCH_CLAIM_TTL_SECONDS
-end
-
-function _finish_cancel_dispatch_claim!(job_id::AbstractString, claim_token::AbstractString; updates...)
-    _with_job_lock(job_id) do
-        record = _job_record_locked(job_id)
-        record === nothing && return (applied=false, record=nothing)
-        String(get(record, "cancel_dispatch_claim", "")) == String(claim_token) ||
-            return (applied=false, record=_job_snapshot(record))
-        candidate = deepcopy(record)
-        applied = _apply_job_transition_unlocked!(
-            candidate,
-            "cancel_requested";
-            expected=("cancel_requested",),
-            updates...,
-        )
-        if applied
-            delete!(candidate, "cancel_dispatch_claim")
-            delete!(candidate, "cancel_dispatch_claimed_at_epoch")
-            _commit_job_candidate_unlocked!(record, candidate)
-        end
-        return (applied=applied, record=_job_snapshot(record))
-    end
-end
-
 function _job_transition!(job_id::AbstractString,
                           target_status::AbstractString;
                           expected=nothing,
@@ -1485,10 +1153,6 @@ function get_biocircuits_job(job_id::AbstractString; user_sub::AbstractString=AN
     record = _job_record(job_id)
     if record !== nothing
         _check_user_owns_record(record, user_sub, job_id)
-        if String(get(record, "executor", "")) == "aws_batch"
-            refreshed = _refresh_aws_batch_job!(job_id)
-            refreshed !== nothing && return _job_public_record(refreshed)
-        end
         return _job_public_record(record)
     end
     throw(ArgumentError("Unknown job_id: $(job_id)"))
@@ -1511,39 +1175,6 @@ function get_biocircuits_job_result(job_id::AbstractString; user_sub::AbstractSt
         "job" => status,
         "result" => _read_json_uri(result_uri),
     )
-end
-
-function _presign_s3_get(uri::AbstractString; expires_in::Integer=3600)
-    _is_s3_uri(uri) || throw(ArgumentError("Cannot presign non-S3 URI: $(uri)"))
-    output = read(Cmd([_aws_cli(), "s3", "presign", String(uri), "--expires-in", string(expires_in)]), String)
-    return strip(output)
-end
-
-# Returns a short-lived pre-signed GET URL for result.json so clients can
-# fetch large results directly from S3 instead of round-tripping through the
-# broker. Only available for AWS Batch jobs (which store result.json in S3).
-function get_biocircuits_job_result_url(job_id::AbstractString;
-                                        user_sub::AbstractString=ANONYMOUS_USER_SUB,
-                                        expires_in::Integer=3600)
-    status = get_biocircuits_job(job_id; user_sub=user_sub)
-    String(status["status"]) == "succeeded" || throw(ArgumentError("Job $(job_id) has not succeeded."))
-    record = _job_record(job_id)
-    record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
-    _check_user_owns_record(record, user_sub, job_id)
-    result_uri = String(get(record, "result_uri", ""))
-    _is_s3_uri(result_uri) ||
-        throw(ArgumentError("Pre-signed URLs are only available for AWS Batch jobs."))
-    expires_at = _now_iso_timestamp_after(expires_in)
-    return Dict{String, Any}(
-        "job_id" => String(job_id),
-        "result_url" => _presign_s3_get(result_uri; expires_in=expires_in),
-        "expires_at" => expires_at,
-        "expires_in" => Int(expires_in),
-    )
-end
-
-function _now_iso_timestamp_after(seconds::Integer)
-    return Dates.format(Dates.now(Dates.UTC) + Dates.Second(seconds), dateformat"yyyy-mm-ddTHH:MM:SSZ")
 end
 
 function _execute_local_job(kind::AbstractString, spec;
@@ -1699,19 +1330,16 @@ function _publish_job_result_with_manifest_with_ops(
     # object. The result is serialized exactly once; its byte identity is then
     # recorded in the small manifest published last as the commit marker.
     identity = _job_result_identity(result, job_id, kind, expected_config_hash)
-    local_result = !_is_s3_uri(result_uri)
-    temp_parent = local_result ?
-        _ensure_job_directory_with_ops(
-            dirname(_uri_local_path(result_uri)),
-            ops,
-        ) :
-        tempdir()
+    temp_parent = _ensure_job_directory_with_ops(
+        dirname(_uri_local_path(result_uri)),
+        ops,
+    )
     temp_path, temp_io = mktemp(temp_parent; cleanup=false)
     close(temp_io)
     try
         # The staging entry is never a published artifact. Its file contents
         # are synced here; local publication later renames it into place and
-        # syncs the destination directory, while S3 publication uploads it.
+        # syncs the destination directory.
         _write_job_staging_json_with_ops(temp_path, result, ops)
         content_length = filesize(temp_path)
         content_length > 0 || throw(ArgumentError("Serialized job result is empty."))
@@ -1837,11 +1465,6 @@ run_biocircuits_job_payload(payload; status_uri=nothing, result_uri=nothing) =
         status_uri=status_uri,
         result_uri=result_uri,
     )
-
-function run_biocircuits_job_from_uri(input_uri::AbstractString; status_uri=nothing, result_uri=nothing)
-    payload = _read_json_uri(input_uri)
-    return run_biocircuits_job_payload(payload; status_uri=status_uri, result_uri=result_uri)
-end
 
 function _finish_local_job!(job_id::AbstractString;
                             succeeded::Bool,
@@ -2111,55 +1734,6 @@ function _job_execution_mode(raw)
     return lowercase(String(_raw_get(execution, :mode, "local_async")))
 end
 
-function _aws_cli_json(args::Vector{<:AbstractString})
-    output = read(Cmd([_aws_cli(); String.(args)]), String)
-    return _materialize(JSON3.read(output))
-end
-
-function _aws_cli_json_single_attempt(args::Vector{<:AbstractString})
-    command = addenv(
-        Cmd([_aws_cli(); String.(args)]),
-        "AWS_MAX_ATTEMPTS" => "1",
-    )
-    output = read(command, String)
-    return _materialize(JSON3.read(output))
-end
-
-function _s3_uri_bucket_key(uri::AbstractString)
-    text = String(uri)
-    _is_s3_uri(text) || return nothing
-    body = text[6:end]
-    slash = findfirst('/', body)
-    slash === nothing && return nothing
-    bucket = body[1:slash - 1]
-    key = body[slash + 1:end]
-    (isempty(bucket) || isempty(key)) && return nothing
-    return (bucket, key)
-end
-
-function _run_command_captured(cmd::Cmd)
-    stdout_buffer = IOBuffer()
-    stderr_buffer = IOBuffer()
-    process = run(pipeline(ignorestatus(cmd); stdout=stdout_buffer, stderr=stderr_buffer))
-    return (
-        success=success(process),
-        stdout=String(take!(stdout_buffer)),
-        stderr=String(take!(stderr_buffer)),
-    )
-end
-
-function _s3_head_definitively_missing(stdout::AbstractString, stderr::AbstractString)
-    diagnostic = lowercase(String(stdout) * "\n" * String(stderr))
-    return occursin(
-        r"an error occurred \((404|nosuchkey|notfound)\) when calling (the )?headobject operation",
-        diagnostic,
-    )
-end
-
-# A failed HeadObject call is not equivalent to a missing object. Only an
-# explicit not-found response is terminal; permissions, unavailable CLI,
-# network, throttling, malformed CLI output, and other operational failures
-# remain retryable.
 function _head_artifact(uri::AbstractString)
     text = strip(String(uri))
     isempty(text) && return (
@@ -2170,49 +1744,22 @@ function _head_artifact(uri::AbstractString)
         metadata=Dict{String, Any}(),
     )
 
-    if !_is_s3_uri(text)
-        path = _uri_local_path(text)
-        try
-            isfile(path) || return (
-                status=:missing,
-                detail="Local result artifact does not exist.",
-                content_length=nothing,
-                content_type=nothing,
-                metadata=Dict{String, Any}(),
-            )
-            return (
-                status=:present,
-                detail="",
-                content_length=filesize(path),
-                content_type=JOB_RESULT_MEDIA_TYPE,
-                metadata=Dict{String, Any}(),
-            )
-        catch err
-            return (
-                status=:retryable_error,
-                detail=sprint(showerror, err),
-                content_length=nothing,
-                content_type=nothing,
-                metadata=Dict{String, Any}(),
-            )
-        end
-    end
-
-    parsed = _s3_uri_bucket_key(text)
-    parsed === nothing && return (
-        status=:invalid,
-        detail="Result artifact S3 URI must include a bucket and object key.",
-        content_length=nothing,
-        content_type=nothing,
-        metadata=Dict{String, Any}(),
-    )
-    bucket, key = parsed
-    probe = try
-        _run_command_captured(Cmd([
-            _aws_cli(), "s3api", "head-object",
-            "--bucket", String(bucket),
-            "--key", String(key),
-        ]))
+    path = _uri_local_path(text)
+    try
+        isfile(path) || return (
+            status=:missing,
+            detail="Local result artifact does not exist.",
+            content_length=nothing,
+            content_type=nothing,
+            metadata=Dict{String, Any}(),
+        )
+        return (
+            status=:present,
+            detail="",
+            content_length=filesize(path),
+            content_type=JOB_RESULT_MEDIA_TYPE,
+            metadata=Dict{String, Any}(),
+        )
     catch err
         return (
             status=:retryable_error,
@@ -2222,54 +1769,6 @@ function _head_artifact(uri::AbstractString)
             metadata=Dict{String, Any}(),
         )
     end
-    if probe.success
-        payload = try
-            _materialize(JSON3.read(probe.stdout))
-        catch err
-            return (
-                status=:retryable_error,
-                detail="S3 HeadObject returned invalid JSON: $(sprint(showerror, err))",
-                content_length=nothing,
-                content_type=nothing,
-                metadata=Dict{String, Any}(),
-            )
-        end
-        payload isa AbstractDict || return (
-            status=:retryable_error,
-            detail="S3 HeadObject response must be a JSON object.",
-            content_length=nothing,
-            content_type=nothing,
-            metadata=Dict{String, Any}(),
-        )
-        content_length = get(payload, "ContentLength", nothing)
-        metadata_raw = get(payload, "Metadata", Dict{String, Any}())
-        metadata = metadata_raw isa AbstractDict ?
-            Dict{String, Any}(String(k) => v for (k, v) in pairs(metadata_raw)) :
-            Dict{String, Any}()
-        content_type_raw = get(payload, "ContentType", nothing)
-        return (
-            status=:present,
-            detail="",
-            content_length=content_length,
-            content_type=content_type_raw === nothing ? nothing : String(content_type_raw),
-            metadata=metadata,
-        )
-    end
-    _s3_head_definitively_missing(probe.stdout, probe.stderr) && return (
-        status=:missing,
-        detail="S3 result artifact does not exist.",
-        content_length=nothing,
-        content_type=nothing,
-        metadata=Dict{String, Any}(),
-    )
-    diagnostic = strip(isempty(probe.stderr) ? probe.stdout : probe.stderr)
-    return (
-        status=:retryable_error,
-        detail=isempty(diagnostic) ? "S3 HeadObject failed without a not-found response." : diagnostic,
-        content_length=nothing,
-        content_type=nothing,
-        metadata=Dict{String, Any}(),
-    )
 end
 
 function _probe_artifact_presence(uri::AbstractString)
@@ -2279,68 +1778,26 @@ end
 
 function _read_artifact_bytes(uri::AbstractString; max_bytes=nothing)
     text = String(uri)
-    if !_is_s3_uri(text)
-        try
-            path = _uri_local_path(text)
-            if max_bytes !== nothing && filesize(path) > Int(max_bytes)
-                return (
-                    status=:too_large,
-                    bytes=UInt8[],
-                    detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
-                )
-            end
-            bytes = read(path)
-            if max_bytes !== nothing && length(bytes) > Int(max_bytes)
-                return (
-                    status=:too_large,
-                    bytes=UInt8[],
-                    detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
-                )
-            end
-            return (status=:ok, bytes=bytes, detail="")
-        catch err
-            return (status=:retryable_error, bytes=UInt8[], detail=sprint(showerror, err))
-        end
-    end
-
-    temp_path, temp_io = mktemp()
-    close(temp_io)
     try
-        download = try
-            _run_command_captured(Cmd([_aws_cli(), "s3", "cp", text, temp_path]))
-        catch err
-            return (status=:retryable_error, bytes=UInt8[], detail=sprint(showerror, err))
-        end
-        if !download.success
-            diagnostic = strip(isempty(download.stderr) ? download.stdout : download.stderr)
+        path = _uri_local_path(text)
+        if max_bytes !== nothing && filesize(path) > Int(max_bytes)
             return (
-                status=:retryable_error,
+                status=:too_large,
                 bytes=UInt8[],
-                detail=isempty(diagnostic) ? "S3 result download failed." : diagnostic,
+                detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
             )
         end
-        try
-            if max_bytes !== nothing && filesize(temp_path) > Int(max_bytes)
-                return (
-                    status=:too_large,
-                    bytes=UInt8[],
-                    detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
-                )
-            end
-            bytes = read(temp_path)
-            if max_bytes !== nothing && length(bytes) > Int(max_bytes)
-                return (
-                    status=:too_large,
-                    bytes=UInt8[],
-                    detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
-                )
-            end
-            return (status=:ok, bytes=bytes, detail="")
-        catch err
-            return (status=:retryable_error, bytes=UInt8[], detail=sprint(showerror, err))
+        bytes = read(path)
+        if max_bytes !== nothing && length(bytes) > Int(max_bytes)
+            return (
+                status=:too_large,
+                bytes=UInt8[],
+                detail="Artifact exceeds the $(Int(max_bytes))-byte read limit.",
+            )
         end
-    finally
-        isfile(temp_path) && rm(temp_path; force=true)
+        return (status=:ok, bytes=bytes, detail="")
+    catch err
+        return (status=:retryable_error, bytes=UInt8[], detail=sprint(showerror, err))
     end
 end
 
@@ -2503,7 +1960,7 @@ function _load_job_result_manifest(uri::AbstractString)
         status=head.status,
         manifest=nothing,
         error=head.status == :missing ?
-            "AWS Batch job exited successfully but result manifest is missing: $(uri)" :
+            "Job succeeded but result manifest is missing: $(uri)" :
             head.detail,
     )
     length_value = head.content_length
@@ -2601,30 +2058,14 @@ function _verify_manifest_job_result_artifact(record::AbstractDict)
         verification_mode=:manifest,
     )
 
-    actual_sha256 = if _is_s3_uri(descriptor.result_uri)
-        head.content_type == JOB_RESULT_MEDIA_TYPE || return (
-            status=:invalid,
-            error="Result artifact content type does not match its committed manifest.",
+    actual_sha256 = try
+        _file_sha256_hex(_uri_local_path(descriptor.result_uri))
+    catch err
+        return (
+            status=:retryable_error,
+            error="Cannot hash local result artifact: $(sprint(showerror, err))",
             verification_mode=:manifest,
         )
-        metadata_value = get(head.metadata, JOB_RESULT_SHA256_METADATA_KEY, nothing)
-        metadata_value isa AbstractString &&
-            occursin(r"^[0-9a-fA-F]{64}$", String(metadata_value)) || return (
-            status=:invalid,
-            error="Result artifact is missing its committed SHA-256 object metadata.",
-            verification_mode=:manifest,
-        )
-        lowercase(String(metadata_value))
-    else
-        try
-            _file_sha256_hex(_uri_local_path(descriptor.result_uri))
-        catch err
-            return (
-                status=:retryable_error,
-                error="Cannot hash local result artifact: $(sprint(showerror, err))",
-                verification_mode=:manifest,
-            )
-        end
     end
     actual_sha256 == descriptor.sha256 || return (
         status=:invalid,
@@ -2770,1150 +2211,9 @@ function _verify_job_result_artifact(record::AbstractDict; verify_nested::Bool=t
     )
 end
 
-function _required_config(value, name::AbstractString)
-    value === nothing && throw(ArgumentError("Missing required AWS Batch config: $(name)."))
-    text = strip(String(value))
-    isempty(text) && throw(ArgumentError("Missing required AWS Batch config: $(name)."))
-    return String(text)
-end
-
-function _allow_aws_batch_request_config()
-    return Config.allow_aws_batch_request_config()
-end
-
-function _aws_batch_config_value(execution, key::Symbol, env_name::AbstractString)
-    if _allow_aws_batch_request_config() && _raw_haskey(execution, key)
-        return _raw_get(execution, key, nothing)
-    end
-    return Config.aws_batch_env_value(env_name)
-end
-
-function _aws_batch_job_name_prefix(execution)
-    requested = _aws_batch_config_value(
-        execution,
-        :job_name_prefix,
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX",
-    )
-    prefix = requested === nothing ? "" : strip(String(requested))
-    return isempty(prefix) ? Config.aws_batch_job_name_prefix() : prefix
-end
-
-function _validated_aws_batch_job_name(execution, job_id::AbstractString)
-    id = String(job_id)
-    occursin(r"^[0-9a-f]{32}$", id) || throw(ArgumentError(
-        "AWS Batch canonical job_id must contain exactly 32 lowercase hexadecimal characters."))
-
-    prefix = strip(_aws_batch_job_name_prefix(execution))
-    isempty(prefix) && (prefix = "biocircuits")
-    occursin(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", prefix) || throw(ArgumentError(
-        "AWS Batch job-name prefix must start with an alphanumeric character " *
-        "and contain only letters, digits, hyphens, or underscores."))
-    maximum_prefix_length = AWS_BATCH_JOB_NAME_MAX_LENGTH - 1 - length(id)
-    length(prefix) <= maximum_prefix_length || throw(ArgumentError(
-        "AWS Batch job-name prefix is too long; maximum length is " *
-        "$(maximum_prefix_length) characters when the full canonical job_id is retained."))
-
-    job_name = "$(prefix)-$(id)"
-    length(job_name) <= AWS_BATCH_JOB_NAME_MAX_LENGTH || error(
-        "Internal AWS Batch job-name length invariant failed.")
-    return job_name
-end
-
-function _aws_batch_arn_identity(value)
-    value isa AbstractString || return nothing
-    text = String(value)
-    startswith(text, "arn:") || return nothing
-    parts = split(text, ':'; limit=6)
-    length(parts) == 6 || return nothing
-    parts[1] == "arn" || return nothing
-    isempty(parts[2]) && return nothing
-    parts[3] == "batch" || return nothing
-    Config.is_valid_aws_batch_region(parts[4]) || return nothing
-    Config.is_valid_aws_account_id(parts[5]) || return nothing
-    isempty(parts[6]) && return nothing
-    return (
-        text=text,
-        partition=parts[2],
-        region=parts[4],
-        account_id=parts[5],
-        resource=parts[6],
-    )
-end
-
-function _aws_batch_expected_resource_identity_valid(
-    value::AbstractString,
-    resource_prefix::AbstractString,
-    region::AbstractString,
-    account_id,
-)
-    startswith(String(value), "arn:") || return true
-    identity = _aws_batch_arn_identity(value)
-    identity === nothing && return false
-    identity.region == String(region) || return false
-    account_id === nothing || identity.account_id == String(account_id) ||
-        return false
-    return startswith(identity.resource, "$(resource_prefix)/")
-end
-
-function _aws_batch_artifact_uri(prefix::AbstractString, user_sub::AbstractString, job_id::AbstractString, filename::AbstractString)
-    cleaned = replace(String(prefix), r"/+$" => "")
-    return "$(cleaned)/users/$(user_sub)/jobs/$(job_id)/$(filename)"
-end
-
-function _aws_batch_container_override_plan(input_uri::AbstractString,
-                                            status_uri::AbstractString,
-                                            result_uri::AbstractString,
-                                            execution)
-    command = [
-        "julia",
-        "-t",
-        "auto",
-        "--project=webapp",
-        "webapp/scripts/run_batch_job.jl",
-        "--input-uri",
-        String(input_uri),
-        "--status-uri",
-        String(status_uri),
-        "--result-uri",
-        String(result_uri),
-    ]
-    overrides = Dict{String, Any}(
-        "command" => command,
-    )
-
-    environment = Dict{String, String}[]
-    if _allow_aws_batch_request_config() && _raw_haskey(execution, :environment)
-        for (key, value) in pairs(_raw_get(execution, :environment, Dict{String, Any}()))
-            push!(environment, Dict("name" => String(key), "value" => String(value)))
-        end
-    end
-    isempty(environment) || (overrides["environment"] = environment)
-
-    resources = Dict{String, String}[]
-    if _allow_aws_batch_request_config() && _raw_haskey(execution, :vcpus)
-        push!(resources, Dict("type" => "VCPU", "value" => string(_raw_get(execution, :vcpus, ""))))
-    end
-    if _allow_aws_batch_request_config() && _raw_haskey(execution, :memory_mib)
-        push!(resources, Dict("type" => "MEMORY", "value" => string(_raw_get(execution, :memory_mib, ""))))
-    end
-    isempty(resources) || (overrides["resourceRequirements"] = resources)
-
-    return overrides
-end
-
-
-function _aws_batch_container_overrides(input_uri::AbstractString,
-                                        status_uri::AbstractString,
-                                        result_uri::AbstractString,
-                                        execution)
-    return JSON3.write(_aws_batch_container_override_plan(
-        input_uri,
-        status_uri,
-        result_uri,
-        execution,
-    ))
-end
-
-function _prepare_aws_batch_submission_plan(job_id::AbstractString,
-                                            user_sub::AbstractString,
-                                            kind::AbstractString,
-                                            execution)
-    id = String(job_id)
-    region = Config.aws_batch_region()
-    account_id = Config.aws_account_id()
-    queue = _required_config(
-        _aws_batch_config_value(
-            execution,
-            :job_queue,
-            "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
-        ),
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
-    )
-    definition = _required_config(
-        _aws_batch_config_value(
-            execution,
-            :job_definition,
-            "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION",
-        ),
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION",
-    )
-    artifact_prefix = _required_config(
-        _aws_batch_config_value(
-            execution,
-            :artifact_prefix,
-            "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX",
-        ),
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX",
-    )
-    _is_s3_uri(artifact_prefix) || throw(ArgumentError(
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX must be an s3:// URI."))
-    _aws_batch_expected_resource_identity_valid(
-        queue,
-        "job-queue",
-        region,
-        account_id,
-    ) || throw(ArgumentError(
-        "AWS Batch queue ARN does not match the configured region/account identity."))
-    _aws_batch_expected_resource_identity_valid(
-        definition,
-        "job-definition",
-        region,
-        account_id,
-    ) || throw(ArgumentError(
-        "AWS Batch job-definition ARN does not match the configured region/account identity."))
-
-    input_uri = _aws_batch_artifact_uri(
-        artifact_prefix,
-        user_sub,
-        id,
-        "input.json",
-    )
-    status_uri = _aws_batch_artifact_uri(
-        artifact_prefix,
-        user_sub,
-        id,
-        "status.json",
-    )
-    result_uri = _aws_batch_artifact_uri(
-        artifact_prefix,
-        user_sub,
-        id,
-        "result.json",
-    )
-    result_manifest_uri = _aws_batch_artifact_uri(
-        artifact_prefix,
-        user_sub,
-        id,
-        "result-manifest.json",
-    )
-    tags = Dict{String, String}(
-        "User" => _sanitize_tag_value(user_sub),
-        "JobKind" => _sanitize_tag_value(kind),
-        AWS_BATCH_JOB_ID_TAG => id,
-    )
-    overrides = _aws_batch_container_override_plan(
-        input_uri,
-        status_uri,
-        result_uri,
-        execution,
-    )
-
-    plan = Dict{String, Any}(
-        "protocol_version" => AWS_BATCH_SUBMISSION_PROTOCOL_VERSION,
-        "canonical_job_id" => id,
-        "region" => region,
-        "job_name" => _validated_aws_batch_job_name(execution, id),
-        "job_queue" => queue,
-        "job_definition" => definition,
-        "input_uri" => input_uri,
-        "status_uri" => status_uri,
-        "result_uri" => result_uri,
-        "result_manifest_uri" => result_manifest_uri,
-        "tags" => tags,
-        "container_overrides" => overrides,
-    )
-    account_id === nothing || (plan["account_id"] = account_id)
-    return plan
-end
-
-function _aws_batch_submission_plan(record::AbstractDict)
-    String(get(record, "submission_protocol_version", "")) ==
-        AWS_BATCH_SUBMISSION_PROTOCOL_VERSION || return nothing
-    String(get(record, "submission_state", "")) in
-        AWS_BATCH_SUBMISSION_STATES || return nothing
-    plan = get(record, "submission_plan", nothing)
-    plan isa AbstractDict || return nothing
-    String(get(plan, "protocol_version", "")) ==
-        AWS_BATCH_SUBMISSION_PROTOCOL_VERSION || return nothing
-    String(get(plan, "canonical_job_id", "")) ==
-        String(get(record, "job_id", "")) || return nothing
-    region = get(plan, "region", nothing)
-    Config.is_valid_aws_batch_region(region) || return nothing
-    account_id = get(plan, "account_id", nothing)
-    account_id === nothing || Config.is_valid_aws_account_id(account_id) ||
-        return nothing
-    for key in (
-        "job_name",
-        "job_queue",
-        "job_definition",
-        "input_uri",
-        "status_uri",
-        "result_uri",
-        "result_manifest_uri",
-    )
-        value = get(plan, key, nothing)
-        value isa AbstractString && !isempty(strip(String(value))) || return nothing
-    end
-    _aws_batch_expected_resource_identity_valid(
-        String(plan["job_queue"]),
-        "job-queue",
-        String(region),
-        account_id,
-    ) || return nothing
-    _aws_batch_expected_resource_identity_valid(
-        String(plan["job_definition"]),
-        "job-definition",
-        String(region),
-        account_id,
-    ) || return nothing
-    tags = get(plan, "tags", nothing)
-    tags isa AbstractDict || return nothing
-    String(get(tags, AWS_BATCH_JOB_ID_TAG, "")) ==
-        String(record["job_id"]) || return nothing
-    overrides = get(plan, "container_overrides", nothing)
-    overrides isa AbstractDict || return nothing
-    command = get(overrides, "command", nothing)
-    command isa AbstractVector || return nothing
-    return plan
-end
-
-function _aws_batch_region_for_record(record::AbstractDict)
-    plan = _aws_batch_submission_plan(record)
-    return plan === nothing ?
-        Config.aws_batch_region() : String(plan["region"])
-end
-
-function _aws_batch_input_payload(record::AbstractDict)
-    plan = _aws_batch_submission_plan(record)
-    plan === nothing && throw(ArgumentError(
-        "AWS Batch submission plan is missing or invalid."))
-    return Dict{String, Any}(
-        "job_id" => String(record["job_id"]),
-        "kind" => String(record["kind"]),
-        "executor" => "aws_batch",
-        "user_sub" => String(get(record, "user_sub", ANONYMOUS_USER_SUB)),
-        "spec" => deepcopy(record["spec"]),
-        "result_protocol_version" => JOB_RESULT_PROTOCOL_VERSION,
-        "expected_artifact_config_hash" =>
-            _record_expected_artifact_config_hash(
-                record;
-                allow_legacy_derivation=false,
-            ),
-        "artifacts" => Dict{String, Any}(
-            "input" => String(plan["input_uri"]),
-            "status" => String(plan["status_uri"]),
-            "result" => String(plan["result_uri"]),
-            "result_manifest" => String(plan["result_manifest_uri"]),
-        ),
-    )
-end
-
-function _confirm_aws_dispatch_record_durability(
-    persistence::_JobPersistenceResult,
-    ops::_JobPersistenceOps,
-)
-    persistence.committed || error(
-        "AWS dispatch persistence returned without committing or throwing.")
-    persistence.durable && return (durable=true, error=nothing)
-
-    directory = dirname(abspath(persistence.path))
-    try
-        _fsync_job_directory_tracked!(directory, ops)
-    catch err
-        return (
-            durable=false,
-            error="AWS dispatch boundary committed, but exact directory " *
-                "durability retry failed: $(sprint(showerror, err))",
-        )
-    end
-    pending = _pending_job_store_dir_generation(directory)
-    pending === nothing || return (
-        durable=false,
-        error="AWS dispatch boundary committed, but directory durability " *
-            "remains pending at generation $(pending).",
-    )
-    return (durable=true, error=nothing)
-end
-
-function _begin_aws_batch_dispatch!(
-    job_id::AbstractString;
-    ops::_JobPersistenceOps=_DEFAULT_JOB_PERSISTENCE_OPS,
-)
-    id = String(job_id)
-    return _with_job_lock(id) do
-        record = _job_record_locked(id)
-        record === nothing && return nothing
-        String(get(record, "executor", "")) == "aws_batch" || return nothing
-        String(get(record, "status", "")) == "queued" || return nothing
-        String(get(record, "submission_state", "")) == "prepared" || return nothing
-        _aws_batch_submission_plan(record) === nothing && return nothing
-
-        candidate = deepcopy(record)
-        candidate["submission_state"] = "dispatch_started"
-        candidate["submission_dispatch_started_at"] = _now_iso_timestamp()
-        candidate["progress"] = Dict(
-            "message" => "AWS Batch dispatch boundary committed",
-            "aws_status" => "DISPATCH_STARTED",
-        )
-        candidate["updated_at"] = _now_iso_timestamp()
-        committed = _commit_job_candidate_unlocked_with_ops!(
-            record,
-            candidate,
-            ops,
-        )
-        durability = _confirm_aws_dispatch_record_durability(
-            committed.persistence,
-            ops,
-        )
-        snapshot = _job_snapshot(record)
-        authorization = durability.durable ?
-            _AwsBatchDispatchAuthorization(snapshot) : nothing
-        return (
-            record=snapshot,
-            authorization=authorization,
-            durability_error=durability.error,
-        )
-    end
-end
-
-function _record_aws_batch_submission_ambiguity!(job_id::AbstractString,
-                                                 err)
-    id = String(job_id)
-    diagnostic = sprint(showerror, err, catch_backtrace())
-    return _with_job_lock(id) do
-        record = _job_record_locked(id)
-        record === nothing && return nothing
-        !isempty(String(get(record, "batch_job_id", ""))) &&
-            return _job_snapshot(record)
-        String(get(record, "status", "")) in JOB_TERMINAL_STATUSES &&
-            return _job_snapshot(record)
-
-        candidate = deepcopy(record)
-        candidate["submission_state"] = "reconciling"
-        candidate["submission_last_error"] = diagnostic
-        candidate["progress"] = Dict(
-            "message" => String(get(record, "status", "")) ==
-                "cancel_requested" ?
-                "Cancel requested; reconciling AWS Batch submission" :
-                "AWS Batch submission outcome is ambiguous; reconciling",
-            "aws_status" => "SUBMISSION_OUTCOME_UNKNOWN",
-        )
-        candidate["updated_at"] = _now_iso_timestamp()
-        _commit_job_candidate_unlocked!(record, candidate)
-        return _job_snapshot(record)
-    end
-end
-
-function _accept_aws_batch_submission!(job_id::AbstractString,
-                                       submission::AbstractDict)
-    id = String(job_id)
-    return _with_job_lock(id) do
-        record = _job_record_locked(id)
-        record === nothing && return (record=nothing, cancel_after_accept=false)
-        current_external_id = String(get(record, "batch_job_id", ""))
-        if !isempty(current_external_id)
-            return (
-                record=_job_snapshot(record),
-                cancel_after_accept=String(get(record, "status", "")) ==
-                    "cancel_requested",
-            )
-        end
-        String(get(record, "status", "")) in JOB_TERMINAL_STATUSES &&
-            return (record=_job_snapshot(record), cancel_after_accept=false)
-
-        candidate = deepcopy(record)
-        for (key, value) in submission
-            key == "progress" &&
-                String(get(candidate, "status", "")) != "queued" && continue
-            candidate[String(key)] = deepcopy(value)
-        end
-        candidate["submission_state"] = "accepted"
-        delete!(candidate, "submission_last_error")
-        delete!(candidate, "submission_conflict_job_ids")
-        candidate["updated_at"] = _now_iso_timestamp()
-        _commit_job_candidate_unlocked!(record, candidate)
-        return (
-            record=_job_snapshot(record),
-            cancel_after_accept=String(get(record, "status", "")) ==
-                "cancel_requested",
-        )
-    end
-end
-
-function _aws_batch_resource_name(value::AbstractString)
-    text = String(value)
-    slash = findlast(==('/'), text)
-    return slash === nothing ? text : text[nextind(text, slash):end]
-end
-
-function _aws_batch_resource_matches(
-    actual,
-    expected,
-    resource_prefix::AbstractString,
-    plan::AbstractDict;
-    allow_unversioned_revision::Bool=false,
-)
-    actual isa AbstractString && expected isa AbstractString || return false
-    actual_text = String(actual)
-    expected_text = String(expected)
-    actual_text == expected_text && return true
-
-    # A persisted full ARN is already the complete identity. Never weaken it
-    # to a resource-name comparison.
-    startswith(expected_text, "arn:") && return false
-
-    actual_name = if startswith(actual_text, "arn:")
-        identity = _aws_batch_arn_identity(actual_text)
-        identity === nothing && return false
-        identity.region == String(plan["region"]) || return false
-        account_id = get(plan, "account_id", nothing)
-        account_id === nothing ||
-            identity.account_id == String(account_id) || return false
-        startswith(identity.resource, "$(resource_prefix)/") || return false
-        _aws_batch_resource_name(identity.resource)
-    else
-        _aws_batch_resource_name(actual_text)
-    end
-    expected_name = _aws_batch_resource_name(expected_text)
-    if allow_unversioned_revision && !occursin(':', expected_name)
-        actual_name == expected_name && return true
-        parts = split(actual_name, ':'; limit=2)
-        return length(parts) == 2 && parts[1] == expected_name &&
-               !isempty(parts[2]) && all(character ->
-                   '0' <= character <= '9', parts[2])
-    end
-    return actual_name == expected_name
-end
-
-_aws_batch_queue_matches(actual, expected, plan::AbstractDict) =
-    _aws_batch_resource_matches(actual, expected, "job-queue", plan)
-
-_aws_batch_definition_matches(actual, expected, plan::AbstractDict) =
-    _aws_batch_resource_matches(
-        actual,
-        expected,
-        "job-definition",
-        plan;
-        allow_unversioned_revision=true,
-    )
-
-function _aws_batch_list_job_summaries(plan::AbstractDict)
-    summaries = Any[]
-    seen_job_ids = Set{String}()
-    next_token = nothing
-    seen_tokens = Set{String}()
-    for page_number in 1:AWS_BATCH_LIST_MAX_PAGES
-        request = Dict{String, Any}(
-            "jobQueue" => String(plan["job_queue"]),
-            "maxResults" => AWS_BATCH_LIST_PAGE_SIZE,
-            "filters" => Any[Dict(
-                "name" => "JOB_NAME",
-                "values" => Any[String(plan["job_name"])],
-            )],
-        )
-        next_token === nothing || (request["nextToken"] = next_token)
-        response = _aws_cli_json([
-            "batch",
-            "list-jobs",
-            "--cli-input-json",
-            JSON3.write(request),
-            "--no-paginate",
-            "--region",
-            String(plan["region"]),
-        ])
-        raw_summaries = _raw_get(response, :jobSummaryList, nothing)
-        raw_summaries isa AbstractVector || throw(ArgumentError(
-            "AWS Batch ListJobs reconciliation response must contain a jobSummaryList array."))
-        for summary in raw_summaries
-            summary isa AbstractDict || throw(ArgumentError(
-                "AWS Batch ListJobs reconciliation returned a malformed job summary."))
-            raw_id = _raw_get(summary, :jobId, nothing)
-            raw_id isa AbstractString && !isempty(strip(String(raw_id))) ||
-                throw(ArgumentError(
-                    "AWS Batch ListJobs reconciliation returned a malformed jobId."))
-            job_id = String(raw_id)
-            job_id in seen_job_ids && throw(ArgumentError(
-                "AWS Batch ListJobs reconciliation returned duplicate job ID: $(job_id)."))
-            raw_name = _raw_get(summary, :jobName, nothing)
-            raw_name isa AbstractString && !isempty(String(raw_name)) ||
-                throw(ArgumentError(
-                    "AWS Batch ListJobs reconciliation returned a malformed jobName for $(job_id)."))
-            push!(seen_job_ids, job_id)
-            push!(summaries, summary)
-        end
-        length(summaries) <= AWS_BATCH_RECONCILE_MAX_CANDIDATES ||
-            throw(ArgumentError(
-                "AWS Batch submission reconciliation candidate limit exceeded."))
-        raw_next = _raw_get(response, :nextToken, nothing)
-        if raw_next === nothing
-            return summaries
-        end
-        raw_next isa AbstractString || throw(ArgumentError(
-            "AWS Batch ListJobs returned a non-string nextToken."))
-        isempty(strip(String(raw_next))) && return summaries
-        token = String(raw_next)
-        token in seen_tokens && throw(ArgumentError(
-            "AWS Batch ListJobs returned the same nextToken twice."))
-        push!(seen_tokens, token)
-        next_token = token
-        page_number < AWS_BATCH_LIST_MAX_PAGES || throw(ArgumentError(
-            "AWS Batch submission reconciliation page limit exceeded."))
-    end
-    error("AWS Batch submission reconciliation pagination invariant failed.")
-end
-
-function _aws_batch_describe_candidate_jobs(job_ids::Vector{String},
-                                            plan::AbstractDict)
-    details = Any[]
-    for offset in 1:100:length(job_ids)
-        upper = min(offset + 99, length(job_ids))
-        requested_ids = job_ids[offset:upper]
-        response = _aws_cli_json(vcat(
-            ["batch", "describe-jobs", "--jobs"],
-            requested_ids,
-            ["--region", String(plan["region"])],
-        ))
-        raw_details = _raw_get(response, :jobs, nothing)
-        raw_details isa AbstractVector || throw(ArgumentError(
-            "AWS Batch DescribeJobs reconciliation response must contain a jobs array."))
-        expected_ids = Set(requested_ids)
-        described_ids = Set{String}()
-        for detail in raw_details
-            detail isa AbstractDict || throw(ArgumentError(
-                "AWS Batch DescribeJobs reconciliation returned a malformed job detail."))
-            raw_id = _raw_get(detail, :jobId, nothing)
-            raw_id isa AbstractString && !isempty(strip(String(raw_id))) ||
-                throw(ArgumentError(
-                    "AWS Batch DescribeJobs reconciliation returned a malformed jobId."))
-            detail_id = String(raw_id)
-            detail_id in expected_ids || throw(ArgumentError(
-                "AWS Batch DescribeJobs reconciliation returned an unrequested job ID: $(detail_id)."))
-            detail_id in described_ids && throw(ArgumentError(
-                "AWS Batch DescribeJobs reconciliation returned duplicate detail for job ID: $(detail_id)."))
-            job_name = _raw_get(detail, :jobName, nothing)
-            job_queue = _raw_get(detail, :jobQueue, nothing)
-            job_definition = _raw_get(detail, :jobDefinition, nothing)
-            tags = _raw_get(detail, :tags, nothing)
-            container = _raw_get(detail, :container, nothing)
-            command = container isa AbstractDict ?
-                _raw_get(container, :command, nothing) : nothing
-            job_name isa AbstractString && !isempty(String(job_name)) &&
-                job_queue isa AbstractString && !isempty(String(job_queue)) &&
-                job_definition isa AbstractString &&
-                    !isempty(String(job_definition)) &&
-                tags isa AbstractDict && container isa AbstractDict &&
-                command isa AbstractVector || throw(ArgumentError(
-                    "AWS Batch DescribeJobs reconciliation returned an incomplete job detail for $(detail_id)."))
-            push!(described_ids, detail_id)
-            push!(details, detail)
-        end
-        described_ids == expected_ids || throw(ArgumentError(
-            "AWS Batch DescribeJobs reconciliation did not completely cover the requested job IDs."))
-    end
-    return details
-end
-
-function _aws_batch_candidate_matches(detail, plan::AbstractDict)
-    detail isa AbstractDict || return false
-    String(_raw_get(detail, :jobName, "")) ==
-        String(plan["job_name"]) || return false
-    _aws_batch_queue_matches(
-        _raw_get(detail, :jobQueue, nothing),
-        plan["job_queue"],
-        plan,
-    ) || return false
-    _aws_batch_definition_matches(
-        _raw_get(detail, :jobDefinition, nothing),
-        plan["job_definition"],
-        plan,
-    ) || return false
-
-    tags = _raw_get(detail, :tags, nothing)
-    tags isa AbstractDict || return false
-    String(_raw_get(tags, Symbol(AWS_BATCH_JOB_ID_TAG), "")) ==
-        String(plan["canonical_job_id"]) || return false
-    container = _raw_get(detail, :container, nothing)
-    container isa AbstractDict || return false
-    command = _raw_get(container, :command, nothing)
-    command isa AbstractVector || return false
-    expected_command = get(plan["container_overrides"], "command", nothing)
-    expected_command isa AbstractVector || return false
-    String.(collect(command)) == String.(collect(expected_command)) || return false
-    return !isempty(String(_raw_get(detail, :jobId, "")))
-end
-
-function _find_aws_batch_submission_candidates(record::AbstractDict)
-    plan = _aws_batch_submission_plan(record)
-    plan === nothing && throw(ArgumentError(
-        "AWS Batch submission plan is missing or invalid."))
-    expected_name = String(plan["job_name"])
-    ids = String[]
-    for summary in _aws_batch_list_job_summaries(plan)
-        summary isa AbstractDict || continue
-        String(_raw_get(summary, :jobName, "")) == expected_name || continue
-        candidate_id = strip(String(_raw_get(summary, :jobId, "")))
-        isempty(candidate_id) || push!(ids, candidate_id)
-    end
-    isempty(ids) && return String[]
-
-    listed_ids = Set(ids)
-    valid_ids = String[]
-    for detail in _aws_batch_describe_candidate_jobs(ids, plan)
-        detail_id = String(_raw_get(detail, :jobId, ""))
-        detail_id in listed_ids || continue
-        _aws_batch_candidate_matches(detail, plan) || continue
-        push!(valid_ids, detail_id)
-    end
-    unique!(valid_ids)
-    sort!(valid_ids)
-    return valid_ids
-end
-
-function _commit_aws_batch_reconciliation!(job_id::AbstractString;
-                                           candidate_ids::Vector{String}=String[],
-                                           reconcile_error=nothing)
-    id = String(job_id)
-    return _with_job_lock(id) do
-        record = _job_record_locked(id)
-        record === nothing && return (record=nothing, adopted=false)
-        !isempty(String(get(record, "batch_job_id", ""))) &&
-            return (record=_job_snapshot(record), adopted=false)
-        String(get(record, "status", "")) in JOB_TERMINAL_STATUSES &&
-            return (record=_job_snapshot(record), adopted=false)
-        _aws_batch_submission_plan(record) === nothing &&
-            return (record=_job_snapshot(record), adopted=false)
-
-        candidate = deepcopy(record)
-        attempts = try
-            Int(get(candidate, "submission_reconcile_attempts", 0)) + 1
-        catch
-            1
-        end
-        candidate["submission_reconcile_attempts"] = attempts
-        candidate["submission_last_reconcile_at"] = _now_iso_timestamp()
-        adopted = false
-
-        if reconcile_error !== nothing
-            candidate["submission_state"] = "reconciling"
-            candidate["submission_last_error"] = String(reconcile_error)
-            candidate["progress"] = Dict(
-                "message" => "AWS Batch submission reconciliation will retry",
-                "aws_status" => "SUBMISSION_RECONCILE_RETRY",
-            )
-        elseif isempty(candidate_ids)
-            candidate["submission_state"] =
-                attempts >= AWS_BATCH_RECONCILE_UNKNOWN_AFTER_ATTEMPTS ?
-                "unknown" : "reconciling"
-            delete!(candidate, "submission_last_error")
-            delete!(candidate, "submission_conflict_job_ids")
-            candidate["progress"] = Dict(
-                "message" => candidate["submission_state"] == "unknown" ?
-                    "AWS Batch submission remains unknown; reconciliation will continue" :
-                    "AWS Batch submission is not yet discoverable; reconciliation will retry",
-                "aws_status" => candidate["submission_state"] == "unknown" ?
-                    "SUBMISSION_UNKNOWN" : "SUBMISSION_NOT_FOUND",
-            )
-        elseif length(candidate_ids) == 1
-            batch_job_id = only(candidate_ids)
-            candidate["submission_state"] = "accepted"
-            candidate["submission_accepted_at"] = _now_iso_timestamp()
-            candidate["batch_job_id"] = batch_job_id
-            candidate["batch_job_name"] =
-                String(candidate["submission_plan"]["job_name"])
-            delete!(candidate, "submission_last_error")
-            delete!(candidate, "submission_conflict_job_ids")
-            candidate["progress"] = Dict(
-                "message" => "Adopted existing AWS Batch submission",
-                "aws_status" => "SUBMITTED",
-            )
-            adopted = true
-        else
-            candidate["submission_state"] = "conflict"
-            candidate["submission_conflict_job_ids"] = copy(candidate_ids)
-            delete!(candidate, "submission_last_error")
-            candidate["progress"] = Dict(
-                "message" => "Multiple AWS Batch submissions matched the canonical job",
-                "aws_status" => "SUBMISSION_CONFLICT",
-            )
-        end
-        if String(get(record, "status", "")) == "cancel_requested"
-            candidate["progress"] = Dict(
-                "message" => adopted ?
-                    "Cancel requested; adopted AWS Batch submission" :
-                    "Cancel requested; reconciling AWS Batch submission",
-                "aws_status" => get(
-                    candidate["progress"],
-                    "aws_status",
-                    "SUBMISSION_OUTCOME_UNKNOWN",
-                ),
-            )
-        end
-        candidate["updated_at"] = _now_iso_timestamp()
-        _commit_job_candidate_unlocked!(record, candidate)
-        return (record=_job_snapshot(record), adopted=adopted)
-    end
-end
-
-function _reconcile_aws_batch_submission!(record::AbstractDict)
-    job_id = String(record["job_id"])
-    candidate_ids = try
-        _find_aws_batch_submission_candidates(record)
-    catch err
-        diagnostic = sprint(showerror, err, catch_backtrace())
-        return _commit_aws_batch_reconciliation!(
-            job_id;
-            reconcile_error=diagnostic,
-        )
-    end
-    return _commit_aws_batch_reconciliation!(
-        job_id;
-        candidate_ids=candidate_ids,
-    )
-end
-
-function _aws_batch_status_to_job_status(status::AbstractString)
-    aws_status = uppercase(String(status))
-    if aws_status in ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING")
-        return "queued"
-    elseif aws_status == "RUNNING"
-        return "running"
-    elseif aws_status == "SUCCEEDED"
-        return "succeeded"
-    elseif aws_status == "FAILED"
-        return "failed"
-    else
-        return "queued"
-    end
-end
-
-# Perform the one allowed remote SubmitJob call from a fully persisted immutable
-# plan. Configuration lookup and S3 publication happen before this helper; it
-# never retries at the application layer, and the CLI SDK retry count is pinned
-# to one total attempt so reconciliation owns every ambiguous outcome.
-function _aws_batch_submit(authorization::_AwsBatchDispatchAuthorization)
-    record = _consume_aws_batch_dispatch_authorization!(authorization)
-    plan = _aws_batch_submission_plan(record)
-    plan === nothing && throw(ArgumentError(
-        "AWS Batch submission plan is missing or invalid."))
-    String(get(record, "submission_state", "")) == "dispatch_started" ||
-        throw(ArgumentError(
-            "AWS Batch SubmitJob requires a durable dispatch_started state."))
-
-    tags = plan["tags"]
-    tag_value = join([
-        "User=$(String(tags["User"]))",
-        "JobKind=$(String(tags["JobKind"]))",
-        "$(AWS_BATCH_JOB_ID_TAG)=$(String(tags[AWS_BATCH_JOB_ID_TAG]))",
-    ], ",")
-    job_name = String(plan["job_name"])
-    response = _aws_cli_json_single_attempt([
-        "batch",
-        "submit-job",
-        "--job-name",
-        job_name,
-        "--job-queue",
-        String(plan["job_queue"]),
-        "--job-definition",
-        String(plan["job_definition"]),
-        "--container-overrides",
-        JSON3.write(plan["container_overrides"]),
-        "--tags",
-        tag_value,
-        "--propagate-tags",
-        "--region",
-        String(plan["region"]),
-    ])
-
-    batch_job_id = strip(String(_raw_get(response, :jobId, "")))
-    isempty(batch_job_id) && throw(ArgumentError(
-        "AWS Batch SubmitJob response did not contain a non-empty jobId."))
-    returned_job_name = strip(String(_raw_get(response, :jobName, "")))
-    returned_job_name == job_name || throw(ArgumentError(
-        "AWS Batch SubmitJob response jobName did not match the persisted submission plan."))
-
-    return Dict{String, Any}(
-        "batch_job_id" => batch_job_id,
-        "batch_job_name" => returned_job_name,
-        "submission_state" => "accepted",
-        "submission_accepted_at" => _now_iso_timestamp(),
-        "progress" => Dict(
-            "message" => "Submitted to AWS Batch",
-            "aws_status" => "SUBMITTED",
-        ),
-    )
-end
-
-function _refresh_aws_batch_job!(job_id::AbstractString;
-                                 now_seconds::Real=_monotonic_seconds())
-    id = String(job_id)
-    refresh_now = Float64(now_seconds)
-    probe = _with_job_lock(id) do
-        record = _job_record_locked(id)
-        if record === nothing
-            lock(JOBS_LOCK) do
-                delete!(JOB_DESCRIBE_LAST_AT, id)
-            end
-            return (action=:none, record=nothing)
-        end
-        if String(get(record, "executor", "")) != "aws_batch"
-            lock(JOBS_LOCK) do
-                delete!(JOB_DESCRIBE_LAST_AT, id)
-            end
-            return (action=:none, record=_job_snapshot(record))
-        end
-        if String(get(record, "status", "")) in JOB_TERMINAL_STATUSES
-            lock(JOBS_LOCK) do
-                delete!(JOB_DESCRIBE_LAST_AT, id)
-            end
-            return (action=:none, record=_job_snapshot(record))
-        end
-        batch_job_id = String(get(record, "batch_job_id", ""))
-        if isempty(batch_job_id)
-            plan = _aws_batch_submission_plan(record)
-            if plan === nothing
-                if String(get(record, "submission_state", "")) !=
-                   "legacy_submission_unknown"
-                    candidate = deepcopy(record)
-                    candidate["submission_state"] =
-                        "legacy_submission_unknown"
-                    candidate["progress"] = Dict(
-                        "message" => String(get(record, "status", "")) ==
-                            "cancel_requested" ?
-                            "Cancel requested; legacy AWS submission outcome is unknown" :
-                            "Legacy AWS submission outcome is unknown",
-                        "aws_status" => "LEGACY_SUBMISSION_UNKNOWN",
-                    )
-                    candidate["updated_at"] = _now_iso_timestamp()
-                    _commit_job_candidate_unlocked!(record, candidate)
-                end
-                lock(JOBS_LOCK) do
-                    delete!(JOB_DESCRIBE_LAST_AT, id)
-                end
-                return (action=:none, record=_job_snapshot(record))
-            end
-            submission_state = String(get(record, "submission_state", ""))
-            if !(submission_state in (
-                "dispatch_started",
-                "reconciling",
-                "unknown",
-                "accepted",
-            ))
-                lock(JOBS_LOCK) do
-                    delete!(JOB_DESCRIBE_LAST_AT, id)
-                end
-                return (action=:none, record=_job_snapshot(record))
-            end
-        end
-        acquired_claim = lock(JOBS_LOCK) do
-            _prune_job_describe_cache_unlocked!(refresh_now)
-            id in JOB_DESCRIBE_IN_FLIGHT && return false
-            last_at = get(JOB_DESCRIBE_LAST_AT, id, 0.0)
-            if haskey(JOB_DESCRIBE_LAST_AT, id) &&
-               refresh_now - last_at < _aws_batch_describe_min_interval()
-                return false
-            end
-            _remember_job_describe_unlocked!(id, refresh_now)
-            push!(JOB_DESCRIBE_IN_FLIGHT, id)
-            return true
-        end
-        if !acquired_claim
-            return (action=:none, record=_job_snapshot(record))
-        end
-        return (
-            action=isempty(batch_job_id) ? :reconcile : :describe,
-            record=_job_snapshot(record),
-        )
-    end
-    probe.action === :none && return probe.record
-
-    if probe.action === :reconcile
-        try
-            outcome = _reconcile_aws_batch_submission!(probe.record)
-            if outcome.adopted && outcome.record !== nothing &&
-               String(get(outcome.record, "status", "")) == "cancel_requested"
-                cancel_biocircuits_job(
-                    id;
-                    user_sub=String(get(
-                        outcome.record,
-                        "user_sub",
-                        ANONYMOUS_USER_SUB,
-                    )),
-                )
-                return _job_record(id)
-            end
-            return outcome.record
-        finally
-            lock(JOBS_LOCK) do
-                delete!(JOB_DESCRIBE_IN_FLIGHT, id)
-            end
-        end
-    end
-
-    try
-        # AWS calls deliberately run without JOBS_LOCK. The response is
-        # committed only if it is still a legal successor of the state observed
-        # afterwards. The in-flight claim is always released in `finally`.
-        response = _aws_cli_json([
-            "batch",
-            "describe-jobs",
-            "--jobs",
-            String(probe.record["batch_job_id"]),
-            "--region",
-            _aws_batch_region_for_record(probe.record),
-        ])
-        jobs = collect(_raw_get(response, :jobs, Any[]))
-        isempty(jobs) && return _job_record(id)
-        aws_job = jobs[1]
-        aws_status = String(_raw_get(aws_job, :status, "UNKNOWN"))
-        aws_job_status = _aws_batch_status_to_job_status(aws_status)
-        status = aws_job_status
-        container = _raw_get(aws_job, :container, Dict{String, Any}())
-        log_stream = String(_raw_get(container, :logStreamName, ""))
-        failure_reason = String(_raw_get(aws_job, :statusReason, _raw_get(container, :reason, "AWS Batch job failed")))
-        result_artifact_error = nothing
-        result_artifact_error_code = nothing
-        result_artifact_verification = nothing
-
-        # AWS Batch SUCCEEDED only confirms that the container exited 0. New
-        # jobs validate a bounded commit manifest and HeadObject metadata
-        # without downloading the potentially large result; records predating
-        # the protocol retain the inline compatibility verifier. Every S3/CLI
-        # call remains outside JOBS_LOCK.
-        if status == "succeeded"
-            result_artifact_verification = _verify_job_result_artifact(probe.record)
-            if result_artifact_verification.status == :missing
-                status = "failed"
-                result_artifact_error = result_artifact_verification.error
-                result_artifact_error_code = "aws_result_artifact_missing"
-            elseif result_artifact_verification.status == :invalid
-                status = "failed"
-                result_artifact_error = result_artifact_verification.error
-                result_artifact_error_code = "aws_result_artifact_invalid"
-            elseif result_artifact_verification.status == :retryable_error
-                # Preserve the current nonterminal state. A future refresh
-                # retries verification instead of converting an operational
-                # probe failure into a permanent failed job.
-                status = String(get(probe.record, "status", "queued"))
-            end
-        end
-
-        return _with_job_lock(id) do
-            record = _job_record_locked(id)
-            if record === nothing
-                lock(JOBS_LOCK) do
-                    delete!(JOB_DESCRIBE_LAST_AT, id)
-                end
-                return nothing
-            end
-            current_status = String(get(record, "status", ""))
-            if current_status in JOB_TERMINAL_STATUSES
-                lock(JOBS_LOCK) do
-                    delete!(JOB_DESCRIBE_LAST_AT, id)
-                end
-                return _job_snapshot(record)
-            end
-
-            # A pending cancellation is monotonic while AWS remains nonterminal.
-            # AWS FAILED after cancel/terminate confirms cancellation; SUCCEEDED
-            # is retained because the remote job may have won the finish race.
-            target_status = status
-            if current_status == "cancel_requested"
-                if aws_job_status == "failed" && result_artifact_error === nothing
-                    target_status = "cancelled"
-                elseif aws_job_status in ("queued", "running")
-                    target_status = "cancel_requested"
-                end
-            elseif current_status == "running" && target_status == "queued"
-                target_status = "running"
-            end
-
-            progress_message = if result_artifact_verification !== nothing &&
-                                  result_artifact_verification.status == :retryable_error
-                "AWS Batch succeeded; result artifact verification will retry"
-            elseif result_artifact_error !== nothing
-                "AWS Batch result artifact validation failed"
-            else
-                "AWS Batch status: $(aws_status)"
-            end
-            progress = Dict{String, Any}(
-                "message" => progress_message,
-                "aws_status" => aws_status,
-            )
-            if result_artifact_verification !== nothing
-                progress["artifact_status"] = String(result_artifact_verification.status)
-                hasproperty(result_artifact_verification, :verification_mode) &&
-                    (progress["artifact_verification_mode"] =
-                        String(result_artifact_verification.verification_mode))
-            end
-            updates = Dict{Symbol, Any}(
-                :result_available => target_status == "succeeded",
-                :progress => progress,
-            )
-            !isempty(log_stream) && (updates[:log_stream_name] = log_stream)
-            if target_status == "running" && !haskey(record, "started_at")
-                updates[:started_at] = _now_iso_timestamp()
-            end
-            if target_status in JOB_TERMINAL_STATUSES
-                updates[:finished_at] = _now_iso_timestamp()
-            end
-            if target_status == "failed"
-                updates[:error] = result_artifact_error === nothing ?
-                    failure_reason : result_artifact_error
-                result_artifact_error_code === nothing ||
-                    (updates[:error_code] = result_artifact_error_code)
-            end
-
-            _transition_job_record_unlocked!(
-                record,
-                target_status;
-                expected=(current_status,),
-                updates...,
-            )
-            if String(get(record, "status", "")) in JOB_TERMINAL_STATUSES
-                lock(JOBS_LOCK) do
-                    delete!(JOB_DESCRIBE_LAST_AT, id)
-                end
-            end
-            return _job_snapshot(record)
-        end
-    finally
-        lock(JOBS_LOCK) do
-            delete!(JOB_DESCRIBE_IN_FLIGHT, id)
-        end
-    end
-end
-
-function _cancel_aws_batch_job!(record::AbstractDict; observed_status=nothing)
-    haskey(record, "batch_job_id") || throw(ArgumentError("AWS Batch job has not been submitted yet."))
-    batch_job_id = String(record["batch_job_id"])
-    status = observed_status === nothing ? String(get(record, "status", "queued")) : String(observed_status)
-    region = _aws_batch_region_for_record(record)
-    try
-        if status == "running"
-            run(Cmd([_aws_cli(), "batch", "terminate-job", "--job-id", batch_job_id, "--reason", "Cancelled by Biocircuits Explorer user", "--region", region]))
-        else
-            run(Cmd([_aws_cli(), "batch", "cancel-job", "--job-id", batch_job_id, "--reason", "Cancelled by Biocircuits Explorer user", "--region", region]))
-        end
-    catch err
-        throw(ArgumentError("Failed to cancel AWS Batch job $(batch_job_id): $(sprint(showerror, err))"))
-    end
-    return nothing
-end
-
-# Fetch only the remote lifecycle state needed to resolve a cancellation race.
-# Like every other AWS helper, callers must invoke this without JOBS_LOCK.
-function _describe_aws_batch_status(record::AbstractDict)
-    haskey(record, "batch_job_id") || return nothing
-    batch_job_id = String(record["batch_job_id"])
-    isempty(batch_job_id) && return nothing
-    response = _aws_cli_json([
-        "batch",
-        "describe-jobs",
-        "--jobs",
-        batch_job_id,
-        "--region",
-        _aws_batch_region_for_record(record),
-    ])
-    jobs = collect(_raw_get(response, :jobs, Any[]))
-    isempty(jobs) && return nothing
-    return uppercase(String(_raw_get(jobs[1], :status, "UNKNOWN")))
-end
-
 function submit_biocircuits_job_from_spec(
     raw;
     user_sub::AbstractString=ANONYMOUS_USER_SUB,
-    dispatch_persistence_ops::_JobPersistenceOps=
-        _DEFAULT_JOB_PERSISTENCE_OPS,
 )
     _raw_haskey(raw, :kind) || throw(ArgumentError("Job request must include `kind`."))
     _raw_haskey(raw, :spec) || throw(ArgumentError("Job request must include `spec`."))
@@ -3921,26 +2221,17 @@ function submit_biocircuits_job_from_spec(
     kind = String(_raw_get(raw, :kind, ""))
     kind in LOCAL_JOB_KINDS || throw(ArgumentError("Unsupported job kind: $(kind)"))
 
-    execution = _raw_get(raw, :execution, Dict{String, Any}())
     mode = _job_execution_mode(raw)
-    if !(mode in ("local", "local_async", "aws_batch", "batch"))
+    if !(mode in ("local", "local_async"))
         throw(ArgumentError("Unsupported job execution mode: $(mode)"))
     end
-    if kind == "compute_ro_field" && mode in ("aws_batch", "batch")
-        throw(ArgumentError(
-            "compute_ro_field is local_async-only until shared object-store chunk publication is implemented."))
-    end
-    if kind == "design_network" && mode in ("aws_batch", "batch")
-        throw(ArgumentError("design_network currently supports local_async execution only."))
-    end
 
-    # Parse and validate the process-local cache bound before quota consumption
-    # or durable publication. Runtime configuration errors must not surface
-    # after a canonical record has already committed.
+    # Parse and validate the process-local cache bound before durable
+    # publication. Runtime configuration errors must not surface after a
+    # canonical record has already committed.
     _activate_job_cache_capacity!()
 
     job_id = string(rand(UInt128), base=16, pad=32)
-    executor = mode in ("aws_batch", "batch") ? "aws_batch" : "local_async"
     user_sub = _sanitize_user_sub(user_sub)
     prepared = _prepare_job_spec_and_artifact_identity(
         kind,
@@ -3949,40 +2240,20 @@ function submit_biocircuits_job_from_spec(
     spec = prepared.spec
     kind == "compute_ro_field" &&
         validate_ro_field_resume_parent!(spec, user_sub)
-    submission_plan = executor == "aws_batch" ?
-        _prepare_aws_batch_submission_plan(
-            job_id,
-            user_sub,
-            kind,
-            execution,
-        ) : nothing
-    local_semaphore = executor == "local_async" ?
-        _reserve_local_job_admission!(job_id) : nothing
+    local_semaphore = _reserve_local_job_admission!(job_id)
     local_admission_transferred = false
-    aws_submission_owner_registered = false
 
     try
-        # Pure request normalization precedes admission. Capacity admission then
-        # precedes quota consumption and every input/record write. Any later
-        # failure before task ownership is transferred releases the reservation.
-        if !_check_and_consume_quota!(user_sub)
-            throw(QuotaExceeded("Daily submission quota exceeded for user $(user_sub). Limit: $(_quota_daily_limit())"))
-        end
-        if executor == "aws_batch"
-            lock(JOBS_LOCK) do
-                job_id in AWS_BATCH_INITIAL_SUBMISSIONS && error(
-                    "AWS Batch job $(job_id) already has an initial submission owner.")
-                push!(AWS_BATCH_INITIAL_SUBMISSIONS, job_id)
-            end
-            aws_submission_owner_registered = true
-        end
+        # Pure request normalization precedes admission, and admission precedes
+        # every input/record write. Any later failure before task ownership is
+        # transferred releases the reservation.
         now = _now_iso_timestamp()
 
         record = Dict{String, Any}(
             "job_id" => job_id,
             "kind" => kind,
             "status" => "queued",
-            "executor" => executor,
+            "executor" => "local_async",
             "user_sub" => user_sub,
             "created_at" => now,
             "updated_at" => now,
@@ -4020,373 +2291,107 @@ function submit_biocircuits_job_from_spec(
                 _job_result_manifest_path(job_id)
         end
 
-        aws_input_payload = nothing
-        if executor == "aws_batch"
-            record["result_protocol_version"] = JOB_RESULT_PROTOCOL_VERSION
-            record["result_manifest_path"] = _job_result_manifest_path(job_id)
-            record["submission_protocol_version"] =
-                AWS_BATCH_SUBMISSION_PROTOCOL_VERSION
-            record["submission_state"] = "prepared"
-            record["submission_reconcile_attempts"] = 0
-            record["submission_plan"] = deepcopy(submission_plan)
-            record["batch_job_name"] = String(submission_plan["job_name"])
-            record["input_uri"] = String(submission_plan["input_uri"])
-            record["status_uri"] = String(submission_plan["status_uri"])
-            record["result_uri"] = String(submission_plan["result_uri"])
-            record["result_manifest_uri"] =
-                String(submission_plan["result_manifest_uri"])
-            record["progress"] = Dict(
-                "message" => "AWS Batch submission prepared",
-                "aws_status" => "PREPARED",
-            )
-            aws_input_payload = _aws_batch_input_payload(record)
-            _write_job_json(record["input_path"], aws_input_payload)
-        else
-            initial_payload = Dict{String, Any}(
-                "job_id" => job_id,
-                "kind" => kind,
-                "executor" => record["executor"],
-                "user_sub" => user_sub,
-                "spec" => spec,
-                "expected_artifact_config_hash" =>
-                    prepared.expected_artifact_config_hash,
-                "artifacts" => Dict{String, Any}(
-                    "input" => record["input_uri"],
-                    "status" => record["status_uri"],
-                    "result" => record["result_uri"],
-                ),
-            )
-            if kind == "compute_ro_field"
-                initial_payload["result_protocol_version"] =
-                    JOB_RESULT_PROTOCOL_VERSION
-                initial_payload["artifacts"]["result_manifest"] =
-                    record["result_manifest_uri"]
-            end
-            _write_json_uri(record["input_uri"], initial_payload)
+        initial_payload = Dict{String, Any}(
+            "job_id" => job_id,
+            "kind" => kind,
+            "executor" => record["executor"],
+            "user_sub" => user_sub,
+            "spec" => spec,
+            "expected_artifact_config_hash" =>
+                prepared.expected_artifact_config_hash,
+            "artifacts" => Dict{String, Any}(
+                "input" => record["input_uri"],
+                "status" => record["status_uri"],
+                "result" => record["result_uri"],
+            ),
+        )
+        if kind == "compute_ro_field"
+            initial_payload["result_protocol_version"] =
+                JOB_RESULT_PROTOCOL_VERSION
+            initial_payload["artifacts"]["result_manifest"] =
+                record["result_manifest_uri"]
         end
+        _write_json_uri(record["input_uri"], initial_payload)
 
-        canonical_snapshot = _with_job_lock(job_id) do
+        _with_job_lock(job_id) do
             _persist_job_record_unlocked(record)
             _job_cache_publish!(job_id, record)
             _persist_job_status_projection_unlocked(record)
             return _job_snapshot(record)
         end
 
-        if executor == "aws_batch"
-            # The very first canonical record already owns the complete remote
-            # identity. Publish input from that immutable snapshot, then commit
-            # dispatch_started before the one allowed SubmitJob call.
-            try
-                _write_json_uri(
-                    String(canonical_snapshot["input_uri"]),
-                    aws_input_payload,
-                )
-            catch err
-                failed = _job_transition!(
-                    job_id,
-                    "failed";
-                    expected=("queued",),
-                    submission_state="failed_before_dispatch",
-                    finished_at=_now_iso_timestamp(),
-                    result_available=false,
-                    error=sprint(showerror, err, catch_backtrace()),
-                    error_code="aws_input_publication_failed",
-                    progress=Dict(
-                        "message" => "AWS Batch input publication failed before dispatch",
-                    ),
-                )
-                if !failed.applied && failed.record !== nothing &&
-                   String(get(failed.record, "status", "")) in
-                   JOB_TERMINAL_STATUSES
-                    return _job_public_record(failed.record)
-                end
-                rethrow()
+        semaphore = local_semaphore
+        semaphore isa Base.Semaphore ||
+            error("Local job admission did not provide a run semaphore.")
+        start_gate = Channel{Nothing}(1)
+        token = LocalJobCancelToken(job_id)
+        task = Threads.@spawn _run_admitted_local_job!(
+            job_id,
+            kind,
+            spec,
+            token,
+            semaphore;
+            start_gate=start_gate,
+        )
+        # From this point the task-level `finally` owns admission release,
+        # even if registration or gate publication unexpectedly fails.
+        local_admission_transferred = true
+        try
+            lock(JOBS_LOCK) do
+                JOB_TASKS[job_id] = task
+                LOCAL_JOB_CANCEL_TOKENS[job_id] = token
             end
-
-            dispatch = _begin_aws_batch_dispatch!(
-                job_id;
-                ops=dispatch_persistence_ops,
-            )
-            if dispatch === nothing
-                current = _job_record(job_id)
-                current === nothing && error(
-                    "AWS Batch job disappeared before dispatch.")
-                return _job_public_record(current)
-            end
-
-            if dispatch.authorization === nothing
-                public = _job_public_record(dispatch.record)
-                submission_diagnostic = public["submission"]
-                submission_diagnostic["dispatch_durability"] = "unconfirmed"
-                submission_diagnostic["dispatch_durability_error"] =
-                    dispatch.durability_error
-                return public
-            end
-
-            submission = try
-                _aws_batch_submit(dispatch.authorization)
-            catch err
-                ambiguous = _record_aws_batch_submission_ambiguity!(
-                    job_id,
-                    err,
-                )
-                ambiguous === nothing && error(
-                    "AWS Batch job disappeared after an ambiguous submission.")
-                return _job_public_record(ambiguous)
-            end
-
-            accepted = _accept_aws_batch_submission!(job_id, submission)
-            accepted.record === nothing && error(
-                "AWS Batch job disappeared after submission was accepted.")
-            if accepted.cancel_after_accept
-                cancel_biocircuits_job(job_id; user_sub=user_sub)
-            end
-        else
-            semaphore = local_semaphore
-            semaphore isa Base.Semaphore ||
-                error("Local job admission did not provide a run semaphore.")
-            start_gate = Channel{Nothing}(1)
-            token = LocalJobCancelToken(job_id)
-            task = Threads.@spawn _run_admitted_local_job!(
-                job_id,
-                kind,
-                spec,
-                token,
-                semaphore;
-                start_gate=start_gate,
-            )
-            # From this point the task-level `finally` owns admission release,
-            # even if registration or gate publication unexpectedly fails.
-            local_admission_transferred = true
-            try
-                lock(JOBS_LOCK) do
-                    JOB_TASKS[job_id] = task
-                    LOCAL_JOB_CANCEL_TOKENS[job_id] = token
-                end
-                # Registration happens-before worker execution, so the worker's
-                # cleanup cannot race a late bookkeeping insertion.
-                put!(start_gate, nothing)
-            catch
-                close(start_gate)
-                rethrow()
-            end
+            # Registration happens-before worker execution, so the worker's
+            # cleanup cannot race a late bookkeeping insertion.
+            put!(start_gate, nothing)
+        catch
+            close(start_gate)
+            rethrow()
         end
 
         return get_biocircuits_job(job_id; user_sub=user_sub)
     finally
-        if local_semaphore !== nothing && !local_admission_transferred
+        if !local_admission_transferred
             _release_local_job_admission!(job_id)
-        end
-        if aws_submission_owner_registered
-            lock(JOBS_LOCK) do
-                delete!(AWS_BATCH_INITIAL_SUBMISSIONS, job_id)
-            end
         end
     end
 end
 
 function cancel_biocircuits_job(job_id::AbstractString; user_sub::AbstractString=ANONYMOUS_USER_SUB)
     job_id = String(job_id)
-    decision = _with_job_lock(job_id) do
+    return _with_job_lock(job_id) do
         record = _job_record_locked(job_id)
         record === nothing && throw(ArgumentError("Unknown job_id: $(job_id)"))
         _check_user_owns_record(record, user_sub, job_id)
         status = String(record["status"])
         if status in JOB_TERMINAL_STATUSES
-            return (public=_job_public_record(record), aws_record=nothing,
-                    observed_status=status, dispatch_claim=nothing)
+            return _job_public_record(record)
         end
 
-        executor = String(get(record, "executor", ""))
-        has_external_job = executor == "aws_batch" &&
-            haskey(record, "batch_job_id") &&
-            !isempty(String(record["batch_job_id"]))
-        if status == "cancel_requested"
-            # A successful dispatch is idempotent.  A failed dispatch deliberately
-            # leaves this marker absent so the next API call retries the CLI.
-            should_retry = has_external_job &&
-                !haskey(record, "cancel_dispatched_at") &&
-                !_cancel_dispatch_claim_active(record)
-            dispatch_claim = nothing
-            if should_retry
-                dispatch_claim = string(rand(UInt128), base=16, pad=32)
-                claimed = _transition_job_record_unlocked!(
-                    record,
-                    "cancel_requested";
-                    expected=("cancel_requested",),
-                    cancel_dispatch_claim=dispatch_claim,
-                    cancel_dispatch_claimed_at_epoch=time(),
-                )
-                claimed || (dispatch_claim = nothing)
-            end
-            observed_status = String(get(
-                record,
-                "cancel_observed_status",
-                haskey(record, "started_at") ? "running" : "queued",
-            ))
-            return (
-                public=_job_public_record(record),
-                aws_record=dispatch_claim === nothing ? nothing : _job_snapshot(record),
-                observed_status=observed_status,
-                dispatch_claim=dispatch_claim,
-            )
-        end
-
-        # A prepared AWS plan has not crossed the durable dispatch boundary, so
-        # queued cancellation terminates it locally and the submit path's
-        # prepared -> dispatch_started commit cannot win afterwards. Once the
-        # boundary is crossed, cancellation remains pending until an external
-        # id is returned or reconciled.
-        prepared_aws_without_external_id = executor == "aws_batch" &&
-            !has_external_job &&
-            String(get(record, "submission_state", "")) == "prepared"
-        target_status = status == "queued" &&
-            (executor != "aws_batch" || prepared_aws_without_external_id) ?
-            "cancelled" : "cancel_requested"
-        dispatch_claim = has_external_job ? string(rand(UInt128), base=16, pad=32) : nothing
-        transition_updates = Dict{Symbol, Any}(
-            :cancel_requested_at => _now_iso_timestamp(),
-            :cancel_observed_status => status,
-            :result_available => false,
-            :progress => Dict("message" => target_status == "cancelled" ? "Cancelled" : "Cancel requested"),
-        )
-        prepared_aws_without_external_id &&
-            (transition_updates[:submission_state] =
-                "cancelled_before_dispatch")
-        if dispatch_claim !== nothing
-            transition_updates[:cancel_dispatch_claim] = dispatch_claim
-            transition_updates[:cancel_dispatch_claimed_at_epoch] = time()
-        end
+        # A queued local job settles immediately; a running one keeps the
+        # cancel intent until its worker reaches a cooperative checkpoint.
+        target_status = status == "queued" ? "cancelled" : "cancel_requested"
         applied = _transition_job_record_unlocked!(
             record,
             target_status;
             expected=(status,),
-            transition_updates...,
+            cancel_requested_at=_now_iso_timestamp(),
+            cancel_observed_status=status,
+            result_available=false,
+            progress=Dict("message" => target_status == "cancelled" ? "Cancelled" : "Cancel requested"),
         )
-        applied || return (public=_job_public_record(record), aws_record=nothing,
-                           observed_status=status, dispatch_claim=nothing)
+        applied || return _job_public_record(record)
         token = lock(JOBS_LOCK) do
-            token = get(LOCAL_JOB_CANCEL_TOKENS, job_id, nothing)
-            delete!(JOB_DESCRIBE_LAST_AT, job_id)
-            token
+            get(LOCAL_JOB_CANCEL_TOKENS, job_id, nothing)
         end
         token === nothing || _request_cancel!(token)
-        return (
-            public=_job_public_record(record),
-            aws_record=has_external_job ? _job_snapshot(record) : nothing,
-            observed_status=status,
-            dispatch_claim=dispatch_claim,
-        )
+        return _job_public_record(record)
     end
-
-    decision.aws_record === nothing && return decision.public
-
-    try
-        _cancel_aws_batch_job!(decision.aws_record; observed_status=decision.observed_status)
-    catch err
-        # Keep the monotonic cancellation intent: a failed CLI invocation does
-        # not make it safe for a late completion to overwrite the request.
-        failed_update = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
-            cancel_error=sprint(showerror, err),
-            progress=Dict("message" => "Cancel request failed"),
-        )
-        if !failed_update.applied && failed_update.record !== nothing &&
-           String(get(failed_update.record, "status", "")) in JOB_TERMINAL_STATUSES
-            return _job_public_record(failed_update.record)
-        end
-        rethrow()
-    end
-
-    remote_status = nothing
-    if decision.observed_status == "queued"
-        # CancelJob applies to queued Batch states only.  If the remote job won
-        # the queued→running race, immediately escalate to TerminateJob and keep
-        # the public state pending until AWS confirms a terminal outcome.
-        remote_status = try
-            _describe_aws_batch_status(decision.aws_record)
-        catch
-            nothing
-        end
-        if remote_status in ("STARTING", "RUNNING")
-            try
-                _cancel_aws_batch_job!(decision.aws_record; observed_status="running")
-            catch err
-                failed_update = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
-                    cancel_error=sprint(showerror, err),
-                    progress=Dict("message" => "Cancel request failed"),
-                )
-                if !failed_update.applied && failed_update.record !== nothing &&
-                   String(get(failed_update.record, "status", "")) in JOB_TERMINAL_STATUSES
-                    return _job_public_record(failed_update.record)
-                end
-                rethrow()
-            end
-        end
-    end
-
-    dispatched = _finish_cancel_dispatch_claim!(job_id, decision.dispatch_claim;
-        cancel_dispatched_at=_now_iso_timestamp(),
-        cancel_error=nothing,
-        cancel_aws_status=remote_status,
-        progress=Dict("message" => "Cancel requested"),
-    )
-    if !dispatched.applied
-        return dispatched.record === nothing ? decision.public : _job_public_record(dispatched.record)
-    end
-
-    if decision.observed_status == "queued" &&
-       remote_status in ("SUBMITTED", "PENDING", "RUNNABLE", "FAILED")
-        settled = _job_transition!(job_id, "cancelled";
-            expected=("cancel_requested",),
-            finished_at=_now_iso_timestamp(),
-            result_available=false,
-            progress=Dict("message" => "Cancelled"),
-        )
-        settled.record !== nothing && return _job_public_record(settled.record)
-    end
-    latest = _job_record(job_id)
-    return latest === nothing ? decision.public : _job_public_record(latest)
-end
-
-function _request_header(req, name::AbstractString)
-    headers = req.headers
-    headers === nothing && return nothing
-    target = lowercase(String(name))
-    for header in headers
-        lowercase(String(first(header))) == target || continue
-        return String(last(header))
-    end
-    return nothing
-end
-
-function _bearer_token_from_request(req)
-    raw = _request_header(req, "authorization")
-    raw === nothing && return nothing
-    text = strip(raw)
-    startswith(lowercase(text), "bearer ") || return nothing
-    return strip(text[8:end])
-end
-
-function _cognito_user_pool_id()
-    return Config.cognito_user_pool_id()
 end
 
 function _request_user_sub(req)
-    # Two modes:
-    #  - Production (Cognito configured): require Authorization: Bearer <JWT>
-    #    and verify the RS256 signature against the user pool's JWKs. No
-    #    fallback to X-User-Sub so a hostile client cannot spoof identity.
-    #  - Dev / test (no Cognito): trust the X-User-Sub header; falls back to
-    #    "anonymous" when neither is present.
-    if !isempty(_cognito_user_pool_id())
-        token = _bearer_token_from_request(req)
-        token === nothing && throw(ArgumentError("Missing Authorization Bearer token"))
-        claims = verify_cognito_jwt(token)
-        return _sanitize_user_sub(claims["sub"])
-    end
-    raw = _request_header(req, "x-user-sub")
-    raw === nothing && return ANONYMOUS_USER_SUB
-    return _sanitize_user_sub(raw)
+    # Single-user deployment: every request resolves to the anonymous owner.
+    return ANONYMOUS_USER_SUB
 end
 
 function handle_jobs_route(req, path::AbstractString)
@@ -4413,10 +2418,6 @@ function handle_jobs_route(req, path::AbstractString)
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result"
         return json_response(get_biocircuits_job_result(parts[3]; user_sub=user_sub))
-    end
-
-    if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "result-url"
-        return json_response(get_biocircuits_job_result_url(parts[3]; user_sub=user_sub))
     end
 
     if length(parts) == 4 && parts[1] == "api" && parts[2] == "jobs" && parts[4] == "cancel"

@@ -72,7 +72,6 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
 
     # Version-adjacent public endpoints.
     APIRouteContract("/api/v1/version", "/api/version", ("GET", "POST"), :handle_version, "/api/version", :exact),
-    APIRouteContract("/api/v1/auth/config", "/api/auth/config", ("GET", "POST"), :handle_auth_config, "/api/auth/config", :exact),
     APIRouteContract("/api/v1/local-image", "/api/local-image", ("GET",), :handle_local_image, "/api/local-image", :exact),
 
     # Root operations endpoints.
@@ -84,7 +83,6 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
     APIRouteContract("/api/v1/jobs", "/api/jobs", ("POST",), :handle_jobs_route, "/api/jobs", :template),
     APIRouteContract("/api/v1/jobs/{job_id}", "/api/jobs/{job_id}", ("GET", "POST"), :handle_jobs_route, "/api/jobs/{job_id}", :template),
     APIRouteContract("/api/v1/jobs/{job_id}/result", "/api/jobs/{job_id}/result", ("GET", "POST"), :handle_jobs_route, "/api/jobs/{job_id}/result", :template),
-    APIRouteContract("/api/v1/jobs/{job_id}/result-url", "/api/jobs/{job_id}/result-url", ("GET", "POST"), :handle_jobs_route, "/api/jobs/{job_id}/result-url", :template),
     APIRouteContract("/api/v1/jobs/{job_id}/cancel", "/api/jobs/{job_id}/cancel", ("POST",), :handle_jobs_route, "/api/jobs/{job_id}/cancel", :template),
 ]
 

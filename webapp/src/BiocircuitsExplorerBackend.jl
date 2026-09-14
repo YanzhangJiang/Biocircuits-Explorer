@@ -28,7 +28,7 @@ export plan_delta_build, build_summary_delta, merge_atlas_delta
 export retrieve_candidates, materialize_witnesses, refine_top_k
 export record_negative, check_negative
 export submit_biocircuits_job_from_spec, get_biocircuits_job, get_biocircuits_job_result, cancel_biocircuits_job
-export run_biocircuits_job_payload, run_biocircuits_job_from_uri
+export run_biocircuits_job_payload
 export biocircuits_explorer_version, biocircuits_explorer_build_info
 export RESULT_ARTIFACT_SCHEMA_VERSION, artifact_metadata, attach_artifact!, wrap_artifact
 export DESIGNABILITY_SPEC_VERSION, normalize_designability_spec, design_screen_from_spec
@@ -125,15 +125,12 @@ include(joinpath(@__DIR__, "ir.jl"))
 include(joinpath(@__DIR__, "sbml.jl"))
 include(joinpath(@__DIR__, "version.jl"))
 include(joinpath(@__DIR__, "result_artifact.jl"))
-include(joinpath(@__DIR__, "auth.jl"))
 include(joinpath(@__DIR__, "jobs.jl"))
 # The Latent-Atlas SISO phenotyper — the SAME labeller that built the dose atlas. Exposed so the
 # design agent verifies a candidate's dose-response shape CONSISTENTLY with the atlas labels
 # (shape_support over the Kd prior Π), not via the different ROP-family view of behavior_families.
 include(joinpath(@__DIR__, "latent_atlas", "phenotype_pipeline.jl"))
 using .PhenotypePipeline: phenotype_profile, PhenotyperPolicy, ParameterPrior, LogUniform, PointMass
-
-export verify_cognito_jwt
 
 include(joinpath(@__DIR__, "service_handlers.jl"))
 

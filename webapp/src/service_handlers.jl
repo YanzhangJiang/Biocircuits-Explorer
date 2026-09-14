@@ -126,26 +126,6 @@ function handle_version(req)
     return json_response(info)
 end
 
-# Public auth bootstrap. Frontend calls this once on load to discover whether
-# Cognito is configured for this deployment, and (if so) which user pool /
-# client / hosted UI domain to redirect users to. Returns "enabled: false"
-# in dev mode (no Cognito), so the SPA can degrade gracefully to local-only.
-function handle_auth_config(req)
-    pool_id = Config.cognito_user_pool_id()
-    if isempty(pool_id)
-        return json_response(Dict{String, Any}("enabled" => false))
-    end
-    return json_response(Dict{String, Any}(
-        "enabled" => true,
-        "cognito_region" => Config.cognito_region(),
-        "cognito_user_pool_id" => pool_id,
-        "cognito_app_client_id" => Config.cognito_app_client_id(),
-        "cognito_domain" => Config.cognito_domain(),
-        "scopes" => ["openid", "email", "profile"],
-        "response_type" => "code",
-    ))
-end
-
 # POST /api/v1/export/sbml — accepts a NetworkIR (top-level or under
 # `network`) or the legacy {reactions, kd} shape, returns an SBML L3 string.
 function handle_export_sbml(req)

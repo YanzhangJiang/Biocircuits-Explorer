@@ -1,6 +1,6 @@
 # Loaded as a plain include at the end of BiocircuitsExplorerBackend (so that
-# all `handle_*` functions, `QuotaExceeded`, and `handle_jobs_route` are
-# already defined in this module's namespace).
+# all `handle_*` functions, the capacity/budget exception types, and
+# `handle_jobs_route` are already defined in this module's namespace).
 
 include(joinpath(@__DIR__, "api_contract.jl"))
 
@@ -156,9 +156,7 @@ function _api_response_with_error_mapping(handler, path::AbstractString)
     try
         return handler()
     catch e
-        if e isa QuotaExceeded
-            return error_response(sprint(showerror, e); status=429)
-        elseif e isa LocalJobCapacityExceeded
+        if e isa LocalJobCapacityExceeded
             response = json_response(Dict(
                 "error" => sprint(showerror, e),
                 "code" => "local_job_capacity_exhausted",
