@@ -124,9 +124,7 @@ results restore as historical without changing their evidence grade. A future
 document version fails before replacing the active browser or native project.
 
 All tracked first-party clients now use `/api/v1/*`. Declared compatibility
-aliases remain through their sunset, while
-`bcx_http_legacy_requests_total` measures actual bounded route/method/status
-usage; canonical, unknown, and v1-only paths are excluded. This is local
+aliases remain permanently available. This is local
 contract evidence, not production traffic evidence.
 
 | Workflow check | Local result | Boundary |
@@ -720,10 +718,8 @@ checks that these files remain included once and in dependency order.
 
 ## Earlier verified boundaries retained
 
-- `/api/v1/*` is canonical. Bare `/api/*` routes remain compatibility aliases
-  until the sunset declared by executable route metadata. All tracked
-  first-party clients are canonical; the bounded legacy-request counter informs
-  but does not itself authorize alias removal.
+- `/api/v1/*` is canonical. Bare `/api/*` routes remain permanent
+  compatibility aliases. All tracked first-party clients are canonical.
 - Liveness, readiness, and Prometheus endpoints remain `/health`, `/ready`, and
   `/metrics`.
 - The local Design Chat helper remains loopback-only with exact-origin and

@@ -104,8 +104,8 @@ and returns an explicit offline/error result when computation is unavailable.
 There are two different uses of “legacy,” and they must not be conflated:
 
 - **HTTP surface:** `/api/v1/...` is the canonical current API. Bare
-  `/api/...` endpoints are compatibility aliases routed to the same handlers
-  and carry an `X-API-Deprecation` header. The current browser client still
+  `/api/...` endpoints are permanent compatibility aliases routed to the same
+  handlers. The current browser client still
   constructs bare `/api/...` URLs in
   [`api.js`](../../webapp/public/js/api.js), so removing the aliases requires a
   coordinated client migration.

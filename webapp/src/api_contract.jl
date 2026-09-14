@@ -13,9 +13,6 @@ end
 
 const API_CURRENT_VERSION = "v1"
 const API_V1_PREFIX = "/api/v1"
-const API_LEGACY_SUNSET = "2027-05-25"
-const API_LEGACY_DEPRECATION_HEADER =
-    "version=\"v0-legacy\"; sunset=\"$API_LEGACY_SUNSET\"; link=\"$API_V1_PREFIX/\""
 
 # Keep this declaration ordered: the same order is emitted by the deterministic
 # reference exporter. `internal_path` is the path after v1 canonicalization;
@@ -149,7 +146,6 @@ function api_contract_reference_facts()
     return (
         schema_version="1",
         api_version=API_CURRENT_VERSION,
-        legacy_sunset=API_LEGACY_SUNSET,
         route_count=length(routes),
         routes=routes,
     )

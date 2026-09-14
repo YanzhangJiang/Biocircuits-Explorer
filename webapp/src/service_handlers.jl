@@ -36,7 +36,6 @@ end
 # / hist_observe! / gauge_set! at the call sites.
 const _METRIC_LABEL_SCHEMAS = Dict{String, Tuple}(
     "bcx_http_requests_total"         => (:method, :path, :status),
-    "bcx_http_legacy_requests_total"  => (:method, :path, :status),
     "bcx_http_request_duration_seconds" => (:method, :path),
     "bcx_uptime_seconds"              => (),
     "bcx_sessions_active"             => (),
@@ -121,11 +120,9 @@ function handle_version(req)
     info = Dict{String, Any}(biocircuits_explorer_build_info())
     # API protocol identity, separate from the application build metadata above.
     # `api_version` is the canonical current surface; `api_supported` lets a
-    # client decide whether to fall back; `api_legacy_sunset` is the ISO date
-    # after which we stop serving the bare /api/<endpoint> alias.
+    # client decide whether to fall back.
     info["api_version"] = API_CURRENT_VERSION
     info["api_supported"] = [API_CURRENT_VERSION]
-    info["api_legacy_sunset"] = API_LEGACY_SUNSET
     return json_response(info)
 end
 

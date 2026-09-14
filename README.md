@@ -107,8 +107,8 @@ curl http://127.0.0.1:8088/metrics
 curl http://127.0.0.1:8088/api/v1
 ```
 
-`/api/v1/*` is the canonical API. Bare `/api/*` routes are compatibility
-aliases and return an `X-API-Deprecation` header. See
+`/api/v1/*` is the canonical API. Bare `/api/*` routes are permanent
+compatibility aliases. See
 [the API boundary](knowledge/contracts/api.md).
 
 ## Verify a checkout

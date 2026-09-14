@@ -76,10 +76,8 @@ override wins in either mode.
   inputs fall back to the positional `NetworkIR` content hash; cache identity is
   deterministic but no longer guaranteed invariant to renaming or ordering.
 - Every tracked first-party browser, native, and Python request path uses the
-  canonical `/api/v1/*` surface. Declared bare `/api/*` aliases remain available
-  through their executable sunset metadata, and actual alias requests increment
-  the bounded `bcx_http_legacy_requests_total` counter by method, canonicalized
-  route, and status. Canonical v1, unknown, and v1-only paths do not increment it.
+  canonical `/api/v1/*` surface. Declared bare `/api/*` aliases remain
+  permanently available and route to the same handlers.
 
 ## Working-tree target-driven network design
 

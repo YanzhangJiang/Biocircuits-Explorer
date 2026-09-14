@@ -1506,7 +1506,6 @@ end
 
     # Required series are present with their TYPE annotations.
     @test occursin("# TYPE bcx_http_requests_total counter", body)
-    @test occursin("# TYPE bcx_http_legacy_requests_total counter", body)
     @test occursin("# TYPE bcx_http_request_duration_seconds histogram", body)
     @test occursin("# TYPE bcx_uptime_seconds gauge", body)
     @test occursin("# TYPE bcx_sessions_active gauge", body)
@@ -1522,15 +1521,6 @@ end
     # The 400 build_model attempt shows up as its own series.
     @test occursin(
         r"bcx_http_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
-        body)
-
-    # Canonical and legacy calls intentionally share the ordinary request
-    # series, but the sunset counter records only compatibility-surface use.
-    @test occursin(
-        r"bcx_http_legacy_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
-        body)
-    @test !occursin(
-        r"bcx_http_legacy_requests_total\{method=\"GET\",path=\"/api/version\"",
         body)
 
     # Histogram has both cumulative buckets and _sum/_count.
@@ -1676,32 +1666,24 @@ end
     end
 
     # These paths must not collide with the API surface — verify the
-    # canonicalizer leaves them alone (no spurious deprecation header etc.).
+    # canonicalizer leaves them alone.
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/health") == ("/health", false)
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/ready")  == ("/ready", false)
-    @test !HTTP.hasheader(health, "X-API-Deprecation")
-    @test !HTTP.hasheader(ready,  "X-API-Deprecation")
 end
 
-@testset "API Versioning" begin
-    # Legacy /api/version still works and carries the deprecation header so
-    # clients on the bare /api/ surface can detect they need to migrate.
+@testset "API v1 canonicalization" begin
+    # Bare /api/version is a permanent compatibility alias for the canonical
+    # v1 route and returns the identical payload.
     legacy_version = router(HTTP.Request("GET", "/api/version"))
     @test legacy_version.status == 200
-    @test HTTP.hasheader(legacy_version, "X-API-Deprecation")
-    @test occursin("v1", HTTP.header(legacy_version, "X-API-Deprecation"))
-    @test occursin(BiocircuitsExplorerBackend.API_LEGACY_SUNSET,
-                   HTTP.header(legacy_version, "X-API-Deprecation"))
     legacy_body = JSON3.read(legacy_version.body)
     @test legacy_body["api_version"] == BiocircuitsExplorerBackend.API_CURRENT_VERSION
-    @test legacy_body["api_legacy_sunset"] == BiocircuitsExplorerBackend.API_LEGACY_SUNSET
     @test haskey(legacy_body, "version")              # app version retained
     @test legacy_body["api_supported"][1] == "v1"
 
-    # /api/v1/version is the canonical form — same payload, no deprecation.
+    # /api/v1/version is the canonical form — same payload.
     v1_version = router(HTTP.Request("GET", "/api/v1/version"))
     @test v1_version.status == 200
-    @test !HTTP.hasheader(v1_version, "X-API-Deprecation")
     v1_body = JSON3.read(v1_version.body)
     @test v1_body["api_version"] == "v1"
     @test v1_body["version"] == legacy_body["version"]
@@ -1710,16 +1692,14 @@ end
     @test router(HTTP.Request("GET", "/api/v1")).status == 200
     @test router(HTTP.Request("GET", "/api/v1/")).status == 200
 
-    # A real POST endpoint: malformed body should produce the same 400 on both
-    # surfaces, but only the legacy form gets the deprecation header.
+    # A real POST endpoint: malformed body produces the same 400 on both
+    # surfaces, with an identical payload.
     bad_legacy = router(HTTP.Request("POST", "/api/build_model",
         ["Content-Type" => "application/json"], "{"))
     bad_v1 = router(HTTP.Request("POST", "/api/v1/build_model",
         ["Content-Type" => "application/json"], "{"))
     @test bad_legacy.status == 400
     @test bad_v1.status == 400
-    @test HTTP.hasheader(bad_legacy, "X-API-Deprecation")
-    @test !HTTP.hasheader(bad_v1, "X-API-Deprecation")
     @test String(bad_legacy.body) == String(bad_v1.body)   # identical payload
 
     # Unknown endpoints under v1 fall through to the static handler (404).
@@ -1737,14 +1717,6 @@ end
           ("/api/v1", false)
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/static/foo.css") ==
           ("/static/foo.css", false)
-
-    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/version") ==
-          "/api/version"
-    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/jobs/not/a/declared/route") ==
-          "/api/jobs/:id"
-    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/v1/version") === nothing
-    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/rop_shape_optimize") === nothing
-    @test BiocircuitsExplorerBackend._legacy_metric_path_label("/api/not-a-route") === nothing
 end
 
 @testset "SBML Export/Import Round-Trip" begin
@@ -1861,12 +1833,6 @@ end
     named_ir2 = JSON3.read(named_reimport.body)["network_ir"]
     @test named_ir2["reactions"][1]["formula"] == "_free_A + B <-> _complex_AB"
     @test named_ir2["reactions"][1]["metadata"]["sbml"]["name"] == "Primary binding"
-
-    # Legacy alias carries the deprecation header; v1 does not.
-    @test HTTP.hasheader(router(HTTP.Request("POST", "/api/export/sbml",
-        ["Content-Type" => "application/json"],
-        JSON3.write(Dict("reactions" => ["A + B <-> AB"], "kd" => [1.0])))),
-        "X-API-Deprecation")
 end
 
 @testset "SBML Import Warnings And Lossy Constructs" begin

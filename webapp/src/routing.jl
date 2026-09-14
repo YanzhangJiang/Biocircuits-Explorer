@@ -17,7 +17,7 @@ const _CORS_HEADERS = [
     # http://127.0.0.1:18088) cannot reach the EC2 broker
     # (origin https://…) for /api/jobs/* and /api/auth/config.
     "Access-Control-Allow-Headers" => "Content-Type, Authorization, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
-    "Access-Control-Expose-Headers" => "X-API-Deprecation, Retry-After",
+    "Access-Control-Expose-Headers" => "Retry-After",
     "Access-Control-Max-Age"       => "600",
 ]
 
@@ -36,16 +36,6 @@ function _canonicalize_api_path(path::AbstractString)
     else
         return (String(path), false)
     end
-end
-
-# Quick check whether a canonical path is one we actually route. Used to
-# decide whether to attach the deprecation header to a legacy response.
-function _is_known_api_path(path::AbstractString)
-    _match_api_route(path) !== nothing && return true
-    # Preserve the legacy behavior for malformed paths in the jobs namespace:
-    # they are still handled as API 404s and receive a deprecation header.
-    (path == "/api/jobs" || startswith(path, "/api/jobs/")) && return true
-    return false
 end
 
 function _with_cors(resp::HTTP.Response)
@@ -98,23 +88,6 @@ function _metric_path_label(raw_path::AbstractString)
     return "static"
 end
 
-# Return the bounded canonical route label only when the caller actually used
-# a declared bare-/api compatibility alias. Canonical v1 traffic, unknown
-# paths, and v1-only routes deliberately do not enter the sunset counter.
-function _legacy_metric_path_label(raw_path::AbstractString)
-    canonical, is_legacy = _canonicalize_api_path(raw_path)
-    is_legacy || return nothing
-    route = _match_api_route(canonical)
-    if route !== nothing
-        route.legacy_alias === nothing && return nothing
-        return _metric_path_label(raw_path)
-    end
-    # Malformed paths under the historical jobs namespace retain the API JSON
-    # 404/deprecation behavior and collapse to one bounded label.
-    (canonical == "/api/jobs" || startswith(canonical, "/api/jobs/")) || return nothing
-    return "/api/jobs/:id"
-end
-
 function _client_ip(req)
     fwd = HTTP.header(req, "X-Forwarded-For", "")
     if !isempty(fwd)
@@ -156,11 +129,6 @@ function router(req)
     path_label = _metric_path_label(raw_path)
     counter_inc!("bcx_http_requests_total",
         (req.method, path_label, string(response.status)))
-    legacy_path_label = _legacy_metric_path_label(raw_path)
-    if legacy_path_label !== nothing
-        counter_inc!("bcx_http_legacy_requests_total",
-            (req.method, legacy_path_label, string(response.status)))
-    end
     hist_observe!("bcx_http_request_duration_seconds",
         (req.method, path_label), elapsed_s)
 
@@ -261,10 +229,6 @@ function _router_impl(req)
         return serve_static(req)
     end
 
-    if is_legacy && _is_known_api_path(canonical) &&
-       !HTTP.hasheader(response, "X-API-Deprecation")
-        push!(response.headers, "X-API-Deprecation" => API_LEGACY_DEPRECATION_HEADER)
-    end
     return response
 end
 

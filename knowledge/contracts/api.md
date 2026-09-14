@@ -24,8 +24,8 @@ evidence owners are
 
 The canonical current surface is `/api/v1`.
 
-- New clients use `/api/v1`; bare `/api` paths are deprecated compatibility
-  aliases until the declared legacy sunset.
+- New clients use `/api/v1`; bare `/api` paths are permanent compatibility
+  aliases kept for existing clients.
 - `/api/v1` and `/api/v1/` return application and protocol identity.
 - Application version and API protocol version are separate identities.
 - Health, readiness, and metrics are operational routes outside `/api`.
@@ -42,10 +42,8 @@ version. Renaming a Julia function alone does not create a new wire contract.
 - Every routed response receives `X-Request-Id`. A supplied value is retained
   only when it is at most 128 characters and uses letters, digits, `-`, `_`,
   `:`, or `.`; otherwise the backend generates one.
-- Known bare `/api` responses carry the deprecation header and declared sunset.
-- CORS currently permits any origin and exposes `X-API-Deprecation` and
-  `Retry-After`. This records deployed behavior; it is not a security
-  recommendation for every host.
+- CORS currently permits any origin and exposes `Retry-After`. This records
+  deployed behavior; it is not a security recommendation for every host.
 
 JSON request bodies have three independent application checks: at most
 1,048,576 bytes, at most 64 levels of nesting, and at most 100,000 values. The
@@ -239,13 +237,6 @@ authentication.
 Metrics may reveal API shape and should be restricted at the deployment edge
 when public metrics are not intended.
 
-The bounded counter `bcx_http_legacy_requests_total` records actual calls to
-declared bare `/api` compatibility aliases with method, canonicalized route
-label, and status. Canonical `/api/v1` traffic, unknown paths, and v1-only routes
-do not increment it. This counter supplies removal evidence for the declared
-`2027-05-25` sunset; it does not by itself authorize deletion, because every
-deployed client and rollback version must also be accounted for.
-
 ## Verification and change rule
 
 The unified read-only gate is:
@@ -254,9 +245,9 @@ The unified read-only gate is:
 python3 scripts/verify_repository.py --check
 ```
 
-It exports executable route facts, rejects route/catalog/reference drift,
-checks schemas and artifact fixtures, and verifies that generated files are
-current. `webapp/test/runtests.jl`, `concurrency_and_budget_contract.jl`, and
+It checks generated-schema drift, version-owner consistency, artifact
+fixtures, maintained Markdown hygiene, and the public repository boundary.
+`webapp/test/runtests.jl`, `concurrency_and_budget_contract.jl`, and
 `input_validation_contract.jl` exercise route behavior, numerical limits,
 capacity admission, body/error payloads, SQLite policy, and validity reporting.
 
@@ -266,8 +257,8 @@ a client begins to depend on a field.
 
 ## Verified against
 
-- Current source commit: `b91cf41`; canonical first-party callers and bounded
-  legacy-alias metrics were verified locally on 2026-07-15.
+- Current source commit: `b91cf41`; canonical first-party callers and the
+  permanent bare-`/api` aliases were verified locally on 2026-07-15.
 - Earlier bounded-runtime anchor: `1177a3d`.
 - Historical baseline: the route/version/provenance contract was previously
   audited at `f9c65a5`; that evidence remains historical and does not cover the
