@@ -1,6 +1,6 @@
 # ─── ParameterPlacer: constructive (q,K) placement for a target reaction order ───
 #
-# Inlined from the verified prototype `webapp/scripts/synth/parameter_placer.jl`
+# Inlined from the verified ParameterPlacer prototype
 # (its `place_for_target_slope(...; kd_bounds=...)` path). The prototype is NOT
 # `include`d here on purpose: its top-level `Pkg.activate(Bnc_julia)` would switch
 # the running backend's active project. Every engine call below

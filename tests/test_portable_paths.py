@@ -23,10 +23,8 @@ def production_files() -> list[Path]:
     roots = [
         ROOT / "webapp/src",
         ROOT / "webapp/scripts/reader",
-        ROOT / "webapp/scripts/synth",
         ROOT / "packaging",
         ROOT / "frontend-swift",
-        ROOT / "deploy",
         ROOT / "tools/migration_parity",
     ]
     files = [
