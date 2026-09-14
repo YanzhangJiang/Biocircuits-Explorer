@@ -441,7 +441,7 @@ struct BiocircuitsExplorerMacTests {
         ) == 19_002)
     }
 
-    @Test func nativeBackendKeepsStableCognitoOriginWhileChatUsesAnEphemeralPort() async throws {
+    @Test func nativeBackendKeepsStableOriginWhileChatUsesAnEphemeralPort() async throws {
         let enginePort = BiocircuitsBackendController.resolveConfiguredPort(from: [:])
         let chatPort = DesignChatBackendController.resolveConfiguredPort(
             from: [:],
@@ -516,49 +516,6 @@ struct BiocircuitsExplorerMacTests {
         )
         #expect(designEnvironment["BNE_TRACE_DIR"] ==
             "/tmp/BiocircuitsExplorerTests/Application Support/Biocircuits Explorer/Runtime/DesignAgentTraces")
-    }
-
-    @Test func awsRuntimeFileCannotOverrideNativeBackendBootstrap() async throws {
-        let runtimeEnvironment = [
-            "AWS_REGION": "us-west-2",
-            "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE": "trusted-queue",
-            "BIOCIRCUITS_EXPLORER_IMAGE": "unrelated-to-the-native-runtime",
-            "BIOCIRCUITS_EXPLORER_HOST": "0.0.0.0",
-            "BIOCIRCUITS_EXPLORER_PORT": "9999",
-            "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": "/tmp/attacker-public",
-            "BIOCIRCUITS_EXPLORER_PARENT_PID": "1",
-            "ROP_HOST": "0.0.0.0",
-            "ROP_PORT": "9999",
-            "ROP_PUBLIC_DIR": "/tmp/attacker-public",
-            "ROP_PARENT_PID": "1",
-            "BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES": "1",
-            "UNRELATED_OPERATOR_SETTING": "ignored",
-        ]
-        let bootstrapEnvironment = [
-            "HOME": "/tmp/biocircuits-test-home",
-            "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
-            "BIOCIRCUITS_EXPLORER_PORT": "18088",
-            "BIOCIRCUITS_EXPLORER_PUBLIC_DIR": "/safe/public",
-            "BIOCIRCUITS_EXPLORER_PARENT_PID": "4242",
-            "ROP_HOST": "127.0.0.1",
-            "ROP_PORT": "18088",
-            "ROP_PUBLIC_DIR": "/safe/public",
-            "ROP_PARENT_PID": "4242",
-        ]
-
-        let secured = BiocircuitsBackendController.securedBackendEnvironment(
-            runtimeEnvironment: runtimeEnvironment,
-            bootstrapEnvironment: bootstrapEnvironment
-        )
-
-        for (key, expected) in bootstrapEnvironment {
-            #expect(secured[key] == expected)
-        }
-        #expect(secured["AWS_REGION"] == "us-west-2")
-        #expect(secured["BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE"] == "trusted-queue")
-        #expect(secured["BIOCIRCUITS_EXPLORER_IMAGE"] == nil)
-        #expect(secured["BIOCIRCUITS_EXPLORER_ALLOW_LOCAL_IMAGES"] == nil)
-        #expect(secured["UNRELATED_OPERATOR_SETTING"] == nil)
     }
 
     @Test func workspaceDocumentNormalizesRequiredFields() async throws {
@@ -923,15 +880,15 @@ struct BiocircuitsExplorerMacTests {
     @Test func webShellNavigationQueueIsLatestWins() async throws {
         var queue = WebShellNavigationQueue()
         let firstURL = URL(string: "http://127.0.0.1:18088/index-node.html")!
-        let latestURL = URL(string: "https://login.example.test/oauth2/authorize")!
+        let latestURL = URL(string: "http://127.0.0.1:18088/index-node.html#agent")!
 
         queue.enqueue(firstURL)
-        queue.enqueue(latestURL, trust: .externalAuthentication)
+        queue.enqueue(latestURL, trust: .trustedWorkspace)
 
         let selectedRequest = queue.takeLatestRequest()
         #expect(selectedRequest == WebShellNavigationRequest(
             url: latestURL,
-            trust: .externalAuthentication
+            trust: .trustedWorkspace
         ))
         #expect(queue.latestURL == nil)
         let noRemainingURL = queue.takeLatest()
@@ -959,20 +916,14 @@ struct BiocircuitsExplorerMacTests {
     }
 
     @MainActor
-    @Test func webShellOriginPolicyIsExactAndExternalAuthIsHTTPSOnly() async throws {
+    @Test func webShellOriginPolicyIsExactAndWorkspaceOnly() async throws {
         guard let trustedOrigin = WebShellOrigin(
             url: URL(string: "http://127.0.0.1:18088/index-node.html")!
         ) else {
             Issue.record("Expected a valid local workspace origin")
             return
         }
-        let authenticationOrigin = WebShellOrigin(
-            url: URL(string: "https://login.example.test/oauth2/authorize")!
-        )
-        let policy = WebShellOriginPolicy(
-            trustedOrigin: trustedOrigin,
-            authenticationOrigin: authenticationOrigin
-        )
+        let policy = WebShellOriginPolicy(trustedOrigin: trustedOrigin)
         func credentialedURL(_ rawURL: String) -> URL {
             var components = URLComponents(string: rawURL)!
             components.user = "test-user"
@@ -982,7 +933,7 @@ struct BiocircuitsExplorerMacTests {
 
         #expect(trustedOrigin.serialized == "http://127.0.0.1:18088")
         #expect(trustedOrigin.contains(
-            URL(string: "http://127.0.0.1:18088/auth-callback.html?code=abc")!
+            URL(string: "http://127.0.0.1:18088/index-node.html#workspace")!
         ))
         #expect(!trustedOrigin.contains(
             URL(string: "http://localhost:18088/index-node.html")!
@@ -1005,9 +956,6 @@ struct BiocircuitsExplorerMacTests {
             for: URL(string: "http://127.0.0.1:18088/index-node.html")!
         ) == .trustedWorkspace)
         #expect(policy.disposition(
-            for: URL(string: "http://127.0.0.1:18088/auth-callback.html?code=abc")!
-        ) == .localAuthenticationCallback)
-        #expect(policy.disposition(
             for: URL(string: "http://127.0.0.1:18088/wiki.html")!
         ) == .blocked)
         #expect(policy.disposition(
@@ -1015,18 +963,6 @@ struct BiocircuitsExplorerMacTests {
         ) == .blocked)
         #expect(policy.disposition(
             for: URL(string: "https://login.example.test/oauth2/authorize")!
-        ) == .externalAuthentication)
-        #expect(policy.disposition(
-            for: URL(string: "https://phishing.example.test/oauth2/authorize")!
-        ) == .blocked)
-        #expect(WebShellOriginPolicy(trustedOrigin: trustedOrigin).disposition(
-            for: URL(string: "https://login.example.test/oauth2/authorize")!
-        ) == .blocked)
-        #expect(policy.disposition(
-            for: URL(string: "http://login.example.test/oauth2/authorize")!
-        ) == .blocked)
-        #expect(policy.disposition(
-            for: credentialedURL("https://login.example.test/oauth2/authorize")
         ) == .blocked)
         #expect(policy.disposition(
             for: URL(string: "javascript:alert(1)")!
@@ -1036,56 +972,16 @@ struct BiocircuitsExplorerMacTests {
             navigationTrust: .trustedWorkspace
         ))
         #expect(!WebShellController.allowsSubframeNavigation(
-            disposition: .externalAuthentication,
+            disposition: .blocked,
             navigationTrust: .trustedWorkspace
-        ))
-        #expect(WebShellController.allowsSubframeNavigation(
-            disposition: .externalAuthentication,
-            navigationTrust: .externalAuthentication
         ))
         #expect(!WebShellController.allowsSubframeNavigation(
             disposition: .trustedWorkspace,
-            navigationTrust: .externalAuthentication
-        ))
-        #expect(!WebShellController.allowsSubframeNavigation(
-            disposition: .localAuthenticationCallback,
-            navigationTrust: .localAuthenticationCallback
-        ))
-        #expect(!WebShellController.allowsSubframeNavigation(
-            disposition: .externalAuthentication,
             navigationTrust: nil
         ))
         #expect(WebShellController.navigationTrust(for: .trustedWorkspace) == .trustedWorkspace)
-        #expect(WebShellController.navigationTrust(
-            for: .localAuthenticationCallback
-        ) == .localAuthenticationCallback)
-        #expect(WebShellController.navigationTrust(
-            for: .externalAuthentication
-        ) == .externalAuthentication)
         #expect(WebShellController.navigationTrust(for: .blocked) == nil)
 
-        let enabledConfiguration = Data(
-            #"{"enabled":true,"cognito_domain":"Login.Example.Test"}"#.utf8
-        )
-        #expect(WebShellController.authenticationOrigin(
-            statusCode: 200,
-            body: enabledConfiguration
-        ) == authenticationOrigin)
-        #expect(WebShellController.authenticationOrigin(
-            statusCode: 503,
-            body: enabledConfiguration
-        ) == nil)
-        for invalidBody in [
-            Data(#"{"enabled":false,"cognito_domain":"login.example.test"}"#.utf8),
-            Data(#"{"enabled":true,"cognito_domain":"evil.test/path"}"#.utf8),
-            Data(#"{"enabled":true,"cognito_domain":"user@evil.test"}"#.utf8),
-            Data(#"{"enabled":true,"cognito_domain":"evil.test:444"}"#.utf8),
-        ] {
-            #expect(WebShellController.authenticationOrigin(
-                statusCode: 200,
-                body: invalidBody
-            ) == nil)
-        }
         #expect(WebShellController.isExternalHTTPSURL(
             URL(string: "https://docs.example.test/guide")!
         ))
@@ -1142,22 +1038,20 @@ struct BiocircuitsExplorerMacTests {
     @MainActor
     @Test func webContentTerminationRecoveryTargetsCanonicalTrustedWorkspace() async throws {
         let workspaceURL = URL(string: "http://127.0.0.1:18088/index-node.html")!
-        let callbackURL = URL(
-            string: "http://127.0.0.1:18088/auth-callback.html?code=abc&state=xyz"
-        )!
-        let logoutReturnURL = URL(string: "http://127.0.0.1:18088/")!
+        let strayURL = URL(string: "http://127.0.0.1:18088/wiki.html")!
+        let rootURL = URL(string: "http://127.0.0.1:18088/")!
 
         #expect(WebShellController.webContentRecoveryRequest(for: workspaceURL)
             == WebShellNavigationRequest(url: workspaceURL, trust: .trustedWorkspace))
         #expect(WebShellController.webContentRecoveryRequest(for: nil) == nil)
         #expect(WebShellController.trustedReturnURL(
-            navigationURL: callbackURL,
-            canonicalWorkspaceURL: workspaceURL
-        ) == callbackURL)
-        #expect(WebShellController.trustedReturnURL(
-            navigationURL: logoutReturnURL,
+            navigationURL: strayURL,
             canonicalWorkspaceURL: workspaceURL
         ) == workspaceURL)
+        #expect(WebShellController.trustedReturnURL(
+            navigationURL: rootURL,
+            canonicalWorkspaceURL: nil
+        ) == rootURL)
     }
 
     @MainActor

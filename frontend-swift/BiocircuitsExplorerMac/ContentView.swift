@@ -38,7 +38,6 @@ struct ProjectRenameCommitCoordinator {
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @AppStorage("biocircuitsExplorer.themeMode") private var themeMode = "auto"
-    @AppStorage("biocircuitsExplorer.cloudComputeEnabled") private var cloudComputeEnabled = false
     // Active surface inside the embedded canvas: "agent" (Design Agent) or
     // "workspace" (node graph). The native shell hides the web header, so this
     // switcher is the only way to reach the Design Agent — it opens here by default.
@@ -349,17 +348,6 @@ struct ContentView: View {
                     .disabled(!canUseEmbeddedWorkspaceControls)
 
                     Button {
-                        cloudComputeEnabled.toggle()
-                        webController.setCloudComputeEnabled(cloudComputeEnabled)
-                    } label: {
-                        Label(
-                            cloudComputeEnabled ? "Cloud Compute On" : "Cloud Compute",
-                            systemImage: cloudComputeEnabled ? "cloud.fill" : "cloud"
-                        )
-                    }
-                    .disabled(!canUseEmbeddedWorkspaceControls)
-
-                    Button {
                         webController.saveWorkspace()
                     } label: {
                         Label("Save Workspace", systemImage: "square.and.arrow.down")
@@ -515,19 +503,11 @@ struct ContentView: View {
             }
 
             syncThemeModeToWeb(themeMode)
-            webController.setCloudComputeEnabled(cloudComputeEnabled)
             webController.setSurface(activeSurface)
             injectDesignChatEndpoint()
         }
         .onChange(of: designChatController.isReady) { _, _ in
             injectDesignChatEndpoint()
-        }
-        .onChange(of: cloudComputeEnabled) { _, enabled in
-            guard webController.isReady else {
-                return
-            }
-
-            webController.setCloudComputeEnabled(enabled)
         }
         .onChange(of: activeSurface) { _, surface in
             guard webController.isReady else {

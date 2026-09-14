@@ -218,7 +218,6 @@ From the repository root:
 ```text
 julia --project=webapp webapp/test/runtests.jl
 julia --project=webapp Bnc_julia/test/runtests.jl
-python3 -m unittest tests.test_deployment_contract
 ```
 
 The backend suite includes the concurrency/budget, input-validation, and

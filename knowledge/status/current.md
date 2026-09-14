@@ -612,12 +612,12 @@ packaged-resource, and release-metadata contracts also passed locally.
 
 This is local evidence retained from revision `f2ca13c` and extended at
 `b91cf41`. No remote
-CI result, real Cognito flow, packaged helper launch, relocatable Python input,
+CI result, packaged helper launch, relocatable Python input,
 Developer ID signature, notarization, stapling, Gatekeeper install, or clean-host
 qualification is claimed.
 
 The evidence below is local repository evidence. It does not establish that a
-remote workflow ran, an image was published, AWS or Slurm accepted a job, or a
+remote workflow ran, an image was published, Slurm accepted a job, or a
 signed application was installed.
 
 ## Evidence recorded for this snapshot
@@ -760,9 +760,8 @@ they do not rewrite the catalog's baseline identifier or historical
 2. No current evidence establishes publishing to or pulling from a live image
    registry. Image signing, signature verification, and an SBOM release lane
    are also unverified.
-3. No live AWS rollout or Slurm run was verified. ECR, Batch, Cognito, S3, IAM,
-   quota storage, scheduler behavior, artifact return, and rollback remain
-   external unknowns.
+3. No live Slurm run was verified. Scheduler behavior, artifact return, and
+   rollback remain external unknowns.
 4. A signed, notarized, stapled, installed, and Gatekeeper-tested macOS package
    remains unverified.
 5. The complete Compose stack with Nginx, a real domain, TLS certificates,

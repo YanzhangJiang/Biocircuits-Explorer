@@ -53,8 +53,6 @@ of a stale secret or use of a different port is not enough.
   relocatable Python 3.9+ runtime rooted at `DESIGN_PYTHON_SOURCE`, plus the
   allowlisted Design Agent source/data files included in the backend bundle.
   Local development may instead use an explicit interpreter or `PATH` fallback.
-- An optional `deploy/aws-runtime.env`; only explicitly approved AWS, Cognito,
-  and quota keys are accepted from it.
 
 ## Outputs
 
@@ -146,10 +144,8 @@ installation.
 - The chat service accepts only a literal loopback bind host and one canonical
   HTTP(S) loopback origin without path/query/fragment. Native launch disables
   the unauthenticated loopback development exception.
-- Values loaded from `aws-runtime.env` pass through an explicit key allowlist.
-  Native bootstrap values for HOME, loopback binding, actual port, public
-  assets, and parent PID always win; image selection, local-image opt-in, and
-  unrelated operator keys do not pass through.
+- The backend launch environment is assembled natively from HOME, loopback
+  binding, actual port, public assets, and parent PID.
 - Workspace v2 documents reject unsupported future versions before project
   replacement while preserving unknown extension fields in supported
   documents. V1 merged compute nodes expand into their typed config/result

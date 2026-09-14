@@ -40,8 +40,6 @@ flowchart LR
     J --> E["BindingAndCatalysis engine"]
     J <--> A["Atlas SQLite or in-memory corpus"]
     J <--> S["Session, model-cache, and local job state"]
-    J -->|"optional long job"| B["AWS Batch worker"]
-    B <--> O["S3 job artifacts"]
     J --> R["Versioned result and research artifacts"]
 ```
 
@@ -58,7 +56,7 @@ and returns an explicit offline/error result when computation is unavailable.
 | Layer | Decides | Canonical owners |
 |---|---|---|
 | Interface | workspace state, visualization, request assembly | [`webapp/public/js/`](../../webapp/public/js/), [`frontend-swift/`](../../frontend-swift/) |
-| API/runtime | routing, validation, sessions, jobs, auth, persistence | [`webapp/src/`](../../webapp/src/), [backend runtime card](../modules/backend-runtime.md) |
+| API/runtime | routing, validation, sessions, jobs, persistence | [`webapp/src/`](../../webapp/src/), [backend runtime card](../modules/backend-runtime.md) |
 | Mathematical engine | binding-network regimes, ROP geometry, SISO paths, numerical solves | [`Bnc_julia/src/`](../../Bnc_julia/src/), [engine card](../modules/engine-rop.md) |
 | Reusable behavior knowledge | network enumeration, behavior slices, querying, inverse design | [`atlas.jl`](../../webapp/src/atlas.jl), [`atlas_sqlite.jl`](../../webapp/src/atlas_sqlite.jl), [atlas card](../modules/atlas.md) |
 | Recommendation evidence | explicit target audit, feasible regions, sampled forward checks | [`designability.jl`](../../webapp/src/designability.jl), [designability card](../modules/designability.md) |
@@ -84,18 +82,14 @@ and returns an explicit offline/error result when computation is unavailable.
    are aliases. Per-bundle locks protect lazy mutable engine state, while
    single-flight construction prevents split bundles for one hash. Job
    `record.json` is the canonical process-restart record; its
-   public `status.json` is a best-effort projection. Atlas SQLite and S3 cross
-   process boundaries and therefore require schema, identity, and ownership
+   public `status.json` is a best-effort projection. Atlas SQLite crosses
+   process boundaries and therefore requires schema, identity, and ownership
    checks.
 4. **Filesystem paths are operator authority.** Raw Atlas SQLite paths are
    disabled on HTTP by default. Explicit client and server opt-in still limits
    them to a configured store root; this is a trusted-operator mode, not a
    multi-tenant path API.
-5. **Cloud execution is a separate trust zone.** The broker verifies identity
-   when Cognito is configured, partitions jobs by user, and transfers explicit
-   input/status/result artifacts. AWS command success alone is not proof of a
-   result; the jobs code also checks for the result artifact.
-6. **Research prose is downstream.** A notebook, figure, or manuscript statement
+5. **Research prose is downstream.** A notebook, figure, or manuscript statement
    is not a runtime contract. It should cite the exact data artifact, generator,
    code revision, and verification command that support it.
 

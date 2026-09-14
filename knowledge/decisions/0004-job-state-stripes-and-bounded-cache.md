@@ -206,7 +206,6 @@ From the repository root:
 julia --project=webapp webapp/test/jobs_cache_concurrency_contract.jl
 julia --project=webapp webapp/test/jobs_cancellation_contract.jl
 julia --project=webapp webapp/test/jobs_artifact_validity_contract.jl
-julia --project=webapp webapp/test/jobs_submission_reconciliation_contract.jl
 JULIA_NUM_THREADS=auto julia --project=webapp webapp/test/runtests.jl
 ```
 

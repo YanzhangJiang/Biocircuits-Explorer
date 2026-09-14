@@ -1,12 +1,13 @@
 # 0003: Reconcile ambiguous AWS Batch submissions without resubmitting
 
-- Status: accepted in the 2026-07-11 working tree
+- Status: superseded — the cloud lane was removed in 2026-09; this page is
+  retained as the historical record of that design
 - Date: 2026-07-11
 - Verified against: `f2ca13c`
 - Historical implementation anchor: `1177a3d`
 - Owners: `backend-runtime`, `batch-hpc`
 - Supersedes: implicit retry of an unconfirmed Batch submission
-- Superseded by: none
+- Superseded by: single-user backend simplification (2026-09)
 
 ## Problem in plain language
 

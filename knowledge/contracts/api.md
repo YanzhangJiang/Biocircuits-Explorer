@@ -221,10 +221,8 @@ whether the former exceeds the latter. `screened_count` is the compatibility
 count of evaluated cards. A client must not promote an unevaluated or proxy-only
 candidate to the verified list.
 
-With Cognito configured, job routes require a verified bearer token and derive
-ownership from its subject. Development mode may use `X-User-Sub` and otherwise
-falls back to an anonymous subject; that fallback is not production
-authentication.
+Job routes resolve every request to the single anonymous local owner.
+Ownership checks fail closed on a mismatched identifier.
 
 ## Operations boundary
 

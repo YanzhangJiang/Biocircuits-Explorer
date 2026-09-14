@@ -197,10 +197,9 @@ final class BiocircuitsBackendController: ObservableObject {
             return port
         }
 
-        // Cognito Hosted UI requires an exact, pre-registered redirect URI.
-        // auth.js derives that URI from this service's origin, so the native
-        // engine retains its documented stable default while the per-launch
-        // nonce prevents an unrelated listener on that port being accepted.
+        // The workspace WebView pins this documented default origin, so the
+        // engine retains it; the per-launch nonce prevents an unrelated
+        // listener on that port being accepted.
         return 18_088
     }
 
@@ -333,46 +332,6 @@ final class BiocircuitsBackendController: ObservableObject {
         return nil
     }
 
-    // deploy/setup_aws_batch.sh writes a mixed operator environment file, but
-    // the native helper only needs cloud/auth settings from it. In particular,
-    // network binding, static assets, and parent supervision always belong to
-    // the native shell and must never be overridden by that file.
-    nonisolated static let awsRuntimeEnvironmentAllowlist: Set<String> = [
-        "AWS_REGION",
-        "AWS_DEFAULT_REGION",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AWS_PROFILE",
-        "AWS_SHARED_CREDENTIALS_FILE",
-        "AWS_CONFIG_FILE",
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE",
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION",
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX",
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_NAME_PREFIX",
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL",
-        "BIOCIRCUITS_EXPLORER_AWS_CLI",
-        "BIOCIRCUITS_EXPLORER_ALLOW_AWS_BATCH_REQUEST_CONFIG",
-        "BIOCIRCUITS_EXPLORER_COGNITO_REGION",
-        "BIOCIRCUITS_EXPLORER_COGNITO_USER_POOL_ID",
-        "BIOCIRCUITS_EXPLORER_COGNITO_APP_CLIENT_ID",
-        "BIOCIRCUITS_EXPLORER_COGNITO_DOMAIN",
-        "BIOCIRCUITS_EXPLORER_COGNITO_JWKS_URL_OVERRIDE",
-        "BIOCIRCUITS_EXPLORER_QUOTA_TABLE",
-        "BIOCIRCUITS_EXPLORER_QUOTA_DAILY_LIMIT",
-    ]
-
-    nonisolated static func securedBackendEnvironment(
-        runtimeEnvironment: [String: String],
-        bootstrapEnvironment: [String: String]
-    ) -> [String: String] {
-        var secured = runtimeEnvironment.filter {
-            awsRuntimeEnvironmentAllowlist.contains($0.key)
-        }
-        secured.merge(bootstrapEnvironment) { _, bootstrapValue in bootstrapValue }
-        return secured
-    }
-
     nonisolated static func runtimeStorageEnvironment(
         applicationSupportDirectory: URL,
         instanceNonce: String
@@ -401,68 +360,6 @@ final class BiocircuitsBackendController: ObservableObject {
             applicationSupportDirectory: applicationSupportDirectory,
             instanceNonce: instanceNonce
         )
-    }
-
-    // Parse a deploy/aws-runtime.env style file: KEY=VALUE lines, # comments,
-    // optional surrounding quotes. Missing files return [:] silently so the
-    // local-only path keeps working when Cognito has not been provisioned.
-    private static func loadEnvFile(at url: URL) -> [String: String] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            return [:]
-        }
-        var env: [String: String] = [:]
-        for rawLine in text.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            guard let eqIdx = line.firstIndex(of: "=") else { continue }
-            let key = String(line[..<eqIdx]).trimmingCharacters(in: .whitespaces)
-            var value = String(line[line.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
-            if value.count >= 2 {
-                let first = value.first
-                let last = value.last
-                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-                    value = String(value.dropFirst().dropLast())
-                }
-            }
-            if !key.isEmpty { env[key] = value }
-        }
-        return env
-    }
-
-    // Discover the runtime configuration written by deploy/setup_aws_batch.sh.
-    // Search order (first match wins) — explicit overrides win, then per-user
-    // persistent config, then the repo's deploy/ dir for dev builds.
-    private func loadAwsRuntimeEnv(repoRoots: [URL]) -> [String: String] {
-        if let override = Self.environmentValue(
-            keys: ["BIOCIRCUITS_EXPLORER_AWS_RUNTIME_ENV"],
-            from: environment
-        )?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !override.isEmpty
-        {
-            let expanded = (override as NSString).expandingTildeInPath
-            let url = URL(fileURLWithPath: expanded)
-            return Self.loadEnvFile(at: url)
-        }
-
-        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let supportEnv = appSupport
-                .appendingPathComponent("BiocircuitsExplorer", isDirectory: true)
-                .appendingPathComponent("aws-runtime.env")
-            if fileManager.fileExists(atPath: supportEnv.path) {
-                return Self.loadEnvFile(at: supportEnv)
-            }
-        }
-
-        for root in repoRoots {
-            let candidate = root
-                .appendingPathComponent("deploy", isDirectory: true)
-                .appendingPathComponent("aws-runtime.env")
-            if fileManager.fileExists(atPath: candidate.path) {
-                return Self.loadEnvFile(at: candidate)
-            }
-        }
-
-        return [:]
     }
 
     private func resolveLaunchSpec(instanceNonce: String) throws -> LaunchSpec {
@@ -602,10 +499,6 @@ final class BiocircuitsBackendController: ObservableObject {
             return nil
         }
 
-        // Layer the runtime config produced by deploy/setup_aws_batch.sh on
-        // top of the bootstrap vars. Without this the local Julia process has
-        // no Cognito / AWS Batch knowledge and the Sign-in button stays
-        // hidden because /api/auth/config reports enabled: false.
         var bootstrapEnvironment: [String: String] = [
             "HOME": NSHomeDirectory(),
             "BIOCIRCUITS_EXPLORER_HOST": "127.0.0.1",
@@ -620,10 +513,7 @@ final class BiocircuitsBackendController: ObservableObject {
         bootstrapEnvironment.merge(
             nativeRuntimeEnvironment(instanceNonce: instanceNonce)
         ) { _, nativeValue in nativeValue }
-        let spawnEnv = Self.securedBackendEnvironment(
-            runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: configuredRepoRoots()),
-            bootstrapEnvironment: bootstrapEnvironment
-        )
+        let spawnEnv = bootstrapEnvironment
 
         return LaunchSpec(
             executableURL: executableURL,
@@ -667,10 +557,7 @@ final class BiocircuitsBackendController: ObservableObject {
             bootstrapEnvironment.merge(
                 nativeRuntimeEnvironment(instanceNonce: instanceNonce)
             ) { _, nativeValue in nativeValue }
-            let spawnEnv = Self.securedBackendEnvironment(
-                runtimeEnvironment: loadAwsRuntimeEnv(repoRoots: repoRoots),
-                bootstrapEnvironment: bootstrapEnvironment
-            )
+            let spawnEnv = bootstrapEnvironment
 
             return LaunchSpec(
                 executableURL: juliaURL,
