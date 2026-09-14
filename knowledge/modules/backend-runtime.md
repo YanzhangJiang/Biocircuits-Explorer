@@ -446,9 +446,6 @@ behind their hashes and never assert external execution.
 - [`tests/version_resource_contract.jl`](../../tests/version_resource_contract.jl)
   constructs an installed bundle layout and proves that runtime version lookup
   finds its copied `VERSION` resource before unavailable source paths.
-- [`tests/test_deployment_contract.py`](../../tests/test_deployment_contract.py)
-  checks local-start loopback propagation, the single-image runtime gate, and
-  the Nginx 1 MiB JSON 413 boundary.
 - [`webapp/test/concurrency_and_budget_contract.jl`](../../webapp/test/concurrency_and_budget_contract.jl)
   covers per-bundle serialization, parallelism across bundles, same-hash
   single-flight, independent LRU clocks, the two-slot gate, typed HTTP errors,

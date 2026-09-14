@@ -17,13 +17,9 @@ ENV BIOCIRCUITS_EXPLORER_REVISION="${BIOCIRCUITS_EXPLORER_REVISION}"
 ENV BIOCIRCUITS_EXPLORER_CREATED="${BIOCIRCUITS_EXPLORER_CREATED}"
 ENV JULIA_NUM_THREADS=auto
 
-# Install system dependencies. AWS CLI is used by the optional Batch worker
-# path for S3 artifact transfer and job submission/status calls.
+# Install system dependencies.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libcdd-dev curl python3-venv && \
-    python3 -m venv /opt/awscli && \
-    /opt/awscli/bin/pip install --no-cache-dir awscli && \
-    ln -s /opt/awscli/bin/aws /usr/local/bin/aws && \
+    apt-get install -y --no-install-recommends libcdd-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

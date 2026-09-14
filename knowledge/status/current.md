@@ -630,7 +630,6 @@ signed application was installed.
 | Browser quality gate | `npm run lint` passed with zero warnings; local real-Chromium `npm run test:e2e` passed its workflow, v2, axe, and visual contracts | Mocked loopback `/api/v1` endpoints; no remote CI or live Julia/provider/cloud call |
 | Native Workspace v2 | Local no-sign build and 51/51 Swift unit tests passed, including shared migration fixtures | No WebView UI automation, packaged-process launch, signing, or clean-host install |
 | Generated schema check | `julia --project=webapp webapp/scripts/gen_schemas.jl --check` passed | Confirms generated NetworkIR/DesignSpec drift only; hand-authored schemas retain their cataloged coverage levels |
-| Deployment contract suite | `python3 tests/test_deployment_contract.py -q` passed, 15/15 | Static and mocked checks do not prove a registry, TLS endpoint, AWS account, or rollback was exercised |
 
 ## Verified revision line
 
@@ -796,7 +795,6 @@ julia --project=Bnc_julia Bnc_julia/test/runtests.jl
 (cd webapp && npm run test:e2e && npm run check-i18n-sync)
 julia --project=webapp webapp/scripts/gen_schemas.jl --check
 python3 tests/test_workspace_schema.py
-python3 tests/test_deployment_contract.py -q
 python3 scripts/verify_repository.py --check
 ```
 

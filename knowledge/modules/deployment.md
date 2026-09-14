@@ -32,9 +32,7 @@ material, job data, or cloud resources.
   `deploy/image_reference.sh`, `VERSION`, `scripts/set_version.sh`
 - Host rollout and rollback: `deploy/deploy.sh`,
   `deploy/rewrite_rollback_config.py`
-- AWS setup and state validation: `deploy/setup_aws_batch.sh`,
-  `deploy/validate_aws_batch_state.py`, `deploy/AWS_BATCH.md`,
-  `deploy/aws-runtime.env.example`, `deploy/aws_setup_permissions_policy.json`
+- Host environment template: `deploy/aws-runtime.env.example`
 - macOS backend bundles: `packaging/`, `scripts/build_macos_dmg.sh`
 - Runtime probes, configuration, and build identity: `webapp/server.jl`,
   `webapp/src/config.jl`, `webapp/src/version.jl`,
@@ -84,16 +82,11 @@ material, job data, or cloud resources.
 
 - `webapp/test/runtests.jl` covers liveness, fail-closed readiness, version
   discovery, API identity, and writable job-store behavior.
-- `tests/test_deployment_contract.py` checks image/Compose probe separation,
-  non-root ownership, release identity, TLS preflight, rendered rollback,
-  legacy-static preservation, shell parsing, and Compose parsing when the
-  plugin is available.
 - `tests/test_build_image.py` checks clean-tree publication, semantic versions,
   OCI revision metadata, tag safety, and ECR immutability setup.
-- `tests/test_rewrite_rollback_config.py`, `tests/test_setup_aws_batch.py`, and
-  `tests/test_validate_aws_batch_state.py` cover rollback path rewriting and
-  fail-closed AWS setup/state validation with mocked commands and fixtures.
-- These tests do not start the complete proxy/TLS stack or contact AWS.
+- `tests/test_rewrite_rollback_config.py` covers rollback path rewriting with
+  mocked commands and fixtures.
+- These tests do not start the complete proxy/TLS stack.
 
 ## CI
 
@@ -134,7 +127,7 @@ bundle.
   also snapshots the legacy host-mounted static files and rewrites the rendered
   file to use that snapshot.
 - Rollback deliberately excludes external environment files, certificates,
-  persistent job data, databases, object storage, and AWS resources.
+  persistent job data, and databases.
 - Credentials, generated runtime environments, job stores, and private TLS
   keys remain outside version control.
 
@@ -175,5 +168,5 @@ bundle.
   and both CI workflows.
 - Boundary: the checked-in single-image gate defines readiness, liveness,
   version, static delivery, and a write probe. No external workflow run,
-  complete Compose/TLS stack, registry publication, host rollout, signed
-  artifact, or live AWS system is claimed verified.
+  complete Compose/TLS stack, registry publication, host rollout, or signed
+  artifact is claimed verified.

@@ -299,7 +299,6 @@ contracts:
       - "webapp/e2e/workspace.spec.mjs"
       - "webapp/e2e/inverse-design.spec.mjs"
       - "tests/test_portable_paths.py"
-      - "tests/test_deployment_contract.py"
     compatibility: "Stylesheet layering, theme variable parity, status/selection/category/port color tokens, node geometry reservations, node-type JavaScript conventions, and figure-export page rules form one design system; violations surface as silent styling loss, theme leaks, wire/socket color splits, or untestable figure exports."
     coverage: "direct-css-js-html-with-e2e-geometry-assertions"
 

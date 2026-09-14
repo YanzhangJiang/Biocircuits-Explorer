@@ -157,7 +157,7 @@ webapp_hpc/                headless Julia environment with 1.10/1.12 locks
 schemas/                   versioned interchange schemas
 frontend-swift/            native macOS shell
 packaging/                 relocatable backend-bundle builder
-deploy/                    container, proxy, and optional AWS deployment tools
+deploy/                    container, proxy, and host deployment tools
 slurm/                     scheduler setup and submission helpers
 src/periodic_table/        bounded periodic-table research primitives
 scripts/periodic_table/    search and reproduction entry points
@@ -181,10 +181,9 @@ guides, not the source of developer contracts.
 
 The repository does not yet provide current evidence for:
 
-- publishing to or pulling from a live image registry;
+- publishing to or pulling from a live image registry (including ECR), or
+  host rollout and rollback behavior;
 - image signing, signature verification, or an SBOM release lane;
-- a live AWS rollout, including ECR, Batch, Cognito, S3, IAM, quota storage,
-  and rollback behavior;
 - submission to or completion on a real Slurm cluster;
 - a signed, notarized, stapled, and Gatekeeper-tested macOS DMG;
 - the complete Compose, Nginx, domain, TLS certificate, and renewal path; or

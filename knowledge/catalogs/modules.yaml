@@ -422,7 +422,7 @@ modules:
 
   - id: "deployment"
     name: "Packaging and deployment"
-    purpose: "Build and operate the containerized backend/static app, optional proxy, version metadata, and cloud bootstrap helpers."
+    purpose: "Build and operate the containerized backend/static app, optional proxy, and version metadata."
     doc: "knowledge/modules/deployment.md"
     owner_paths:
       - "deploy"
@@ -434,19 +434,15 @@ modules:
       - "deploy/docker-compose.yml"
       - "deploy/build_image.sh"
       - "deploy/deploy.sh"
-      - "deploy/setup_aws_batch.sh"
       - "packaging/build_backend_app.jl"
       - "scripts/build_macos_dmg.sh"
     tests:
       - ".github/workflows/docker.yml"
       - "packaging/test_design_runtime.jl"
       - "tests/test_build_image.py"
-      - "tests/test_deployment_contract.py"
       - "tests/test_macos_release_metadata.py"
       - "tests/test_rewrite_rollback_config.py"
       - "tests/test_set_version.py"
-      - "tests/test_setup_aws_batch.py"
-      - "tests/test_validate_aws_batch_state.py"
       - "tests/version_resource_contract.jl"
     depends_on:
       - "backend-runtime"
