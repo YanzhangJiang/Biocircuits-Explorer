@@ -51,10 +51,6 @@ const API_ROUTE_CONTRACTS = APIRouteContract[
     APIRouteContract("/api/v1/design_search", "/api/design_search", ("POST",), :handle_design_search, :exact),
     APIRouteContract("/api/v1/design_screen", "/api/design_screen", ("POST",), :handle_design_screen, :exact),
     APIRouteContract("/api/v1/rop_shape_optimize", "/api/rop_shape_optimize", ("POST",), :handle_rop_shape_optimize, :exact),
-    APIRouteContract("/api/v1/ro_field", "/api/ro_field", ("POST",), :handle_ro_field, :exact),
-    # Differential diagnostics are separately identified and never mutate the
-    # source RO-field artifact or its scientific evidence class.
-    APIRouteContract("/api/v1/ro_field/differential", "/api/ro_field/differential", ("POST",), :handle_ro_field_differential, :exact),
     APIRouteContract("/api/v1/validate_designability_spec", "/api/validate_designability_spec", ("POST",), :handle_validate_designability_spec, :exact),
     APIRouteContract("/api/v1/design_labels", "/api/design_labels", ("POST",), :handle_design_labels, :exact),
     APIRouteContract("/api/v1/atlas_landscape_2d", "/api/atlas_landscape_2d", ("POST",), :handle_atlas_landscape_2d, :exact),

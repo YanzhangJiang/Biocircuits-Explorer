@@ -183,7 +183,6 @@ const SYNC_HEAVY_HANDLER_NAMES = Set{Symbol}((
     :handle_discover_architecture,
     :handle_design_screen,
     :handle_rop_shape_optimize,
-    :handle_ro_field,
 ))
 
 const _SYNC_REQUEST_CONTEXT_TLS_KEY = :biocircuits_explorer_sync_request_context

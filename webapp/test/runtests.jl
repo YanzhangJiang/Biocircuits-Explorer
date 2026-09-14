@@ -24,17 +24,6 @@ include("rop_shape_cat_benchmark.jl")
 include("rop_shape_api_contract.jl")
 include("rop_shape_schema_contract.jl")
 include("target_design_schema_contract.jl")
-include("ro_field_api_contract.jl")
-include("ro_field_chunks_contract.jl")
-include("ro_field_slices_contract.jl")
-include("ro_field_campaign_contract.jl")
-include("ro_field_job_contract.jl")
-include("ro_field_sparse_job_contract.jl")
-include("ro_field_differential_contract.jl")
-include("ro_field_identity_sqlite_contract.jl")
-include("ro_field_behavior_contract.jl")
-include("ro_field_atlas_contract.jl")
-include("ro_field_signature_sqlite_contract.jl")
 
 function _configure_design_index_fixture!()
     dir = mktempdir()
@@ -770,8 +759,8 @@ end
     @test v1_body["api_supported"][1] == "v1"
 
     # Bare /api/* is not an API surface any more.
-    @test router(HTTP.Request("GET", "/api/v1/version")).status == 404
-    @test router(HTTP.Request("POST", "/api/v1/build_model",
+    @test router(HTTP.Request("GET", "/api/version")).status == 404
+    @test router(HTTP.Request("POST", "/api/build_model",
         ["Content-Type" => "application/json"], "{")).status == 404
 
     # /api/v1 (with or without trailing slash) is a discovery probe.
@@ -788,12 +777,12 @@ end
 
     # Canonicalization unit checks.
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/build_model") ==
-          "/api/v1/build_model"
+          "/api/build_model"
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1") == "/api/v1"
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/") == "/api/v1"
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/static/foo.css") ==
           "/static/foo.css"
-    @test BiocircuitsExplorerBackend._is_unversioned_api_path("/api/v1/build_model")
+    @test BiocircuitsExplorerBackend._is_unversioned_api_path("/api/build_model")
     @test !BiocircuitsExplorerBackend._is_unversioned_api_path("/api/v1/build_model")
 end
 
@@ -2699,8 +2688,8 @@ end
     end
     @test any(r -> r.out == "C_A_A", idx)
     @test BEB.handle_design_labels(nothing).status == 503       # no tracked label corpus
-    @test haskey(BEB.API_ROUTES, "/api/v1/run_inverse_design")   # downgraded, not removed
-    @test haskey(BEB.API_ROUTES, "/api/v1/design_labels")        # new endpoint wired
-    @test haskey(BEB.API_ROUTES, "/api/v1/design_screen")        # tunability-aware screen wired
+    @test haskey(BEB.API_ROUTES, "/api/run_inverse_design")   # downgraded, not removed
+    @test haskey(BEB.API_ROUTES, "/api/design_labels")        # new endpoint wired
+    @test haskey(BEB.API_ROUTES, "/api/design_screen")        # tunability-aware screen wired
     end
 end

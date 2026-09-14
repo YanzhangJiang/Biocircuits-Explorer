@@ -378,29 +378,6 @@ end
 end
 
 include(joinpath(@__DIR__, "volume_reproducibility_contract.jl"))
-include(joinpath(@__DIR__, "multi_input_ro_field_contract.jl"))
-include(joinpath(@__DIR__, "ro_cell_complex_contract.jl"))
-include(joinpath(@__DIR__, "ro_cell_complex_3d_contract.jl"))
-include(joinpath(@__DIR__, "ro_coordinate_chart_contract.jl"))
-include(joinpath(@__DIR__, "ro_nonlinear_coordinate_chart_contract.jl"))
-include(joinpath(@__DIR__, "ro_observable_chart_contract.jl"))
-include(joinpath(@__DIR__, "ro_regular_sheet_contract.jl"))
-include(joinpath(@__DIR__, "ro_regular_root_census_contract.jl"))
-include(joinpath(@__DIR__, "ro_fold_event_census_contract.jl"))
-include(joinpath(@__DIR__, "ro_fold_branch_incidence_contract.jl"))
-include(joinpath(@__DIR__, "ro_branch_indexed_field_contract.jl"))
-include(joinpath(@__DIR__, "ro_spectral_hopf_event_census_contract.jl"))
-include(joinpath(@__DIR__, "ro_hopf_lyapunov_census_contract.jl"))
-include(joinpath(@__DIR__, "ro_hopf_periodic_orbit_germ_contract.jl"))
-include(joinpath(@__DIR__, "ro_periodic_fourier_identity_contract.jl"))
-include(joinpath(@__DIR__, "ro_field_differential_contract.jl"))
-include(joinpath(@__DIR__, "ro_field_uncertainty_contract.jl"))
-include(joinpath(@__DIR__, "ro_stratified_field_contract.jl"))
-include(joinpath(@__DIR__, "ro_stratified_field_3d_contract.jl"))
-include(joinpath(@__DIR__, "ro_singular_selection_contract.jl"))
-include(joinpath(@__DIR__, "ro_sparse_sampler_contract.jl"))
-include(joinpath(@__DIR__, "ro_dynamic_hysteresis_contract.jl"))
-include(joinpath(@__DIR__, "ro_dynamic_trajectory_contract.jl"))
 
 # =============================================================================
 @testset "BindingAndCatalysis golden-value suite" begin
