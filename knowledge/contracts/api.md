@@ -12,10 +12,9 @@ large queries, persistence, and numerical refinement that can grow beyond those
 limits belong in `/api/v1/jobs`. A route name alone does not authorize unbounded
 work.
 
-The exact path, method, handler, and legacy-alias inventory is generated from
-executable route metadata in the
-[contract reference](../generated/reference.md#api-routes). Do not maintain a
-second route list here. The evidence owners are
+The exact path, method, handler, and legacy-alias inventory is owned by the
+executable route metadata. Do not maintain a second route list here. The
+evidence owners are
 [`api_contract.jl`](../../webapp/src/api_contract.jl),
 [`routing.jl`](../../webapp/src/routing.jl), the budget modules under
 [`webapp/src/`](../../webapp/src/), and the contract tests under

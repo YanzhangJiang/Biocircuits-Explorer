@@ -10,10 +10,10 @@ A schema tells a client which fields may appear. It does not prove that a
 computation converged, that every producer was validated, or that an old stored
 file has current meaning. Shape and evidence are separate contracts.
 
-The exact schema path, `$id`, identity field, version, contract owner, and
-declared coverage are generated in the
-[contract reference](../generated/reference.md#json-schemas). Values there come
-from the schema and catalogs, so this page does not copy the full inventory.
+The exact schema path, `$id`, identity field, and version live in each schema
+file; the contract owner and declared coverage live in the
+[contract catalog](../catalogs/contracts.yaml). This page does not copy the
+full inventory.
 
 ## What coverage statements mean
 
@@ -347,9 +347,8 @@ For a schema-bearing interface:
 2. add or update positive and negative contract fixtures;
 3. update or regenerate the schema;
 4. run producer and consumer tests;
-5. regenerate the reference with `python3 scripts/verify_repository.py --write`;
-6. run the read-only gate with `python3 scripts/verify_repository.py --check`;
-7. document migration and sunset behavior when compatibility is not additive.
+5. run the read-only gate with `python3 scripts/verify_repository.py --check`;
+6. document migration and sunset behavior when compatibility is not additive.
 
 `webapp/scripts/validate_artifacts.py` implements only the draft-07 subset used
 by its configured artifact families. A pass must not be generalized to schemas

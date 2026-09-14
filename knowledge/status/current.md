@@ -6,8 +6,8 @@
 - Historical knowledge baseline retained: `f9c65a5`
 - Current-tree contract inventory:
   `python3 scripts/verify_repository.py --check`
-- Configured versions:
-  [generated from their owners](../generated/reference.md#versions-and-configured-toolchains)
+- Configured versions: owned per file (`VERSION`, Julia Project/Manifest,
+  `webapp/package.json`, Dockerfile, Xcode project) under the inventory gate
 - Scope: repository runtime and local verification evidence, not manuscript
   claims, a remote CI result, or proof that an external deployment succeeded
 
@@ -731,8 +731,7 @@ checks that these files remain included once and in dependency order.
 ## Earlier verified boundaries retained
 
 - `/api/v1/*` is canonical. Bare `/api/*` routes remain compatibility aliases
-  until the sunset projected from executable route metadata into the
-  [generated reference](../generated/reference.md#api-routes). All tracked
+  until the sunset declared by executable route metadata. All tracked
   first-party clients are canonical; the bounded legacy-request counter informs
   but does not itself authorize alias removal.
 - Liveness, readiness, and Prometheus endpoints remain `/health`, `/ready`, and

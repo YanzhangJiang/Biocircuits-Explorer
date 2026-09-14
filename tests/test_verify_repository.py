@@ -25,14 +25,6 @@ SPEC.loader.exec_module(verify_repository)
 
 
 class PathAndMarkdownTests(unittest.TestCase):
-    def test_repository_paths_reject_absolute_parent_and_glob_without_opt_in(self):
-        safe = verify_repository.is_safe_repo_path
-        self.assertTrue(safe("knowledge/contracts/api.md"))
-        self.assertFalse(safe("/etc/passwd"))
-        self.assertFalse(safe("knowledge/../README.md"))
-        self.assertFalse(safe("schemas/*.json"))
-        self.assertTrue(safe("schemas/*.json", allow_glob=True))
-
     def test_balanced_parentheses_in_markdown_destinations(self):
         text = "[one](docs/a_(draft).md) and ![two](images/b.png \"caption\")"
         self.assertEqual(
@@ -80,44 +72,26 @@ class PathAndMarkdownTests(unittest.TestCase):
             self.assertEqual(good_audit.errors, [])
             self.assertTrue(any("broken Markdown heading fragment" in error for error in bad_audit.errors))
 
-    def test_manifest_document_symlink_cannot_escape_repository(self):
+    def test_maintained_scope_covers_entrypoints_and_knowledge_tree(self):
         with tempfile.TemporaryDirectory() as temporary:
-            parent = Path(temporary)
-            root = parent / "repo"
-            (root / "knowledge" / "catalogs").mkdir(parents=True)
-            for name in ("README.md", "PROJECT_SUMMARY.md"):
-                (root / name).write_text("maintained\n", encoding="utf-8")
-            outside = parent / "outside.md"
-            outside.write_text("outside\n", encoding="utf-8")
-            (root / "knowledge" / "out.md").symlink_to(outside)
-            for name in ("modules.yaml", "contracts.yaml", "artifacts.yaml"):
-                (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
-            common = {
-                "baseline_evidence_revision": "baseline",
-                "verification_command": "python3 scripts/verify_repository.py --check",
-            }
-            manifest = {
-                **common,
-                "schema_version": "bcx-knowledge-manifest/v1.0.0",
-                "entrypoints": [],
-                "documents": [{"id": "outside", "path": "knowledge/out.md"}],
-                "catalogs": {
-                    "modules": "knowledge/catalogs/modules.yaml",
-                    "contracts": "knowledge/catalogs/contracts.yaml",
-                    "artifacts": "knowledge/catalogs/artifacts.yaml",
-                },
-                "active_context_packs": [],
-            }
-            modules = {**common, "schema_version": "bcx-module-catalog/v1.0.0", "modules": []}
-            contracts = {**common, "schema_version": "bcx-contract-catalog/v1.0.0", "contracts": []}
-            artifacts = {**common, "schema_version": "bcx-artifact-catalog/v1.0.0", "artifacts": []}
-            audit = verify_repository.Audit()
+            root = Path(temporary)
+            (root / "README.md").write_text("maintained\n", encoding="utf-8")
+            (root / "PROJECT_SUMMARY.md").write_text("maintained\n", encoding="utf-8")
+            nested = root / "knowledge" / "contracts"
+            nested.mkdir(parents=True)
+            (nested / "api.md").write_text("# API\n", encoding="utf-8")
+            (root / "knowledge" / "notes.txt").write_text("not markdown\n", encoding="utf-8")
 
-            verify_repository.validate_knowledge(
-                root, manifest, modules, contracts, artifacts, audit
+            relatives = verify_repository.maintained_markdown_paths(root)
+
+            self.assertEqual(
+                relatives,
+                [
+                    Path("README.md"),
+                    Path("PROJECT_SUMMARY.md"),
+                    Path("knowledge/contracts/api.md"),
+                ],
             )
-
-            self.assertTrue(any("path escapes repository in manifest document" in error for error in audit.errors))
 
     def test_private_key_and_major_token_shapes_are_detected(self):
         markers = verify_repository.find_private_markers(
@@ -177,273 +151,8 @@ class PathAndMarkdownTests(unittest.TestCase):
         self.assertTrue(any("contains output" in error for error in audit.errors))
         self.assertTrue(any("execution_count" in error for error in audit.errors))
 
-    def test_manifest_document_paths_must_be_unique(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "knowledge" / "catalogs").mkdir(parents=True)
-            for name in ("README.md", "PROJECT_SUMMARY.md"):
-                (root / name).write_text("maintained\n", encoding="utf-8")
-            (root / "knowledge" / "same.md").write_text("# Same\n", encoding="utf-8")
-            for name in ("modules.yaml", "contracts.yaml", "artifacts.yaml"):
-                (root / "knowledge" / "catalogs" / name).write_text("{}\n", encoding="utf-8")
-            common = {
-                "baseline_evidence_revision": "baseline",
-                "verification_command": "python3 scripts/verify_repository.py --check",
-            }
-            manifest = {
-                **common,
-                "schema_version": "bcx-knowledge-manifest/v1.0.0",
-                "entrypoints": [],
-                "documents": [
-                    {"id": "first", "path": "knowledge/same.md"},
-                    {"id": "second", "path": "knowledge/same.md"},
-                ],
-                "catalogs": {
-                    "modules": "knowledge/catalogs/modules.yaml",
-                    "contracts": "knowledge/catalogs/contracts.yaml",
-                    "artifacts": "knowledge/catalogs/artifacts.yaml",
-                },
-                "active_context_packs": [],
-            }
-            modules = {**common, "schema_version": "bcx-module-catalog/v1.0.0", "modules": []}
-            contracts = {**common, "schema_version": "bcx-contract-catalog/v1.0.0", "contracts": []}
-            artifacts = {**common, "schema_version": "bcx-artifact-catalog/v1.0.0", "artifacts": []}
-            audit = verify_repository.Audit()
 
-            verify_repository.validate_knowledge(
-                root, manifest, modules, contracts, artifacts, audit
-            )
-
-            self.assertTrue(any("same path" in error for error in audit.errors))
-
-
-class SchemaInventoryTests(unittest.TestCase):
-    def _fixture(self, root: Path) -> tuple[dict, dict]:
-        schema_path = root / "schemas" / "example.schema.json"
-        schema_path.parent.mkdir(parents=True)
-        schema_path.write_text(
-            json.dumps(
-                {
-                    "$schema": "http://json-schema.org/draft-07/schema#",
-                    "$id": "https://example.test/example.schema.json",
-                    "type": "object",
-                    "properties": {"schema_version": {"const": "example/v1"}},
-                }
-            ),
-            encoding="utf-8",
-        )
-        contracts = {
-            "contracts": [
-                {
-                    "id": "example",
-                    "owner": "example-module",
-                    "coverage": "direct",
-                    "version_source": "schema-const",
-                    "schemas": ["schemas/example.schema.json"],
-                    "sources": ["schemas/example.schema.json"],
-                }
-            ]
-        }
-        artifacts = {
-            "artifacts": [
-                {"id": "example-schemas", "paths": ["schemas/example.schema.json"]}
-            ]
-        }
-        return contracts, artifacts
-
-    def test_schema_version_has_one_derived_owner(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            contracts, artifacts = self._fixture(root)
-            audit = verify_repository.Audit()
-
-            rows = verify_repository.schema_inventory(root, contracts, artifacts, audit)
-
-            self.assertEqual(audit.errors, [])
-            self.assertEqual(rows[0]["version"], "example/v1")
-            self.assertEqual(rows[0]["contract"], "example")
-
-    def test_two_version_identity_fields_are_rejected(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            contracts, artifacts = self._fixture(root)
-            path = root / "schemas" / "example.schema.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
-            document["properties"]["trace_schema_version"] = {"const": "trace/v1"}
-            path.write_text(json.dumps(document), encoding="utf-8")
-            audit = verify_repository.Audit()
-
-            verify_repository.schema_inventory(root, contracts, artifacts, audit)
-
-            self.assertTrue(any("exactly one version identity" in error for error in audit.errors))
-
-    def test_schema_contract_cannot_copy_or_empty_the_owned_version(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            contracts, artifacts = self._fixture(root)
-            contracts["contracts"][0]["version"] = "WRONG"
-            path = root / "schemas" / "example.schema.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
-            document["properties"]["schema_version"]["const"] = ""
-            path.write_text(json.dumps(document), encoding="utf-8")
-            audit = verify_repository.Audit()
-
-            verify_repository.schema_inventory(root, contracts, artifacts, audit)
-
-            self.assertTrue(any("duplicates its schema-owned version" in error for error in audit.errors))
-            self.assertTrue(any("empty version identity" in error for error in audit.errors))
-
-
-class GeneratedReferenceTests(unittest.TestCase):
-    def test_reference_order_is_deterministic(self):
-        routes = [
-            {
-                "canonical_path": path,
-                "methods": ["POST"],
-                "handler": "handle_" + path[-1],
-                "legacy_alias": None,
-                "match_kind": "exact",
-            }
-            for path in ("/z", "/a")
-        ]
-        schemas = [
-            {
-                "path": path,
-                "schema_id": "https://example.test/" + path,
-                "identity_field": "schema_version",
-                "version": "v1",
-                "contract": "contract",
-                "owner": "owner",
-                "coverage": "direct",
-                "artifact": "artifact",
-            }
-            for path in ("schemas/z.schema.json", "schemas/a.schema.json")
-        ]
-        rendered = verify_repository.render_reference({"routes": routes}, schemas, [])
-
-        self.assertLess(rendered.index("`/a`"), rendered.index("`/z`"))
-        self.assertLess(
-            rendered.index("`schemas/a.schema.json`"),
-            rendered.index("`schemas/z.schema.json`"),
-        )
-        self.assertNotIn("generated_at", rendered)
-
-    def test_atomic_writer_and_read_only_comparison(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            audit = verify_repository.Audit()
-            expected = "generated\n"
-
-            verify_repository.compare_or_write_generated(root, expected, True, audit)
-            path = root / verify_repository.GENERATED_REFERENCE
-            before = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
-            verify_repository.compare_or_write_generated(root, expected, False, audit)
-            after = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
-
-            self.assertEqual(audit.errors, [])
-            self.assertEqual(before, after)
-
-    def test_api_fact_mutation_is_rejected(self):
-        facts = {
-            "schema_version": "1",
-            "api_version": "v1",
-            "legacy_sunset": "2027-05-25",
-            "route_count": 2,
-            "routes": [
-                {
-                    "canonical_path": "/api/v1/a",
-                    "internal_path": "/api/a",
-                    "methods": ["POST"],
-                    "handler": "handle_a",
-                    "legacy_alias": "/api/a",
-                    "match_kind": "exact",
-                },
-                {
-                    "canonical_path": "/api/v1/b",
-                    "internal_path": "/api/b",
-                    "methods": ["post"],
-                    "handler": "handle_b",
-                    "legacy_alias": "/api/a",
-                    "match_kind": "exact",
-                },
-            ],
-        }
-        audit = verify_repository.Audit()
-        with mock.patch.object(
-            verify_repository, "run_command", return_value=json.dumps(facts)
-        ):
-            verify_repository.load_api_facts(Path("."), audit)
-
-        self.assertTrue(any("invalid methods" in error for error in audit.errors))
-        self.assertTrue(any("duplicate legacy API aliases" in error for error in audit.errors))
-
-    def test_api_version_and_sunset_cross_fields_are_rejected(self):
-        facts = {
-            "schema_version": "1",
-            "api_version": "v2",
-            "legacy_sunset": "2027-99-99",
-            "route_count": 1,
-            "routes": [
-                {
-                    "canonical_path": "/api/v1/a",
-                    "internal_path": "/api/a",
-                    "methods": ["POST"],
-                    "handler": "handle_a",
-                    "legacy_alias": "/api/a",
-                    "match_kind": "exact",
-                }
-            ],
-        }
-        audit = verify_repository.Audit()
-        with mock.patch.object(
-            verify_repository, "run_command", return_value=json.dumps(facts)
-        ):
-            verify_repository.load_api_facts(Path("."), audit)
-
-        self.assertTrue(any("real ISO date" in error for error in audit.errors))
-        self.assertTrue(any("disagrees with api_version" in error for error in audit.errors))
-
-    def test_api_catalog_cannot_duplicate_executable_version_or_sunset(self):
-        facts = {"api_version": "v1", "legacy_sunset": "2027-05-25"}
-        contracts = {
-            "contracts": [
-                {
-                    "id": "http-api-v1",
-                    "version": "v999",
-                    "compatibility": "Canonical /api/v999 until 2099-01-01",
-                }
-            ]
-        }
-        audit = verify_repository.Audit()
-
-        verify_repository.validate_api_catalog(facts, contracts, audit)
-
-        self.assertTrue(any("owned by executable metadata" in error for error in audit.errors))
-        self.assertTrue(any("duplicates its executable version" in error for error in audit.errors))
-        self.assertTrue(any("duplicates the executable legacy sunset" in error for error in audit.errors))
-        self.assertTrue(any("duplicates the executable versioned prefix" in error for error in audit.errors))
-
-    def test_maintained_api_projections_are_cross_checked(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            relative = Path("knowledge/current.md")
-            (root / relative).parent.mkdir(parents=True)
-            (root / relative).write_text(
-                "Use /api/v2; the legacy sunset is 2099-01-01.\n",
-                encoding="utf-8",
-            )
-            audit = verify_repository.Audit()
-
-            verify_repository.validate_api_projections(
-                root,
-                [relative],
-                {"api_version": "v1", "legacy_sunset": "2027-05-25"},
-                audit,
-            )
-
-            self.assertTrue(any("stale API version projection" in error for error in audit.errors))
-            self.assertTrue(any("stale legacy sunset projection" in error for error in audit.errors))
-
+class VersionInventoryTests(unittest.TestCase):
     def test_version_lines_compare_components_not_prefixes(self):
         self.assertEqual(verify_repository.major_minor_line("1.12"), (1, 12))
         self.assertEqual(verify_repository.major_minor_line("1.12.6-alpine"), (1, 12))
@@ -523,9 +232,6 @@ class GeneratedReferenceTests(unittest.TestCase):
             "webapp/package-lock.json",
             "deploy/Dockerfile",
             "frontend-swift/BiocircuitsExplorerMac.xcodeproj/project.pbxproj",
-            "frontend-swift/BiocircuitsExplorerMac/WorkspaceDocument.swift",
-            "scripts/build_macos_dmg.sh",
-            "packaging/macos_release_metadata.sh",
         )
         ci_document = {
             "jobs": {
@@ -548,11 +254,6 @@ class GeneratedReferenceTests(unittest.TestCase):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO_ROOT / relative, destination)
 
-            shutil.copytree(
-                REPO_ROOT / "webapp/public/js/node-types",
-                root / "webapp/public/js/node-types",
-            )
-
             manifest_path = root / "webapp/Manifest.toml"
             text = manifest_path.read_text(encoding="utf-8")
             package = "BiocircuitsExplorerBackend"
@@ -569,44 +270,10 @@ class GeneratedReferenceTests(unittest.TestCase):
 
             audit = verify_repository.Audit()
             with mock.patch.object(verify_repository, "load_yaml", return_value=ci_document):
-                verify_repository.version_inventory(
-                    root,
-                    {"api_version": "v1", "legacy_sunset": "2027-05-25"},
-                    audit,
-                )
+                verify_repository.version_inventory(root, audit)
 
         self.assertTrue(any("application version drift" in error for error in audit.errors))
         self.assertTrue(any("webapp/Manifest.toml" in error for error in audit.errors))
-
-    def test_write_inventories_schemas_after_generation(self):
-        events: list[str] = []
-
-        def run_command(_root, _command, _audit, label):
-            events.append(label)
-            return ""
-
-        def schema_inventory(_root, _contracts, _artifacts, _audit):
-            events.append("schema inventory")
-            return []
-
-        def compare(_root, _expected, write, _audit):
-            events.append("write reference" if write else "check reference")
-
-        with tempfile.TemporaryDirectory() as temporary, \
-             mock.patch.object(verify_repository, "load_yaml", return_value={}), \
-             mock.patch.object(verify_repository, "validate_knowledge", return_value=[]), \
-             mock.patch.object(verify_repository, "schema_inventory", side_effect=schema_inventory), \
-             mock.patch.object(verify_repository, "load_api_facts", return_value={"routes": []}), \
-             mock.patch.object(verify_repository, "version_inventory", return_value=[]), \
-             mock.patch.object(verify_repository, "run_command", side_effect=run_command), \
-             mock.patch.object(verify_repository, "compare_or_write_generated", side_effect=compare), \
-             contextlib.redirect_stdout(io.StringIO()):
-            status = verify_repository.verify(Path(temporary), write=True, external=True)
-
-        self.assertEqual(status, 0)
-        self.assertLess(events.index("generated schema check"), events.index("schema inventory"))
-        self.assertLess(events.index("schema inventory"), events.index("write reference"))
-        self.assertLess(events.index("write reference"), events.index("post-write generated schema check"))
 
     def test_check_ignores_unrelated_worktree_activity(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -621,16 +288,11 @@ class GeneratedReferenceTests(unittest.TestCase):
                 return ""
 
             output = io.StringIO()
-            with mock.patch.object(verify_repository, "load_yaml", return_value={}), \
-                 mock.patch.object(verify_repository, "validate_knowledge", return_value=[]), \
-                 mock.patch.object(verify_repository, "schema_inventory", return_value=[]), \
-                 mock.patch.object(verify_repository, "load_api_facts", return_value={"routes": []}), \
-                 mock.patch.object(verify_repository, "version_inventory", return_value=[]), \
+            with mock.patch.object(verify_repository, "version_inventory"), \
                  mock.patch.object(verify_repository, "check_public_repository_safety"), \
                  mock.patch.object(verify_repository, "run_command", side_effect=run_command), \
-                 mock.patch.object(verify_repository, "compare_or_write_generated"), \
                  contextlib.redirect_stdout(output):
-                status = verify_repository.verify(root, write=False, external=True)
+                status = verify_repository.verify(root, external=True)
 
             self.assertEqual(status, 0, output.getvalue())
             self.assertEqual((root / "baseline.txt").read_text(), "baseline\n")

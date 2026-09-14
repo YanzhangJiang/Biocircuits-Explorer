@@ -45,8 +45,10 @@ knowledge catalog.
   run passed the build-for-testing step and all unit tests on 2026-07-15;
   no remote workflow run, UI automation, or signed/notarized package is claimed.
 
-The configured versions and their owners are listed in the
-[generated reference](knowledge/generated/reference.md#versions-and-configured-toolchains).
+The configured versions live with their owning files (`VERSION`, the Julia
+`Project.toml` and `Manifest.toml` files, `webapp/package.json`,
+`deploy/Dockerfile`, and the Xcode project) and are kept consistent by
+`python3 scripts/verify_repository.py --check`.
 A configured workflow is not, by itself, proof that an external run passed.
 
 ## Quick start: local and loopback-only
@@ -107,8 +109,7 @@ curl http://127.0.0.1:8088/api/v1
 
 `/api/v1/*` is the canonical API. Bare `/api/*` routes are compatibility
 aliases and return an `X-API-Deprecation` header. See
-[the API boundary](knowledge/contracts/api.md) and the
-[generated route list](knowledge/generated/reference.md#api-routes).
+[the API boundary](knowledge/contracts/api.md).
 
 ## Verify a checkout
 

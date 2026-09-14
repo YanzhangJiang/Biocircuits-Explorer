@@ -84,9 +84,8 @@ The repository check detects credential-bearing URLs, private-key headers,
 common token shapes, files in explicitly private directories, and manuscript
 or bibliography file types (`.tex`, `.doc`, `.docx`, `.pdf`, `.bib`, `.ris`,
 `.nbib`, `.enw`) even when a force-add bypasses `.gitignore`. Public SSH
-repository URLs and example paths are allowed. Generated schemas and
-references are checked for drift; unrelated worktree edits do not invalidate a
-check. Runtime compatibility is tested by the owning code's behavior, without
+repository URLs and example paths are allowed. Generated schemas are checked
+for drift; unrelated worktree edits do not invalidate a check. Runtime compatibility is tested by the owning code's behavior, without
 requiring a particular source formatting.
 
 The legacy `doc/`, `wiki/`, and incident-specific agent notes can still explain
@@ -103,9 +102,7 @@ For a code change that affects behavior:
 4. add a decision only when the choice is durable and non-obvious;
 5. change summaries last;
 6. for a snapshot document, set `verified_against` to the revision actually
-   inspected or mark it provisional; executable catalogs instead retain their
-   historical `baseline_evidence_revision` and must pass their declared
-   `verification_command` on the current tree.
+   inspected or mark it provisional.
 
 For a data or paper claim, also follow the repository hand-off in
 [`research/repositories.md`](research/repositories.md). Conflicting counts stay

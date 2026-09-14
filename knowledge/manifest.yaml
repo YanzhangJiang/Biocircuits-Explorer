@@ -39,12 +39,6 @@ catalogs:
   artifacts: "knowledge/catalogs/artifacts.yaml"
 
 documents:
-  - id: "generated-contract-reference"
-    path: "knowledge/generated/reference.md"
-    kind: "generated-reference"
-    owner: "cross-module"
-    status: "generated-do-not-edit"
-
   - id: "glossary"
     path: "knowledge/glossary.md"
     kind: "reference"

@@ -43,15 +43,6 @@ artifacts:
     authority: "Julia selects Manifest-v1.10.toml before 1.11 and Manifest.toml for the current 1.12 environment"
     status: "workflow-configured-and-locally-loaded-on-julia-1.10.11-and-1.12.6"
 
-  - id: "generated-contract-reference"
-    kind: "generated-reference"
-    paths:
-      - "knowledge/generated/reference.md"
-    producer: "scripts/verify_repository.py --write"
-    validator: "scripts/verify_repository.py --check"
-    authority: "Executable API metadata, JSON Schemas, contract catalogs, version files, and CI configuration"
-    status: "deterministic-drift-gated"
-
   - id: "ir-json-schemas"
     kind: "generated-contract"
     paths:
