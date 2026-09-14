@@ -15,9 +15,6 @@
 //   2. URL pathname like foo.zh.html, foo.zh-cn.html
 //   3. DEFAULT_LOCALE
 //
-// The matching .zh.html file is allowed to be a literal copy of the English
-// HTML — both files run the same JS, the JS just detects the URL and applies
-// translations. Keep the two files byte-identical with `npm run sync-html`.
 
 const DEFAULT_LOCALE = "en";
 const SUPPORTED_LOCALES = new Set(["en", "zh"]);

@@ -12,12 +12,8 @@
 </head>
 <body>
 <!--
-  This file is the single source of truth for the landing page. The browser
-  also serves an identical copy at /index.zh.html for backward-compatible
-  Chinese URLs; js/i18n.js detects the locale from the URL and swaps text via
-  data-i18n attributes. Keep the two HTML files byte-identical (CI: npm run
-  check-i18n-sync). Edit only this file; translations live in
-  webapp/public/locales/<lang>.json.
+  Landing page. js/i18n.js reads ?lang=zh and swaps text via data-i18n
+  attributes; translations live in webapp/public/locales/<lang>.json.
 -->
 <header class="site-header">
   <a class="brand" href="/" data-i18n-attr-aria-label="header.brand_aria" aria-label="Biocircuits Explorer home">
@@ -33,7 +29,7 @@
   </nav>
   <span class="lang-switch" role="group" data-i18n-attr-aria-label="header.lang_aria" aria-label="Language">
     <a href="/index.html" class="active" aria-current="page" lang="en">EN</a>
-    <a href="/index.zh.html" lang="zh-CN">中文</a>
+    <a href="/index.html?lang=zh" lang="zh-CN">中文</a>
   </span>
   <a class="nav-cta" href="/index-node.html" data-i18n="header.cta">Open Web App</a>
 </header>
@@ -82,11 +78,11 @@
             <span class="variant-tag">Web</span>
             <h3>Biocircuits Web</h3>
           </div>
-          <p data-i18n="variants.web.body">The full design canvas, served from any modern browser. Best for teams behind a shared backend, classroom deployments, and remote collaborators on a managed server.</p>
+          <p data-i18n="variants.web.body">The full design canvas, served from your own machine to any modern browser. Start it with one script and keep everything local.</p>
           <ul class="variant-list">
             <li data-i18n="variants.web.li1">Full node canvas with zero install</li>
-            <li data-i18n="variants.web.li2">Cloud Compute for long-running atlas builds</li>
-            <li data-i18n="variants.web.li3">Cognito-backed accounts and per-user quotas</li>
+            <li data-i18n="variants.web.li2">Local asynchronous jobs for long-running atlas builds</li>
+            <li data-i18n="variants.web.li3">Everything runs on loopback; no accounts, no cloud</li>
           </ul>
           <a class="variant-link" href="/index-node.html"><span data-i18n="variants.web.cta">Open web app</span> <span aria-hidden="true">→</span></a>
         </article>
@@ -102,19 +98,6 @@
             <li data-i18n="variants.mac.li3">SQLite atlas libraries on disk</li>
           </ul>
           <a class="variant-link" href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer"><span data-i18n="variants.mac.cta">Release downloads</span> <span aria-hidden="true">→</span></a>
-        </article>
-        <article class="variant-card">
-          <div class="variant-head">
-            <span class="variant-tag">Classic</span>
-            <h3 data-i18n="variants.classic.title">Classic form UI</h3>
-          </div>
-          <p data-i18n="variants.classic.body">The original form-based interface, kept around for reproducible scripting, headless reruns, and benchmarking against the canvas workflow.</p>
-          <ul class="variant-list">
-            <li data-i18n="variants.classic.li1">Direct form-based parameter entry</li>
-            <li data-i18n="variants.classic.li2">Compatible with existing notebooks and scripts</li>
-            <li data-i18n="variants.classic.li3">Useful for headless reproduction</li>
-          </ul>
-          <a class="variant-link" href="/classic.html"><span data-i18n="variants.classic.cta">Open classic UI</span> <span aria-hidden="true">→</span></a>
         </article>
       </div>
     </div>
@@ -213,13 +196,13 @@
 
       <article class="feature-row">
         <div class="feature-copy">
-          <p class="feature-kicker" data-i18n="features.f5.kicker">05 · Inverse design, AI Import, remote compute</p>
-          <h3 data-i18n="features.f5.title">The library, the agent, and the cluster.</h3>
-          <p data-i18n="features.f5.body">Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Cloud Compute offloads heavy atlas builds to AWS Batch. Workspaces stay versionable JSON across all of it.</p>
+          <p class="feature-kicker" data-i18n="features.f5.kicker">05 · Inverse design, AI Import, local jobs</p>
+          <h3 data-i18n="features.f5.title">The library, the agent, and the job queue.</h3>
+          <p data-i18n="features.f5.body">Atlas-backed inverse design searches a library for networks that realize a target behavior. AI Import turns a paper or notebook into a populated analysis chain in one click. Heavy atlas builds run as local asynchronous jobs you can cancel. Workspaces stay versionable JSON across all of it.</p>
           <ul>
             <li data-i18n="features.f5.li1">Atlas inverse design with motif, witness, and robustness queries</li>
             <li data-i18n="features.f5.li2">AI Import via Claude or DeepSeek (key stays in your browser)</li>
-            <li data-i18n="features.f5.li3">Cloud Compute with Cognito accounts and per-user quotas</li>
+            <li data-i18n="features.f5.li3">Local job queue with cancellation and a durable job store</li>
           </ul>
         </div>
         <div class="feature-media">
@@ -238,7 +221,7 @@
     <div class="section-inner">
       <div class="section-heading">
         <h2 id="workflow-title" data-i18n="workflow.title">From hypothesis to a design you can defend in review.</h2>
-        <p data-i18n="workflow.body">Four steps that follow the same path in the browser, the native macOS shell, or the classic form UI. Workspaces and atlas libraries stay portable between them.</p>
+        <p data-i18n="workflow.body">Four steps that follow the same path in the browser or the native macOS shell. Workspaces and atlas libraries stay portable between them.</p>
       </div>
       <ol class="workflow-list" data-i18n-attr-aria-label="workflow.steps_aria" aria-label="Workflow steps">
         <li class="workflow-step">
@@ -313,7 +296,6 @@
       <ul>
         <li><a href="/index-node.html" data-i18n="footer.product.web">Web app</a></li>
         <li><a href="https://github.com/YanzhangJiang/Biocircuits-Explorer/releases" rel="noreferrer" data-i18n="footer.product.mac">macOS releases</a></li>
-        <li><a href="/classic.html" data-i18n="footer.product.classic">Classic UI</a></li>
         <li><a href="#features" data-i18n="footer.product.capabilities">Capabilities</a></li>
         <li><a href="#workflow" data-i18n="footer.product.workflow">Workflow</a></li>
       </ul>

@@ -54,10 +54,6 @@ jobs:
       - name: Periodic-table Python contract tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-      - name: index.html / index.zh.html structural sync
-        working-directory: webapp
-        run: npm run check-i18n-sync
-
   browser-e2e:
     name: Browser E2E / accessibility / visual regression
     runs-on: ubuntu-latest
