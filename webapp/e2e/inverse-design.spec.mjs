@@ -606,10 +606,10 @@ test('an uploaded pattern becomes a one-input XY target only after an ordered tr
   expect(app.errors).toEqual([]);
 });
 
-test('node Agent compilation shares authenticated settings and is one undoable editable target change', async ({ page }) => {
+test('node Agent compilation shares LLM settings and is one undoable editable target change', async ({ page }) => {
   const app = await openInverseDesign(page);
   await page.evaluate(async () => {
-    window.setDesignChatEndpoint('http://127.0.0.1:8765/design-chat', 'test-memory-bearer');
+    window.setDesignChatEndpoint('http://127.0.0.1:8765/design-chat');
     (await import('/js/llm-settings.js')).setLLMConfig({ provider: 'openai', model: 'mock-compiler', apiKey: 'test-memory-llm-key', effort: 'high' });
   });
   await control(page, 'description').fill('Create a triangular response with a peak in the middle.');
@@ -618,7 +618,7 @@ test('node Agent compilation shares authenticated settings and is one undoable e
   await page.getByRole('button', { name: 'Compile with Design Agent', exact: true }).click();
   await expect(targetNode(page).getByText('Goal compiled.', { exact: true })).toBeVisible();
   expect(app.compilerRequests).toHaveLength(1);
-  expect(app.compilerRequests[0].headers.authorization).toBe('Bearer test-memory-bearer');
+  expect(app.compilerRequests[0].headers.authorization).toBeUndefined();
   expect(app.compilerRequests[0].body).toMatchObject({ message: description, llm: { model: 'mock-compiler', apiKey: 'test-memory-llm-key', effort: 'high' } });
   expect(await targetValue(page)).toEqual(compiledResponse().target);
   expect(await control(page, 'target-mode').inputValue()).toBe('agent');
@@ -638,7 +638,6 @@ test('node Agent compilation shares authenticated settings and is one undoable e
   expect(app.requests).toHaveLength(1);
   expect(app.requests[0].target.source).toBe('data');
   const persisted = await snapshot(page), stored = await page.evaluate(() => JSON.stringify(localStorage));
-  expect(JSON.stringify(persisted) + stored).not.toContain('test-memory-bearer');
   expect(JSON.stringify(persisted) + stored).not.toContain('test-memory-llm-key');
   expect(app.errors).toEqual([]);
 });

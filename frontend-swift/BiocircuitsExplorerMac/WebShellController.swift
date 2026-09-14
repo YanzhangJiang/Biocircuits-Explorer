@@ -977,13 +977,12 @@ final class WebShellController: NSObject, ObservableObject {
     /// Point the embedded Design Agent at the locally-spawned design-chat backend
     /// (`DesignChatBackendController`). The web default is 127.0.0.1:8765; this
     /// keeps the two in sync if the port was overridden.
-    func setDesignChatEndpoint(_ urlString: String, bearerToken: String) {
+    func setDesignChatEndpoint(_ urlString: String) {
         do {
             let urlArgument = try javaScriptStringLiteral(for: urlString)
-            let tokenArgument = try javaScriptStringLiteral(for: bearerToken)
             evaluateNativeShellCommand(
                 "typeof window.setDesignChatEndpoint === 'function' && " +
-                "window.setDesignChatEndpoint(\(urlArgument), \(tokenArgument))"
+                "window.setDesignChatEndpoint(\(urlArgument))"
             )
         } catch {
             lastErrorMessage = error.localizedDescription

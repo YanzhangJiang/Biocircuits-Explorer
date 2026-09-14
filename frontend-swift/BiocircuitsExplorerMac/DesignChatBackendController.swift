@@ -25,7 +25,6 @@ final class DesignChatBackendController: ObservableObject {
     @Published private(set) var isStarting = false
     @Published private(set) var statusMessage = "Design backend not started"
     @Published var lastErrorMessage: String?
-    private(set) var bearerToken: String?
 
     let port: Int
     let enginePort: Int
@@ -37,10 +36,6 @@ final class DesignChatBackendController: ObservableObject {
 
     private var healthURL: URL {
         URL(string: "http://127.0.0.1:\(port)/health")!
-    }
-
-    private var identityURL: URL {
-        URL(string: "http://127.0.0.1:\(port)/identity")!
     }
 
     private var allowedOrigin: String {
@@ -121,20 +116,13 @@ final class DesignChatBackendController: ObservableObject {
         "http://127.0.0.1:\(enginePort)"
     }
 
-    nonisolated static func makeBearerToken() -> String {
-        LocalLoopbackService.makeNonce()
-    }
-
     nonisolated static func nativeSecurityEnvironment(
         enginePort: Int,
-        bearerToken: String,
         instanceNonce: String
     ) -> [String: String] {
         [
             "BNE_CHAT_ALLOWED_ORIGIN": nativeAllowedOrigin(enginePort: enginePort),
-            "BNE_CHAT_BEARER_TOKEN": bearerToken,
             "BNE_CHAT_INSTANCE_NONCE": instanceNonce,
-            "BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK": "0",
         ]
     }
 
@@ -151,13 +139,8 @@ final class DesignChatBackendController: ObservableObject {
         ]
     }
 
-    nonisolated static func authenticatedRequest(
-        url: URL,
-        bearerToken: String,
-        allowedOrigin: String
-    ) -> URLRequest {
+    nonisolated static func probeRequest(url: URL, allowedOrigin: String) -> URLRequest {
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         request.setValue(allowedOrigin, forHTTPHeaderField: "Origin")
         return request
     }
@@ -193,14 +176,10 @@ final class DesignChatBackendController: ObservableObject {
             }
         }
 
-        let nextBearerToken = Self.makeBearerToken()
         let nextInstanceNonce = LocalLoopbackService.makeNonce()
         let launchSpec: LaunchSpec
         do {
-            launchSpec = try resolveLaunchSpec(
-                bearerToken: nextBearerToken,
-                instanceNonce: nextInstanceNonce
-            )
+            launchSpec = try resolveLaunchSpec(instanceNonce: nextInstanceNonce)
         } catch {
             guard launchLifecycle.accepts(generation) else {
                 return
@@ -213,7 +192,6 @@ final class DesignChatBackendController: ObservableObject {
         guard launchLifecycle.accepts(generation) else {
             return
         }
-        bearerToken = nextBearerToken
         instanceNonce = nextInstanceNonce
         do {
             try launchBackend(using: launchSpec, generation: generation)
@@ -221,7 +199,6 @@ final class DesignChatBackendController: ObservableObject {
             guard launchLifecycle.accepts(generation) else {
                 return
             }
-            bearerToken = nil
             instanceNonce = nil
             lastErrorMessage = error.localizedDescription
             statusMessage = "Design backend failed to launch"
@@ -232,8 +209,7 @@ final class DesignChatBackendController: ObservableObject {
             try await waitUntilReady(
                 timeout: startupTimeout,
                 generation: generation,
-                expectedNonce: nextInstanceNonce,
-                bearerToken: nextBearerToken
+                expectedNonce: nextInstanceNonce
             )
             try launchLifecycle.requireCurrent(generation)
             isReady = true
@@ -308,7 +284,6 @@ final class DesignChatBackendController: ObservableObject {
         if let processToStop, processToStop.isRunning {
             processToStop.terminate()
         }
-        bearerToken = nil
         instanceNonce = nil
         if startedByApp {
             statusMessage = "Design backend stopped"
@@ -317,10 +292,7 @@ final class DesignChatBackendController: ObservableObject {
         return processToStop
     }
 
-    private func resolveLaunchSpec(
-        bearerToken: String,
-        instanceNonce: String
-    ) throws -> LaunchSpec {
+    private func resolveLaunchSpec(instanceNonce: String) throws -> LaunchSpec {
         guard let scriptURL = locateChatScript() else {
             throw DesignChatError.scriptMissing
         }
@@ -343,7 +315,6 @@ final class DesignChatBackendController: ObservableObject {
         spawnEnv.merge(Self.enginePortEnvironment(enginePort)) { _, explicit in explicit }
         spawnEnv.merge(Self.nativeSecurityEnvironment(
             enginePort: enginePort,
-            bearerToken: bearerToken,
             instanceNonce: instanceNonce
         )) { _, explicit in explicit }
         if let configuredTraceDirectory = environment["BNE_TRACE_DIR"]?
@@ -613,7 +584,6 @@ final class DesignChatBackendController: ObservableObject {
                 self.isStarting = false
                 self.clearPipeHandlers()
                 self.process = nil
-                self.bearerToken = nil
                 self.instanceNonce = nil
                 let expectedStop = Self.processTerminationWasExpected(
                     stopRequested: self.stopRequested,
@@ -669,16 +639,12 @@ final class DesignChatBackendController: ObservableObject {
     private func waitUntilReady(
         timeout: TimeInterval,
         generation: UInt64,
-        expectedNonce: String,
-        bearerToken: String
+        expectedNonce: String
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             try launchLifecycle.requireCurrent(generation)
-            if await probeBackend(
-                expectedNonce: expectedNonce,
-                bearerToken: bearerToken
-            ) {
+            if await probeBackend(expectedNonce: expectedNonce) {
                 try launchLifecycle.requireCurrent(generation)
                 return
             }
@@ -696,34 +662,10 @@ final class DesignChatBackendController: ObservableObject {
         )
     }
 
-    /// Perform an unauthenticated identity handshake first. The bearer is sent
-    /// only after the listener proves possession of this launch's nonce.
-    private func probeBackend(expectedNonce: String, bearerToken: String) async -> Bool {
-        var identityRequest = URLRequest(url: identityURL)
-        identityRequest.timeoutInterval = 2
-        do {
-            let (identityData, identityResponse) = try await URLSession.shared.data(
-                for: identityRequest
-            )
-            guard
-                let identityHTTP = identityResponse as? HTTPURLResponse,
-                Self.identityProbeSucceeded(
-                    statusCode: identityHTTP.statusCode,
-                    body: identityData,
-                    expectedNonce: expectedNonce
-                )
-            else {
-                return false
-            }
-        } catch {
-            return false
-        }
-
-        var request = Self.authenticatedRequest(
-            url: healthURL,
-            bearerToken: bearerToken,
-            allowedOrigin: allowedOrigin
-        )
+    /// Poll /health until the listener answers with this launch's nonce, so a
+    /// stale helper on the same port is never mistaken for ours.
+    private func probeBackend(expectedNonce: String) async -> Bool {
+        var request = Self.probeRequest(url: healthURL, allowedOrigin: allowedOrigin)
         request.timeoutInterval = 2
 
         do {
@@ -739,22 +681,6 @@ final class DesignChatBackendController: ObservableObject {
         } catch {
             return false
         }
-    }
-
-    nonisolated static func identityProbeSucceeded(
-        statusCode: Int,
-        body: Data,
-        expectedNonce: String
-    ) -> Bool {
-        guard
-            statusCode == 200,
-            let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-            payload["service"] as? String == serviceIdentity,
-            payload["instance_nonce"] as? String == expectedNonce
-        else {
-            return false
-        }
-        return true
     }
 
     nonisolated static func healthProbeSucceeded(

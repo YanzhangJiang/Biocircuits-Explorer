@@ -23,29 +23,16 @@ const {
   setDesignChatEndpoint,
 } = await import('../public/js/agent-view.js');
 
+// The loopback helper is Origin-checked; the browser client sends no credentials.
 assert.deepEqual(designChatRequestHeaders(), {});
 assert.deepEqual(designChatRequestHeaders({ json: true }), {
   'Content-Type': 'application/json',
 });
 
 const endpoint = 'http://127.0.0.1:8765/design-chat';
-const firstToken = 'a'.repeat(64);
-setDesignChatEndpoint(endpoint, firstToken);
-assert.deepEqual(designChatRequestHeaders(), {
-  Authorization: `Bearer ${firstToken}`,
-});
-assert.deepEqual(designChatRequestHeaders({ json: true }), {
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${firstToken}`,
-});
-assert.equal(persisted.get('bcx-chat-api'), endpoint);
-assert.equal([...persisted.values()].includes(firstToken), false, 'bearer token must stay memory-only');
-
-const rotatedToken = 'b'.repeat(64);
-setDesignChatEndpoint(endpoint, rotatedToken);
-assert.equal(designChatRequestHeaders().Authorization, `Bearer ${rotatedToken}`);
-
 setDesignChatEndpoint(endpoint);
-assert.deepEqual(designChatRequestHeaders(), {}, 'local development remains token-free');
+assert.equal(persisted.get('bcx-chat-api'), endpoint);
+assert.equal(window.__BCX_CHAT_API__, endpoint);
+assert.deepEqual(designChatRequestHeaders(), {});
 
-console.log('Design Chat auth contract tests passed.');
+console.log('Design Chat endpoint contract tests passed.');

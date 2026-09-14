@@ -452,49 +452,37 @@ struct BiocircuitsExplorerMacTests {
         #expect(chatPort != enginePort)
     }
 
-    @Test func nativeDesignChatRotatesAndPropagatesItsBearerContract() async throws {
-        let firstToken = DesignChatBackendController.makeBearerToken()
-        let secondToken = DesignChatBackendController.makeBearerToken()
-
-        #expect(firstToken.count == 64)
-        #expect(firstToken.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil)
-        #expect(secondToken.count == 64)
-        #expect(firstToken != secondToken)
+    @Test func nativeDesignChatPinsOriginAndLaunchNonce() async throws {
+        let nonce = LocalLoopbackService.makeNonce()
+        let otherNonce = LocalLoopbackService.makeNonce()
+        #expect(nonce.count == 64)
+        #expect(nonce != otherNonce)
 
         let securityEnvironment = DesignChatBackendController.nativeSecurityEnvironment(
             enginePort: 18_088,
-            bearerToken: firstToken,
-            instanceNonce: secondToken
+            instanceNonce: nonce
         )
         #expect(securityEnvironment["BNE_CHAT_ALLOWED_ORIGIN"] == "http://127.0.0.1:18088")
-        #expect(securityEnvironment["BNE_CHAT_BEARER_TOKEN"] == firstToken)
-        #expect(securityEnvironment["BNE_CHAT_INSTANCE_NONCE"] == secondToken)
-        #expect(securityEnvironment["BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK"] == "0")
+        #expect(securityEnvironment["BNE_CHAT_INSTANCE_NONCE"] == nonce)
+        #expect(securityEnvironment["BNE_CHAT_BEARER_TOKEN"] == nil)
 
-        let request = DesignChatBackendController.authenticatedRequest(
+        let request = DesignChatBackendController.probeRequest(
             url: URL(string: "http://127.0.0.1:8765/health")!,
-            bearerToken: firstToken,
             allowedOrigin: "http://127.0.0.1:18088"
         )
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(firstToken)")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
         #expect(request.value(forHTTPHeaderField: "Origin") == "http://127.0.0.1:18088")
 
-        let identityBody = Data(#"{"service":"biocircuits-design-chat","instance_nonce":"\#(secondToken)"}"#.utf8)
-        let healthBody = Data(#"{"ok":true,"service":"biocircuits-design-chat","instance_nonce":"\#(secondToken)"}"#.utf8)
-        #expect(DesignChatBackendController.identityProbeSucceeded(
-            statusCode: 200,
-            body: identityBody,
-            expectedNonce: secondToken
-        ))
-        #expect(!DesignChatBackendController.identityProbeSucceeded(
-            statusCode: 200,
-            body: identityBody,
-            expectedNonce: firstToken
-        ))
+        let healthBody = Data(#"{"ok":true,"service":"biocircuits-design-chat","instance_nonce":"\#(nonce)"}"#.utf8)
         #expect(DesignChatBackendController.healthProbeSucceeded(
             statusCode: 200,
             body: healthBody,
-            expectedNonce: secondToken
+            expectedNonce: nonce
+        ))
+        #expect(!DesignChatBackendController.healthProbeSucceeded(
+            statusCode: 200,
+            body: healthBody,
+            expectedNonce: otherNonce
         ))
     }
 

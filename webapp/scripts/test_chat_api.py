@@ -18,26 +18,14 @@ class _BrokenStderr:
 
 
 TEST_ORIGIN = "http://127.0.0.1:18088"
-TEST_TOKEN = "a" * 64
 TEST_NONCE = "b" * 64
 
 
 @contextmanager
-def _running_server(
-    *,
-    token=TEST_TOKEN,
-    allow_unauthenticated=False,
-    max_concurrent_turns=2,
-):
+def _running_server(*, max_concurrent_turns=2):
     with (
         mock.patch.object(chat_api, "ALLOWED_ORIGIN", TEST_ORIGIN),
-        mock.patch.object(chat_api, "BEARER_TOKEN", token),
         mock.patch.object(chat_api, "INSTANCE_NONCE", TEST_NONCE),
-        mock.patch.object(
-            chat_api,
-            "ALLOW_UNAUTHENTICATED_LOOPBACK",
-            allow_unauthenticated,
-        ),
         mock.patch.object(chat_api.engine, "engine_ready", return_value=True),
         mock.patch.object(chat_api.engine, "engine_base_url", return_value=TEST_ORIGIN),
         mock.patch.object(
@@ -111,7 +99,6 @@ class ChatApiCapacityContractTests(unittest.TestCase):
             "/design-chat",
             headers={
                 "Origin": TEST_ORIGIN,
-                "Authorization": f"Bearer {TEST_TOKEN}",
                 "Content-Type": "application/json",
             },
             payload={"message": message, "state": {}, "top": 1},
@@ -198,12 +185,8 @@ class ChatApiCapacityContractTests(unittest.TestCase):
 
 
 class ChatApiSecurityContractTests(unittest.TestCase):
-    def test_runtime_contract_requires_loopback_origin_and_native_token(self):
-        chat_api._validate_runtime_contract(
-            TEST_ORIGIN, TEST_TOKEN, False, instance_nonce=TEST_NONCE
-        )
-        chat_api._validate_runtime_contract(TEST_ORIGIN, "", True)
-
+    def test_runtime_contract_requires_loopback_bind_and_exact_loopback_origin(self):
+        chat_api._validate_runtime_contract(TEST_ORIGIN)
         for origin in (
             "",
             "https://evil.example",
@@ -213,34 +196,9 @@ class ChatApiSecurityContractTests(unittest.TestCase):
         ):
             with self.subTest(origin=origin):
                 with self.assertRaises(ValueError):
-                    chat_api._validate_runtime_contract(origin, TEST_TOKEN, False)
+                    chat_api._validate_runtime_contract(origin)
         with self.assertRaises(ValueError):
-            chat_api._validate_runtime_contract(TEST_ORIGIN, "short", False)
-        with self.assertRaises(ValueError):
-            chat_api._validate_runtime_contract(
-                TEST_ORIGIN, TEST_TOKEN, False, instance_nonce=""
-            )
-        with self.assertRaises(ValueError):
-            chat_api._validate_runtime_contract(TEST_ORIGIN, TEST_TOKEN, False, "0.0.0.0")
-        with self.assertRaises(ValueError):
-            chat_api._validate_runtime_contract(TEST_ORIGIN, "", True, "0.0.0.0")
-        with self.assertRaises(ValueError):
-            chat_api._validate_runtime_contract(
-                TEST_ORIGIN, TEST_TOKEN, False, instance_nonce="short"
-            )
-
-    def test_identity_handshake_requires_no_bearer_and_returns_only_launch_identity(self):
-        with _running_server() as port:
-            status, headers, body = _request(port, "GET", "/identity")
-        self.assertEqual(status, 200)
-        self.assertNotIn("access-control-allow-origin", headers)
-        self.assertEqual(
-            json.loads(body),
-            {
-                "service": chat_api.SERVICE_IDENTITY,
-                "instance_nonce": TEST_NONCE,
-            },
-        )
+            chat_api._validate_runtime_contract(TEST_ORIGIN, "0.0.0.0")
 
     def test_preflight_only_echoes_the_exact_allowed_origin(self):
         with _running_server() as port:
@@ -251,12 +209,11 @@ class ChatApiSecurityContractTests(unittest.TestCase):
                 headers={
                     "Origin": TEST_ORIGIN,
                     "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Content-Type, Authorization",
+                    "Access-Control-Request-Headers": "Content-Type",
                 },
             )
             self.assertEqual(status, 204)
             self.assertEqual(headers.get("access-control-allow-origin"), TEST_ORIGIN)
-            self.assertIn("Authorization", headers.get("access-control-allow-headers", ""))
 
             status, headers, _ = _request(
                 port,
@@ -270,7 +227,7 @@ class ChatApiSecurityContractTests(unittest.TestCase):
             self.assertEqual(status, 403)
             self.assertNotIn("access-control-allow-origin", headers)
 
-    def test_post_rejects_evil_origin_before_agent_even_with_valid_token(self):
+    def test_post_rejects_evil_or_missing_origin_before_agent(self):
         with mock.patch.object(chat_api.agent, "run_turn") as run_turn:
             with _running_server() as port:
                 status, headers, _ = _request(
@@ -279,76 +236,13 @@ class ChatApiSecurityContractTests(unittest.TestCase):
                     "/design-chat",
                     headers={
                         "Origin": "https://evil.example",
-                        "Authorization": f"Bearer {TEST_TOKEN}",
                         # A simple/no-cors request must still be rejected server-side.
                         "Content-Type": "text/plain",
                     },
                     payload={"message": "spend the user's key", "state": {}},
                 )
-            self.assertEqual(status, 403)
-            self.assertNotIn("access-control-allow-origin", headers)
-            run_turn.assert_not_called()
-
-    def test_native_mode_requires_bearer_and_accepts_authorized_probe(self):
-        with _running_server() as port:
-            for authorization in (None, "Bearer wrong"):
-                headers = {"Origin": TEST_ORIGIN}
-                if authorization is not None:
-                    headers["Authorization"] = authorization
-                status, response_headers, _ = _request(
-                    port, "GET", "/health", headers=headers
-                )
-                self.assertEqual(status, 401)
-                self.assertEqual(
-                    response_headers.get("access-control-allow-origin"),
-                    TEST_ORIGIN,
-                )
-
-            # URLSession/curl probes are safe without Origin when they know the secret.
-            status, _, body = _request(
-                port,
-                "GET",
-                "/health",
-                headers={"Authorization": f"Bearer {TEST_TOKEN}"},
-            )
-            self.assertEqual(status, 200)
-            payload = json.loads(body)
-            self.assertTrue(payload["ok"])
-            self.assertEqual(payload["service"], chat_api.SERVICE_IDENTITY)
-            self.assertEqual(payload["instance_nonce"], TEST_NONCE)
-
-    def test_authorized_native_post_reaches_agent_once(self):
-        response = {"kind": "chat", "reply": "ok", "cards": []}
-        with mock.patch.object(chat_api.agent, "run_turn", return_value=response) as run_turn:
-            with _running_server() as port:
-                status, headers, body = _request(
-                    port,
-                    "POST",
-                    "/design-chat",
-                    headers={
-                        "Origin": TEST_ORIGIN,
-                        "Authorization": f"Bearer {TEST_TOKEN}",
-                        "Content-Type": "application/json",
-                    },
-                    payload={"message": "hello", "state": {}, "top": 1},
-                )
-            self.assertEqual(status, 200)
-            self.assertEqual(headers.get("access-control-allow-origin"), TEST_ORIGIN)
-            self.assertEqual(json.loads(body), response)
-            run_turn.assert_called_once()
-
-    def test_explicit_local_dev_mode_still_requires_the_exact_origin(self):
-        response = {"kind": "chat", "reply": "dev", "cards": []}
-        with mock.patch.object(chat_api.agent, "run_turn", return_value=response) as run_turn:
-            with _running_server(token="", allow_unauthenticated=True) as port:
-                status, _, _ = _request(
-                    port,
-                    "POST",
-                    "/design-chat",
-                    headers={"Origin": TEST_ORIGIN, "Content-Type": "application/json"},
-                    payload={"message": "hello"},
-                )
-                self.assertEqual(status, 200)
+                self.assertEqual(status, 403)
+                self.assertNotIn("access-control-allow-origin", headers)
 
                 status, _, _ = _request(
                     port,
@@ -358,6 +252,44 @@ class ChatApiSecurityContractTests(unittest.TestCase):
                     payload={"message": "no origin"},
                 )
                 self.assertEqual(status, 403)
+            run_turn.assert_not_called()
+
+    def test_health_probe_works_with_or_without_origin_and_reports_nonce(self):
+        with _running_server() as port:
+            status, response_headers, body = _request(
+                port, "GET", "/health", headers={"Origin": TEST_ORIGIN}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                response_headers.get("access-control-allow-origin"), TEST_ORIGIN
+            )
+            # URLSession/curl probes from the same machine may omit Origin.
+            status, _, body = _request(port, "GET", "/health")
+            self.assertEqual(status, 200)
+            payload = json.loads(body)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["service"], chat_api.SERVICE_IDENTITY)
+            self.assertEqual(payload["instance_nonce"], TEST_NONCE)
+
+            status, _, _ = _request(
+                port, "GET", "/health", headers={"Origin": "https://evil.example"}
+            )
+            self.assertEqual(status, 403)
+
+    def test_post_with_exact_origin_reaches_agent_once(self):
+        response = {"kind": "chat", "reply": "ok", "cards": []}
+        with mock.patch.object(chat_api.agent, "run_turn", return_value=response) as run_turn:
+            with _running_server() as port:
+                status, headers, body = _request(
+                    port,
+                    "POST",
+                    "/design-chat",
+                    headers={"Origin": TEST_ORIGIN, "Content-Type": "application/json"},
+                    payload={"message": "hello", "state": {}, "top": 1},
+                )
+            self.assertEqual(status, 200)
+            self.assertEqual(headers.get("access-control-allow-origin"), TEST_ORIGIN)
+            self.assertEqual(json.loads(body), response)
             run_turn.assert_called_once()
 
 

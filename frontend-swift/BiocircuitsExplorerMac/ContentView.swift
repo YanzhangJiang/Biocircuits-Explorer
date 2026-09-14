@@ -989,18 +989,11 @@ struct ContentView: View {
     }
 
     private func injectDesignChatEndpoint() {
-        guard
-            webController.isReady,
-            designChatController.isReady,
-            let bearerToken = designChatController.bearerToken
-        else {
+        guard webController.isReady, designChatController.isReady else {
             return
         }
 
-        webController.setDesignChatEndpoint(
-            designChatController.endpointURL.absoluteString,
-            bearerToken: bearerToken
-        )
+        webController.setDesignChatEndpoint(designChatController.endpointURL.absoluteString)
     }
 
     private func revealSelection() {

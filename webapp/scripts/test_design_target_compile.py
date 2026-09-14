@@ -7,7 +7,7 @@ from unittest import mock
 
 import chat_api
 import design_target_compile as compiler
-from test_chat_api import _request, _running_server, TEST_ORIGIN, TEST_TOKEN
+from test_chat_api import _request, _running_server, TEST_ORIGIN
 
 
 class TargetCompilerTests(unittest.TestCase):
@@ -136,10 +136,10 @@ class TargetCompilerRouteTests(unittest.TestCase):
     def test_compile_route_auth_origin_and_preflight_share_existing_security(self):
         with mock.patch.object(chat_api.target_compiler, "compile_target") as compile_target:
             with _running_server() as port:
-                for headers, expected in (({"Origin": TEST_ORIGIN}, 401), ({"Origin": "https://evil.example", "Authorization": f"Bearer {TEST_TOKEN}"}, 403), ({}, 403)):
+                for headers, expected in (({"Origin": "https://evil.example"}, 403), ({}, 403)):
                     status, _, _ = _request(port, "POST", "/compile-target", headers=headers, payload={"message": "monotone increasing"})
                     self.assertEqual(status, expected)
-                status, headers, _ = _request(port, "OPTIONS", "/compile-target", headers={"Origin": TEST_ORIGIN, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"})
+                status, headers, _ = _request(port, "OPTIONS", "/compile-target", headers={"Origin": TEST_ORIGIN, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
                 self.assertEqual(status, 204)
                 self.assertEqual(headers["access-control-allow-origin"], TEST_ORIGIN)
                 status, headers, _ = _request(port, "OPTIONS", "/compile-target", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
@@ -150,7 +150,7 @@ class TargetCompilerRouteTests(unittest.TestCase):
     def test_real_no_key_compile_route_and_unknown_intent(self):
         with mock.patch.object(compiler.llm_transport, "llm_config_from_env", return_value={}):
             with _running_server() as port:
-                headers = {"Origin": TEST_ORIGIN, "Authorization": f"Bearer {TEST_TOKEN}", "Content-Type": "application/json"}
+                headers = {"Origin": TEST_ORIGIN, "Content-Type": "application/json"}
                 status, response_headers, body = _request(port, "POST", "/compile-target", headers=headers, payload={"message": "单调下降"})
                 self.assertEqual(status, 200)
                 self.assertEqual(response_headers["cache-control"], "no-store")
@@ -164,7 +164,7 @@ class TargetCompilerRouteTests(unittest.TestCase):
 
     def test_compile_capacity_is_bounded_and_slot_released_after_failure(self):
         with _running_server(max_concurrent_turns=1) as port:
-            headers = {"Origin": TEST_ORIGIN, "Authorization": f"Bearer {TEST_TOKEN}"}
+            headers = {"Origin": TEST_ORIGIN}
             chat_api.CHAT_TURN_SEMAPHORE.acquire()
             status, response_headers, _ = _request(port, "POST", "/compile-target", headers=headers, payload={"message": "monotone increasing"})
             self.assertEqual(status, 429)

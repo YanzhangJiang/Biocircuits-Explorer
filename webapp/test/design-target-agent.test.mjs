@@ -29,23 +29,22 @@ const fetchImpl = async (url, options) => {
   observed = { url, options };
   return { ok: true, json: async () => result };
 };
-setDesignChatEndpoint('http://127.0.0.1:19876/design-chat', 'native-token');
+setDesignChatEndpoint('http://127.0.0.1:19876/design-chat');
 setLLMConfig({ provider: 'anthropic', apiKey: 'transient-llm-key', model: 'test' });
 const controller = new AbortController();
 assert.deepEqual(await compileDesignTarget('  monotone increasing ', { target, signal: controller.signal, fetchImpl }), result);
 assert.equal(observed.url, 'http://127.0.0.1:19876/compile-target');
-assert.equal(observed.options.headers.Authorization, 'Bearer native-token');
+assert.equal(observed.options.headers.Authorization, undefined);
 assert.equal(observed.options.signal, controller.signal);
 const request = JSON.parse(observed.options.body);
 assert.equal(request.message, 'monotone increasing');
 assert.deepEqual(request.target, target);
 assert.equal(request.llm.apiKey, 'transient-llm-key');
-assert.ok([...persisted.values()].every(value => !value.includes('transient-llm-key') && !value.includes('native-token')));
+assert.ok([...persisted.values()].every(value => !value.includes('transient-llm-key')));
 
-setDesignChatEndpoint('http://127.0.0.1:19877/design-chat', 'rotated-token');
+setDesignChatEndpoint('http://127.0.0.1:19877/design-chat');
 await compileDesignTarget('bandpass', { fetchImpl });
 assert.equal(observed.url, 'http://127.0.0.1:19877/compile-target');
-assert.equal(observed.options.headers.Authorization, 'Bearer rotated-token');
 assert.equal('target' in JSON.parse(observed.options.body), false);
 
 await assert.rejects(compileDesignTarget('', { fetchImpl }), /Describe the target/);
