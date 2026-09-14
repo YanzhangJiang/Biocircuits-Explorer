@@ -462,19 +462,17 @@ modules:
 
   - id: "batch-hpc"
     name: "Batch and HPC execution"
-    purpose: "Manage local/AWS asynchronous job lifecycle and run large atlas or phenotype workloads through Slurm or the headless backend project."
+    purpose: "Manage local asynchronous job lifecycle and run large atlas or phenotype workloads through Slurm or the headless backend project."
     doc: "knowledge/modules/batch-hpc.md"
     owner_paths:
       - "webapp/src/jobs.jl"
       - "webapp/src/cancellation.jl"
-      - "webapp/scripts/run_batch_job.jl"
       - "schemas/result-artifact.schema.json"
       - "schemas/job-result-manifest.schema.json"
       - "webapp_hpc"
       - "Bnc_julia_headless"
       - "slurm"
     entrypoints:
-      - "webapp/scripts/run_batch_job.jl"
       - "slurm/atlas_build.sbatch"
       - "slurm/env_setup.sh"
     tests:
@@ -483,19 +481,18 @@ modules:
       - "webapp/test/jobs_cancellation_contract.jl"
       - "webapp/test/jobs_cache_concurrency_contract.jl"
       - "webapp/test/jobs_artifact_validity_contract.jl"
-      - "webapp/test/jobs_submission_reconciliation_contract.jl"
       - "webapp/test/cooperative_cancel_checkpoints_contract.jl"
     depends_on:
       - "engine-rop"
       - "atlas"
     provides:
       - "headless-backend"
-      - "local-and-aws-job-lifecycle"
+      - "local-job-lifecycle"
       - "asynchronous-result-commit-manifest"
       - "slurm-workflows"
       - "version-matched-hpc-environments"
     maturity: "mixed"
-    evidence_boundary: "Local job races, cooperative cancellation, and request-level AWS overrides are contract-tested; the workflow is configured to select Julia 1.10 and 1.12 HPC locks, which were also loaded locally on 1.10.11 and 1.12.6. No external workflow run, live AWS/Slurm run, exact cluster patch version, or campaign result merge is verified."
+    evidence_boundary: "Local job races and cooperative cancellation are contract-tested; the workflow is configured to select Julia 1.10 and 1.12 HPC locks, which were also loaded locally on 1.10.11 and 1.12.6. No external workflow run, live Slurm run, exact cluster patch version, or campaign result merge is verified."
 
   - id: "periodic-table-research"
     name: "Periodic-table research layer"

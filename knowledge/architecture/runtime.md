@@ -40,7 +40,6 @@ in-memory policy.
 | Julia server only | [`webapp/server.jl`](../../webapp/server.jl) | one Julia HTTP process |
 | Native macOS | [`frontend-swift/`](../../frontend-swift/) | Swift shell, Julia backend, optional Python design-chat sibling, WebView |
 | Container | [`deploy/Dockerfile`](../../deploy/Dockerfile) | non-root Julia server; reverse proxy is defined separately in [`docker-compose.yml`](../../deploy/docker-compose.yml) |
-| Batch worker | [`webapp/scripts/run_batch_job.jl`](../../webapp/scripts/run_batch_job.jl) | one Julia worker reading explicit input/status/result URIs |
 
 `server.jl` activates the repository-local web project before importing
 `BiocircuitsExplorerBackend`. That project resolves `BindingAndCatalysis` by the
@@ -131,11 +130,10 @@ terminate call. A successful dispatch records its completion; a failed dispatch
 clears the claim so a later request can retry, and an abandoned claim has a
 bounded expiry. Preserve this claim protocol when changing cancellation.
 
-When Cognito is configured, jobs require a verified bearer token. Development
-mode can use an explicit user header. Ownership checks deliberately return an
-unknown-job error for another user's identifier. Optional submission quota
-state is stored in DynamoDB. These boundaries are implemented in
-[`auth.jl`](../../webapp/src/auth.jl) and [`jobs.jl`](../../webapp/src/jobs.jl).
+Jobs resolve every request to the single anonymous local owner. Ownership
+checks deliberately return an unknown-job error for a mismatched identifier.
+The lifecycle boundary is implemented in
+[`jobs.jl`](../../webapp/src/jobs.jl).
 
 ## State ownership
 

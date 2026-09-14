@@ -10,9 +10,9 @@ const Backend = BiocircuitsExplorerBackend
 @testset "Executable API route contract" begin
     routes = Backend.API_ROUTE_CONTRACTS
 
-    @test length(routes) == 53
+    @test length(routes) == 51
     @test length(filter(Backend._is_ordinary_post_route, routes)) == 41
-    @test count(route -> route.match_kind === :template, routes) == 5
+    @test count(route -> route.match_kind === :template, routes) == 4
     @test length(Backend.API_ROUTES) == 41
 
     canonical_paths = getfield.(routes, :canonical_path)
@@ -55,13 +55,12 @@ const Backend = BiocircuitsExplorerBackend
     jobs_root = Backend._match_api_route("/api/jobs")
     jobs_status = Backend._match_api_route("/api/jobs/job-123")
     jobs_result = Backend._match_api_route("/api/jobs/job-123/result")
-    jobs_url = Backend._match_api_route("/api/jobs/job-123/result-url")
     jobs_cancel = Backend._match_api_route("/api/jobs/job-123/cancel")
     @test jobs_root.internal_path == "/api/jobs"
     @test jobs_status.internal_path == "/api/jobs/{job_id}"
     @test jobs_result.internal_path == "/api/jobs/{job_id}/result"
-    @test jobs_url.internal_path == "/api/jobs/{job_id}/result-url"
     @test jobs_cancel.internal_path == "/api/jobs/{job_id}/cancel"
+    @test Backend._match_api_route("/api/jobs/job-123/result-url") === nothing
     @test Backend._match_api_route("/api/jobs/job-123/unknown") === nothing
     @test Backend._match_api_route("/api/jobs//result") === nothing
 
@@ -86,8 +85,8 @@ const Backend = BiocircuitsExplorerBackend
 
     reference = JSON3.read(first_json)
     @test reference["schema_version"] == "1"
-    @test reference["route_count"] == 53
-    @test length(reference["routes"]) == 53
+    @test reference["route_count"] == 51
+    @test length(reference["routes"]) == 51
     @test reference["routes"][1]["canonical_path"] == "/api/v1"
     @test reference["routes"][1]["methods"] == ["GET", "POST"]
 end

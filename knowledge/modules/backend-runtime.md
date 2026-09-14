@@ -335,8 +335,7 @@ behind their hashes and never assert external execution.
   [`webapp/src/parameter_placement.jl`](../../webapp/src/parameter_placement.jl)
 - Static and local-image boundary:
   [`webapp/src/static_assets.jl`](../../webapp/src/static_assets.jl)
-- Jobs and AWS request boundary: [`webapp/src/jobs.jl`](../../webapp/src/jobs.jl)
-- Authentication: [`webapp/src/auth.jl`](../../webapp/src/auth.jl)
+- Jobs request boundary: [`webapp/src/jobs.jl`](../../webapp/src/jobs.jl)
 - Serialization and observability:
   [`webapp/src/serialization.jl`](../../webapp/src/serialization.jl),
   [`webapp/src/observability.jl`](../../webapp/src/observability.jl)
@@ -436,10 +435,7 @@ behind their hashes and never assert external execution.
   request override opt-in; routing, bounded legacy-alias metrics, auth/quota,
   jobs, SBML/IR, handlers, and serialization.
 - [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl)
-  covers local/AWS cancellation, finish, submit, and dispatch races.
-- [`webapp/test/jobs_submission_reconciliation_contract.jl`](../../webapp/test/jobs_submission_reconciliation_contract.jl)
-  covers at-most-once AWS submission, crash/response-loss reconciliation,
-  strict candidate adoption, and explicit unknown/conflict states.
+  covers local cancellation, finish, submit, and restart-settlement races.
 - [`webapp/test/jobs_cache_concurrency_contract.jl`](../../webapp/test/jobs_cache_concurrency_contract.jl)
   covers cross-job progress during blocked persistence, same-job serialization,
   cold-load single-flight, wrong-directory identity rejection, hard LRU

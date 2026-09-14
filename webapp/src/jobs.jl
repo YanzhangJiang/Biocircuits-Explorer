@@ -2313,7 +2313,7 @@ function submit_biocircuits_job_from_spec(
         end
         _write_json_uri(record["input_uri"], initial_payload)
 
-        _with_job_lock(job_id) do
+        canonical_snapshot = _with_job_lock(job_id) do
             _persist_job_record_unlocked(record)
             _job_cache_publish!(job_id, record)
             _persist_job_status_projection_unlocked(record)

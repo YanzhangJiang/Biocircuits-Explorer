@@ -25,17 +25,12 @@ function drain_and_reset_job_runtime!()
     lock(Backend.JOBS_LOCK) do
         isempty(Backend.LOCAL_JOB_ADMISSIONS) ||
             error("Local job admission reservations leaked across test fixtures.")
-        isempty(Backend.JOB_DESCRIBE_IN_FLIGHT) ||
-            error("AWS describe claims leaked across test fixtures.")
         empty!(Backend.JOBS)
         empty!(Backend.JOB_CACHE_LAST_ACCESS)
         Backend.JOB_CACHE_ACCESS_CLOCK[] = UInt64(0)
         Backend.JOB_CACHE_CAPACITY[] = nothing
         empty!(Backend.JOB_TASKS)
         empty!(Backend.LOCAL_JOB_CANCEL_TOKENS)
-        empty!(Backend.JOB_DESCRIBE_LAST_AT)
-        empty!(Backend.JOB_DESCRIBE_IN_FLIGHT)
-        empty!(Backend.AWS_BATCH_INITIAL_SUBMISSIONS)
         empty!(Backend.JOB_STATUS_PROJECTION_DIRTY)
         Backend.LOCAL_JOB_LIMITS[] = nothing
         Backend.LOCAL_JOB_RUN_SEMAPHORE[] = nothing
@@ -49,18 +44,12 @@ end
 
 function with_isolated_job_store(f::Function)
     previous_env = haskey(ENV, "BIOCIRCUITS_EXPLORER_JOB_STORE") ? ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] : nothing
-    previous_batch_region = get(
-        ENV,
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION",
-        nothing,
-    )
     previous_store_dir = Backend.LOCAL_JOB_STORE_DIR[]
 
     mktempdir() do dir
         try
             drain_and_reset_job_runtime!()
             ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = dir
-            ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] = "us-west-2"
             Backend.LOCAL_JOB_STORE_DIR[] = nothing
             f(dir)
         finally
@@ -70,12 +59,6 @@ function with_isolated_job_store(f::Function)
             else
                 ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = previous_env
             end
-            if previous_batch_region === nothing
-                delete!(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION")
-            else
-                ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] =
-                    previous_batch_region
-            end
             Backend.LOCAL_JOB_STORE_DIR[] = previous_store_dir
         end
     end
@@ -83,7 +66,6 @@ end
 
 function seed_job(status::AbstractString;
                   executor::AbstractString="local_async",
-                  batch_job_id=nothing,
                   result_available::Bool=false,
                   job_id=nothing,
                   state_revision=1)
@@ -111,7 +93,6 @@ function seed_job(status::AbstractString;
     )
     state_revision === nothing ||
         (record["state_revision"] = state_revision)
-    batch_job_id === nothing || (record["batch_job_id"] = String(batch_job_id))
     Backend._with_job_lock(job_id) do
         Backend._persist_job_record_unlocked(record)
         Backend._job_cache_publish!(job_id, record)
@@ -129,76 +110,11 @@ function simulate_process_restart()
         empty!(Backend.JOB_TASKS)
         empty!(Backend.LOCAL_JOB_CANCEL_TOKENS)
         empty!(Backend.LOCAL_JOB_ADMISSIONS)
-        empty!(Backend.JOB_DESCRIBE_LAST_AT)
-        empty!(Backend.JOB_DESCRIBE_IN_FLIGHT)
-        empty!(Backend.AWS_BATCH_INITIAL_SUBMISSIONS)
         empty!(Backend.JOB_STATUS_PROJECTION_DIRTY)
         Backend.LOCAL_JOB_LIMITS[] = nothing
         Backend.LOCAL_JOB_RUN_SEMAPHORE[] = nothing
     end
     return nothing
-end
-
-function write_blocking_aws_cli(path::AbstractString)
-    open(path, "w") do io
-        write(io, raw"""#!/bin/sh
-set -eu
-
-if [ "$1" = "batch" ] && [ "$2" = "${AWS_BLOCK_ON:-never}" ]; then
-  : > "${AWS_CALL_STARTED:?}"
-  while [ ! -f "${AWS_CALL_RELEASE:?}" ]; do
-    sleep 0.01
-  done
-fi
-
-if [ "$1" = "s3" ] && [ "$2" = "cp" ]; then
-  exit 0
-fi
-if [ "$1" = "s3api" ] && [ "$2" = "head-object" ]; then
-  exit 1
-fi
-if [ "$1" = "batch" ] && [ "$2" = "submit-job" ]; then
-  if [ "${AWS_SUBMIT_FAIL:-0}" = "1" ]; then
-    exit 19
-  fi
-  job_name=""
-  shift 2
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --job-name) job_name="$2"; shift 2 ;;
-      *)          shift ;;
-    esac
-  done
-  printf '{"jobId":"blocking-job-123","jobName":"%s"}\n' "$job_name"
-  exit 0
-fi
-if [ "$1" = "batch" ] && [ "$2" = "list-jobs" ]; then
-  printf '{"jobSummaryList":[]}\n'
-  exit 0
-fi
-if [ "$1" = "batch" ] && [ "$2" = "describe-jobs" ]; then
-  printf '{"jobs":[{"status":"%s","container":{}}]}\n' "${AWS_DESCRIBE_STATUS:-SUBMITTED}"
-  exit 0
-fi
-if [ "$1" = "batch" ] && { [ "$2" = "cancel-job" ] || [ "$2" = "terminate-job" ]; }; then
-  if [ -n "${AWS_CANCEL_FAIL_ONCE_FILE:-}" ] && [ ! -f "$AWS_CANCEL_FAIL_ONCE_FILE" ]; then
-    : > "$AWS_CANCEL_FAIL_ONCE_FILE"
-    exit 17
-  fi
-  exit 0
-fi
-
-printf '{}\n'
-""")
-    end
-    chmod(path, 0o755)
-    return path
-end
-
-function touch_file(path::AbstractString)
-    open(path, "w") do io
-        write(io, "released\n")
-    end
 end
 
 function write_valid_job_result(job_id::AbstractString)
@@ -255,10 +171,6 @@ end
         )
         @test !occursin(
             "canonical_snapshot = lock(JOBS_LOCK) do",
-            source,
-        )
-        @test !occursin(
-            "_aws_batch_submit(_job_snapshot(record)",
             source,
         )
 
@@ -579,8 +491,7 @@ end
 
         with_isolated_job_store() do _
             legacy_id = seed_job(
-                "queued";
-                executor="aws_batch",
+                "succeeded";
                 job_id="legacy-revision",
                 state_revision=nothing,
             )
@@ -602,17 +513,6 @@ end
             @test Backend._read_job_json(
                 Backend._job_status_path(legacy_id),
             )["state_revision"] == 0
-
-            migrated = Backend._job_transition!(
-                legacy_id,
-                "running";
-                expected=("queued",),
-            )
-            @test migrated.applied
-            @test migrated.record["state_revision"] == 1
-            @test Backend._read_job_json(
-                Backend._job_status_path(legacy_id),
-            )["state_revision"] == 1
         end
 
         with_isolated_job_store() do _
@@ -750,13 +650,11 @@ end
         end
     end
 
-    @testset "capacity rejects before quota and durable job creation" begin
+    @testset "capacity rejects before durable job creation" begin
         with_isolated_job_store() do store_dir
             withenv(
                 "BIOCIRCUITS_EXPLORER_LOCAL_JOB_MAX_CONCURRENCY" => "1",
                 "BIOCIRCUITS_EXPLORER_LOCAL_JOB_ADMISSION_LIMIT" => "1",
-                "BIOCIRCUITS_EXPLORER_QUOTA_TABLE" => "quota-must-not-run",
-                "BIOCIRCUITS_EXPLORER_AWS_CLI" => joinpath(store_dir, "missing-aws"),
             ) do
                 held_id = "held-local-admission"
                 Backend._reserve_local_job_admission!(held_id)
@@ -943,71 +841,6 @@ end
         end
     end
 
-    @testset "describe cache is monotonic, bounded, and terminal-cleaned" begin
-        with_isolated_job_store() do store_dir
-            lock(Backend.JOBS_LOCK) do
-                Backend._remember_job_describe_unlocked!(
-                    "oldest", 10.0; ttl_seconds=100.0, max_entries=2)
-                Backend._remember_job_describe_unlocked!(
-                    "middle", 11.0; ttl_seconds=100.0, max_entries=2)
-                Backend._remember_job_describe_unlocked!(
-                    "newest", 12.0; ttl_seconds=100.0, max_entries=2)
-                @test Set(keys(Backend.JOB_DESCRIBE_LAST_AT)) ==
-                      Set(["middle", "newest"])
-
-                Backend.JOB_DESCRIBE_LAST_AT["expired"] = 1.0
-                Backend.JOB_DESCRIBE_LAST_AT["future"] = 1000.0
-                Backend._prune_job_describe_cache_unlocked!(
-                    200.0; ttl_seconds=100.0, max_entries=2)
-                @test isempty(Backend.JOB_DESCRIBE_LAST_AT)
-            end
-
-            terminal_id = seed_job(
-                "succeeded";
-                executor="aws_batch",
-                batch_job_id="terminal-describe",
-            )
-            invalid_id = seed_job("queued"; executor="aws_batch")
-            local_id = seed_job("queued"; executor="local_async")
-            lock(Backend.JOBS_LOCK) do
-                Backend.JOB_DESCRIBE_LAST_AT[terminal_id] = 1.0
-                Backend.JOB_DESCRIBE_LAST_AT[invalid_id] = 1.0
-                Backend.JOB_DESCRIBE_LAST_AT[local_id] = 1.0
-            end
-            Backend._refresh_aws_batch_job!(terminal_id; now_seconds=2.0)
-            Backend._refresh_aws_batch_job!(invalid_id; now_seconds=2.0)
-            Backend._refresh_aws_batch_job!(local_id; now_seconds=2.0)
-            @test lock(Backend.JOBS_LOCK) do
-                all(id -> !haskey(Backend.JOB_DESCRIBE_LAST_AT, id),
-                    (terminal_id, invalid_id, local_id))
-            end
-
-            aws_cli = write_blocking_aws_cli(joinpath(store_dir, "aws-describe"))
-            withenv(
-                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "3",
-                "AWS_BLOCK_ON" => "never",
-                "AWS_DESCRIBE_STATUS" => "SUBMITTED",
-            ) do
-                refresh_id = seed_job(
-                    "queued";
-                    executor="aws_batch",
-                    batch_job_id="monotonic-describe",
-                )
-                Backend._refresh_aws_batch_job!(refresh_id; now_seconds=100.0)
-                @test Backend.JOB_DESCRIBE_LAST_AT[refresh_id] == 100.0
-                Backend._refresh_aws_batch_job!(refresh_id; now_seconds=101.0)
-                @test Backend.JOB_DESCRIBE_LAST_AT[refresh_id] == 100.0
-                Backend._refresh_aws_batch_job!(refresh_id; now_seconds=103.0)
-                @test Backend.JOB_DESCRIBE_LAST_AT[refresh_id] == 103.0
-
-                Backend._job_transition!(refresh_id, "failed"; expected=("queued",))
-                Backend._refresh_aws_batch_job!(refresh_id; now_seconds=104.0)
-                @test !haskey(Backend.JOB_DESCRIBE_LAST_AT, refresh_id)
-            end
-        end
-    end
-
     @testset "disk-loaded local jobs settle after process restart" begin
         with_isolated_job_store() do _
             interrupted_ids = Dict(
@@ -1093,36 +926,23 @@ end
         end
     end
 
-    @testset "disk-loaded AWS jobs remain refreshable" begin
-        with_isolated_job_store() do store_dir
-            aws_cli = write_blocking_aws_cli(joinpath(store_dir, "aws"))
-            withenv(
-                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
-                "AWS_BLOCK_ON" => "never",
-                "AWS_DESCRIBE_STATUS" => "RUNNING",
-            ) do
-                for status in ("queued", "running", "cancel_requested")
-                    job_id = seed_job(
-                        status;
-                        executor="aws_batch",
-                        batch_job_id="restart-$(status)",
-                    )
-                    record_before = read(Backend._job_record_path(job_id), String)
-                    status_before = read(Backend._job_status_path(job_id), String)
-                    simulate_process_restart()
+    @testset "disk-loaded retired-executor jobs settle to failed" begin
+        with_isolated_job_store() do _
+            for status in ("queued", "running", "cancel_requested")
+                job_id = seed_job(status; executor="aws_batch")
+                simulate_process_restart()
 
-                    loaded = Backend._job_record(job_id)
-                    @test loaded["status"] == status
-                    @test loaded["executor"] == "aws_batch"
-                    @test read(Backend._job_record_path(job_id), String) == record_before
-                    @test read(Backend._job_status_path(job_id), String) == status_before
-
-                    refreshed = Backend._refresh_aws_batch_job!(job_id)
-                    expected = status == "queued" ? "running" : status
-                    @test refreshed["status"] == expected
-                end
+                loaded = Backend._job_record(job_id)
+                @test loaded["status"] == "failed"
+                @test loaded["error_code"] == "executor_retired"
+                @test loaded["executor"] == "aws_batch"
+                @test loaded["result_available"] == false
             end
+
+            terminal_id = seed_job("succeeded"; executor="aws_batch", result_available=true)
+            simulate_process_restart()
+            terminal = Backend._job_record(terminal_id)
+            @test terminal["status"] == "succeeded"
         end
     end
 
@@ -1305,266 +1125,6 @@ end
             # job in memory or corrupt the previous public projection.
             @test Backend._job_record(failing_id)["status"] == "queued"
             @test Backend._read_job_json(Backend._job_status_path(failing_id))["status"] == "queued"
-        end
-    end
-
-    @testset "AWS external calls never hold JOBS_LOCK" begin
-        with_isolated_job_store() do _
-            mktempdir() do dir
-                aws_cli = write_blocking_aws_cli(joinpath(dir, "aws"))
-
-                function blocked_env(f::Function, block_on)
-                    started = joinpath(dir, "$(block_on)-started")
-                    released = joinpath(dir, "$(block_on)-released")
-                    rm(started; force=true)
-                    rm(released; force=true)
-                    return withenv(
-                        "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "queue",
-                        "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "definition",
-                        "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" => "s3://bucket/jobs",
-                        "BIOCIRCUITS_EXPLORER_AWS_BATCH_DESCRIBE_MIN_INTERVAL" => "0",
-                        "AWS_BLOCK_ON" => block_on,
-                        "AWS_CALL_STARTED" => started,
-                        "AWS_CALL_RELEASE" => released,
-                        "AWS_DESCRIBE_STATUS" => "RUNNING",
-                    ) do
-                        f(started, released)
-                    end
-                end
-
-                blocked_env("submit-job") do started, released
-                    operation = @async submit_biocircuits_job_from_spec(Dict(
-                        "kind" => "query_atlas",
-                        "execution" => Dict("mode" => "aws_batch"),
-                        "spec" => Dict{String, Any}(),
-                    ))
-                    @test wait_for_file(started)
-                    try
-                        assert_job_lock_available()
-                    finally
-                        touch_file(released)
-                    end
-                    submitted = fetch(operation)
-                    @test submitted["external_job_id"] == "blocking-job-123"
-                    @test submitted["status"] == "running"
-                end
-
-                blocked_env("submit-job") do started, released
-                    before_ids = lock(Backend.JOBS_LOCK) do
-                        Set(keys(Backend.JOBS))
-                    end
-                    operation = @async submit_biocircuits_job_from_spec(Dict(
-                        "kind" => "query_atlas",
-                        "execution" => Dict("mode" => "aws_batch"),
-                        "spec" => Dict{String, Any}(),
-                    ))
-                    @test wait_for_file(started)
-                    in_flight_id = lock(Backend.JOBS_LOCK) do
-                        new_ids = setdiff(Set(keys(Backend.JOBS)), before_ids)
-                        @test length(new_ids) == 1
-                        job_id = only(new_ids)
-                        @test Backend.JOBS[job_id]["state_revision"] == 2
-                        @test Backend.JOBS[job_id]["submission_state"] ==
-                              "dispatch_started"
-                        @test Backend._read_job_json(
-                            Backend._job_record_path(job_id),
-                        )["state_revision"] == 2
-                        @test Backend._read_job_json(
-                            Backend._job_status_path(job_id),
-                        )["state_revision"] == 2
-                        job_id
-                    end
-                    requested = cancel_biocircuits_job(in_flight_id)
-                    @test requested["status"] == "cancel_requested"
-                    try
-                        assert_job_lock_available()
-                    finally
-                        touch_file(released)
-                    end
-                    cancelled_submission = fetch(operation)
-                    @test cancelled_submission["status"] == "cancel_requested"
-                    ENV["AWS_DESCRIBE_STATUS"] = "FAILED"
-                    @test get_biocircuits_job(in_flight_id)["status"] == "cancelled"
-                end
-
-                blocked_env("submit-job") do started, released
-                    before_ids = lock(Backend.JOBS_LOCK) do
-                        Set(keys(Backend.JOBS))
-                    end
-                    operation = @async withenv("AWS_SUBMIT_FAIL" => "1") do
-                        submit_biocircuits_job_from_spec(Dict(
-                            "kind" => "query_atlas",
-                            "execution" => Dict("mode" => "aws_batch"),
-                            "spec" => Dict{String, Any}(),
-                        ))
-                    end
-                    @test wait_for_file(started)
-                    in_flight_id = lock(Backend.JOBS_LOCK) do
-                        new_ids = setdiff(Set(keys(Backend.JOBS)), before_ids)
-                        @test length(new_ids) == 1
-                        only(new_ids)
-                    end
-                    try
-                        @test cancel_biocircuits_job(in_flight_id)["status"] == "cancel_requested"
-                    finally
-                        touch_file(released)
-                    end
-                    ambiguous = fetch(operation)
-                    @test ambiguous["status"] == "cancel_requested"
-                    @test ambiguous["submission_state"] == "reconciling"
-                    record = Backend._job_record(in_flight_id)
-                    @test record["status"] == "cancel_requested"
-                    @test record["submission_state"] == "reconciling"
-                    @test !haskey(record, "batch_job_id")
-                    @test occursin(
-                        "failed process",
-                        lowercase(String(record["submission_last_error"])),
-                    )
-                end
-
-                blocked_env("describe-jobs") do started, released
-                    job_id = seed_job("queued";
-                        executor="aws_batch",
-                        batch_job_id="describe-job-123",
-                    )
-                    operation = @async Backend._refresh_aws_batch_job!(job_id)
-                    @test wait_for_file(started)
-                    @test lock(Backend.JOBS_LOCK) do
-                        job_id in Backend.JOB_DESCRIBE_IN_FLIGHT
-                    end
-                    duplicate = @async Backend._refresh_aws_batch_job!(
-                        job_id;
-                        now_seconds=Backend._monotonic_seconds() + 1000,
-                    )
-                    @test timedwait(() -> istaskdone(duplicate), 1.0; pollint=0.01) == :ok
-                    @test fetch(duplicate)["status"] == "queued"
-                    try
-                        assert_job_lock_available()
-                    finally
-                        touch_file(released)
-                    end
-                    refreshed = fetch(operation)
-                    @test refreshed["status"] == "running"
-                    @test lock(Backend.JOBS_LOCK) do
-                        !(job_id in Backend.JOB_DESCRIBE_IN_FLIGHT)
-                    end
-                end
-
-                blocked_env("describe-jobs") do started, released
-                    job_id = seed_job("queued";
-                        executor="aws_batch",
-                        batch_job_id="stale-describe-job-123",
-                    )
-                    stale_refresh = @async Backend._refresh_aws_batch_job!(job_id)
-                    @test wait_for_file(started)
-                    cancellation = @async cancel_biocircuits_job(job_id)
-                    try
-                        yield()
-                    finally
-                        touch_file(released)
-                    end
-                    @test fetch(cancellation)["status"] == "cancel_requested"
-                    @test fetch(stale_refresh)["status"] == "cancel_requested"
-                    @test Backend._job_record(job_id)["status"] == "cancel_requested"
-                    ENV["AWS_DESCRIBE_STATUS"] = "FAILED"
-                    @test get_biocircuits_job(job_id)["status"] == "cancelled"
-                end
-
-                blocked_env("cancel-job") do started, released
-                    job_id = seed_job("queued";
-                        executor="aws_batch",
-                        batch_job_id="cancel-job-123",
-                    )
-                    operation = @async cancel_biocircuits_job(job_id)
-                    @test wait_for_file(started)
-                    @test Backend._job_record(job_id)["status"] == "cancel_requested"
-                    duplicate = @async cancel_biocircuits_job(job_id)
-                    @test timedwait(() -> istaskdone(duplicate), 1.0; pollint=0.01) == :ok
-                    @test fetch(duplicate)["status"] == "cancel_requested"
-                    try
-                        assert_job_lock_available()
-                    finally
-                        touch_file(released)
-                    end
-                    cancelled = fetch(operation)
-                    @test cancelled["status"] == "cancel_requested"
-                end
-
-                blocked_env("terminate-job") do started, released
-                    job_id = seed_job("running";
-                        executor="aws_batch",
-                        batch_job_id="terminate-job-123",
-                    )
-                    operation = @async cancel_biocircuits_job(job_id)
-                    @test wait_for_file(started)
-                    @test Backend._job_record(job_id)["status"] == "cancel_requested"
-                    try
-                        assert_job_lock_available()
-                    finally
-                        touch_file(released)
-                    end
-                    requested = fetch(operation)
-                    @test requested["status"] == "cancel_requested"
-                end
-
-                blocked_env("terminate-job") do started, released
-                    job_id = seed_job("running";
-                        executor="aws_batch",
-                        batch_job_id="finish-wins-job-123",
-                    )
-                    # A successful remote completion needs an artifact before
-                    # refresh is allowed to publish `succeeded`.
-                    write_valid_job_result(job_id)
-                    cancellation = @async cancel_biocircuits_job(job_id)
-                    @test wait_for_file(started)
-                    ENV["AWS_DESCRIBE_STATUS"] = "SUCCEEDED"
-                    refreshed = Backend._refresh_aws_batch_job!(job_id)
-                    @test refreshed["status"] == "succeeded"
-                    terminal_progress = deepcopy(refreshed["progress"])
-                    touch_file(released)
-                    @test fetch(cancellation)["status"] == "succeeded"
-                    final = Backend._job_record(job_id)
-                    @test final["status"] == "succeeded"
-                    @test final["progress"] == terminal_progress
-                    @test !haskey(final, "cancel_dispatched_at")
-                end
-
-                # The common queued case remains API-compatible: once AWS
-                # still reports a cancellable queue state, the response is
-                # immediately terminal `cancelled`.
-                withenv(
-                    "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                    "AWS_BLOCK_ON" => "never",
-                    "AWS_DESCRIBE_STATUS" => "SUBMITTED",
-                ) do
-                    queued_id = seed_job("queued";
-                        executor="aws_batch",
-                        batch_job_id="ordinary-cancel-job-123",
-                    )
-                    @test cancel_biocircuits_job(queued_id)["status"] == "cancelled"
-                end
-
-                # A failed CLI dispatch remains cancel_requested but has no
-                # success marker, so a second API call retries and can settle.
-                fail_once = joinpath(dir, "cancel-failed-once")
-                withenv(
-                    "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                    "AWS_BLOCK_ON" => "never",
-                    "AWS_DESCRIBE_STATUS" => "SUBMITTED",
-                    "AWS_CANCEL_FAIL_ONCE_FILE" => fail_once,
-                ) do
-                    retry_id = seed_job("queued";
-                        executor="aws_batch",
-                        batch_job_id="retry-cancel-job-123",
-                    )
-                    @test_throws ArgumentError cancel_biocircuits_job(retry_id)
-                    failed_request = Backend._job_record(retry_id)
-                    @test failed_request["status"] == "cancel_requested"
-                    @test !haskey(failed_request, "cancel_dispatched_at")
-                    @test cancel_biocircuits_job(retry_id)["status"] == "cancelled"
-                end
-            end
         end
     end
 end

@@ -40,9 +40,10 @@ specific remote job, never by issuing another blind submission.
   result page as the complete population.
 - Cancellation can race with response loss and reconciliation. A late remote
   observation must not overwrite a newer local cancellation state.
-- The executable state machine and its crash/race fixtures are in
-  [`webapp/test/jobs_submission_reconciliation_contract.jl`](../../webapp/test/jobs_submission_reconciliation_contract.jl)
-  and [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl).
+- The executable state machine and its crash/race fixtures were recorded in
+  `webapp/test/jobs_submission_reconciliation_contract.jl` (removed with the
+  AWS lane) and
+  [`webapp/test/jobs_cancellation_contract.jl`](../../webapp/test/jobs_cancellation_contract.jl).
 
 ## Decision
 

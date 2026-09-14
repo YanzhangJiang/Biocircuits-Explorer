@@ -17,10 +17,6 @@ function reset_runtime!()
     lock(Backend.JOBS_LOCK) do
         isempty(Backend.LOCAL_JOB_ADMISSIONS) || error(
             "Local job admissions leaked into the cache contract fixture.")
-        isempty(Backend.JOB_DESCRIBE_IN_FLIGHT) || error(
-            "AWS describe claims leaked into the cache contract fixture.")
-        isempty(Backend.AWS_BATCH_INITIAL_SUBMISSIONS) || error(
-            "AWS submission owners leaked into the cache contract fixture.")
         empty!(Backend.JOBS)
         empty!(Backend.JOB_CACHE_LAST_ACCESS)
         Backend.JOB_CACHE_ACCESS_CLOCK[] = UInt64(0)
@@ -28,9 +24,6 @@ function reset_runtime!()
         empty!(Backend.JOB_TASKS)
         empty!(Backend.LOCAL_JOB_CANCEL_TOKENS)
         empty!(Backend.LOCAL_JOB_ADMISSIONS)
-        empty!(Backend.JOB_DESCRIBE_LAST_AT)
-        empty!(Backend.JOB_DESCRIBE_IN_FLIGHT)
-        empty!(Backend.AWS_BATCH_INITIAL_SUBMISSIONS)
         empty!(Backend.JOB_STATUS_PROJECTION_DIRTY)
         Backend.LOCAL_JOB_LIMITS[] = nothing
         Backend.LOCAL_JOB_RUN_SEMAPHORE[] = nothing
@@ -54,17 +47,11 @@ function with_store(f::Function; capacity::Integer=8)
         nothing,
     )
     previous_store = Backend.LOCAL_JOB_STORE_DIR[]
-    previous_batch_region = get(
-        ENV,
-        "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION",
-        nothing,
-    )
     mktempdir() do dir
         try
             reset_runtime!()
             ENV["BIOCIRCUITS_EXPLORER_JOB_STORE"] = dir
             ENV["BIOCIRCUITS_EXPLORER_JOB_CACHE_CAPACITY"] = string(capacity)
-            ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] = "us-west-2"
             Backend.LOCAL_JOB_STORE_DIR[] = nothing
             f(dir)
         finally
@@ -80,12 +67,6 @@ function with_store(f::Function; capacity::Integer=8)
                 ENV["BIOCIRCUITS_EXPLORER_JOB_CACHE_CAPACITY"] =
                     previous_capacity_env
             end
-            if previous_batch_region === nothing
-                delete!(ENV, "BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION")
-            else
-                ENV["BIOCIRCUITS_EXPLORER_AWS_BATCH_REGION"] =
-                    previous_batch_region
-            end
             Backend.LOCAL_JOB_STORE_DIR[] = previous_store
         end
     end
@@ -94,8 +75,7 @@ end
 function seed_job(job_id::AbstractString;
                   status::AbstractString="succeeded",
                   executor::AbstractString="local_async",
-                  state_revision::Integer=1,
-                  batch_job_id=nothing)
+                  state_revision::Integer=1)
     id = String(job_id)
     now = Backend._now_iso_timestamp()
     record = Dict{String, Any}(
@@ -118,8 +98,6 @@ function seed_job(job_id::AbstractString;
         "status_uri" => Backend._job_status_path(id),
         "result_uri" => Backend._job_result_path(id),
     )
-    batch_job_id === nothing ||
-        (record["batch_job_id"] = String(batch_job_id))
     Backend._with_job_lock(id) do
         Backend._activate_job_cache_capacity!()
         Backend._persist_job_record_unlocked(record)
@@ -137,73 +115,6 @@ function cache_snapshot()
             capacity=Backend.JOB_CACHE_CAPACITY[],
         )
     end
-end
-
-function touch_file(path::AbstractString)
-    open(path, "w") do io
-        write(io, "released\n")
-    end
-    return path
-end
-
-function write_cache_aws_cli(path::AbstractString)
-    open(path, "w") do io
-        write(io, raw"""#!/bin/sh
-set -eu
-
-if [ -n "${AWS_CACHE_LOG:-}" ]; then
-  printf '%s\n' "$*" >> "$AWS_CACHE_LOG"
-fi
-
-block_if_requested() {
-  label="$1"
-  if [ "${AWS_CACHE_BLOCK_ON:-never}" = "$label" ]; then
-    : > "${AWS_CACHE_BLOCK_STARTED:?}"
-    while [ ! -f "${AWS_CACHE_BLOCK_RELEASE:?}" ]; do
-      sleep 0.01
-    done
-  fi
-}
-
-if [ "$1" = "s3" ] && [ "$2" = "cp" ]; then
-  block_if_requested s3-cp
-  exit 0
-fi
-
-if [ "$1" = "batch" ] && [ "$2" = "submit-job" ]; then
-  job_name=""
-  shift 2
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --job-name) job_name="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  printf '{"jobId":"cache-submit-123","jobName":"%s"}\n' "$job_name"
-  exit 0
-fi
-
-if [ "$1" = "batch" ] && [ "$2" = "describe-jobs" ]; then
-  block_if_requested describe-jobs
-  printf '{"jobs":[{"jobId":"cache-job","status":"%s","container":{}}]}\n' "${AWS_CACHE_DESCRIBE_STATUS:-SUBMITTED}"
-  exit 0
-fi
-
-if [ "$1" = "batch" ] && { [ "$2" = "cancel-job" ] || [ "$2" = "terminate-job" ]; }; then
-  block_if_requested "$2"
-  exit 0
-fi
-
-if [ "$1" = "batch" ] && [ "$2" = "list-jobs" ]; then
-  printf '{"jobSummaryList":[]}\n'
-  exit 0
-fi
-
-printf '{}\n'
-""")
-    end
-    chmod(path, 0o755)
-    return path
 end
 
 @testset "Striped job state and bounded cache contract" begin
@@ -450,87 +361,6 @@ end
                 ENV["BIOCIRCUITS_EXPLORER_JOB_CACHE_CAPACITY"] = previous
             end
             @test Backend._job_record(job_id)["status"] == "running"
-        end
-    end
-
-    @testset "AWS initial-submit and cancel claims survive eviction" begin
-        with_store(capacity=1) do dir
-            aws_cli = write_cache_aws_cli(joinpath(dir, "aws-cache"))
-            started = joinpath(dir, "s3-started")
-            released = joinpath(dir, "s3-released")
-            log_path = joinpath(dir, "aws.log")
-            withenv(
-                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_QUEUE" => "queue",
-                "BIOCIRCUITS_EXPLORER_AWS_BATCH_JOB_DEFINITION" => "definition",
-                "BIOCIRCUITS_EXPLORER_AWS_BATCH_ARTIFACT_PREFIX" =>
-                    "s3://cache-bucket/artifacts",
-                "AWS_CACHE_LOG" => log_path,
-                "AWS_CACHE_BLOCK_ON" => "s3-cp",
-                "AWS_CACHE_BLOCK_STARTED" => started,
-                "AWS_CACHE_BLOCK_RELEASE" => released,
-                "AWS_CACHE_DESCRIBE_STATUS" => "SUBMITTED",
-            ) do
-                submission = @async Backend.submit_biocircuits_job_from_spec(
-                    Dict(
-                        "kind" => "query_atlas",
-                        "spec" => Dict{String, Any}(),
-                        "execution" => Dict("mode" => "aws_batch"),
-                    ),
-                )
-                @test timedwait(() -> isfile(started), 5.0; pollint=0.01) == :ok
-                live_id = lock(Backend.JOBS_LOCK) do
-                    @test length(Backend.AWS_BATCH_INITIAL_SUBMISSIONS) == 1
-                    only(Backend.AWS_BATCH_INITIAL_SUBMISSIONS)
-                end
-                @test Backend._job_record(live_id)["submission_state"] ==
-                      "prepared"
-                seed_job("aws-submit-evictor")
-                @test !(live_id in cache_snapshot().ids)
-                touch_file(released)
-                submitted = fetch(submission)
-                @test submitted["submission_state"] == "accepted"
-                @test Backend._job_record(live_id)["submission_state"] ==
-                      "accepted"
-                @test lock(Backend.JOBS_LOCK) do
-                    !(live_id in Backend.AWS_BATCH_INITIAL_SUBMISSIONS)
-                end
-                calls = isfile(log_path) ? readlines(log_path) : String[]
-                @test count(line -> startswith(line, "batch submit-job"), calls) == 1
-            end
-
-            cancel_id = seed_job(
-                "aws-cancel-eviction";
-                status="queued",
-                executor="aws_batch",
-                batch_job_id="aws-cancel-external",
-            )
-            cancel_started = joinpath(dir, "cancel-started")
-            cancel_released = joinpath(dir, "cancel-released")
-            withenv(
-                "BIOCIRCUITS_EXPLORER_AWS_CLI" => aws_cli,
-                "AWS_CACHE_BLOCK_ON" => "cancel-job",
-                "AWS_CACHE_BLOCK_STARTED" => cancel_started,
-                "AWS_CACHE_BLOCK_RELEASE" => cancel_released,
-                "AWS_CACHE_DESCRIBE_STATUS" => "SUBMITTED",
-            ) do
-                cancellation = @async Backend.cancel_biocircuits_job(cancel_id)
-                @test timedwait(
-                    () -> isfile(cancel_started),
-                    5.0;
-                    pollint=0.01,
-                ) == :ok
-                claimed = Backend._job_record(cancel_id)
-                @test claimed["status"] == "cancel_requested"
-                @test haskey(claimed, "cancel_dispatch_claim")
-                seed_job("aws-cancel-evictor")
-                @test !(cancel_id in cache_snapshot().ids)
-                touch_file(cancel_released)
-                @test fetch(cancellation)["status"] == "cancelled"
-                final = Backend._job_record(cancel_id)
-                @test final["status"] == "cancelled"
-                @test !haskey(final, "cancel_dispatch_claim")
-            end
         end
     end
 end

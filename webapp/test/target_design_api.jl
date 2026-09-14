@@ -165,7 +165,7 @@ end
 
     with_design_job_store() do _, tasks
         response = Backend.router(HTTP.Request("POST", "/api/v1/design_network",
-            ["X-User-Sub" => "target-design-owner"], JSON3.write(request)))
+            ["Content-Type" => "application/json"], JSON3.write(request)))
         @test response.status == 202
         job = JSON3.read(response.body)
         @test job["kind"] == "design_network"
@@ -175,13 +175,12 @@ end
             get(Backend.JOB_TASKS, id, nothing)
         end
         task === nothing || push!(tasks, task)
-        @test timedwait(() -> Backend.get_biocircuits_job(id;
-            user_sub="target-design-owner")["status"] in Backend.JOB_TERMINAL_STATUSES,
+        @test timedwait(() -> Backend.get_biocircuits_job(id)["status"] in Backend.JOB_TERMINAL_STATUSES,
             60; pollint=0.01) == :ok
-        status = Backend.get_biocircuits_job(id; user_sub="target-design-owner")
+        status = Backend.get_biocircuits_job(id)
         @test status["status"] == "succeeded"
         response = Backend.router(HTTP.Request("POST", "/api/v1/jobs/$id/result",
-            ["X-User-Sub" => "target-design-owner"], "{}"))
+            ["Content-Type" => "application/json"], "{}"))
         @test response.status == 200
         saved = JSON3.read(response.body)["result"]
         @test saved["selected_network"]["predictions"] ==

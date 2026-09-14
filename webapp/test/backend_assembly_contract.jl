@@ -28,7 +28,6 @@ using BiocircuitsExplorerBackend
         "sbml.jl",
         "version.jl",
         "result_artifact.jl",
-        "auth.jl",
         "jobs.jl",
         joinpath("latent_atlas", "phenotype_pipeline.jl"),
         "service_handlers.jl",
