@@ -7,8 +7,6 @@
 import { showToast } from './api.js';
 import { nodeIdCounter, nodeRegistry } from './state.js';
 import { shouldDispatchActionForEvent } from './action-events.js';
-import { initAuthUiEvents } from './auth-ui.js';
-import { initCloudComputeToggleEvents, setCloudComputeEnabled, toggleCloudComputeEnabled } from './cloud-compute.js';
 import { installThemeChangeObserver } from './theme.js';
 import { initCanvasEvents, resetView } from './canvas.js';
 import {
@@ -175,8 +173,6 @@ window.addNodeFromMenu = addNodeFromMenu;
 window.addQuickAddChain = addQuickAddChain;
 window.resetView = resetView;
 window.toggleDebugConsole = toggleDebugConsole;
-window.toggleCloudComputeEnabled = toggleCloudComputeEnabled;
-window.setCloudComputeEnabled = setCloudComputeEnabled;
 window.showToast = showToast;
 window.runConnectedWorkspace = runConnectedWorkspace;
 window.runAllConnectedWorkspace = runAllConnectedWorkspace;
@@ -371,8 +367,6 @@ async function boot() {
   initAttrHistory();
   initEditorUI();   // alignment toolbar + selection shortcuts + cheatsheet
   installHeaderOffsetObserver();
-  initCloudComputeToggleEvents();
-  initAuthUiEvents();
   initCanvasEvents();
   initSocketEvents();
   initDebugConsoleEvents();

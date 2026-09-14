@@ -6,18 +6,8 @@
 // dev server all hit '' (same-origin) for local-only endpoints.
 export const API = '';
 
-// Cloud broker base — used only for endpoints that must reach the SaaS
-// backend (Cloud Compute job submission + Cognito-driven auth). Same-origin
-// by default; the macOS Swift app injects an absolute URL like
-// 'https://app.yourdomain.com' via window.BIOCIRCUITS_EXPLORER_CLOUD_API so
-// its WebView talks to the EC2 broker for cloud features while keeping
-// instant local responses for the rest.
-export const CLOUD_API = (typeof window !== 'undefined' && window.BIOCIRCUITS_EXPLORER_CLOUD_API)
-  ? String(window.BIOCIRCUITS_EXPLORER_CLOUD_API).replace(/\/+$/, '')
-  : '';
 export const DEBUG_CLIENT_STORAGE_KEY = 'biocircuits-explorer.debug-client-id';
 export const LEGACY_DEBUG_CLIENT_STORAGE_KEY = 'rop-explorer.debug-client-id';
-export const CLOUD_COMPUTE_STORAGE_KEY = 'biocircuits-explorer.cloud-compute-enabled';
 
 export const state = {
   sessionId: null,
@@ -34,10 +24,6 @@ export const debugConsoleState = {
   versionFetchInFlight: false,
   buildInfo: null,
   unseenPriority: false,
-};
-
-export const cloudComputeState = {
-  enabled: false,
 };
 
 export const WORKSPACE_DOCUMENT_VERSION = 2;

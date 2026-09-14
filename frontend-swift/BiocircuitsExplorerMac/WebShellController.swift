@@ -55,54 +55,26 @@ struct WebShellOrigin: Equatable {
 
 enum WebShellNavigationTrust: Equatable {
     case trustedWorkspace
-    case localAuthenticationCallback
-    case externalAuthentication
 }
 
 enum WebShellNavigationDisposition: Equatable {
     case trustedWorkspace
-    case localAuthenticationCallback
-    case externalAuthentication
     case blocked
 }
 
 struct WebShellOriginPolicy: Equatable {
     static let workspacePath = "/index-node.html"
-    static let authenticationCallbackPath = "/auth-callback.html"
 
     let trustedOrigin: WebShellOrigin
-    let authenticationOrigin: WebShellOrigin?
-
-    init(
-        trustedOrigin: WebShellOrigin,
-        authenticationOrigin: WebShellOrigin? = nil
-    ) {
-        self.trustedOrigin = trustedOrigin
-        self.authenticationOrigin = authenticationOrigin
-    }
 
     func disposition(for url: URL) -> WebShellNavigationDisposition {
-        if trustedOrigin.contains(url) {
-            switch url.path {
-            case Self.workspacePath:
-                return .trustedWorkspace
-            case Self.authenticationCallbackPath:
-                return .localAuthenticationCallback
-            default:
-                return .blocked
-            }
-        }
-
         guard
-            let authenticationOrigin,
-            authenticationOrigin.scheme == "https",
-            authenticationOrigin.contains(url),
-            url.user == nil,
-            url.password == nil
+            trustedOrigin.contains(url),
+            url.path == Self.workspacePath
         else {
             return .blocked
         }
-        return .externalAuthentication
+        return .trustedWorkspace
     }
 }
 
@@ -380,8 +352,6 @@ final class WebShellController: NSObject, ObservableObject {
     private var admittedMainFrameRequest: WebShellNavigationRequest?
     private var navigationTrust: WebShellNavigationTrust?
     private var trustedOrigin: WebShellOrigin?
-    private var authenticationOrigin: WebShellOrigin?
-    private var authenticationConfigurationTask: Task<Void, Never>?
     private var bridgeMessageHandlerInstalled = false
     private var isCapturingSnapshot = false
     private var identityChangeSourceProjectID: String?
@@ -512,81 +482,7 @@ final class WebShellController: NSObject, ObservableObject {
 
         currentURL = url
         trustedOrigin = origin
-        refreshAuthenticationOrigin(for: origin)
         queueNavigation(to: url, trust: .trustedWorkspace)
-    }
-
-    private func refreshAuthenticationOrigin(for trustedOrigin: WebShellOrigin) {
-        authenticationConfigurationTask?.cancel()
-        authenticationOrigin = nil
-
-        guard let configurationURL = URL(
-            string: "\(trustedOrigin.serialized)/api/v1/auth/config"
-        ) else {
-            return
-        }
-
-        authenticationConfigurationTask = Task { @MainActor [weak self] in
-            do {
-                var request = URLRequest(url: configurationURL)
-                request.cachePolicy = .reloadIgnoringLocalCacheData
-                request.timeoutInterval = 10
-                let (data, response) = try await URLSession.shared.data(for: request)
-                try Task.checkCancellation()
-                guard
-                    let self,
-                    self.trustedOrigin == trustedOrigin,
-                    let response = response as? HTTPURLResponse
-                else {
-                    return
-                }
-                self.authenticationOrigin = Self.authenticationOrigin(
-                    statusCode: response.statusCode,
-                    body: data
-                )
-            } catch {
-                guard !Task.isCancelled, self?.trustedOrigin == trustedOrigin else {
-                    return
-                }
-                // Authentication stays fail-closed. The workspace remains fully
-                // usable when Cognito is disabled or its bootstrap is unavailable.
-                self?.authenticationOrigin = nil
-            }
-        }
-    }
-
-    static func authenticationOrigin(statusCode: Int, body: Data) -> WebShellOrigin? {
-        struct Configuration: Decodable {
-            let enabled: Bool
-            let cognitoDomain: String?
-
-            enum CodingKeys: String, CodingKey {
-                case enabled
-                case cognitoDomain = "cognito_domain"
-            }
-        }
-
-        guard
-            statusCode == 200,
-            let configuration = try? JSONDecoder().decode(Configuration.self, from: body),
-            configuration.enabled,
-            let domain = configuration.cognitoDomain?.lowercased(),
-            !domain.isEmpty,
-            domain.unicodeScalars.allSatisfy({
-                !$0.properties.isWhitespace && $0.isASCII
-            }),
-            !domain.contains("/"),
-            !domain.contains("@"),
-            !domain.contains(":"),
-            let url = URL(string: "https://\(domain)"),
-            url.host?.lowercased() == domain,
-            let origin = WebShellOrigin(url: url),
-            origin.scheme == "https",
-            origin.port == 443
-        else {
-            return nil
-        }
-        return origin
     }
 
     static func isExternalHTTPSURL(_ url: URL) -> Bool {
@@ -942,10 +838,7 @@ final class WebShellController: NSObject, ObservableObject {
             return false
         }
 
-        let disposition = WebShellOriginPolicy(
-            trustedOrigin: trustedOrigin,
-            authenticationOrigin: authenticationOrigin
-        )
+        let disposition = WebShellOriginPolicy(trustedOrigin: trustedOrigin)
             .disposition(for: request.url)
         guard Self.navigationTrust(for: disposition) == request.trust else {
             lastErrorMessage = "Blocked an untrusted embedded navigation."
@@ -964,12 +857,7 @@ final class WebShellController: NSObject, ObservableObject {
         latestPersistedSnapshotSequence = 0
         bridgeLifecycle.beginNavigation()
         navigationTrust = request.trust
-        switch request.trust {
-        case .trustedWorkspace:
-            installBridgeForTrustedOrigin(trustedOrigin)
-        case .localAuthenticationCallback, .externalAuthentication:
-            removeBridgeFromWebContent()
-        }
+        installBridgeForTrustedOrigin(trustedOrigin)
         admittedMainFrameRequest = request
         activeNavigation = nil
         activeNavigation = webView.load(URLRequest(url: request.url))
@@ -1079,10 +967,6 @@ final class WebShellController: NSObject, ObservableObject {
 
     func toggleDebugConsole() {
         evaluateNativeShellCommand("typeof window.toggleDebugConsole === 'function' && window.toggleDebugConsole()")
-    }
-
-    func setCloudComputeEnabled(_ enabled: Bool) {
-        evaluateNativeShellCommand("(window.BiocircuitsExplorerWorkspaceShell || window.ROPWorkspaceShell)?.setCloudComputeEnabled?.(\(enabled ? "true" : "false"))")
     }
 
     func setSurface(_ surface: String) {
@@ -1678,40 +1562,14 @@ extension WebShellController: WKNavigationDelegate {
             return
         }
 
-        let policy = WebShellOriginPolicy(
-            trustedOrigin: trustedOrigin,
-            authenticationOrigin: authenticationOrigin
-        )
+        let policy = WebShellOriginPolicy(trustedOrigin: trustedOrigin)
         let disposition = policy.disposition(for: url)
 
         guard let targetFrame = navigationAction.targetFrame else {
-            switch disposition {
-            case .externalAuthentication:
+            // New-window requests never replace the embedded shell; same-origin
+            // and plain HTTPS targets open in the system browser instead.
+            if trustedOrigin.contains(url) || Self.isExternalHTTPSURL(url) {
                 NSWorkspace.shared.open(url)
-
-            case .localAuthenticationCallback
-                where navigationTrust == .externalAuthentication:
-                queueNavigation(to: url, trust: .localAuthenticationCallback)
-
-            case .trustedWorkspace
-                where navigationTrust == .externalAuthentication
-                    || navigationTrust == .localAuthenticationCallback:
-                if let currentURL {
-                    queueNavigation(to: currentURL, trust: .trustedWorkspace)
-                }
-
-            case .trustedWorkspace:
-                NSWorkspace.shared.open(url)
-
-            case .blocked where trustedOrigin.contains(url)
-                && navigationTrust == .trustedWorkspace:
-                NSWorkspace.shared.open(url)
-
-            case .blocked where Self.isExternalHTTPSURL(url):
-                NSWorkspace.shared.open(url)
-
-            default:
-                break
             }
             decisionHandler(.cancel)
             return
@@ -1741,50 +1599,14 @@ extension WebShellController: WKNavigationDelegate {
         switch disposition {
         case .trustedWorkspace:
             decisionHandler(.cancel)
-            if
-                navigationTrust == .externalAuthentication
-                    || navigationTrust == .localAuthenticationCallback,
-                let currentURL
-            {
-                queueNavigation(to: currentURL, trust: .trustedWorkspace)
-            } else {
-                queueNavigation(to: url, trust: .trustedWorkspace)
-            }
-
-        case .localAuthenticationCallback:
-            decisionHandler(.cancel)
-            guard navigationTrust == .externalAuthentication else {
-                lastErrorMessage = "Blocked an authentication callback outside an active OAuth navigation."
-                return
-            }
-            queueNavigation(to: url, trust: .localAuthenticationCallback)
-
-        case .externalAuthentication:
-            if navigationTrust == .externalAuthentication {
-                prepareForAllowedExternalMainFrameNavigation()
-                decisionHandler(.allow)
-            } else {
-                decisionHandler(.cancel)
-                queueNavigation(to: url, trust: .externalAuthentication)
-            }
+            queueNavigation(to: url, trust: .trustedWorkspace)
 
         case .blocked:
             decisionHandler(.cancel)
-            if
-                trustedOrigin.contains(url),
-                navigationTrust == .externalAuthentication
-                    || navigationTrust == .localAuthenticationCallback,
-                let currentURL
-            {
-                // Cognito logout commonly returns to `/`. Never embed that or
-                // another same-origin utility page; restore the canonical shell.
-                queueNavigation(to: currentURL, trust: .trustedWorkspace)
+            if Self.isExternalHTTPSURL(url) {
+                NSWorkspace.shared.open(url)
             } else {
-                if Self.isExternalHTTPSURL(url) {
-                    NSWorkspace.shared.open(url)
-                } else {
-                    lastErrorMessage = "Blocked a navigation outside the canonical workspace and OAuth paths."
-                }
+                lastErrorMessage = "Blocked a navigation outside the canonical workspace path."
             }
         }
     }
@@ -1853,19 +1675,6 @@ extension WebShellController: WKNavigationDelegate {
 
         beginNavigationNow(recoveryRequest)
         lastErrorMessage = recoveryMessage
-    }
-
-    private func prepareForAllowedExternalMainFrameNavigation() {
-        pendingProject = Self.projectToReapply(
-            pendingProject: pendingProject,
-            currentProjectID: currentProjectID,
-            currentProjectDocument: currentProjectDocument
-        )
-        isReady = false
-        isLoadingProject = false
-        bridgeLifecycle.beginNavigation()
-        navigationTrust = .externalAuthentication
-        removeBridgeFromWebContent()
     }
 
     private func isActiveNavigation(_ navigation: WKNavigation?) -> Bool {
@@ -1966,10 +1775,6 @@ extension WebShellController {
         switch disposition {
         case .trustedWorkspace:
             return .trustedWorkspace
-        case .localAuthenticationCallback:
-            return .localAuthenticationCallback
-        case .externalAuthentication:
-            return .externalAuthentication
         case .blocked:
             return nil
         }
@@ -1982,10 +1787,6 @@ extension WebShellController {
         switch navigationTrust {
         case .trustedWorkspace:
             return disposition == .trustedWorkspace
-        case .localAuthenticationCallback:
-            return false
-        case .externalAuthentication:
-            return disposition == .externalAuthentication
         case nil:
             return false
         }
@@ -1995,9 +1796,6 @@ extension WebShellController {
         navigationURL: URL,
         canonicalWorkspaceURL: URL?
     ) -> URL {
-        if navigationURL.path == WebShellOriginPolicy.authenticationCallbackPath {
-            return navigationURL
-        }
         return canonicalWorkspaceURL ?? navigationURL
     }
 

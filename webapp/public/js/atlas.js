@@ -5,7 +5,7 @@ import {
   getWorkspaceRuntimeEpoch,
   nodeRegistry,
 } from './state.js';
-import { api, apiSilent, computeApi, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, syncSelectOptions } from './api.js';
+import { api, apiSilent, showToast, handleNodeError, escapeHtml, splitCommaList, parseOptionalInteger, parseOptionalFloat, parseOptionalJson, normalizePredicateArray, syncSelectOptions } from './api.js';
 import { stableJson } from './stable-json.js';
 import { setNodeLoading } from './nodes.js';
 import { commitWorkspaceSnapshot } from './workspace.js';
@@ -2222,7 +2222,7 @@ export async function executeAtlasBuilder(
   const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket, beginContext);
   const requestIsCurrent = () => atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver);
   try {
-    const data = await computeApi('build_atlas', requestSpec, {
+    const data = await api('build_atlas', requestSpec, {
       // Polling a cloud job must stay O(1); the full request fingerprint is
       // reconstructed only when the request settles.
       statusIsCurrent: executionIsCurrent,
@@ -2465,7 +2465,7 @@ export async function executeAtlasInverseDesignResult(
   const executionIsCurrent = () => isCurrentAtlasNodeExecution(nodeId, ticket, beginContext);
   const requestIsCurrent = () => atlasExecutionRequestIsCurrent(nodeId, ticket, contextResolver);
   try {
-    const data = await computeApi('run_inverse_design', request, {
+    const data = await api('run_inverse_design', request, {
       statusIsCurrent: executionIsCurrent,
     });
     if (!requestIsCurrent()) {

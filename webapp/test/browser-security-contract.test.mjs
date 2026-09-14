@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { webcrypto } from 'node:crypto';
 
 import {
   markdownToSafeTree,
@@ -165,104 +164,14 @@ assert.equal(writeFailingStorage.getItem('bcx-llm-cfg'), null,
   'failed preference rewrite must still delete the legacy persistent key');
 globalThis.localStorage = localStorage;
 
-// Cognito migration and callback tokens are session-scoped. The unused access
-// token is discarded, and an external post-login return target fails closed.
-const authPrefix = 'biocircuits-explorer.auth.';
-const encodedPayload = Buffer.from(JSON.stringify({
-  sub: 'user-1',
-  email: 'user@example.test',
-  email_verified: true,
-  exp: Math.floor(Date.now() / 1000) + 3600,
-})).toString('base64url');
-const legacyIdToken = `header.${encodedPayload}.signature`;
-localStorage.setItem(`${authPrefix}id_token`, legacyIdToken);
-localStorage.setItem(`${authPrefix}access_token`, 'legacy-access-secret');
-localStorage.setItem(`${authPrefix}refresh_token`, 'legacy-refresh-secret');
-localStorage.setItem(`${authPrefix}expires_at`, String(Date.now() + 3600_000));
-
-const assignedLocations = [];
-const location = {
-  origin: 'http://127.0.0.1:18088',
-  protocol: 'http:',
-  hostname: '127.0.0.1',
-  port: '18088',
-  pathname: '/index-node.html',
-  search: '?project=test',
-  hash: '#agent',
-  assign(value) { assignedLocations.push(String(value)); },
-};
-if (!globalThis.crypto) {
-  Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
-}
+// The API modules import `state.js`, which reads window.matchMedia at module
+// scope; install the minimal browser stub before importing them.
 globalThis.window = {
   localStorage,
   sessionStorage,
-  location,
   matchMedia: () => null,
+  crypto: { randomUUID: () => 'security-test' },
 };
-
-const callbackIdToken = `header.${encodedPayload}.callback`;
-const fetchCalls = [];
-globalThis.fetch = async (url, options = {}) => {
-  fetchCalls.push({ url: String(url), options });
-  if (String(url).endsWith('/api/v1/auth/config')) {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        enabled: true,
-        cognito_domain: 'login.example.test',
-        cognito_app_client_id: 'public-client',
-        scopes: ['openid', 'email'],
-      }),
-    };
-  }
-  if (String(url) === 'https://login.example.test/oauth2/token') {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        id_token: callbackIdToken,
-        access_token: 'callback-access-secret',
-        refresh_token: 'callback-refresh-secret',
-        expires_in: 3600,
-      }),
-    };
-  }
-  throw new Error(`unexpected fetch: ${url}`);
-};
-
-const authModule = await import(`../public/js/auth.js?security=${Date.now()}`);
-for (const suffix of ['id_token', 'access_token', 'refresh_token', 'expires_at']) {
-  assert.equal(localStorage.getItem(`${authPrefix}${suffix}`), null, `${suffix} must leave localStorage`);
-}
-assert.equal(sessionStorage.getItem(`${authPrefix}id_token`), legacyIdToken);
-assert.equal(sessionStorage.getItem(`${authPrefix}refresh_token`), 'legacy-refresh-secret');
-assert.equal(sessionStorage.getItem(`${authPrefix}access_token`), null);
-assert.equal(authModule.isAuthenticated(), true);
-assert.equal(authModule.getCurrentUser()?.email, 'user@example.test');
-
-sessionStorage.setItem(`${authPrefix}pkce_state`, 'expected-state');
-sessionStorage.setItem(`${authPrefix}pkce_verifier`, 'expected-verifier');
-sessionStorage.setItem(`${authPrefix}post_login_return`, 'https://attacker.example/steal');
-const returnPath = await authModule.handleCallback(new URLSearchParams({
-  code: 'authorization-code',
-  state: 'expected-state',
-}));
-assert.equal(returnPath, '/index-node.html', 'OAuth callback must not become an open redirect');
-assert.equal(sessionStorage.getItem(`${authPrefix}id_token`), callbackIdToken);
-assert.equal(sessionStorage.getItem(`${authPrefix}refresh_token`), 'callback-refresh-secret');
-assert.equal(sessionStorage.getItem(`${authPrefix}access_token`), null);
-assert.equal(sessionStorage.getItem(`${authPrefix}pkce_state`), null);
-assert.equal(sessionStorage.getItem(`${authPrefix}pkce_verifier`), null);
-assert.equal(sessionStorage.getItem(`${authPrefix}post_login_return`), null);
-assert.equal(await authModule.getIdToken(), callbackIdToken);
-assert.equal([...localStorage.values.values()].some(value => value.includes('callback-')), false);
-
-await authModule.signIn({ returnTo: 'https://attacker.example/after-login' });
-assert.equal(sessionStorage.getItem(`${authPrefix}post_login_return`), '/index-node.html');
-assert.match(assignedLocations.at(-1), /^https:\/\/login\.example\.test\/oauth2\/authorize\?/);
-assert.equal(fetchCalls.filter(call => call.url.endsWith('/api/v1/auth/config')).length, 1);
 
 // Server error bodies flow into Error.message. Rendering them must use a text
 // node, because the same code runs inside the privileged local WKWebView.

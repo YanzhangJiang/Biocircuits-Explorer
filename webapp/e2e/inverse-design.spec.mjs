@@ -100,8 +100,7 @@ async function openInverseDesign(page, { chain = true, delayedSubmission = false
       await route.fulfill({ json: { session_id: 'inverse-e2e', network_ir_hash: 'a'.repeat(64), n: 5, d: 3, r: 2,
         x_sym: ['X', 'A', 'B', 'AX', 'BX'], q_sym: ['tX', 'tA', 'tB'], K_sym: ['K_AX', 'K_BX'] } });
     } else {
-      const json = path.endsWith('/auth/config') ? { enabled: false }
-        : path.endsWith('/debug/logs') ? { entries: [], next_seq: 0 } : { version: 'local-fixture' };
+      const json = path.endsWith('/debug/logs') ? { entries: [], next_seq: 0 } : { version: 'local-fixture' };
       await route.fulfill({ json });
     }
   });

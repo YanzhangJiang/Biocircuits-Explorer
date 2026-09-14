@@ -17,7 +17,7 @@ global.document = {
   },
 };
 
-const { api, apiSilent, optimizeRopShape, submitJob, getJob } = await import('../public/js/api.js');
+const { api, apiSilent, optimizeRopShape } = await import('../public/js/api.js');
 
 let passed = 0;
 function test(name, fn) {
@@ -62,15 +62,6 @@ test('optimizeRopShape attaches a default timeout signal', async () => {
   const captured = captureSignal({ rop_shape: { status: 'ok' } });
   await optimizeRopShape({ network: {} });
   assert.ok(captured() instanceof AbortSignal);
-});
-
-test('job endpoints attach a timeout signal', async () => {
-  const captured = captureSignal({ job_id: 'j-1', status: 'queued' });
-  await submitJob('build_atlas', {});
-  assert.ok(captured() instanceof AbortSignal);
-  const capturedPoll = captureSignal({ job_id: 'j-1', status: 'succeeded' });
-  await getJob('j-1');
-  assert.ok(capturedPoll() instanceof AbortSignal);
 });
 
 test('a caller abort rejects the pending request', async () => {

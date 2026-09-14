@@ -53,9 +53,6 @@ async function installLocalApiMocks(page) {
       case '/api/v1/behavior_families':
         body = emptyBehaviorFamiliesResponse;
         break;
-      case '/api/v1/auth/config':
-        body = { enabled: false };
-        break;
       case '/api/v1/version':
         body = { version: 'playwright-local', commit: 'local-fixture' };
         break;

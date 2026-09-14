@@ -12,7 +12,6 @@ import { getSelection, setSelection } from './selection.js';
 import { remapSnapshots } from './clipboard-util.js';
 import { showToast, cloneSerializable } from './api.js';
 import { applyThemeMode } from './theme.js';
-import { isCloudComputeEnabled, setCloudComputeEnabled as setCloudComputePreference } from './cloud-compute.js';
 import { applyViewportTransform } from './canvas.js';
 import { updateConnections } from './connections.js';
 import { normalizeRestoredConnection, validateNodeConnection } from './connection-validation.js';
@@ -168,15 +167,6 @@ export function initWorkspaceShell() {
 
     getThemeMode() {
       return themeState.mode;
-    },
-
-    setCloudComputeEnabled(enabled) {
-      setCloudComputePreference(!!enabled);
-      return true;
-    },
-
-    getCloudComputeEnabled() {
-      return isCloudComputeEnabled();
     },
 
     async runConnectedWorkspace() {
