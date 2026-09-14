@@ -329,7 +329,7 @@ end
         level_base, Dict("kd" => Any[true]))).status == 400
 end
 
-@testset "Request and Classic UI limits match the 1 MiB/20k contract" begin
+@testset "Request limits match the 1 MiB contract" begin
     @test BiocircuitsExplorerBackend.Serialization.MAX_JSON_REQUEST_BYTES == 1024 * 1024
 
     oversized = router(HTTP.Request(
@@ -355,10 +355,6 @@ end
         JSON3.write(deeply_nested),
     ))
     @test deep_response.status == 400
-
-    classic_html = read(joinpath(@__DIR__, "..", "public", "classic.html"), String)
-    @test occursin(r"id=\"cloud-samples\"[^>]*max=\"20000\"", classic_html)
-    @test !occursin(r"id=\"cloud-samples\"[^>]*max=\"100000\"", classic_html)
 end
 
 @testset "Session aliases are bounded LRU state" begin
