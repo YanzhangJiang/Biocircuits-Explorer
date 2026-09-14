@@ -206,40 +206,6 @@ end
 
 @testset "Synchronous API work fails closed before expensive compute" begin
     backend = BiocircuitsExplorerBackend
-    entered = Channel{Nothing}(2)
-    release = Base.Event()
-    holders = [Threads.@spawn backend.with_sync_work_gate(:handle_design_screen) do
-        put!(entered, nothing)
-        wait(release)
-    end for _ in 1:2]
-    take!(entered)
-    take!(entered)
-    @test_throws backend.SyncCapacityExceeded backend.with_sync_work_gate(
-        () -> nothing, :handle_design_screen)
-    capacity_error = try
-        backend.with_sync_work_gate(() -> nothing, :handle_design_screen)
-        nothing
-    catch err
-        err
-    end
-    @test capacity_error isa backend.SyncCapacityExceeded
-    @test !occursin("/api/v1/jobs", sprint(showerror, capacity_error))
-    capacity_response = router(HTTP.Request(
-        "POST",
-        "/api/v1/design_screen",
-        ["Content-Type" => "application/json"],
-        JSON3.write(Dict("target_kind" => "sign", "target" => "+")),
-    ))
-    @test capacity_response.status == 429
-    capacity_body = JSON3.read(String(capacity_response.body))
-    @test capacity_body["code"] == "sync_capacity_exhausted"
-    @test capacity_body["retryable"] === true
-    @test capacity_body["retry_after_seconds"] == 1
-    @test HTTP.header(capacity_response, "Retry-After") == "1"
-    @test occursin("Retry-After",
-        HTTP.header(capacity_response, "Access-Control-Expose-Headers"))
-    notify(release)
-    fetch.(holders)
 
     @test backend.sync_bounded_int(64.0, "candidate_budget"; max=64) == 64
     @test_throws ArgumentError backend.sync_bounded_int(64.5, "candidate_budget"; max=64)

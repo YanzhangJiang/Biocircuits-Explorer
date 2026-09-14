@@ -6,13 +6,11 @@
 # The frontend (agent-view.js) renders `reply` + `cards`; `state` is client-held and echoed
 # back each turn (stateless server). The LLM key comes in the request body from the UI key
 # panel (llm-settings.js); it is passed straight through and never logged or stored.
-# Security contract:
-#   BNE_CHAT_ALLOWED_ORIGIN=<exact loopback origin>   required
-#   BNE_CHAT_BEARER_TOKEN=<at least 32 characters>    required outside local dev
-#   BNE_CHAT_INSTANCE_NONCE=<at least 32 characters>  required outside local dev
-#   BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK=1        explicit local-dev-only mode
-# `webapp/start.sh` supplies the local-dev contract. The native macOS shell
-# rotates a bearer token for every helper launch and injects it into its WKWebView.
+# Local-only contract (single-user tool): the helper binds to loopback and
+# accepts browser requests only from one exact loopback Origin
+# (BNE_CHAT_ALLOWED_ORIGIN, e.g. http://127.0.0.1:8088). An optional
+# BNE_CHAT_INSTANCE_NONCE is echoed by /health so the native shell can tell its
+# own helper apart from a stale process on the same port.
 import hmac, os, sys, json, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -24,12 +22,8 @@ import design_target_compile as target_compiler
 HOST = os.environ.get("BNE_CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BNE_CHAT_PORT", "8765"))
 ALLOWED_ORIGIN = os.environ.get("BNE_CHAT_ALLOWED_ORIGIN", "").strip()
-BEARER_TOKEN = os.environ.get("BNE_CHAT_BEARER_TOKEN", "").strip()
 INSTANCE_NONCE = os.environ.get("BNE_CHAT_INSTANCE_NONCE", "").strip()
 SERVICE_IDENTITY = "biocircuits-design-chat"
-ALLOW_UNAUTHENTICATED_LOOPBACK = os.environ.get(
-    "BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK", ""
-).strip().lower() in ("1", "true", "yes", "on")
 _LOOPBACK_ORIGIN_HOSTS = frozenset(("127.0.0.1", "localhost", "::1"))
 CHAT_TURN_MAX_CONCURRENCY_HARD_LIMIT = 32
 
@@ -93,33 +87,13 @@ def _is_exact_loopback_origin(origin):
     return hmac.compare_digest(origin, canonical)
 
 
-def _validate_runtime_contract(
-    allowed_origin=ALLOWED_ORIGIN,
-    bearer_token=BEARER_TOKEN,
-    allow_unauthenticated_loopback=ALLOW_UNAUTHENTICATED_LOOPBACK,
-    bind_host=HOST,
-    instance_nonce=INSTANCE_NONCE,
-):
+def _validate_runtime_contract(allowed_origin=ALLOWED_ORIGIN, bind_host=HOST):
     if bind_host != bind_host.strip() or bind_host.lower() not in _LOOPBACK_ORIGIN_HOSTS:
         raise ValueError("BNE_CHAT_HOST must be a literal loopback host")
     if not _is_exact_loopback_origin(allowed_origin):
         raise ValueError(
             "BNE_CHAT_ALLOWED_ORIGIN must be one exact http(s) loopback origin "
             "without a path (for example http://127.0.0.1:18088)"
-        )
-    if allow_unauthenticated_loopback:
-        if instance_nonce and (len(instance_nonce) < 32 or instance_nonce != instance_nonce.strip()):
-            raise ValueError(
-                "BNE_CHAT_INSTANCE_NONCE must contain at least 32 non-whitespace characters"
-            )
-        return
-    if len(bearer_token) < 32 or bearer_token != bearer_token.strip():
-        raise ValueError(
-            "BNE_CHAT_BEARER_TOKEN must contain at least 32 non-whitespace characters"
-        )
-    if len(instance_nonce) < 32 or instance_nonce != instance_nonce.strip():
-        raise ValueError(
-            "BNE_CHAT_INSTANCE_NONCE must contain at least 32 non-whitespace characters"
         )
 
 def _norm_llm(llm):
@@ -136,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
         self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Max-Age", "600")
     def _json(self, code, obj, *, cors=False, extra_headers=()):
@@ -154,66 +128,27 @@ class Handler(BaseHTTPRequestHandler):
     def _origin_is_allowed(self):
         origin = (self.headers.get("Origin") or "").strip()
         return bool(origin) and hmac.compare_digest(origin, ALLOWED_ORIGIN)
-    def _bearer_is_valid(self):
-        authorization = (self.headers.get("Authorization") or "").strip()
-        scheme, separator, supplied = authorization.partition(" ")
-        return (
-            bool(separator) and
-            scheme.lower() == "bearer" and
-            bool(BEARER_TOKEN) and
-            hmac.compare_digest(supplied, BEARER_TOKEN)
-        )
-    def _authorize(self):
+    def _authorize(self, *, origin_required):
+        # Browser requests always carry Origin and it must be the one loopback
+        # workspace origin. A local non-browser probe (the native shell's
+        # URLSession, curl) may omit Origin on GET /health only.
         origin = (self.headers.get("Origin") or "").strip()
-        token_valid = self._bearer_is_valid()
-
-        # Browsers always have to present the one configured loopback Origin.
-        # A token-authenticated non-browser probe (the native URLSession) may
-        # omit Origin, but the explicit unauthenticated dev mode may not.
         if origin and not self._origin_is_allowed():
             self._json(403, {"error": "origin forbidden"})
             return False
-        if not origin and not token_valid:
+        if not origin and origin_required:
             self._json(403, {"error": "origin required"})
-            return False
-        if not token_valid and not (ALLOW_UNAUTHENTICATED_LOOPBACK and origin):
-            self._json(
-                401,
-                {"error": "bearer token required"},
-                cors=self._origin_is_allowed(),
-                extra_headers=(("WWW-Authenticate", "Bearer"),),
-            )
             return False
         return True
     def do_OPTIONS(self):
-        path = self.path.split("?")[0]
-        expected_method = {"/health": "GET", "/design-chat": "POST", "/compile-target": "POST"}.get(path)
         if not self._origin_is_allowed():
             return self._json(403, {"error": "origin forbidden"})
-        requested_method = (self.headers.get("Access-Control-Request-Method") or "").upper()
-        if expected_method is None or requested_method != expected_method:
-            return self._json(405, {"error": "preflight method forbidden"}, cors=True)
-        requested_headers = {
-            item.strip().lower()
-            for item in (self.headers.get("Access-Control-Request-Headers") or "").split(",")
-            if item.strip()
-        }
-        if not requested_headers.issubset({"authorization", "content-type"}):
-            return self._json(403, {"error": "preflight headers forbidden"}, cors=True)
         self.send_response(204)
         self._cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
     def do_GET(self):
-        if self.path.split("?")[0] == "/identity":
-            # This endpoint deliberately contains no bearer-protected data. It
-            # lets the native shell prove process ownership before disclosing
-            # the per-launch bearer to /health.
-            return self._json(200, {
-                "service": SERVICE_IDENTITY,
-                "instance_nonce": INSTANCE_NONCE,
-            })
-        if not self._authorize():
+        if not self._authorize(origin_required=False):
             return
         if self.path.split("?")[0] == "/health":
             corpora = {"dose": os.path.isdir(agent.DOSE_DS), "logic": os.path.isfile(agent.LOGIC_LABELS),
@@ -226,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "engine": eng}, cors=self._origin_is_allowed())
         return self._json(404, {"error": "not found"}, cors=self._origin_is_allowed())
     def do_POST(self):
-        if not self._authorize():
+        if not self._authorize(origin_required=True):
             return
         path = self.path.split("?")[0]
         if path not in ("/design-chat", "/compile-target"):

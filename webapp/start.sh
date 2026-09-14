@@ -30,17 +30,13 @@ CHAT_PID=""
 if [ "${BNE_CHAT_DISABLE:-0}" != "1" ]; then
   if command -v python3 >/dev/null 2>&1; then
     echo "Starting Design Agent backend (chat_api.py) on http://127.0.0.1:$CHAT_PORT ..."
-    echo "Design Agent local-dev origin: $CHAT_ALLOWED_ORIGIN"
+    echo "Design Agent allowed origin: $CHAT_ALLOWED_ORIGIN"
     # BNE_CHAT_PARENT_PID lets chat_api.py self-terminate if this script is killed
     # hard (SIGKILL bypasses the trap), so it can't be left orphaned.
-    # This launcher is the one explicit unauthenticated development path. Direct
-    # and native launches must instead set BNE_CHAT_BEARER_TOKEN (>=32 chars).
     BNE_CHAT_HOST="127.0.0.1" \
       BNE_CHAT_PORT="$CHAT_PORT" \
       BNE_CHAT_PARENT_PID="$$" \
       BNE_CHAT_ALLOWED_ORIGIN="$CHAT_ALLOWED_ORIGIN" \
-      BNE_CHAT_BEARER_TOKEN="" \
-      BNE_CHAT_ALLOW_UNAUTHENTICATED_LOOPBACK="1" \
       python3 scripts/chat_api.py &
     CHAT_PID=$!
   else

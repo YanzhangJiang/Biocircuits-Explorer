@@ -884,7 +884,7 @@ end
                   screen["constraint_audit"])
         @test screen["screen_summary"]["verified_status"] == "blocked_by_unsupported_hard_clause"
 
-        req = HTTP.Request("POST", "/api/validate_designability_spec", [], JSON3.write(spec))
+        req = HTTP.Request("POST", "/api/v1/validate_designability_spec", [], JSON3.write(spec))
         res = BEB.router(req)
         @test res.status == 200
         parsed = JSON3.read(String(copy(res.body)))
@@ -3849,14 +3849,14 @@ end
             "schema_version" => "bne-designability/v1.0.0",
             "target" => Dict("legacy_target" => Dict("target_kind" => "sign", "target" => "+-+")),
         )
-        good_req = HTTP.Request("POST", "/api/validate_designability_spec", [], JSON3.write(good))
+        good_req = HTTP.Request("POST", "/api/v1/validate_designability_spec", [], JSON3.write(good))
         good_res = BEB.router(good_req)
         @test good_res.status == 200
         parsed = JSON3.read(String(copy(good_res.body)))
         @test parsed["ok"] === true
         @test haskey(parsed, "constraint_audit")
 
-        bad_req = HTTP.Request("POST", "/api/validate_designability_spec", [], JSON3.write(Dict("schema_version" => "wrong")))
+        bad_req = HTTP.Request("POST", "/api/v1/validate_designability_spec", [], JSON3.write(Dict("schema_version" => "wrong")))
         @test BEB.router(bad_req).status == 400
     end
 
@@ -3878,7 +3878,7 @@ end
                           item.kind == "candidate_budget_contract",
                   normalized.audit)
         ok_req = HTTP.Request(
-            "POST", "/api/validate_designability_spec", [], JSON3.write(integral_float))
+            "POST", "/api/v1/validate_designability_spec", [], JSON3.write(integral_float))
         @test BEB.router(ok_req).status == 200
 
         over_limit = merge(base, Dict(
@@ -3889,7 +3889,7 @@ end
                           item.kind == "candidate_budget_contract" &&
                           item.support_level == "unsupported",
                   over_normalized.audit)
-        for path in ("/api/validate_designability_spec", "/api/design_screen")
+        for path in ("/api/v1/validate_designability_spec", "/api/v1/design_screen")
             req = HTTP.Request("POST", path, [], JSON3.write(over_limit))
             @test BEB.router(req).status == 422
         end

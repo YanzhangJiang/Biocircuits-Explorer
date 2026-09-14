@@ -7,7 +7,6 @@ struct APIRouteContract
     internal_path::String
     methods::Tuple{Vararg{String}}
     handler::Symbol
-    legacy_alias::Union{Nothing, String}
     match_kind::Symbol
 end
 
@@ -19,71 +18,66 @@ const API_V1_PREFIX = "/api/v1"
 # templates use `{job_id}` for their one variable segment.
 const API_ROUTE_CONTRACTS = APIRouteContract[
     # Version discovery.
-    APIRouteContract("/api/v1", "/api/v1", ("GET", "POST"), :handle_version, nothing, :exact),
+    APIRouteContract("/api/v1", "/api/v1", ("GET", "POST"), :handle_version, :exact),
 
     # Ordinary JSON POST handlers (the historical API_ROUTES surface).
-    APIRouteContract("/api/v1/build_atlas", "/api/build_atlas", ("POST",), :handle_build_atlas, "/api/build_atlas", :exact),
-    APIRouteContract("/api/v1/query_atlas", "/api/query_atlas", ("POST",), :handle_query_atlas, "/api/query_atlas", :exact),
-    APIRouteContract("/api/v1/build_atlas_library", "/api/build_atlas_library", ("POST",), :handle_build_atlas_library, "/api/build_atlas_library", :exact),
-    APIRouteContract("/api/v1/merge_atlas_library", "/api/merge_atlas_library", ("POST",), :handle_merge_atlas_library, "/api/merge_atlas_library", :exact),
-    APIRouteContract("/api/v1/run_inverse_design", "/api/run_inverse_design", ("POST",), :handle_run_inverse_design, "/api/run_inverse_design", :exact),
-    APIRouteContract("/api/v1/build_model", "/api/build_model", ("POST",), :handle_build_model, "/api/build_model", :exact),
-    APIRouteContract("/api/v1/find_vertices", "/api/find_vertices", ("POST",), :handle_find_vertices, "/api/find_vertices", :exact),
-    APIRouteContract("/api/v1/build_graph", "/api/build_graph", ("POST",), :handle_build_graph, "/api/build_graph", :exact),
-    APIRouteContract("/api/v1/siso_paths", "/api/siso_paths", ("POST",), :handle_siso_paths, "/api/siso_paths", :exact),
-    APIRouteContract("/api/v1/siso_polyhedra", "/api/siso_polyhedra", ("POST",), :handle_siso_polyhedra, "/api/siso_polyhedra", :exact),
-    APIRouteContract("/api/v1/siso_path_condition", "/api/siso_path_condition", ("POST",), :handle_siso_path_condition, "/api/siso_path_condition", :exact),
-    APIRouteContract("/api/v1/siso_trajectory", "/api/siso_trajectory", ("POST",), :handle_siso_trajectory, "/api/siso_trajectory", :exact),
-    APIRouteContract("/api/v1/behavior_families", "/api/behavior_families", ("POST",), :handle_behavior_families, "/api/behavior_families", :exact),
-    APIRouteContract("/api/v1/phenotype_classify", "/api/phenotype_classify", ("POST",), :handle_phenotype_classify, "/api/phenotype_classify", :exact),
-    APIRouteContract("/api/v1/rop_cloud", "/api/rop_cloud", ("POST",), :handle_rop_cloud, "/api/rop_cloud", :exact),
-    APIRouteContract("/api/v1/vertex_detail", "/api/vertex_detail", ("POST",), :handle_vertex_detail, "/api/vertex_detail", :exact),
-    APIRouteContract("/api/v1/fret_heatmap", "/api/fret_heatmap", ("POST",), :handle_fret_heatmap, "/api/fret_heatmap", :exact),
-    APIRouteContract("/api/v1/parameter_scan_1d", "/api/parameter_scan_1d", ("POST",), :handle_parameter_scan_1d, "/api/parameter_scan_1d", :exact),
-    APIRouteContract("/api/v1/parameter_scan_2d", "/api/parameter_scan_2d", ("POST",), :handle_parameter_scan_2d, "/api/parameter_scan_2d", :exact),
-    APIRouteContract("/api/v1/discover_architecture", "/api/discover_architecture", ("POST",), :handle_discover_architecture, nothing, :exact),
-    APIRouteContract("/api/v1/design_network", "/api/design_network", ("POST",), :handle_design_network, nothing, :exact),
-    APIRouteContract("/api/v1/place_parameters", "/api/place_parameters", ("POST",), :handle_place_parameters, "/api/place_parameters", :exact),
-    APIRouteContract("/api/v1/placer_menu", "/api/placer_menu", ("POST",), :handle_placer_menu, "/api/placer_menu", :exact),
-    APIRouteContract("/api/v1/placer_curve", "/api/placer_curve", ("POST",), :handle_placer_curve, "/api/placer_curve", :exact),
-    APIRouteContract("/api/v1/placer_threshold", "/api/placer_threshold", ("POST",), :handle_placer_threshold, "/api/placer_threshold", :exact),
-    APIRouteContract("/api/v1/placer_realize_program", "/api/placer_realize_program", ("POST",), :handle_placer_realize_program, "/api/placer_realize_program", :exact),
-    APIRouteContract("/api/v1/placer_level", "/api/placer_level", ("POST",), :handle_placer_level, "/api/placer_level", :exact),
-    APIRouteContract("/api/v1/design_search", "/api/design_search", ("POST",), :handle_design_search, "/api/design_search", :exact),
-    APIRouteContract("/api/v1/design_screen", "/api/design_screen", ("POST",), :handle_design_screen, "/api/design_screen", :exact),
-    # Shape optimization is introduced as v1-only. It has no bare-/api alias,
-    # so new clients cannot acquire a dependency on the sunset surface.
-    APIRouteContract("/api/v1/rop_shape_optimize", "/api/rop_shape_optimize", ("POST",), :handle_rop_shape_optimize, nothing, :exact),
-    # Multi-input reaction-order fields are additive and v1-only. Existing
-    # SISO/RPB1 clients must not acquire a legacy alias with different meaning.
-    APIRouteContract("/api/v1/ro_field", "/api/ro_field", ("POST",), :handle_ro_field, nothing, :exact),
+    APIRouteContract("/api/v1/build_atlas", "/api/build_atlas", ("POST",), :handle_build_atlas, :exact),
+    APIRouteContract("/api/v1/query_atlas", "/api/query_atlas", ("POST",), :handle_query_atlas, :exact),
+    APIRouteContract("/api/v1/build_atlas_library", "/api/build_atlas_library", ("POST",), :handle_build_atlas_library, :exact),
+    APIRouteContract("/api/v1/merge_atlas_library", "/api/merge_atlas_library", ("POST",), :handle_merge_atlas_library, :exact),
+    APIRouteContract("/api/v1/run_inverse_design", "/api/run_inverse_design", ("POST",), :handle_run_inverse_design, :exact),
+    APIRouteContract("/api/v1/build_model", "/api/build_model", ("POST",), :handle_build_model, :exact),
+    APIRouteContract("/api/v1/find_vertices", "/api/find_vertices", ("POST",), :handle_find_vertices, :exact),
+    APIRouteContract("/api/v1/build_graph", "/api/build_graph", ("POST",), :handle_build_graph, :exact),
+    APIRouteContract("/api/v1/siso_paths", "/api/siso_paths", ("POST",), :handle_siso_paths, :exact),
+    APIRouteContract("/api/v1/siso_polyhedra", "/api/siso_polyhedra", ("POST",), :handle_siso_polyhedra, :exact),
+    APIRouteContract("/api/v1/siso_path_condition", "/api/siso_path_condition", ("POST",), :handle_siso_path_condition, :exact),
+    APIRouteContract("/api/v1/siso_trajectory", "/api/siso_trajectory", ("POST",), :handle_siso_trajectory, :exact),
+    APIRouteContract("/api/v1/behavior_families", "/api/behavior_families", ("POST",), :handle_behavior_families, :exact),
+    APIRouteContract("/api/v1/phenotype_classify", "/api/phenotype_classify", ("POST",), :handle_phenotype_classify, :exact),
+    APIRouteContract("/api/v1/rop_cloud", "/api/rop_cloud", ("POST",), :handle_rop_cloud, :exact),
+    APIRouteContract("/api/v1/vertex_detail", "/api/vertex_detail", ("POST",), :handle_vertex_detail, :exact),
+    APIRouteContract("/api/v1/fret_heatmap", "/api/fret_heatmap", ("POST",), :handle_fret_heatmap, :exact),
+    APIRouteContract("/api/v1/parameter_scan_1d", "/api/parameter_scan_1d", ("POST",), :handle_parameter_scan_1d, :exact),
+    APIRouteContract("/api/v1/parameter_scan_2d", "/api/parameter_scan_2d", ("POST",), :handle_parameter_scan_2d, :exact),
+    APIRouteContract("/api/v1/discover_architecture", "/api/discover_architecture", ("POST",), :handle_discover_architecture, :exact),
+    APIRouteContract("/api/v1/design_network", "/api/design_network", ("POST",), :handle_design_network, :exact),
+    APIRouteContract("/api/v1/place_parameters", "/api/place_parameters", ("POST",), :handle_place_parameters, :exact),
+    APIRouteContract("/api/v1/placer_menu", "/api/placer_menu", ("POST",), :handle_placer_menu, :exact),
+    APIRouteContract("/api/v1/placer_curve", "/api/placer_curve", ("POST",), :handle_placer_curve, :exact),
+    APIRouteContract("/api/v1/placer_threshold", "/api/placer_threshold", ("POST",), :handle_placer_threshold, :exact),
+    APIRouteContract("/api/v1/placer_realize_program", "/api/placer_realize_program", ("POST",), :handle_placer_realize_program, :exact),
+    APIRouteContract("/api/v1/placer_level", "/api/placer_level", ("POST",), :handle_placer_level, :exact),
+    APIRouteContract("/api/v1/design_search", "/api/design_search", ("POST",), :handle_design_search, :exact),
+    APIRouteContract("/api/v1/design_screen", "/api/design_screen", ("POST",), :handle_design_screen, :exact),
+    APIRouteContract("/api/v1/rop_shape_optimize", "/api/rop_shape_optimize", ("POST",), :handle_rop_shape_optimize, :exact),
+    APIRouteContract("/api/v1/ro_field", "/api/ro_field", ("POST",), :handle_ro_field, :exact),
     # Differential diagnostics are separately identified and never mutate the
     # source RO-field artifact or its scientific evidence class.
-    APIRouteContract("/api/v1/ro_field/differential", "/api/ro_field/differential", ("POST",), :handle_ro_field_differential, nothing, :exact),
-    APIRouteContract("/api/v1/validate_designability_spec", "/api/validate_designability_spec", ("POST",), :handle_validate_designability_spec, "/api/validate_designability_spec", :exact),
-    APIRouteContract("/api/v1/design_labels", "/api/design_labels", ("POST",), :handle_design_labels, "/api/design_labels", :exact),
-    APIRouteContract("/api/v1/atlas_landscape_2d", "/api/atlas_landscape_2d", ("POST",), :handle_atlas_landscape_2d, "/api/atlas_landscape_2d", :exact),
-    APIRouteContract("/api/v1/rop_polyhedron", "/api/rop_polyhedron", ("POST",), :handle_rop_polyhedron, "/api/rop_polyhedron", :exact),
-    APIRouteContract("/api/v1/ir/network/validate", "/api/ir/network/validate", ("POST",), :handle_ir_network_validate, "/api/ir/network/validate", :exact),
-    APIRouteContract("/api/v1/ir/design/validate", "/api/ir/design/validate", ("POST",), :handle_ir_design_validate, "/api/ir/design/validate", :exact),
-    APIRouteContract("/api/v1/import/sbml", "/api/import/sbml", ("POST",), :handle_import_sbml, "/api/import/sbml", :exact),
-    APIRouteContract("/api/v1/export/sbml", "/api/export/sbml", ("POST",), :handle_export_sbml, "/api/export/sbml", :exact),
-    APIRouteContract("/api/v1/debug_logs", "/api/debug_logs", ("POST",), :handle_debug_logs, "/api/debug_logs", :exact),
+    APIRouteContract("/api/v1/ro_field/differential", "/api/ro_field/differential", ("POST",), :handle_ro_field_differential, :exact),
+    APIRouteContract("/api/v1/validate_designability_spec", "/api/validate_designability_spec", ("POST",), :handle_validate_designability_spec, :exact),
+    APIRouteContract("/api/v1/design_labels", "/api/design_labels", ("POST",), :handle_design_labels, :exact),
+    APIRouteContract("/api/v1/atlas_landscape_2d", "/api/atlas_landscape_2d", ("POST",), :handle_atlas_landscape_2d, :exact),
+    APIRouteContract("/api/v1/rop_polyhedron", "/api/rop_polyhedron", ("POST",), :handle_rop_polyhedron, :exact),
+    APIRouteContract("/api/v1/ir/network/validate", "/api/ir/network/validate", ("POST",), :handle_ir_network_validate, :exact),
+    APIRouteContract("/api/v1/ir/design/validate", "/api/ir/design/validate", ("POST",), :handle_ir_design_validate, :exact),
+    APIRouteContract("/api/v1/import/sbml", "/api/import/sbml", ("POST",), :handle_import_sbml, :exact),
+    APIRouteContract("/api/v1/export/sbml", "/api/export/sbml", ("POST",), :handle_export_sbml, :exact),
+    APIRouteContract("/api/v1/debug_logs", "/api/debug_logs", ("POST",), :handle_debug_logs, :exact),
 
     # Version-adjacent public endpoints.
-    APIRouteContract("/api/v1/version", "/api/version", ("GET", "POST"), :handle_version, "/api/version", :exact),
-    APIRouteContract("/api/v1/local-image", "/api/local-image", ("GET",), :handle_local_image, "/api/local-image", :exact),
+    APIRouteContract("/api/v1/version", "/api/version", ("GET", "POST"), :handle_version, :exact),
+    APIRouteContract("/api/v1/local-image", "/api/local-image", ("GET",), :handle_local_image, :exact),
 
     # Root operations endpoints.
-    APIRouteContract("/health", "/health", ("GET", "HEAD"), :handle_health, nothing, :exact),
-    APIRouteContract("/ready", "/ready", ("GET", "HEAD"), :handle_ready, nothing, :exact),
-    APIRouteContract("/metrics", "/metrics", ("GET", "HEAD"), :handle_metrics, nothing, :exact),
+    APIRouteContract("/health", "/health", ("GET", "HEAD"), :handle_health, :exact),
+    APIRouteContract("/ready", "/ready", ("GET", "HEAD"), :handle_ready, :exact),
 
     # Job routes are declared as templates as one family, including its root.
-    APIRouteContract("/api/v1/jobs", "/api/jobs", ("POST",), :handle_jobs_route, "/api/jobs", :template),
-    APIRouteContract("/api/v1/jobs/{job_id}", "/api/jobs/{job_id}", ("GET", "POST"), :handle_jobs_route, "/api/jobs/{job_id}", :template),
-    APIRouteContract("/api/v1/jobs/{job_id}/result", "/api/jobs/{job_id}/result", ("GET", "POST"), :handle_jobs_route, "/api/jobs/{job_id}/result", :template),
-    APIRouteContract("/api/v1/jobs/{job_id}/cancel", "/api/jobs/{job_id}/cancel", ("POST",), :handle_jobs_route, "/api/jobs/{job_id}/cancel", :template),
+    APIRouteContract("/api/v1/jobs", "/api/jobs", ("POST",), :handle_jobs_route, :template),
+    APIRouteContract("/api/v1/jobs/{job_id}", "/api/jobs/{job_id}", ("GET", "POST"), :handle_jobs_route, :template),
+    APIRouteContract("/api/v1/jobs/{job_id}/result", "/api/jobs/{job_id}/result", ("GET", "POST"), :handle_jobs_route, :template),
+    APIRouteContract("/api/v1/jobs/{job_id}/cancel", "/api/jobs/{job_id}/cancel", ("POST",), :handle_jobs_route, :template),
 ]
 
 _template_segment(segment::AbstractString) =
@@ -137,7 +131,6 @@ function api_contract_reference_facts()
         internal_path=route.internal_path,
         methods=collect(route.methods),
         handler=String(route.handler),
-        legacy_alias=route.legacy_alias,
         match_kind=String(route.match_kind),
     ) for route in API_ROUTE_CONTRACTS]
 

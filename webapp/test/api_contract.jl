@@ -10,17 +10,15 @@ const Backend = BiocircuitsExplorerBackend
 @testset "Executable API route contract" begin
     routes = Backend.API_ROUTE_CONTRACTS
 
-    @test length(routes) == 51
+    @test length(routes) == 50
     @test length(filter(Backend._is_ordinary_post_route, routes)) == 41
     @test count(route -> route.match_kind === :template, routes) == 4
     @test length(Backend.API_ROUTES) == 41
 
     canonical_paths = getfield.(routes, :canonical_path)
     internal_paths = getfield.(routes, :internal_path)
-    legacy_aliases = [route.legacy_alias for route in routes if route.legacy_alias !== nothing]
     @test allunique(canonical_paths)
     @test allunique(internal_paths)
-    @test allunique(legacy_aliases)
 
     for route in routes
         @test Backend._resolve_api_route_handler(route) ===
@@ -34,23 +32,12 @@ const Backend = BiocircuitsExplorerBackend
         end
 
         if startswith(route.canonical_path, Backend.API_V1_PREFIX * "/")
-            @test Backend._canonicalize_api_path(route.canonical_path) ==
-                  (route.internal_path, false)
-            if route.canonical_path in
-               ("/api/v1/rop_shape_optimize", "/api/v1/ro_field",
-                "/api/v1/ro_field/differential", "/api/v1/discover_architecture",
-                "/api/v1/design_network")
-                @test route.legacy_alias === nothing
-            else
-                @test route.legacy_alias !== nothing
-                @test Backend._canonicalize_api_path(route.legacy_alias) ==
-                      (route.internal_path, true)
-            end
+            @test Backend._canonicalize_api_path(route.canonical_path) == route.internal_path
         end
     end
 
-    @test Backend._canonicalize_api_path("/api/v1") == ("/api/v1", false)
-    @test Backend._canonicalize_api_path("/api/v1/") == ("/api/v1", false)
+    @test Backend._canonicalize_api_path("/api/v1") == "/api/v1"
+    @test Backend._canonicalize_api_path("/api/v1/") == "/api/v1"
 
     jobs_root = Backend._match_api_route("/api/jobs")
     jobs_status = Backend._match_api_route("/api/jobs/job-123")
@@ -72,10 +59,10 @@ const Backend = BiocircuitsExplorerBackend
     @test Backend.router(HTTP.Request("POST", "/api/v1/local-image")).status == 405
     @test Backend.router(HTTP.Request("DELETE", "/api/v1/jobs/job-123")).status == 405
     @test Backend.router(HTTP.Request("OPTIONS", "/any/path")).status == 204
+    # Bare /api/* is not served; every route lives under /api/v1.
     @test Backend.router(HTTP.Request("POST", "/api/rop_shape_optimize")).status == 404
-    @test Backend.router(HTTP.Request("POST", "/api/ro_field")).status == 404
-    @test Backend.router(HTTP.Request(
-        "POST", "/api/ro_field/differential")).status == 404
+    @test Backend.router(HTTP.Request("POST", "/api/build_model")).status == 404
+    @test Backend.router(HTTP.Request("GET", "/api/version")).status == 404
 
     first_json = Backend.api_contract_reference_json()
     second_json = Backend.api_contract_reference_json()
@@ -85,8 +72,8 @@ const Backend = BiocircuitsExplorerBackend
 
     reference = JSON3.read(first_json)
     @test reference["schema_version"] == "1"
-    @test reference["route_count"] == 51
-    @test length(reference["routes"]) == 51
+    @test reference["route_count"] == 50
+    @test length(reference["routes"]) == 50
     @test reference["routes"][1]["canonical_path"] == "/api/v1"
     @test reference["routes"][1]["methods"] == ["GET", "POST"]
 end

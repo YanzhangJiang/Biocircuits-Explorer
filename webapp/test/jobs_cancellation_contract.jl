@@ -672,7 +672,7 @@ end
 
                     response = Backend.router(HTTP.Request(
                         "POST",
-                        "/api/jobs",
+                        "/api/v1/jobs",
                         ["Content-Type" => "application/json"],
                         JSON3.write(request),
                     ))

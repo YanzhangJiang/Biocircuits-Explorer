@@ -7,11 +7,6 @@ struct SyncBudgetExceeded <: Exception
 end
 Base.showerror(io::IO, err::SyncBudgetExceeded) = print(io, err.msg)
 
-struct SyncCapacityExceeded <: Exception
-    msg::String
-end
-Base.showerror(io::IO, err::SyncCapacityExceeded) = print(io, err.msg)
-
 struct ModelCandidateBoundExceeded <: Exception
     label::String
     maximum::Int
@@ -191,9 +186,6 @@ const SYNC_HEAVY_HANDLER_NAMES = Set{Symbol}((
     :handle_ro_field,
 ))
 
-const _SYNC_HEAVY_GATE_LOCK = ReentrantLock()
-const _SYNC_HEAVY_ACTIVE = Ref(0)
-const _SYNC_HEAVY_LIMIT = 2
 const _SYNC_REQUEST_CONTEXT_TLS_KEY = :biocircuits_explorer_sync_request_context
 
 _in_sync_request_context() =
@@ -206,20 +198,9 @@ function _with_sync_request_context(f::Function, enabled::Bool)
     end
 end
 
+# Heavy synchronous handlers run inside the sync request context so that
+# path/atlas work budgets apply to them; there is no concurrency gate.
 function with_sync_work_gate(f::Function, handler_name::Symbol)
     handler_name in SYNC_HEAVY_HANDLER_NAMES || return f()
-    admitted = lock(_SYNC_HEAVY_GATE_LOCK) do
-        _SYNC_HEAVY_ACTIVE[] >= _SYNC_HEAVY_LIMIT && return false
-        _SYNC_HEAVY_ACTIVE[] += 1
-        true
-    end
-    admitted || throw(SyncCapacityExceeded(
-        "Synchronous compute capacity is full. Retry later."))
-    try
-        return _with_sync_request_context(f, true)
-    finally
-        lock(_SYNC_HEAVY_GATE_LOCK) do
-            _SYNC_HEAVY_ACTIVE[] -= 1
-        end
-    end
+    return _with_sync_request_context(f, true)
 end

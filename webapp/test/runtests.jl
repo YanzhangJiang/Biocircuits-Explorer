@@ -350,7 +350,7 @@ end
         )
         request = HTTP.Request(
             "POST",
-            "/api/jobs",
+            "/api/v1/jobs",
             ["Content-Type" => "application/json"],
             JSON3.write(Dict(
                 "kind" => "query_atlas",
@@ -642,11 +642,11 @@ end
 
 @testset "Router Guards Static And API Errors" begin
     traversal = router(HTTP.Request("GET", "/../Project.toml"))
-    malformed = router(HTTP.Request("POST", "/api/build_model", ["Content-Type" => "application/json"], "{"))
-    missing_field = router(HTTP.Request("POST", "/api/build_model", ["Content-Type" => "application/json"], JSON3.write(Dict(
+    malformed = router(HTTP.Request("POST", "/api/v1/build_model", ["Content-Type" => "application/json"], "{"))
+    missing_field = router(HTTP.Request("POST", "/api/v1/build_model", ["Content-Type" => "application/json"], JSON3.write(Dict(
         "kd" => Any[1.0],
     ))))
-    wrong_method = router(HTTP.Request("GET", "/api/build_model"))
+    wrong_method = router(HTTP.Request("GET", "/api/v1/build_model"))
 
     @test traversal.status == 404
     @test malformed.status == 400
@@ -655,138 +655,6 @@ end
     @test occursin("reactions", String(missing_field.body))
     @test wrong_method.status == 405
     @test occursin("Method not allowed", String(wrong_method.body))
-end
-
-@testset "Request ID and Structured Logging" begin
-    # Every response gets an X-Request-Id, generated if the client didn't
-    # provide one. Format is UUID-shaped (8-4-4-4-12 hex segments).
-    r = router(HTTP.Request("GET", "/health"))
-    rid = HTTP.header(r, "X-Request-Id", "")
-    @test !isempty(rid)
-    @test occursin(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", rid)
-
-    # Client-supplied IDs are echoed back when well-formed.
-    client_rid = "test-rid-12345"
-    r2 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => client_rid]))
-    @test HTTP.header(r2, "X-Request-Id") == client_rid
-
-    # Malicious IDs (too long, control chars) are replaced with a generated one.
-    bad = "x" ^ 200
-    r3 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => bad]))
-    @test HTTP.header(r3, "X-Request-Id") != bad
-    @test length(HTTP.header(r3, "X-Request-Id")) < 64
-
-    weird = "has spaces and <tags>"
-    r4 = router(HTTP.Request("GET", "/health", ["X-Request-Id" => weird]))
-    @test HTTP.header(r4, "X-Request-Id") != weird
-
-    # JSON logs are off by default — flipping the env var should make
-    # log_request_json write a parseable line to the given IO. The router
-    # uses stderr; we exercise the helper directly to avoid stderr capture
-    # complexity.
-    buf = IOBuffer()
-    BiocircuitsExplorerBackend.Observability.log_request_json(buf, Dict(
-        "event" => "http_request",
-        "status" => 200,
-        "path" => "/health",
-    ))
-    seekstart(buf)
-    line = readline(buf)
-    parsed = JSON3.read(line)
-    @test parsed["event"] == "http_request"
-    @test parsed["status"] == 200
-
-    @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == false
-    withenv("BIOCIRCUITS_EXPLORER_JSON_LOGS" => "1") do
-        @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == true
-    end
-    withenv("BIOCIRCUITS_EXPLORER_JSON_LOGS" => "0") do
-        @test BiocircuitsExplorerBackend.Observability.json_logs_enabled() == false
-    end
-end
-
-@testset "Prometheus Metrics" begin
-    Obs = BiocircuitsExplorerBackend.Observability
-
-    # Isolate this testset from earlier traffic so we can assert exact
-    # counter values without depending on test ordering.
-    Obs.reset_metrics!()
-
-    # Drive a few requests with known shapes; the metric snapshot should
-    # reflect them after the request returns.
-    router(HTTP.Request("GET", "/health"))
-    router(HTTP.Request("GET", "/health"))
-    router(HTTP.Request("GET", "/api/v1/version"))
-    router(HTTP.Request("POST", "/api/build_model",
-        ["Content-Type" => "application/json"], "{"))   # 400 path
-
-    metrics = router(HTTP.Request("GET", "/metrics"))
-    @test metrics.status == 200
-    @test occursin("text/plain", HTTP.header(metrics, "Content-Type"))
-    body = String(metrics.body)
-
-    # Required series are present with their TYPE annotations.
-    @test occursin("# TYPE bcx_http_requests_total counter", body)
-    @test occursin("# TYPE bcx_http_request_duration_seconds histogram", body)
-    @test occursin("# TYPE bcx_uptime_seconds gauge", body)
-    @test occursin("# TYPE bcx_sessions_active gauge", body)
-    @test occursin("# TYPE bcx_build_info gauge", body)
-
-    # Two /health GETs landed in the counter (the /metrics scrape itself is
-    # also counted because it runs through `router`, so we look for the
-    # specific {method, path, status} line, not a total).
-    @test occursin(
-        r"bcx_http_requests_total\{method=\"GET\",path=\"/health\",status=\"200\"\}\s+2",
-        body)
-
-    # The 400 build_model attempt shows up as its own series.
-    @test occursin(
-        r"bcx_http_requests_total\{method=\"POST\",path=\"/api/build_model\",status=\"400\"\}\s+1",
-        body)
-
-    # Histogram has both cumulative buckets and _sum/_count.
-    @test occursin("bcx_http_request_duration_seconds_bucket", body)
-    @test occursin("bcx_http_request_duration_seconds_sum", body)
-    @test occursin("bcx_http_request_duration_seconds_count", body)
-    @test occursin("le=\"+Inf\"", body)
-
-    # Prometheus requires histogram bucket counts to be non-decreasing in
-    # bucket order, and the +Inf bucket to equal _count. Verifying this
-    # catches a class of bug (double-accumulation, off-by-one buckets)
-    # that wouldn't show up as a missing string.
-    health_buckets = Int[]
-    for line in split(body, "\n")
-        ok = match(r"bcx_http_request_duration_seconds_bucket\{method=\"GET\",path=\"/health\",le=\"[^\"]+\"\}\s+(\d+)", line)
-        ok === nothing && continue
-        push!(health_buckets, parse(Int, ok.captures[1]))
-    end
-    @test !isempty(health_buckets)
-    @test issorted(health_buckets)
-    health_count = match(r"bcx_http_request_duration_seconds_count\{method=\"GET\",path=\"/health\"\}\s+(\d+)", body)
-    @test health_count !== nothing
-    @test health_buckets[end] == parse(Int, health_count.captures[1])
-
-    # Uptime is > 0 by the time we run this.
-    m = match(r"bcx_uptime_seconds\s+([0-9.eE+-]+)", body)
-    @test m !== nothing
-    @test parse(Float64, m.captures[1]) > 0
-
-    # build_info exposes version + revision labels.
-    @test occursin("bcx_build_info{", body)
-    @test occursin("version=", body)
-    @test occursin("revision=", body)
-
-    # A scrape can't observe itself: the request counter is incremented in
-    # router() *after* handle_metrics has already rendered the body, so the
-    # first /metrics body never lists path="/metrics". A second scrape sees
-    # the first one.
-    @test !occursin("path=\"/metrics\"", body)
-    router(HTTP.Request("GET", "/metrics"))
-    body2 = String(router(HTTP.Request("GET", "/metrics")).body)
-    @test occursin("path=\"/metrics\"", body2)
-
-    # POST to /metrics should be 405, not a metric-mutating side effect.
-    @test router(HTTP.Request("POST", "/metrics")).status == 405
 end
 
 @testset "Health and Readiness Probes" begin
@@ -888,56 +756,45 @@ end
 
     # These paths must not collide with the API surface — verify the
     # canonicalizer leaves them alone.
-    @test BiocircuitsExplorerBackend._canonicalize_api_path("/health") == ("/health", false)
-    @test BiocircuitsExplorerBackend._canonicalize_api_path("/ready")  == ("/ready", false)
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/health") == "/health"
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/ready")  == "/ready"
 end
 
 @testset "API v1 canonicalization" begin
-    # Bare /api/version is a permanent compatibility alias for the canonical
-    # v1 route and returns the identical payload.
-    legacy_version = router(HTTP.Request("GET", "/api/version"))
-    @test legacy_version.status == 200
-    legacy_body = JSON3.read(legacy_version.body)
-    @test legacy_body["api_version"] == BiocircuitsExplorerBackend.API_CURRENT_VERSION
-    @test haskey(legacy_body, "version")              # app version retained
-    @test legacy_body["api_supported"][1] == "v1"
-
-    # /api/v1/version is the canonical form — same payload.
+    # /api/v1/version is the canonical form.
     v1_version = router(HTTP.Request("GET", "/api/v1/version"))
     @test v1_version.status == 200
     v1_body = JSON3.read(v1_version.body)
-    @test v1_body["api_version"] == "v1"
-    @test v1_body["version"] == legacy_body["version"]
+    @test v1_body["api_version"] == BiocircuitsExplorerBackend.API_CURRENT_VERSION
+    @test haskey(v1_body, "version")              # app version retained
+    @test v1_body["api_supported"][1] == "v1"
+
+    # Bare /api/* is not an API surface any more.
+    @test router(HTTP.Request("GET", "/api/v1/version")).status == 404
+    @test router(HTTP.Request("POST", "/api/v1/build_model",
+        ["Content-Type" => "application/json"], "{")).status == 404
 
     # /api/v1 (with or without trailing slash) is a discovery probe.
     @test router(HTTP.Request("GET", "/api/v1")).status == 200
     @test router(HTTP.Request("GET", "/api/v1/")).status == 200
 
-    # A real POST endpoint: malformed body produces the same 400 on both
-    # surfaces, with an identical payload.
-    bad_legacy = router(HTTP.Request("POST", "/api/build_model",
-        ["Content-Type" => "application/json"], "{"))
+    # Malformed body on a real POST endpoint is a 400.
     bad_v1 = router(HTTP.Request("POST", "/api/v1/build_model",
         ["Content-Type" => "application/json"], "{"))
-    @test bad_legacy.status == 400
     @test bad_v1.status == 400
-    @test String(bad_legacy.body) == String(bad_v1.body)   # identical payload
 
     # Unknown endpoints under v1 fall through to the static handler (404).
     @test router(HTTP.Request("GET", "/api/v1/this-does-not-exist")).status == 404
 
-    # Canonicalization unit checks — kept here rather than in a separate
-    # testset so the failure context shows both unit and integration behavior.
+    # Canonicalization unit checks.
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/build_model") ==
-          ("/api/build_model", false)
-    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/build_model") ==
-          ("/api/build_model", true)
-    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1") ==
-          ("/api/v1", false)
-    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/") ==
-          ("/api/v1", false)
+          "/api/v1/build_model"
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1") == "/api/v1"
+    @test BiocircuitsExplorerBackend._canonicalize_api_path("/api/v1/") == "/api/v1"
     @test BiocircuitsExplorerBackend._canonicalize_api_path("/static/foo.css") ==
-          ("/static/foo.css", false)
+          "/static/foo.css"
+    @test BiocircuitsExplorerBackend._is_unversioned_api_path("/api/v1/build_model")
+    @test !BiocircuitsExplorerBackend._is_unversioned_api_path("/api/v1/build_model")
 end
 
 @testset "SBML Export/Import Round-Trip" begin
@@ -1556,7 +1413,7 @@ end
     sid = "kd-default-scan-test"
     build_response = router(HTTP.Request(
         "POST",
-        "/api/build_model",
+        "/api/v1/build_model",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "session_id" => sid,
@@ -1569,7 +1426,7 @@ end
 
     scan_response = router(HTTP.Request(
         "POST",
-        "/api/parameter_scan_1d",
+        "/api/v1/parameter_scan_1d",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "session_id" => sid,
@@ -1585,7 +1442,7 @@ end
 
     bad_fixed_response = router(HTTP.Request(
         "POST",
-        "/api/parameter_scan_1d",
+        "/api/v1/parameter_scan_1d",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "session_id" => sid,
@@ -2558,7 +2415,7 @@ end
 end
 
 @testset "handle_build_model Accepts Both Legacy And NetworkIR" begin
-    legacy_req = HTTP.Request("POST", "/api/build_model",
+    legacy_req = HTTP.Request("POST", "/api/v1/build_model",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "reactions" => ["A + B <-> AB"],
@@ -2573,7 +2430,7 @@ end
     @test legacy_body["network_ir"]["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
     @test haskey(legacy_body, "network_ir_hash")
 
-    ir_req = HTTP.Request("POST", "/api/build_model",
+    ir_req = HTTP.Request("POST", "/api/v1/build_model",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "network" => Dict(
@@ -2595,7 +2452,7 @@ end
 end
 
 @testset "IR Validation Endpoints Return Structured Errors" begin
-    good_req = HTTP.Request("POST", "/api/ir/network/validate",
+    good_req = HTTP.Request("POST", "/api/v1/ir/network/validate",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "reactions" => ["A + B <-> AB"],
@@ -2608,7 +2465,7 @@ end
     @test good_body["ir_schema_version"] == NETWORK_IR_SCHEMA_VERSION
     @test haskey(good_body, "hash")
 
-    bad_req = HTTP.Request("POST", "/api/ir/network/validate",
+    bad_req = HTTP.Request("POST", "/api/v1/ir/network/validate",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "ir_schema_version" => NETWORK_IR_SCHEMA_VERSION,
@@ -2622,7 +2479,7 @@ end
     @test bad_body["section"] == "network"
     @test occursin("species", String(bad_body["path"]))
 
-    design_req = HTTP.Request("POST", "/api/ir/design/validate",
+    design_req = HTTP.Request("POST", "/api/v1/ir/design/validate",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict(
             "design" => Dict(
@@ -2654,7 +2511,7 @@ end
     MC._clear_all!()
 
     # 1. Build registers exactly one bundle, keyed by the NetworkIR hash.
-    build = post("/api/build_model", NET)
+    build = post("/api/v1/build_model", NET)
     @test build.status == 200
     bbody = response_json(build)
     sid = bbody["session_id"]
@@ -2663,13 +2520,13 @@ end
     @test MC.model_count() == 1
 
     # 2. Rebuilding the same IR is a cache hit; a different IR adds one bundle.
-    @test response_json(post("/api/build_model", NET))["network_ir_hash"] == h
+    @test response_json(post("/api/v1/build_model", NET))["network_ir_hash"] == h
     @test MC.model_count() == 1
-    post("/api/build_model", ALT)
+    post("/api/v1/build_model", ALT)
     @test MC.model_count() == 2
 
     # 3. Downstream endpoints are stateless: a NetworkIR alone resolves a model.
-    sl = post("/api/find_vertices", Dict("network" => NET))
+    sl = post("/api/v1/find_vertices", Dict("network" => NET))
     @test sl.status == 200
     @test haskey(response_json(sl), "n_vertices")
 
@@ -2677,18 +2534,18 @@ end
     #    from the retained IR side-table — no session, no resent IR needed.
     MC._clear_models!()
     @test MC.model_count() == 0
-    reb = post("/api/find_vertices", Dict("network_ir_hash" => h))
+    reb = post("/api/v1/find_vertices", Dict("network_ir_hash" => h))
     @test reb.status == 200
     @test haskey(response_json(reb), "n_vertices")
     @test MC.model_count() == 1
 
     # 5. Legacy session_id still resolves the same bundle.
-    @test post("/api/find_vertices", Dict("session_id" => sid)).status == 200
+    @test post("/api/v1/find_vertices", Dict("session_id" => sid)).status == 200
 
     # 6. Cold miss (no model, unknown hash, no IR to rebuild from) tells the
     #    client to resend the NetworkIR rather than failing opaquely.
     MC._clear_all!()
-    cold = post("/api/find_vertices", Dict("network_ir_hash" => repeat("d", 64)))
+    cold = post("/api/v1/find_vertices", Dict("network_ir_hash" => repeat("d", 64)))
     @test cold.status == 409
     @test response_json(cold)["need_network"] == true
 end
@@ -2721,7 +2578,7 @@ end
     @test attach_artifact!(42, "demo") == 42
 
     # End-to-end: build_model carries a build_model artifact tied to the IR hash.
-    resp = router(HTTP.Request("POST", "/api/build_model",
+    resp = router(HTTP.Request("POST", "/api/v1/build_model",
         ["Content-Type" => "application/json"],
         JSON3.write(Dict("reactions" => ["A + B <-> AB"], "kd" => [1.0]))))
     @test resp.status == 200
@@ -2831,10 +2688,10 @@ end
     @test !haskey(rec["metrics"], "condition_number")
     @test !haskey(rec["metrics"], "parameter_breakpoint_sensitivity")
     @test rec["agent_handoff"]["endpoint"] == "/api/v1/design_screen"
-    bad_kind_req = HTTP.Request("POST", "/api/design_screen", [],
+    bad_kind_req = HTTP.Request("POST", "/api/v1/design_screen", [],
         JSON3.write(Dict("target_kind" => "unknown", "target" => Any[1.0])))
     @test BEB.router(bad_kind_req).status == 400
-    bad_spec_req = HTTP.Request("POST", "/api/design_screen", [],
+    bad_spec_req = HTTP.Request("POST", "/api/v1/design_screen", [],
         JSON3.write(Dict("designability_spec" => "not-an-object", "target" => "+-+")))
     @test BEB.router(bad_spec_req).status == 400
     for cell in BEB.design_search("sign", "+-+")["minimal"], net in cell["networks"]
@@ -2842,8 +2699,8 @@ end
     end
     @test any(r -> r.out == "C_A_A", idx)
     @test BEB.handle_design_labels(nothing).status == 503       # no tracked label corpus
-    @test haskey(BEB.API_ROUTES, "/api/run_inverse_design")   # downgraded, not removed
-    @test haskey(BEB.API_ROUTES, "/api/design_labels")        # new endpoint wired
-    @test haskey(BEB.API_ROUTES, "/api/design_screen")        # tunability-aware screen wired
+    @test haskey(BEB.API_ROUTES, "/api/v1/run_inverse_design")   # downgraded, not removed
+    @test haskey(BEB.API_ROUTES, "/api/v1/design_labels")        # new endpoint wired
+    @test haskey(BEB.API_ROUTES, "/api/v1/design_screen")        # tunability-aware screen wired
     end
 end

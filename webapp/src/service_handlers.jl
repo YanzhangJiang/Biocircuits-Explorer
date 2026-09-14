@@ -30,46 +30,8 @@ function handle_run_inverse_design(req)
     return json_response(run_inverse_design_from_spec(body))
 end
 
-# Label schemas for /metrics. Lives here (not in Observability) so that
-# adding a new metric to handle_metrics doesn't require touching the
-# storage layer. Tuple order must match the tuples passed to counter_inc!
-# / hist_observe! / gauge_set! at the call sites.
-const _METRIC_LABEL_SCHEMAS = Dict{String, Tuple}(
-    "bcx_http_requests_total"         => (:method, :path, :status),
-    "bcx_http_request_duration_seconds" => (:method, :path),
-    "bcx_uptime_seconds"              => (),
-    "bcx_sessions_active"             => (),
-    "bcx_build_info"                  => (:version, :revision),
-)
-
-# GET /metrics — Prometheus scrape endpoint. Returns text exposition v0.0.4.
-# Caution: in production this should be exposed only on an internal network
-# (or behind auth) because path labels could leak API shape. The nginx
-# config defaults to proxying it through, so deployments that don't want
-# /metrics public must block it at the edge.
-function handle_metrics(req)
-    # Refresh dynamic gauges on each scrape. These are cheap (an integer
-    # session count, a subtraction for uptime, a string lookup for build
-    # info) so running them inline is fine.
-    Observability.gauge_set!("bcx_uptime_seconds", (),
-        (time_ns() - _STARTUP_TIME_NS[]) / 1e9)
-    Observability.gauge_set!("bcx_sessions_active", (),
-        SessionStore.session_count())
-    Observability.gauge_set!("bcx_build_info",
-        (biocircuits_explorer_version(),
-         strip(get(ENV, "BIOCIRCUITS_EXPLORER_REVISION", "unknown"))),
-        1.0)
-
-    text = Observability.render_prometheus(_METRIC_LABEL_SCHEMAS)
-    return HTTP.Response(200,
-        ["Content-Type" => "text/plain; version=0.0.4; charset=utf-8"],
-        text)
-end
-
 # GET /health — liveness probe. Returns 200 as long as the Julia process is
-# answering. Cheap, no I/O. Used by container orchestrators (Docker
-# HEALTHCHECK, Kubernetes livenessProbe, AWS ALB target groups) to decide
-# whether to restart the instance.
+# answering. Cheap, no I/O. The native shell and start.sh poll it.
 function handle_health(req)
     initialized = _STARTUP_TIME_NS[] != 0
     uptime_s = initialized ? (time_ns() - _STARTUP_TIME_NS[]) / 1e9 : 0.0
@@ -83,11 +45,8 @@ function handle_health(req)
     ))
 end
 
-# GET /ready — readiness probe. Reports whether the app can serve real
-# traffic. Fails closed (503) if any check is missing so a load balancer can
-# route around the instance until it recovers. Distinct from /health: a
-# crash-looping container is unhealthy; a still-warming container is
-# unready but should not be restarted.
+# GET /ready — readiness probe. Reports whether static assets and the job
+# store are available; 503 until they are.
 function handle_ready(req)
     initialized = _STARTUP_TIME_NS[] != 0
     static_root = try

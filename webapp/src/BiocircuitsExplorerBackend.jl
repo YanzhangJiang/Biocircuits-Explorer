@@ -75,16 +75,12 @@ include(joinpath(@__DIR__, "config.jl"))
 include(joinpath(@__DIR__, "session_store.jl"))
 include(joinpath(@__DIR__, "model_cache.jl"))
 include(joinpath(@__DIR__, "debug_log.jl"))
-include(joinpath(@__DIR__, "observability.jl"))
 include(joinpath(@__DIR__, "serialization.jl"))
 include(joinpath(@__DIR__, "reaction_parser.jl"))
 include(joinpath(@__DIR__, "static_assets.jl"))
 using .SessionStore: get_session, set_session, set_session_if_available
 using .DebugLog: append_debug_log, with_debug_client_scope,
                   debug_client_id_from_request, install_debug_logger!
-using .Observability: counter_inc!, gauge_set!, hist_observe!,
-                       render_prometheus, log_request_json,
-                       json_logs_enabled, iso_timestamp
 using .Serialization: mat2vv, json_safe_value, json_safe_real, json_safe_profile,
                        json_response, error_response, read_json, is_request_error,
                        RequestBodyTooLarge

@@ -193,7 +193,7 @@ end
         ["Content-Type" => "application/json"], JSON3.write(oversized)))
     @test rejected.status == 400
     @test Backend.router(HTTP.Request(
-        "POST", "/api/ro_field/differential",
+        "POST", "/api/v1/ro_field/differential",
         ["Content-Type" => "application/json"], JSON3.write(body))).status == 404
 end
 

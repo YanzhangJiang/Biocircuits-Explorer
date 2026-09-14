@@ -32,9 +32,9 @@ const DESIGNABILITY_SPEC_VERSION = 'bne-designability/v1.0.0';
 import { chatApiUrl, healthUrl, designChatRequestHeaders, setDesignChatEndpoint as setTransportEndpoint } from './design-chat-client.js';
 export { designChatRequestHeaders, designTargetCompileUrl } from './design-chat-client.js';
 
-export function setDesignChatEndpoint(url, bearerToken = '') {
+export function setDesignChatEndpoint(url) {
   if (!url) return;
-  setTransportEndpoint(url, bearerToken);
+  setTransportEndpoint(url);
   refreshBackendStatus();
 }
 if (typeof window !== 'undefined') window.setDesignChatEndpoint = setDesignChatEndpoint;
@@ -866,7 +866,7 @@ async function refreshBackendStatus() {
     }
   } catch {
     statusDotEl.className = 'agent-status-dot offline';
-    if (statusTextEl) statusTextEl.textContent = 'Backend offline — run “cd webapp && ./start.sh”, or set BNE_CHAT_ALLOWED_ORIGIN and BNE_CHAT_BEARER_TOKEN before chat_api.py';
+    if (statusTextEl) statusTextEl.textContent = 'Backend offline — run “cd webapp && ./start.sh”, or set BNE_CHAT_ALLOWED_ORIGIN before chat_api.py';
   }
 }
 
@@ -1311,7 +1311,7 @@ function buildComposer() {
       // backend/proxy response body, so render it as textContent — never innerHTML.
       const errMsg = el('div', { class: 'msg agent' }, [
         el('div', { class: 'who' }, [el('span', { class: 'dot' }), 'Design Agent']),
-        el('div', { class: 'agent-text', html: 'Backend unreachable — run <b>cd webapp &amp;&amp; ./start.sh</b> for the secured local development pair. Direct chat_api.py launches must set an exact loopback origin and bearer token. An LLM key (⚙ panel) is optional.' }),
+        el('div', { class: 'agent-text', html: 'Backend unreachable — run <b>cd webapp &amp;&amp; ./start.sh</b> to start both local backends. Direct chat_api.py launches must set BNE_CHAT_ALLOWED_ORIGIN to the workspace origin. An LLM key (⚙ panel) is optional.' }),
         el('div', { class: 'agent-text', text: String(e.message || e) }),
       ]);
       threadEl.replaceChild(errMsg, pending);

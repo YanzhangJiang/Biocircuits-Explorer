@@ -150,13 +150,13 @@ const BEB = BiocircuitsExplorerBackend
               spec_screen["constraint_audit"])
 
     @test_throws ErrorException BEB.design_search("unknown", [1.0])
-    bad_kind_req = HTTP.Request("POST", "/api/design_screen", [],
+    bad_kind_req = HTTP.Request("POST", "/api/v1/design_screen", [],
         JSON3.write(Dict("target_kind" => "unknown", "target" => Any[1.0])))
     @test BEB.router(bad_kind_req).status == 400
-    bad_spec_req = HTTP.Request("POST", "/api/design_screen", [],
+    bad_spec_req = HTTP.Request("POST", "/api/v1/design_screen", [],
         JSON3.write(Dict("designability_spec" => "not-an-object", "target" => "+-+")))
     @test BEB.router(bad_spec_req).status == 400
-    top_level_spec_req = HTTP.Request("POST", "/api/design_screen", [],
+    top_level_spec_req = HTTP.Request("POST", "/api/v1/design_screen", [],
         JSON3.write(Dict("target_kind" => "sign", "target" => "+-+",
                          "temporal_dynamics" => Dict("peak_width" => "wide"))))
     top_level_spec = JSON3.read(String(copy(BEB.router(top_level_spec_req).body)))

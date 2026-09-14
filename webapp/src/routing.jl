@@ -12,31 +12,27 @@ const API_ROUTES = Dict{String, Function}(
 const _CORS_HEADERS = [
     "Access-Control-Allow-Origin"  => "*",
     "Access-Control-Allow-Methods" => "POST, GET, OPTIONS",
-    # Authorization is non-simple and triggers preflight; we have to list it
-    # explicitly. Without this header the macOS WebView (origin
-    # http://127.0.0.1:18088) cannot reach the EC2 broker
-    # (origin https://…) for /api/jobs/* and /api/auth/config.
-    "Access-Control-Allow-Headers" => "Content-Type, Authorization, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
-    "Access-Control-Expose-Headers" => "Retry-After",
+    "Access-Control-Allow-Headers" => "Content-Type, X-Biocircuits-Explorer-Debug-Client, X-ROP-Debug-Client",
     "Access-Control-Max-Age"       => "600",
 ]
 
-# Returns (canonical_path, called_as_legacy).
-#  - "/api/v1/foo"     -> ("/api/foo",     false)   canonical v1 caller
-#  - "/api/v1" | "/api/v1/" -> ("/api/v1", false)   exact v1 root (discovery)
-#  - "/api/foo"        -> ("/api/foo",     true)    legacy bare-/api caller
-#  - anything else     -> (path,           false)   non-API path; passthrough
+# Map a request path to the internal route path.
+#  - "/api/v1/foo"          -> "/api/foo"   (the internal owner path)
+#  - "/api/v1" | "/api/v1/" -> "/api/v1"    (version discovery)
+#  - anything else          -> unchanged    (static assets, or a 404 below)
+# Only /api/v1/* is served; bare /api/* is not an API surface.
 function _canonicalize_api_path(path::AbstractString)
     if path == API_V1_PREFIX || path == API_V1_PREFIX * "/"
-        return (API_V1_PREFIX, false)
+        return API_V1_PREFIX
     elseif startswith(path, API_V1_PREFIX * "/")
-        return ("/api/" * path[length(API_V1_PREFIX)+2:end], false)
-    elseif startswith(path, "/api/")
-        return (String(path), true)
+        return "/api/" * path[length(API_V1_PREFIX)+2:end]
     else
-        return (String(path), false)
+        return String(path)
     end
 end
+
+_is_unversioned_api_path(path::AbstractString) =
+    startswith(path, "/api/") && !startswith(path, API_V1_PREFIX)
 
 function _with_cors(resp::HTTP.Response)
     for (name, value) in _CORS_HEADERS
@@ -47,109 +43,17 @@ function _with_cors(resp::HTTP.Response)
     return resp
 end
 
-# Allowed characters for client-supplied request IDs. Conservative on purpose
-# — anything else could end up unescaped in log lines or response headers.
-_request_id_char_ok(c::AbstractChar) =
-    isletter(c) || isdigit(c) || c in ('-', '_', ':', '.')
-
-function _ensure_request_id(req)
-    incoming = HTTP.header(req, "X-Request-Id", "")
-    if !isempty(incoming) && length(incoming) <= 128 &&
-       all(_request_id_char_ok, incoming)
-        return String(incoming)
-    end
-    return _generate_request_id()
-end
-
-# UUID-shaped identifier built from rand() segments. Not strictly RFC4122
-# (we don't set version/variant bits) but plenty of entropy for log
-# correlation and short enough to read in a terminal.
-function _generate_request_id()
-    h1 = string(rand(UInt32), base=16, pad=8)
-    h2 = string(rand(UInt16), base=16, pad=4)
-    h3 = string(rand(UInt16), base=16, pad=4)
-    h4 = string(rand(UInt16), base=16, pad=4)
-    h5 = string(rand(UInt32), base=16, pad=8) *
-         string(rand(UInt16), base=16, pad=4)
-    return string(h1, "-", h2, "-", h3, "-", h4, "-", h5)
-end
-
-# Map a raw request path to a low-cardinality label for Prometheus. Anything
-# we recognize stays explicit; jobs paths collapse on the variable id;
-# anything else lands in a single "static" bucket. The point is to keep the
-# series count bounded — Prometheus performance degrades with unbounded
-# label cardinality.
-function _metric_path_label(raw_path::AbstractString)
-    canonical, _ = _canonicalize_api_path(raw_path)
-    (canonical == "/api/jobs" || startswith(canonical, "/api/jobs/")) &&
-        return "/api/jobs/:id"
-    route = _match_api_route(canonical)
-    route !== nothing && return route.internal_path
-    return "static"
-end
-
-function _client_ip(req)
-    fwd = HTTP.header(req, "X-Forwarded-For", "")
-    if !isempty(fwd)
-        return String(strip(split(fwd, ",")[1]))
-    end
-    return ""
-end
-
-# Safe character truncation: never splits a multi-byte codepoint. The
-# trailing ellipsis flags truncation in logs.
-function _truncate_for_log(s::AbstractString, n::Int)
-    length(s) <= n && return String(s)
-    return string(first(s, n), "…")
-end
-
 function router(req)
-    request_id = _ensure_request_id(req)
-    started_ns = time_ns()
-
-    response = try
+    return try
         _with_cors(_router_impl(req))
     catch e
         # _router_impl already wraps API handler errors via
         # _api_response_with_error_mapping. Reaching here means a
-        # router-level bug; synthesize a 500 so metrics + logs still
-        # see the request rather than the exception propagating out
-        # to HTTP.jl's default handler.
+        # router-level bug; synthesize a 500 rather than letting the
+        # exception propagate to HTTP.jl's default handler.
         @error "Router-level exception" exception=(e, catch_backtrace())
         _with_cors(error_response("Internal server error"; status=500))
     end
-
-    elapsed_s = (time_ns() - started_ns) / 1e9
-
-    if !HTTP.hasheader(response, "X-Request-Id")
-        push!(response.headers, "X-Request-Id" => request_id)
-    end
-
-    raw_path = HTTP.URI(req.target).path
-    path_label = _metric_path_label(raw_path)
-    counter_inc!("bcx_http_requests_total",
-        (req.method, path_label, string(response.status)))
-    hist_observe!("bcx_http_request_duration_seconds",
-        (req.method, path_label), elapsed_s)
-
-    if json_logs_enabled()
-        log_request_json(stderr, Dict{String, Any}(
-            "ts"         => iso_timestamp(),
-            "level"      => response.status >= 500 ? "ERROR" :
-                            response.status >= 400 ? "WARN"  : "INFO",
-            "event"      => "http_request",
-            "method"     => req.method,
-            "path"       => path_label,
-            "raw_path"   => raw_path,
-            "status"     => response.status,
-            "latency_ms" => round(elapsed_s * 1000; digits=3),
-            "request_id" => request_id,
-            "client_ip"  => _client_ip(req),
-            "user_agent" => _truncate_for_log(HTTP.header(req, "User-Agent", ""), 200),
-        ))
-    end
-
-    return response
 end
 
 function _api_response_with_error_mapping(handler, path::AbstractString)
@@ -173,15 +77,6 @@ function _api_response_with_error_mapping(handler, path::AbstractString)
                 "limit_bytes" => e.limit,
                 "retryable" => false,
             ); status=413)
-        elseif e isa SyncCapacityExceeded
-            response = json_response(Dict(
-                "error" => sprint(showerror, e),
-                "code" => "sync_capacity_exhausted",
-                "retry_after_seconds" => 1,
-                "retryable" => true,
-            ); status=429)
-            push!(response.headers, "Retry-After" => "1")
-            return response
         elseif e isa SyncBudgetExceeded
             return json_response(Dict(
                 "error" => sprint(showerror, e),
@@ -212,15 +107,9 @@ function _router_impl(req)
     end
 
     raw_path = HTTP.URI(req.target).path
-    canonical, is_legacy = _canonicalize_api_path(raw_path)
-
-    # A route with no declared legacy alias is intentionally v1-only. The
-    # canonicalizer still maps the syntactic bare path to the internal owner,
-    # so enforce the metadata boundary before dispatch.
-    matched_route = _match_api_route(canonical)
-    if is_legacy && matched_route !== nothing && matched_route.legacy_alias === nothing
-        return error_response("API route is available only under /api/v1"; status=404)
-    end
+    _is_unversioned_api_path(raw_path) &&
+        return error_response("API routes are served under /api/v1"; status=404)
+    canonical = _canonicalize_api_path(raw_path)
 
     response = _dispatch_api(req, canonical)
     if response === nothing
@@ -232,8 +121,7 @@ end
 
 # Dispatch an already-canonicalized request. Returns `nothing` if `path` is
 # not part of the API surface, in which case the caller falls back to static
-# asset serving. Splitting this out keeps `_router_impl` focused on the
-# v1-versus-legacy bookkeeping.
+# asset serving.
 function _dispatch_api(req, path::AbstractString)::Union{HTTP.Response, Nothing}
     route = _match_api_route(path)
 
