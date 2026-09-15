@@ -16,9 +16,9 @@ build_payload = Dict(
     "session_id" => "precompile",
 )
 
-build_resp = BiocircuitsExplorerBackend.router(request("POST", "/api/build_model", build_payload))
+build_resp = BiocircuitsExplorerBackend.router(request("POST", "/api/v1/build_model", build_payload))
 build_json = JSON3.read(String(build_resp.body))
 
 session_id = String(build_json["session_id"])
 
-BiocircuitsExplorerBackend.router(request("POST", "/api/find_vertices", Dict("session_id" => session_id)))
+BiocircuitsExplorerBackend.router(request("POST", "/api/v1/find_vertices", Dict("session_id" => session_id)))
